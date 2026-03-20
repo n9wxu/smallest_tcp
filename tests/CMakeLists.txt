@@ -53,3 +53,13 @@ target_link_libraries(test_icmp PRIVATE smallest_tcp_core)
 
 add_unit_test(test_udp)
 target_link_libraries(test_udp PRIVATE smallest_tcp_core)
+
+# ── test_tcp_buf ──────────────────────────────────────────────────────
+
+add_unit_test(test_tcp_buf)
+target_link_libraries(test_tcp_buf PRIVATE smallest_tcp_core)
+
+# ── test_tcp ──────────────────────────────────────────────────────────
+
+add_unit_test(test_tcp)
+target_link_libraries(test_tcp PRIVATE smallest_tcp_core)

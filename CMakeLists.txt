@@ -25,6 +25,8 @@ add_library(smallest_tcp_core STATIC
     src/ipv4.c
     src/icmp.c
     src/udp.c
+    src/tcp.c
+    src/tcp_buf_saw.c
 )
 
 target_include_directories(smallest_tcp_core

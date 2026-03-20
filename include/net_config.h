@@ -18,7 +18,7 @@
 /* ── Protocol inclusion ───────────────────────────────────────────── */
 #define NET_USE_IPV4 1
 #define NET_USE_IPV6 0
-#define NET_USE_TCP 0 /* Not yet implemented */
+#define NET_USE_TCP 1
 #define NET_USE_UDP 1
 #define NET_USE_DHCPV4 0
 #define NET_USE_DHCPV6 0

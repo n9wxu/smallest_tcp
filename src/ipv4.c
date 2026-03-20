@@ -19,6 +19,10 @@
 #include "udp.h"
 #endif
 
+#if NET_USE_TCP
+#include "tcp.h"
+#endif
+
 /* ── Parse ────────────────────────────────────────────────────────── */
 
 net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
@@ -189,7 +193,7 @@ void ipv4_input(net_t *net, const eth_frame_t *eth) {
 #if NET_USE_TCP
   case IPV4_PROTO_TCP:
     /* REQ-IPv4-018 */
-    /* TODO: tcp_input(net, &ip, eth); */
+    tcp_input(net, &ip, eth);
     break;
 #endif
   default:
