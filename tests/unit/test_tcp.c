@@ -190,6 +190,37 @@ static uint32_t sent_tcp_ack(int n) {
   return net_read32be(sent_frames[n] + ETH_HDR_SIZE + IPV4_HDR_SIZE +
                       TCP_OFF_ACK);
 }
+static uint16_t sent_tcp_window(int n) {
+  return net_read16be(sent_frames[n] + ETH_HDR_SIZE + IPV4_HDR_SIZE +
+                      TCP_OFF_WINDOW);
+}
+/**
+ * Scan options in the Nth sent TCP frame and return the MSS value,
+ * or 0 if no MSS option is present.
+ */
+static uint16_t sent_tcp_mss(int n) {
+  uint8_t *tcp = sent_frames[n] + ETH_HDR_SIZE + IPV4_HDR_SIZE;
+  uint8_t hdr_len = (uint8_t)((tcp[TCP_OFF_DOFF] >> 4) * 4u);
+  uint8_t *opt = tcp + TCP_HDR_SIZE;
+  uint8_t *end = tcp + hdr_len;
+  while (opt < end) {
+    if (*opt == TCP_OPT_EOL)
+      break;
+    if (*opt == TCP_OPT_NOP) {
+      opt++;
+      continue;
+    }
+    if (opt + 1 >= end)
+      break;
+    uint8_t kind = opt[0], len = opt[1];
+    if (len < 2 || opt + len > end)
+      break;
+    if (kind == TCP_OPT_MSS && len == 4)
+      return net_read16be(opt + 2);
+    opt += len;
+  }
+  return 0;
+}
 
 /* Inject a frame into the stack */
 static void inject(uint8_t *frame, uint16_t len) {
@@ -598,6 +629,300 @@ TEST(test_tcp_rto_resets_on_ack) {
   ASSERT_FALSE(conn.rto_active); /* Timer stopped */
 }
 
+/* ══════════════════════════════════════════════════════════════════
+ * ACK in LISTEN → RST (REQ-TCP-031)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_ack_in_listen_generates_rst) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+
+  /* Send a pure ACK to the listening port (no SYN) */
+  uint8_t frame[256];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 100u, 999u, TCP_FLAG_ACK, 4096, NULL, 0, 0);
+  inject(frame, len);
+
+  /* REQ-TCP-031: MUST reply with RST */
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_RST) != 0);
+  /* REQ-TCP-073: RST.SEQ = triggering ACK number */
+  ASSERT_EQ(sent_tcp_seq(0), 999u);
+  /* Listener stays in LISTEN */
+  ASSERT_EQ(conn.state, TCP_LISTEN);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * MSS option present in SYN-ACK (REQ-TCP-076, REQ-TCP-077)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_synack_contains_mss) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[256];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 200u, 0u, TCP_FLAG_SYN, 4096, NULL, 0, 1460);
+  inject(frame, len);
+
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_SYN) != 0); /* SYN-ACK */
+  /* REQ-TCP-076: MSS option MUST be present */
+  uint16_t mss = sent_tcp_mss(0);
+  ASSERT_TRUE(mss > 0);
+  /* REQ-TCP-077: MSS value must be ≤ 1460 (IPv4 Ethernet) */
+  ASSERT_TRUE(mss <= 1460u);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Peer MSS honored — SUT reads peer's MSS from SYN (REQ-TCP-078)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_peer_mss_stored) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[256];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 300u, 0u, TCP_FLAG_SYN, 4096, NULL, 0, 512);
+  inject(frame, len);
+  /* REQ-TCP-078: peer MSS 512 should be stored in conn.snd_mss */
+  ASSERT_EQ(conn.snd_mss, 512u);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Default peer MSS = 536 when no MSS option (REQ-TCP-079)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_default_peer_mss_536) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[256];
+  /* SYN with no MSS option (peer_mss=0 → no option appended) */
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 400u, 0u, TCP_FLAG_SYN, 4096, NULL, 0, 0);
+  inject(frame, len);
+  /* REQ-TCP-079: default MSS = 536 */
+  ASSERT_EQ(conn.snd_mss, 536u);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Window advertised in SYN-ACK is non-zero (REQ-TCP-082, REQ-TCP-083)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_window_advertised_nonzero) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[256];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 500u, 0u, TCP_FLAG_SYN, 4096, NULL, 0, 536);
+  inject(frame, len);
+
+  ASSERT_EQ(send_count, 1);
+  /* REQ-TCP-082, REQ-TCP-083: advertised window must be > 0 */
+  ASSERT_TRUE(sent_tcp_window(0) > 0u);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Out-of-window segment → ACK sent, data not accepted (REQ-TCP-041, 042)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_out_of_window_gets_ack) {
+  setup();
+  /* Bring to ESTABLISHED */
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[512];
+  uint16_t len;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 600u, 0u,
+                        TCP_FLAG_SYN, 4096, NULL, 0, 536);
+  inject(frame, len);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 601u,
+                        our_isn + 1u, TCP_FLAG_ACK, 4096, NULL, 0, 0);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  send_count = 0;
+
+  /* Send a data segment far outside the receive window */
+  uint8_t data[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                        601u + 65000u, /* way outside window */
+                        our_isn + 1u, TCP_FLAG_ACK | TCP_FLAG_PSH, 4096, data,
+                        4, 0);
+  inject(frame, len);
+
+  /* REQ-TCP-041, 042: MUST send ACK, MUST NOT accept the data */
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_ACK) != 0);
+  ASSERT_EQ(evt_data, 0); /* Data NOT delivered */
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * SYN in ESTABLISHED → RST or challenge ACK (REQ-TCP-051)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_syn_in_established_gets_rst) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[512];
+  uint16_t len;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 700u, 0u,
+                        TCP_FLAG_SYN, 4096, NULL, 0, 536);
+  inject(frame, len);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 701u,
+                        our_isn + 1u, TCP_FLAG_ACK, 4096, NULL, 0, 0);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  send_count = 0;
+
+  /* Send a SYN inside the existing connection */
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 701u,
+                        our_isn + 1u, TCP_FLAG_SYN, 4096, NULL, 0, 0);
+  inject(frame, len);
+
+  /* REQ-TCP-051: error — RST sent or connection aborted */
+  ASSERT_TRUE(send_count >= 1);
+  uint8_t flags = sent_tcp_flags(0);
+  ASSERT_TRUE((flags & TCP_FLAG_RST) != 0 || (flags & TCP_FLAG_ACK) != 0);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Segment without ACK bit is discarded (REQ-TCP-053)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_no_ack_bit_discarded) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[512];
+  uint16_t len;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 800u, 0u,
+                        TCP_FLAG_SYN, 4096, NULL, 0, 536);
+  inject(frame, len);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 801u,
+                        our_isn + 1u, TCP_FLAG_ACK, 4096, NULL, 0, 0);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  send_count = 0;
+
+  /* Send data with NO ACK flag */
+  uint8_t data[3] = {1, 2, 3};
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 801u, 0u,
+                        TCP_FLAG_PSH /* no ACK */, 4096, data, 3, 0);
+  inject(frame, len);
+
+  /* REQ-TCP-053: segment MUST be discarded, no data delivered */
+  ASSERT_EQ(evt_data, 0);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED); /* No state change */
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * RST in LAST_ACK closes the connection (REQ-TCP-048)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_rst_in_last_ack_closes) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  uint8_t frame[512];
+  uint16_t len;
+  /* 3-way handshake */
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 900u, 0u,
+                        TCP_FLAG_SYN, 4096, NULL, 0, 536);
+  inject(frame, len);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 901u,
+                        our_isn + 1u, TCP_FLAG_ACK, 4096, NULL, 0, 0);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  send_count = 0;
+
+  /* Peer sends FIN → CLOSE_WAIT */
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 901u,
+                        our_isn + 1u, TCP_FLAG_FIN | TCP_FLAG_ACK, 4096, NULL,
+                        0, 0);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_CLOSE_WAIT);
+
+  /* App closes → LAST_ACK */
+  tcp_close(&net, &conn);
+  ASSERT_EQ(conn.state, TCP_LAST_ACK);
+  uint32_t our_fin_seq = sent_tcp_seq(0);
+  send_count = 0;
+
+  /* Peer sends RST in LAST_ACK → CLOSED (REQ-TCP-048) */
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 902u,
+                        our_fin_seq + 1u, TCP_FLAG_RST, 0, NULL, 0, 0);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Option parsing: NOP padding + unknown option skipped (REQ-TCP-109,
+ * REQ-TCP-111, REQ-TCP-115), MSS still parsed (REQ-TCP-112)
+ * ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * Build a SYN with: NOP, NOP, MSS=800, unknown option (kind=99, len=4).
+ * Verifies the stack correctly reads MSS and ignores the unknown option.
+ */
+static uint16_t build_syn_with_options(uint8_t *frame, uint32_t src_ip,
+                                       uint16_t sport, uint16_t dport,
+                                       uint32_t seq) {
+  memcpy(frame + 0, our_mac, 6);
+  memcpy(frame + 6, remote_mac, 6);
+  net_write16be(frame + 12, NET_ETHERTYPE_IPV4);
+
+  uint8_t *ip = frame + ETH_HDR_SIZE;
+  uint8_t *tcp = ip + IPV4_HDR_SIZE;
+
+  /* Options: NOP NOP MSS(800) unknown(99,4,0,0) = 8 bytes → doff=7 */
+  uint8_t opts[8] = {
+      TCP_OPT_NOP, TCP_OPT_NOP,             /* 2 bytes padding */
+      TCP_OPT_MSS, 4,           0x03, 0x20, /* MSS = 800 */
+      99,          4,                       /* unknown kind, len=4 */
+  };
+  /* Pad opts to 8 bytes exactly (already 8) */
+  uint16_t hdr_len = TCP_HDR_SIZE + 8u; /* 28 bytes → doff = 7 */
+
+  net_write16be(tcp + TCP_OFF_SPORT, sport);
+  net_write16be(tcp + TCP_OFF_DPORT, dport);
+  net_write32be(tcp + TCP_OFF_SEQ, seq);
+  net_write32be(tcp + TCP_OFF_ACK, 0);
+  tcp[TCP_OFF_DOFF] = (uint8_t)(7u << 4);
+  tcp[TCP_OFF_FLAGS] = TCP_FLAG_SYN;
+  net_write16be(tcp + TCP_OFF_WINDOW, 4096);
+  net_write16be(tcp + TCP_OFF_CKSUM, 0);
+  net_write16be(tcp + TCP_OFF_URG, 0);
+  memcpy(tcp + TCP_HDR_SIZE, opts, 8);
+
+  uint16_t tcp_len = hdr_len;
+  uint16_t ck = tcp_checksum(src_ip, LOCAL_IP, tcp, tcp_len);
+  net_write16be(tcp + TCP_OFF_CKSUM, ck);
+  ipv4_build(ip, tcp_len, IPV4_PROTO_TCP, src_ip, LOCAL_IP);
+  return (uint16_t)(ETH_HDR_SIZE + IPV4_HDR_SIZE + tcp_len);
+}
+
+TEST(test_tcp_options_nop_unknown_ignored) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+
+  uint8_t frame[256];
+  uint16_t len =
+      build_syn_with_options(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 1100u);
+  inject(frame, len);
+
+  /* REQ-TCP-112: MSS option parsed → conn.snd_mss = 800 */
+  ASSERT_EQ(conn.snd_mss, 800u);
+  /* Handshake must still progress (no crash from unknown option) */
+  ASSERT_EQ(conn.state, TCP_SYN_RECEIVED);
+  /* REQ-TCP-111, 115: NOP and unknown option did not break parsing */
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_SYN) != 0);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -615,6 +940,17 @@ int main(void) {
   RUN_TEST(test_tcp_timewait_expires);
   RUN_TEST(test_tcp_retransmit_on_timeout);
   RUN_TEST(test_tcp_rto_resets_on_ack);
+  /* ── Additional MUST-requirement tests ─── */
+  RUN_TEST(test_tcp_ack_in_listen_generates_rst);
+  RUN_TEST(test_tcp_synack_contains_mss);
+  RUN_TEST(test_tcp_peer_mss_stored);
+  RUN_TEST(test_tcp_default_peer_mss_536);
+  RUN_TEST(test_tcp_window_advertised_nonzero);
+  RUN_TEST(test_tcp_out_of_window_gets_ack);
+  RUN_TEST(test_tcp_syn_in_established_gets_rst);
+  RUN_TEST(test_tcp_no_ack_bit_discarded);
+  RUN_TEST(test_tcp_rst_in_last_ack_closes);
+  RUN_TEST(test_tcp_options_nop_unknown_ignored);
   TEST_REPORT();
   return test_failures;
 }

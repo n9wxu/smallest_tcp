@@ -1,0 +1,145 @@
+name: Fuzz — Nightly TCP Robustness
+
+# Run nightly at 02:00 UTC and allow manual dispatch.
+# Intentionally NOT triggered on push/PR — fuzz tests are slow.
+on:
+  schedule:
+    - cron: "0 2 * * *"          # 02:00 UTC every night
+  workflow_dispatch:
+    inputs:
+      fuzz_count:
+        description: "Fuzz iterations per test (default 500)"
+        required: false
+        default: "500"
+
+jobs:
+  # ── Scapy fuzz over TAP ────────────────────────────────────────────
+  fuzz-tcp-tap:
+    name: Fuzz — TCP over TAP (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip iproute2
+
+      - name: Install Python deps
+        run: pip3 install -r tests/blackbox/requirements.txt
+
+      - name: Build tcp_echo_demo
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build --target tcp_echo_demo
+
+      - name: Set up TAP interface
+        run: |
+          sudo ip tuntap add dev tap0 mode tap user $(whoami)
+          sudo ip link set tap0 up
+          sudo ip addr add 10.0.0.100/24 dev tap0
+
+      - name: Start tcp_echo_demo (SUT)
+        run: |
+          sudo ./build/tcp_echo_demo tap0 10.0.0.2 &
+          echo $! > /tmp/sut.pid
+          sleep 1
+
+      - name: Run fuzz suite
+        run: |
+          FUZZ_COUNT=${{ github.event.inputs.fuzz_count || 500 }}
+          cd tests/blackbox
+          sudo python3 -m pytest test_tcp_fuzz.py      \
+            --iface tap0                               \
+            --sut-ip  10.0.0.2                         \
+            --our-ip  10.0.0.100                       \
+            --sut-port 7                               \
+            --fuzz-count "$FUZZ_COUNT"                 \
+            -v --tb=long                               \
+            -p no:cacheprovider                        \
+            2>&1
+
+      - name: Run conformance suite post-fuzz (regression check)
+        run: |
+          cd tests/blackbox
+          sudo python3 -m pytest test_tcp_conform.py   \
+            --iface tap0                               \
+            --sut-ip  10.0.0.2                         \
+            --our-ip  10.0.0.100                       \
+            --sut-port 7                               \
+            -v --tb=short                              \
+            -p no:cacheprovider                        \
+            2>&1
+
+      - name: Stop SUT
+        if: always()
+        run: |
+          [ -f /tmp/sut.pid ] && sudo kill $(cat /tmp/sut.pid) || true
+
+  # ── Hardware DUT fuzz (self-hosted, conditional) ───────────────────
+  # Runs only when a self-hosted runner with the `hw-dut` label is
+  # registered. The job is skipped gracefully otherwise.
+  fuzz-tcp-hw:
+    name: Fuzz — TCP on Hardware DUT
+    runs-on: [self-hosted, hw-dut]
+    timeout-minutes: 90
+    if: ${{ vars.HW_DUT_ENABLED == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: pip3 install -r tests/blackbox/requirements.txt
+
+      - name: Cross-compile firmware for STM32
+        run: |
+          cmake -S . -B build-arm         \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+            -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-arm --target tcp_echo_demo
+
+      - name: Flash DUT via OpenOCD
+        run: |
+          openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
+            -c "program build-arm/tcp_echo_demo.elf verify reset exit"
+
+      - name: Wait for DUT boot (UART ready signal)
+        run: |
+          timeout 10 bash -c \
+            'until grep -q "ready" <(stty -F /dev/ttyUSB0 115200 && cat /dev/ttyUSB0); do sleep 0.5; done'
+
+      - name: Run fuzz suite on hardware
+        run: |
+          FUZZ_COUNT=${{ github.event.inputs.fuzz_count || 500 }}
+          cd tests/blackbox
+          sudo python3 -m pytest test_tcp_fuzz.py      \
+            --iface eth1                               \
+            --sut-ip  10.0.0.2                         \
+            --our-ip  10.0.0.100                       \
+            --sut-port 7                               \
+            --fuzz-count "$FUZZ_COUNT"                 \
+            -v --tb=long                               \
+            2>&1
+
+      - name: Power-cycle DUT and run conformance (regression)
+        if: always()
+        run: |
+          # Toggle relay GPIO to hard-reset the DUT
+          python3 scripts/hw/relay_cycle.py --channel 1 --wait 3
+
+          # Re-flash and re-verify
+          openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
+            -c "program build-arm/tcp_echo_demo.elf verify reset exit"
+          sleep 2
+
+          cd tests/blackbox
+          sudo python3 -m pytest test_tcp_conform.py   \
+            --iface eth1                               \
+            --sut-ip  10.0.0.2                         \
+            --our-ip  10.0.0.100                       \
+            --sut-port 7                               \
+            -v --tb=short                              \
+            2>&1
