@@ -1,0 +1,63 @@
+name: CI — Build & Unit Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Make build ──────────────────────────────────────────────────────
+  make-linux:
+    name: Make — Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make lib
+      - run: make test
+
+  make-macos:
+    name: Make — macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make lib
+      - run: make test
+
+  # ── CMake build ─────────────────────────────────────────────────────
+  cmake-linux:
+    name: CMake — Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  cmake-macos:
+    name: CMake — macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # ── FetchContent integration test ───────────────────────────────────
+  fetchcontent:
+    name: FetchContent — Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure example consumer
+        run: cmake -S examples/fetchcontent -B examples/fetchcontent/build
+      - name: Build example consumer
+        run: cmake --build examples/fetchcontent/build
+      - name: Run example
+        run: ./examples/fetchcontent/build/example_app
