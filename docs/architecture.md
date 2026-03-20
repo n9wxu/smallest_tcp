@@ -1,6 +1,6 @@
 # Architecture Overview — Portable Minimal TCP/IP Stack
 
-**Last updated:** 2026-03-19
+**Last updated:** 2026-03-19 (Milestones 1–5 implemented: Eth, ARP, IPv4, ICMP, UDP)
 
 ## 1. Design Principles
 
@@ -299,70 +299,70 @@ The application provides `net_config.h` (one per target/application). Factory me
 
 ```
 smallest_tcp/
+├── CMakeLists.txt                   ← CMake build (library + tests + demo)
+├── Makefile                         ← GNU Make build (library + tests)
+├── README.md
+├── tcpip-stack-plan.md              ← high-level overview & task status
 ├── docs/
 │   ├── architecture.md              ← this file
 │   ├── test-plan.md
-│   ├── requirements/
-│   │   ├── ethernet.md
-│   │   ├── arp.md
-│   │   ├── ipv4.md
-│   │   ├── icmpv4.md
-│   │   ├── udp.md
-│   │   ├── tcp.md
-│   │   ├── dhcpv4.md
-│   │   ├── dns.md
-│   │   ├── tftp.md
-│   │   ├── http.md
-│   │   ├── checksum.md
-│   │   ├── ipv6.md
-│   │   ├── icmpv6.md
-│   │   ├── ndp.md
-│   │   ├── slaac.md
-│   │   └── dhcpv6.md
+│   ├── requirements/                ← RFC-traced requirements (~785)
+│   │   ├── ethernet.md  arp.md  checksum.md
+│   │   ├── ipv4.md  icmpv4.md  udp.md  tcp.md
+│   │   ├── dhcpv4.md  dns.md  tftp.md  http.md
+│   │   └── ipv6.md  icmpv6.md  ndp.md  slaac.md  dhcpv6.md
 │   └── design/
-│       ├── mac-hal.md
-│       ├── checksum.md
-│       ├── byte-order.md
-│       ├── timer-model.md
-│       ├── tcp-buffer.md
-│       ├── arp-resolution.md
-│       └── memory-model.md
+│       ├── mac-hal.md  checksum.md  byte-order.md
+│       ├── timer-model.md  tcp-buffer.md
+│       ├── arp-resolution.md  memory-model.md
+│       └── configuration.md
 ├── include/
-│   ├── net.h
-│   ├── net_mac.h
-│   ├── net_endian.h
-│   ├── net_cksum.h
-│   ├── eth.h
-│   ├── arp.h
-│   ├── ipv4.h
-│   ├── icmpv4.h
-│   ├── udp.h
-│   ├── tcp.h
-│   └── ...
-├── src/
-│   ├── eth.c
-│   ├── arp.c
-│   ├── ipv4.c
-│   ├── icmpv4.c
-│   ├── udp.c
-│   ├── tcp.c
-│   ├── net_cksum.c
-│   ├── net_endian.c
+│   ├── net.h                        ← core net_t context, factory, errors
+│   ├── net_config.h                 ← compile-time configuration
+│   ├── net_mac.h                    ← MAC HAL vtable
+│   ├── net_endian.h                 ← byte-order helpers
+│   ├── net_cksum.h                  ← Internet checksum API
+│   ├── eth.h                        ← ✅ Ethernet II parse/build/dispatch
+│   ├── arp.h                        ← ✅ ARP request/reply/next-hop
+│   ├── ipv4.h                       ← ✅ IPv4 parse/build/send/input
+│   ├── icmp.h                       ← ✅ ICMPv4 echo reply, dest unreach
+│   ├── udp.h                        ← ✅ UDP parse/send, port dispatch
 │   └── driver/
-│       ├── tap.c
-│       ├── bpf.c
-│       └── enc28j60.c
-├── demo/
-│   └── ...
+│       ├── tap.h                    ← Linux TAP driver
+│       └── bpf.h                    ← macOS BPF driver
+├── src/
+│   ├── net.c                        ← ✅ net_init, MAC helpers
+│   ├── net_cksum.c                  ← ✅ checksum (incremental + oneshot)
+│   ├── eth.c                        ← ✅ Ethernet + ARP/IPv4 dispatch
+│   ├── arp.c                        ← ✅ ARP reply, gateway MAC learning
+│   ├── ipv4.c                       ← ✅ IPv4 parse/build, protocol dispatch
+│   ├── icmp.c                       ← ✅ ICMP echo reply, port unreach
+│   ├── udp.c                        ← ✅ UDP input/send, pseudo-header cksum
+│   └── driver/
+│       ├── tap.c                    ← Linux TAP
+│       └── bpf.c                    ← macOS BPF
 ├── tests/
-│   ├── conftest.py
-│   ├── test_arp.py
-│   ├── test_ipv4.py
-│   └── ...
-├── tcpip-stack-plan.md              ← high-level overview
-├── Makefile
-└── README.md
+│   ├── CMakeLists.txt               ← CTest definitions
+│   └── unit/
+│       ├── test_main.h              ← minimal C unit test framework
+│       ├── test_endian.c            ← ✅ 10 tests
+│       ├── test_checksum.c          ← ✅ 12 tests
+│       ├── test_eth.c               ← ✅ 11 tests
+│       ├── test_net.c               ← ✅  8 tests
+│       ├── test_arp.c               ← ✅  8 tests
+│       ├── test_ipv4.c              ← ✅ 10 tests
+│       ├── test_icmp.c              ← ✅  4 tests
+│       └── test_udp.c               ← ✅  7 tests
+├── demo/
+│   ├── CMakeLists.txt
+│   └── frame_dump/main.c           ← raw frame hex-dump demo
+├── examples/
+│   └── fetchcontent/                ← CMake FetchContent integration example
+└── .github/
+    └── workflows/ci.yml            ← CI: build + test (Linux + macOS)
 ```
+
+**Implementation status (as of 2026-03-19):** 8 source files, 8 test files, **70 unit tests all passing** with `-Wall -Wextra -Werror -pedantic`. Layers through UDP (Tasks 1–5) are complete. TCP (Task 6) is next.
 
 ## References
 

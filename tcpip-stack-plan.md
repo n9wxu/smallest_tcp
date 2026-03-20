@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-03-19
+**Last updated:** 2026-03-19 (Tasks 1–5 implemented, 70 unit tests passing)
 
 ## Objective
 
@@ -150,7 +150,7 @@ typedef struct {
 
 ## Implementation Tasks
 
-### Task 1: Project skeleton + MAC abstraction + Linux TAP driver
+### ✅ Task 1: Project skeleton + MAC abstraction + Linux TAP driver *(DONE)*
 - Directory structure: `src/`, `src/driver/`, `include/`, `demo/`
 - Define `net_mac.h` (init, send, recv, peek, discard, close)
 - Implement `tap.c` for Linux
@@ -158,13 +158,13 @@ typedef struct {
 - Demo: open TAP, send hardcoded frame, hex-dump received frames
 - Verify with `tcpdump -i tap0`
 
-### Task 2: Ethernet frame parsing/building (eth.c)
+### ✅ Task 2: Ethernet frame parsing/building (eth.c) *(DONE)*
 - `eth_parse()` — validate, return ethertype + payload offset, in-place
 - `eth_build()` — write 14-byte header, return payload pointer
 - Zero-copy: operates on app's `net_buf_t`
 - Test: build frame → parse frame → verify roundtrip
 
-### Task 3: ARP (arp.c) — fast-path filter + reply
+### ✅ Task 3: ARP (arp.c) — fast-path filter + reply *(DONE)*
 - Fast path: check target IP at offset 38, discard if not ours
 - `arp_input()` — reply to requests for our IP; fill connection MACs from replies
 - `arp_resolve()` — send ARP request for a connection's IP
@@ -172,13 +172,13 @@ typedef struct {
 - Test: `arping -I tap0 10.0.0.2` → get reply
 - Demo: host learns our MAC via ARP
 
-### Task 4: IPv4 + ICMP echo reply (ipv4.c, icmp.c)
+### ✅ Task 4: IPv4 + ICMP echo reply (ipv4.c, icmp.c) *(DONE)*
 - `ipv4_input()` — validate, check dst IP, dispatch by protocol
 - `ipv4_build()` — write IP header at offset 14, compute checksum
 - `icmp_input()` — echo request → echo reply (swap src/dst in-place, fix checksum)
 - **Milestone demo: `ping 10.0.0.2` works**
 
-### Task 5: UDP (udp.c)
+### ✅ Task 5: UDP (udp.c) *(DONE)*
 - `udp_input()` — parse 8-byte header, dispatch by port
 - `udp_send()` — build UDP+IPv4+ETH headers, send
 - Port handlers: app provides static array of `{port, callback}`

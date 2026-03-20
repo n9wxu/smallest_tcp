@@ -19,7 +19,7 @@
 #define NET_USE_IPV4 1
 #define NET_USE_IPV6 0
 #define NET_USE_TCP 0 /* Not yet implemented */
-#define NET_USE_UDP 0 /* Not yet implemented */
+#define NET_USE_UDP 1
 #define NET_USE_DHCPV4 0
 #define NET_USE_DHCPV6 0
 #define NET_USE_DNS 0
@@ -43,8 +43,7 @@
 #define NET_DEFAULT_GATEWAY NET_IPV4(10, 0, 0, 1)
 #define NET_DEFAULT_DNS_SERVER NET_IPV4(0, 0, 0, 0)
 
-#define NET_DEFAULT_MAC                                                        \
-  { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 }
+#define NET_DEFAULT_MAC {0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
 
 /* ── ARP tuning ───────────────────────────────────────────────────── */
 #define NET_DEFAULT_ARP_RETRY_MS 1000

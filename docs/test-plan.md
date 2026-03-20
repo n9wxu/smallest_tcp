@@ -1,6 +1,6 @@
 # Test Plan — Portable Minimal TCP/IP Stack
 
-**Last updated:** 2026-03-19
+**Last updated:** 2026-03-19 (70 C unit tests passing; black-box Python/Scapy tests planned)
 
 ## 1. Overview
 
@@ -230,7 +230,25 @@ def test_arp_001_reply_to_request():
     assert reply[0][ARP].hwsrc == SUT_MAC
 ```
 
-## 7. Requirements Traceability Matrix
+## 7. Current Unit Test Status (C — `tests/unit/`)
+
+In addition to the planned black-box Python/Scapy conformance tests, each protocol module has **C unit tests** that verify parsing, building, and protocol logic at the function level. These run in CI via both Make and CMake/CTest.
+
+| Test File | Module(s) Tested | Tests | Status |
+|---|---|---|---|
+| `test_endian.c` | `net_endian.h` | 10 | ✅ All pass |
+| `test_checksum.c` | `net_cksum.c` | 12 | ✅ All pass |
+| `test_eth.c` | `eth.c` | 11 | ✅ All pass |
+| `test_net.c` | `net.c` | 8 | ✅ All pass |
+| `test_arp.c` | `arp.c` | 8 | ✅ All pass |
+| `test_ipv4.c` | `ipv4.c` | 10 | ✅ All pass |
+| `test_icmp.c` | `icmp.c` | 4 | ✅ All pass |
+| `test_udp.c` | `udp.c` | 7 | ✅ All pass |
+| **Total** | | **70** | **All pass** |
+
+Tests use a stub MAC driver that captures sent frames for verification. All tests compile with `-Wall -Wextra -Werror -pedantic` under C99.
+
+## 8. Requirements Traceability Matrix
 
 Maintained in `docs/requirements/` — each requirement file includes Test ID column. Summary matrix:
 
@@ -254,7 +272,7 @@ Maintained in `docs/requirements/` — each requirement file includes Test ID co
 | DHCPv6 | 44 | — | 44 | Planned |
 | **Total** | **~785** | **~546** | **~239** | |
 
-## 8. Test Priority
+## 9. Test Priority
 
 Tests are implemented in the same order as the implementation tasks:
 
@@ -274,15 +292,15 @@ Tests are implemented in the same order as the implementation tasks:
 | 12 | IPv6 family | Ethernet | V2 |
 | 13 | DHCPv6 | IPv6, UDP | V2 |
 
-## 9. Reporting
+## 10. Reporting
 
-### 9.1 CI Reports
+### 10.1 CI Reports
 
 - pytest generates JUnit XML for GitHub Actions
 - Test results visible on PR checks
 - Failures block merge
 
-### 9.2 Requirement Coverage Report
+### 10.2 Requirement Coverage Report
 
 Script to generate coverage report from test results + requirements files:
 
@@ -295,7 +313,7 @@ python scripts/req_coverage.py
 # REQ-ARP-033  MAY     SKIP   TEST-ARP-033  ← ok to skip MAY
 ```
 
-### 9.3 Release Criteria
+### 10.3 Release Criteria
 
 - All MUST requirements: corresponding tests PASS
 - All SHOULD requirements: corresponding tests PASS or documented deviation
@@ -303,7 +321,7 @@ python scripts/req_coverage.py
 - All interop tests PASS
 - No robustness test crashes (may discard bad packets, must not crash)
 
-## 10. Document Maintenance
+## 11. Document Maintenance
 
 This test plan and the requirements documents MUST be kept in sync:
 - Adding a new requirement → add corresponding test ID
@@ -311,7 +329,7 @@ This test plan and the requirements documents MUST be kept in sync:
 - Changing protocol behavior → update requirement, update test
 - PR reviews should verify test↔requirement traceability
 
-## 11. Future Considerations
+## 12. Future Considerations
 
 - **Fuzz testing:** Use Scapy's `fuzz()` to generate random protocol packets. The stack must not crash.
 - **Long-running stability tests:** Run for hours with continuous traffic. Monitor for memory leaks (relevant for hosted environments; embedded has no dynamic allocation).

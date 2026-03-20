@@ -21,6 +21,10 @@ add_library(smallest_tcp_core STATIC
     src/net.c
     src/net_cksum.c
     src/eth.c
+    src/arp.c
+    src/ipv4.c
+    src/icmp.c
+    src/udp.c
 )
 
 target_include_directories(smallest_tcp_core

@@ -9,6 +9,11 @@
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_IPV4
+#include "arp.h"
+#include "ipv4.h"
+#endif
+
 /* ── Parse ────────────────────────────────────────────────────────── */
 
 net_err_t eth_parse(uint8_t *frame, uint16_t frame_len, eth_frame_t *out) {
@@ -76,13 +81,11 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
 #if NET_USE_IPV4
   case NET_ETHERTYPE_ARP:
     /* REQ-ETH-006: dispatch 0x0806 to ARP */
-    NET_LOG("eth_input: ARP frame (%u bytes payload)", eth.payload_len);
-    /* TODO: arp_input(net, &eth) */
+    arp_input(net, &eth);
     break;
   case NET_ETHERTYPE_IPV4:
     /* REQ-ETH-005: dispatch 0x0800 to IPv4 */
-    NET_LOG("eth_input: IPv4 frame (%u bytes payload)", eth.payload_len);
-    /* TODO: ipv4_input(net, &eth) */
+    ipv4_input(net, &eth);
     break;
 #endif
 #if NET_USE_IPV6

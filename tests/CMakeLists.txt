@@ -33,3 +33,23 @@ target_link_libraries(test_eth PRIVATE smallest_tcp_core)
 
 add_unit_test(test_net)
 target_link_libraries(test_net PRIVATE smallest_tcp_core)
+
+# ── test_arp ──────────────────────────────────────────────────────────
+
+add_unit_test(test_arp)
+target_link_libraries(test_arp PRIVATE smallest_tcp_core)
+
+# ── test_ipv4 ─────────────────────────────────────────────────────────
+
+add_unit_test(test_ipv4)
+target_link_libraries(test_ipv4 PRIVATE smallest_tcp_core)
+
+# ── test_icmp ─────────────────────────────────────────────────────────
+
+add_unit_test(test_icmp)
+target_link_libraries(test_icmp PRIVATE smallest_tcp_core)
+
+# ── test_udp ──────────────────────────────────────────────────────────
+
+add_unit_test(test_udp)
+target_link_libraries(test_udp PRIVATE smallest_tcp_core)

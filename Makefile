@@ -13,7 +13,7 @@ BUILD    := build
 
 # ── Source files ──────────────────────────────────────────────────────
 
-LIB_SRCS := src/net.c src/net_cksum.c src/eth.c
+LIB_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c
 
 # Platform-specific driver
 UNAME_S  := $(shell uname -s)
@@ -29,10 +29,17 @@ LIB_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(LIB_SRCS))
 
 # ── Unit test executables ─────────────────────────────────────────────
 
+# Core stack sources needed by most tests
+STACK_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c
+
 TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_checksum.c \
              tests/unit/test_eth.c \
-             tests/unit/test_net.c
+             tests/unit/test_net.c \
+             tests/unit/test_arp.c \
+             tests/unit/test_ipv4.c \
+             tests/unit/test_icmp.c \
+             tests/unit/test_udp.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -82,15 +89,35 @@ $(BUILD)/tests/test_checksum: tests/unit/test_checksum.c src/net_cksum.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_checksum.c src/net_cksum.c
 
-# Test for eth (needs net.c + eth.c + net_cksum.c for linking)
-$(BUILD)/tests/test_eth: tests/unit/test_eth.c src/eth.c src/net.c src/net_cksum.c
+# Test for eth (needs full stack since eth.c dispatches to arp/ipv4)
+$(BUILD)/tests/test_eth: tests/unit/test_eth.c $(STACK_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_eth.c src/eth.c src/net.c src/net_cksum.c
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_eth.c $(STACK_SRCS)
 
-# Test for net (needs net.c)
+# Test for net
 $(BUILD)/tests/test_net: tests/unit/test_net.c src/net.c src/net_cksum.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_net.c src/net.c src/net_cksum.c
+
+# Test for ARP
+$(BUILD)/tests/test_arp: tests/unit/test_arp.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_arp.c $(STACK_SRCS)
+
+# Test for IPv4
+$(BUILD)/tests/test_ipv4: tests/unit/test_ipv4.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_ipv4.c $(STACK_SRCS)
+
+# Test for ICMP
+$(BUILD)/tests/test_icmp: tests/unit/test_icmp.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_icmp.c $(STACK_SRCS)
+
+# Test for UDP
+$(BUILD)/tests/test_udp: tests/unit/test_udp.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_udp.c $(STACK_SRCS)
 
 # ── Clean ─────────────────────────────────────────────────────────────
 
