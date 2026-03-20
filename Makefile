@@ -131,6 +131,40 @@ $(BUILD)/demo/echo_server: demo/echo_server/main.c $(STACK_SRCS) $(LIB_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ demo/echo_server/main.c $(LIB_SRCS)
 
+# ── ARM size measurement ──────────────────────────────────────────────
+
+ARM_CC     := arm-none-eabi-gcc
+ARM_SIZE   := arm-none-eabi-size
+ARM_OBJDUMP:= arm-none-eabi-objdump
+ARM_CFLAGS := -std=c99 -Wall -Wextra -Werror -pedantic \
+              -Os -mthumb -mcpu=cortex-m0 -ffreestanding -ffunction-sections -fdata-sections \
+              -DNET_DEBUG=0 -DNET_ASSERT_ENABLED=0 \
+              -Iinclude
+ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=nosys.specs -nostartfiles
+
+ARM_SRCS   := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
+              src/driver/stub.c bench/size_measure.c
+
+.PHONY: arm-size arm-size-detail
+
+arm-size: $(BUILD)/arm/size_measure.elf
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo, -Os -mthumb) ==="
+	@$(ARM_SIZE) $<
+	@echo ""
+	@echo "=== Per-module .text sizes ==="
+	@$(ARM_SIZE) $(patsubst %.c,$(BUILD)/arm/%.o,$(ARM_SRCS))
+	@echo ""
+	@echo "Flash = .text + .data, RAM = .data + .bss"
+
+$(BUILD)/arm/size_measure.elf: $(patsubst %.c,$(BUILD)/arm/%.o,$(ARM_SRCS))
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_LDFLAGS) -o $@ $^
+
+$(BUILD)/arm/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -c -o $@ $<
+
 # ── Clean ─────────────────────────────────────────────────────────────
 
 clean:

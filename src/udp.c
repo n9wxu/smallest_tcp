@@ -84,9 +84,10 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   uint8_t *data = udp + UDP_HDR_SIZE;
 
   NET_LOG("udp_input: %u.%u.%u.%u:%u -> port %u (%u bytes)",
-          (ip->src_ip >> 24) & 0xFF, (ip->src_ip >> 16) & 0xFF,
-          (ip->src_ip >> 8) & 0xFF, ip->src_ip & 0xFF, src_port, dst_port,
-          data_len);
+          (unsigned)((ip->src_ip >> 24) & 0xFF),
+          (unsigned)((ip->src_ip >> 16) & 0xFF),
+          (unsigned)((ip->src_ip >> 8) & 0xFF), (unsigned)(ip->src_ip & 0xFF),
+          src_port, dst_port, data_len);
 
   /* REQ-UDP-016: dispatch by destination port */
   uint8_t i;

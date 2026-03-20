@@ -315,7 +315,8 @@ smallest_tcp/
 │       ├── mac-hal.md  checksum.md  byte-order.md
 │       ├── timer-model.md  tcp-buffer.md
 │       ├── arp-resolution.md  memory-model.md
-│       └── configuration.md
+│       ├── configuration.md
+│       └── size-comparison.md       ← ARM size comparison vs lwIP
 ├── include/
 │   ├── net.h                        ← core net_t context, factory, errors
 │   ├── net_config.h                 ← compile-time configuration

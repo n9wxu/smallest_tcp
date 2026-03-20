@@ -265,6 +265,9 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/requirements/slaac.md](docs/requirements/slaac.md)** — Stateless Address Autoconfiguration (37 reqs, RFC 4862)
 - **[docs/requirements/dhcpv6.md](docs/requirements/dhcpv6.md)** — DHCPv6 client (44 reqs, RFC 8415)
 
+### Size Benchmarks
+- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (4.1× smaller)
+
 ### Test Plan
 - **[docs/test-plan.md](docs/test-plan.md)** — Black-box conformance testing with Python/Scapy/pytest, CI strategy, traceability matrix
 

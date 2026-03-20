@@ -30,8 +30,12 @@
 #define NET_8BIT_TARGET 0
 
 /* ── Debug ────────────────────────────────────────────────────────── */
+#ifndef NET_DEBUG
 #define NET_DEBUG 1
+#endif
+#ifndef NET_ASSERT_ENABLED
 #define NET_ASSERT_ENABLED 1
+#endif
 
 /* ── Network identity defaults ────────────────────────────────────── */
 #define NET_IPV4(a, b, c, d)                                                   \

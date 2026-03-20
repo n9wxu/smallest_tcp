@@ -84,8 +84,9 @@ void arp_input(net_t *net, const eth_frame_t *eth) {
       return;
     /* REQ-ARP-001: respond with our MAC */
     NET_LOG("arp_input: request for our IP from %u.%u.%u.%u",
-            (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
-            (sender_ip >> 8) & 0xFF, sender_ip & 0xFF);
+            (unsigned)((sender_ip >> 24) & 0xFF),
+            (unsigned)((sender_ip >> 16) & 0xFF),
+            (unsigned)((sender_ip >> 8) & 0xFF), (unsigned)(sender_ip & 0xFF));
     arp_send_reply(net, sender_mac, sender_ip);
   } else if (oper == ARP_OPER_REPLY) {
     /* REQ-ARP-010..012: check if reply matches gateway IP */
@@ -127,8 +128,10 @@ net_err_t arp_request(net_t *net, uint32_t target_ip) {
   net_write32be(payload + ARP_OFF_TPA, target_ip);
 
   uint16_t frame_len = ETH_HDR_SIZE + ARP_PKT_SIZE;
-  NET_LOG("arp_request: who has %u.%u.%u.%u?", (target_ip >> 24) & 0xFF,
-          (target_ip >> 16) & 0xFF, (target_ip >> 8) & 0xFF, target_ip & 0xFF);
+  NET_LOG("arp_request: who has %u.%u.%u.%u?",
+          (unsigned)((target_ip >> 24) & 0xFF),
+          (unsigned)((target_ip >> 16) & 0xFF),
+          (unsigned)((target_ip >> 8) & 0xFF), (unsigned)(target_ip & 0xFF));
   return (net->mac_driver->send(net->mac_ctx, buf, frame_len) >= 0)
              ? NET_OK
              : NET_ERR_NO_FRAME;
