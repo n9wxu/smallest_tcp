@@ -43,11 +43,15 @@ TEST_SRCS := tests/unit/test_endian.c \
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
+# ── Demo executables ──────────────────────────────────────────────────
+
+DEMO_SRCS := demo/echo_server/main.c
+
 # ── Targets ───────────────────────────────────────────────────────────
 
-.PHONY: all lib test clean
+.PHONY: all lib test demo clean
 
-all: lib test
+all: lib test demo
 
 # Static library
 lib: $(BUILD)/libnet.a
@@ -118,6 +122,14 @@ $(BUILD)/tests/test_icmp: tests/unit/test_icmp.c $(STACK_SRCS)
 $(BUILD)/tests/test_udp: tests/unit/test_udp.c $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_udp.c $(STACK_SRCS)
+
+# ── Demo ──────────────────────────────────────────────────────────────
+
+demo: $(BUILD)/demo/echo_server
+
+$(BUILD)/demo/echo_server: demo/echo_server/main.c $(STACK_SRCS) $(LIB_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ demo/echo_server/main.c $(LIB_SRCS)
 
 # ── Clean ─────────────────────────────────────────────────────────────
 
