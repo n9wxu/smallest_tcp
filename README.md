@@ -8,7 +8,7 @@
 
 ## ✨ What Is This?
 
-**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — TCP, UDP, DHCP, HTTP, TFTP — using **zero dynamic memory allocation** and fitting in as little as **3–14 KB of flash**.
+**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — TCP, UDP, DHCP, HTTP, TFTP — using **zero dynamic memory allocation** and fitting in as little as **2.6 KB of flash**.
 
 Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding network connectivity to a $0.20 RISC-V MCU, or prototyping protocol logic on your laptop — this stack has you covered.
 
@@ -25,46 +25,66 @@ Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding n
 
 ---
 
+## 📊 How Small Is It?
+
+Measured on ARM Cortex-M0 (`-Os -mthumb`), UDP echo server (ETH + ARP + IPv4 + ICMP + UDP):
+
+| Metric | smallest_tcp | lwIP (same features) | Ratio |
+|---|---|---|---|
+| **Flash** | **2,650 B** | 10,103 B | **3.8× smaller** |
+| **RAM** | **672 B** (600 = app buffers) | 2,619 B | **3.9× smaller** |
+| Stack-only code | **2,460 B** | 10,103 B | **4.1× smaller** |
+| Stack-internal state | **10 B** | ~2,619 B | **262× smaller** |
+
+The stack itself uses only **10 bytes** of static state. All other memory is application-owned buffers that you size to your needs.
+
+> 📐 See [docs/design/size-comparison.md](docs/design/size-comparison.md) for the full comparison methodology, per-module breakdowns, and analysis.
+
+---
+
 ## 📊 Current Status
 
-### ✅ Milestone 1 — Foundation (Complete!)
+**70 unit tests passing** across 8 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.
 
-The core infrastructure is built, tested, and ready:
+### ✅ Implemented (Milestones 1–5)
 
-| Component | Status | Description |
-|---|---|---|
-| `net.h` / `net.c` | ✅ Done | Core types, error codes, factory method, defaults from `net_config.h` |
-| `net_endian.h` | ✅ Done | Portable byte-order helpers (wire read/write + host/network conversion) |
-| `net_cksum.h` / `net_cksum.c` | ✅ Done | RFC 1071 Internet checksum — one-shot, incremental, verify, RFC 1624 update |
-| `eth.h` / `eth.c` | ✅ Done | Ethernet II frame parsing + building, zero-copy, 802.3 rejection |
-| `net_mac.h` | ✅ Done | Abstract MAC driver interface (init, send, recv, peek, discard, close) |
-| `driver/tap.c` | ✅ Done | Linux TAP driver |
-| `driver/bpf.c` | ✅ Done | macOS BPF driver (feth pair) |
-| Unit tests | ✅ 41 pass | Endian, checksum, Ethernet, net init — all green |
-| CMake + FetchContent | ✅ Done | Drop into any CMake project with 3 lines |
+| Component | File(s) | Tests | Description |
+|---|---|---|---|
+| Core context | `net.h` / `net.c` | 8 | Factory method, defaults from `net_config.h`, MAC helpers |
+| Byte order | `net_endian.h` | 10 | Portable wire read/write + host/network conversion |
+| Checksum | `net_cksum.h` / `net_cksum.c` | 12 | RFC 1071 Internet checksum — incremental, one-shot, verify |
+| Ethernet | `eth.h` / `eth.c` | 11 | Ethernet II parse/build, zero-copy, protocol dispatch |
+| ARP | `arp.h` / `arp.c` | 8 | Fast-path reply, gateway MAC learning, next-hop routing |
+| IPv4 | `ipv4.h` / `ipv4.c` | 10 | Parse/build/send, protocol dispatch, broadcast detection |
+| ICMPv4 | `icmp.h` / `icmp.c` | 4 | Echo reply (ping), destination unreachable |
+| UDP | `udp.h` / `udp.c` | 7 | Parse/send, port dispatch, pseudo-header checksum |
+| MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
+| MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
+| MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
+| CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS build & test on every push |
+| **Total** | **8 source + 3 drivers** | **70** | |
 
 ### 🔜 Roadmap
 
-| Milestone | What's Coming |
-|---|---|
-| **2 — ARP** | Fast-path ARP filter, reply, resolve. No bloated cache — MACs live in your connection structs. |
-| **3 — IPv4 + ICMP** | `ping` works! IPv4 header parse/build, ICMP echo reply. |
-| **4 — UDP** | Datagram send/receive, port dispatch, pseudo-header checksum. |
-| **5 — TCP** | Full state machine, app-managed connections, stop-and-wait retransmit. |
-| **6 — DHCP** | Auto-configure IP from any DHCP server. |
-| **7 — TFTP** | Fetch files over the network — the bootloader data path. |
-| **8 — HTTP** | HTTP/1.0 server — browse to your microcontroller! |
-| **9 — IPv6** | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6. |
+| Milestone | Status | What's Coming |
+|---|---|---|
+| **6 — TCP** | 🔜 Next | Full state machine, app-managed connections, retransmit |
+| **7 — Integration** | Planned | Event loop, timer tick, ARP+ping+UDP+TCP simultaneously |
+| **8 — DHCP** | Planned | Auto-configure IP from any DHCP server |
+| **9 — TFTP** | Planned | Fetch files over the network — bootloader data path |
+| **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
+| **11 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
 
 ### 📐 Target Platforms
 
-| Chip | Flash | RAM | Cost | Notes |
-|---|---|---|---|---|
-| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | Smallest viable target |
-| CH32X033 | 62 KB | 20 KB | ~$0.20 | Best bang for the buck, RISC-V |
-| CH32V203 | 256 KB | 10 KB | ~$0.50 | Better TinyUSB support |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | Mature ARM ecosystem |
-| Linux / macOS | ∞ | ∞ | — | Development & testing via TAP or BPF |
+| Chip | Flash | RAM | Cost | smallest_tcp UDP | lwIP UDP |
+|---|---|---|---|---|---|
+| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ 2.6 KB + buffers | ❌ 10 KB code alone |
+| CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP too | ⚠️ Tight |
+| CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
+| Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 
 ---
 
@@ -73,11 +93,21 @@ The core infrastructure is built, tested, and ready:
 ### Make (quick & simple)
 
 ```bash
-make          # Build library + run tests
+make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run unit tests
+make test     # Build and run all 70 unit tests
+make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
+
+### ARM Size Measurement
+
+```bash
+make arm-size           # Build for Cortex-M0 and show sizes
+bash bench/build_lwip.sh  # Build lwIP for comparison
+```
+
+Requires `arm-none-eabi-gcc` (install via Arm GNU Toolchain or `brew install --cask gcc-arm-embedded`).
 
 ### CMake (recommended for integration)
 
@@ -117,7 +147,7 @@ That's it! Your app gets the headers and library automatically. When included vi
 
 | Target | Description |
 |---|---|
-| `smallest_tcp::smallest_tcp` | Core stack library (net, checksum, ethernet) |
+| `smallest_tcp::smallest_tcp` | Core stack library (net, checksum, ethernet, ARP, IPv4, ICMP, UDP) |
 | `smallest_tcp::driver_tap` | Linux TAP MAC driver (optional, top-level only) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (optional, top-level only) |
 
@@ -142,17 +172,17 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 ├─────────────────────────────────────┤
 │  L7: dhcp.c  tftp.c  http.c        │  ← optional, link what you need
 ├─────────────────────────────────────┤
-│  L4: udp.c          tcp.c          │  ← optional independently
+│  L4: udp.c ✅       tcp.c          │  ← optional independently
 ├─────────────────────────────────────┤
-│  L3: ipv4.c   icmp.c               │
+│  L3: ipv4.c ✅  icmp.c ✅          │
 ├─────────────────────────────────────┤
-│  L2: arp.c                          │
+│  L2: arp.c ✅                       │
 ├─────────────────────────────────────┤
-│  L2: eth.c                          │
+│  L2: eth.c ✅                       │
 ├─────────────────────────────────────┤
 │  MAC driver interface (net_mac.h)   │  ← abstract vtable
 ├──────────┬──────────┬───────────────┤
-│ tap.c    │ bpf.c    │ your_driver.c │
+│ tap.c ✅ │ bpf.c ✅ │ your_driver.c │
 │ (Linux)  │ (macOS)  │ (your HW)     │
 └──────────┴──────────┴───────────────┘
 ```
@@ -166,7 +196,16 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
 
 - **[Architecture](docs/architecture.md)** — System architecture, layer interaction, data flow
-- **[Design Documents](docs/design/)** — MAC HAL, checksum, byte order, timers, TCP buffers, ARP, memory model, configuration
+- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (4.1× smaller)
+- **Design Documents:**
+  - [MAC HAL](docs/design/mac-hal.md) — Abstract hardware interface (vtable, peek+discard)
+  - [Checksum](docs/design/checksum.md) — Incremental Internet checksum design
+  - [Byte Order](docs/design/byte-order.md) — Portable endian handling, 8-bit target strategy
+  - [Timer Model](docs/design/timer-model.md) — net_poll, net_tick, tickless support
+  - [TCP Buffer](docs/design/tcp-buffer.md) — Stop-and-wait, circular, packet-list strategies
+  - [ARP Resolution](docs/design/arp-resolution.md) — Distributed cache, gateway-only mode
+  - [Memory Model](docs/design/memory-model.md) — Zero-allocation factory methods
+  - [Configuration](docs/design/configuration.md) — Compile-time vs. runtime taxonomy
 - **[RFC Requirements](docs/requirements/)** — 785 requirements traced to RFC sections across 16 protocol specifications
 - **[Test Plan](docs/test-plan.md)** — Black-box conformance testing strategy with Python/Scapy/pytest
 
