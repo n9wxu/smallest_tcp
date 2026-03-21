@@ -10,6 +10,7 @@ import time
 from scapy.all import (
     Ether, IP, TCP,
     sendp, sniff, srp1,
+    AsyncSniffer,
 )
 
 
@@ -65,19 +66,40 @@ def recv_tcp(ctx, timeout=RECV_TIMEOUT, count=1, extra_filter=""):
 
 
 def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
-    """Send pkt and wait for up to `count` TCP replies from the SUT."""
+    """Send pkt and wait for up to `count` TCP replies from the SUT.
+
+    Uses AsyncSniffer to open the AF_PACKET capture socket BEFORE sending.
+    On a fast TAP/loopback interface the SUT can reply within microseconds;
+    the classic send-then-sniff pattern misses the reply because the socket
+    is not yet open when the reply arrives.  AsyncSniffer eliminates that
+    race: we arm the socket, yield briefly to let the kernel register it,
+    then send the stimulus.
+    """
+    bpf = f"tcp and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=count, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.02)          # give the kernel time to register the socket
     send_pkt(ctx, pkt)
-    return recv_tcp(ctx, timeout=timeout, count=count)
+    sniffer.join(timeout=timeout + 1)
+    return list(sniffer.results)
 
 
 def silence(ctx, pkt, timeout=2):
     """
     Send pkt and verify no TCP reply arrives within timeout.
     Returns True if silence observed (test passes), False otherwise.
+
+    Also uses AsyncSniffer so we don't miss a fast reply.
     """
+    bpf = f"tcp and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=1, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.02)
     send_pkt(ctx, pkt)
-    replies = recv_tcp(ctx, timeout=timeout, count=1)
-    return len(replies) == 0
+    sniffer.join(timeout=timeout + 1)
+    return len(sniffer.results) == 0
 
 
 # ── TCP handshake helpers ──────────────────────────────────────────────────────
