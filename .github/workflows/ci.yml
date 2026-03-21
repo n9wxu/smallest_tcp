@@ -93,19 +93,23 @@ jobs:
 
       - name: Run TCP conformance suite
         run: |
-          cd tests/blackbox
-          sudo python3 -m pytest test_tcp_conform.py \
+          sudo python3 -m pytest tests/blackbox/test_tcp_conform.py \
             --iface tap0            \
             --sut-ip  10.0.0.2      \
             --our-ip  10.0.0.100    \
             --sut-port 7            \
-            -v --tb=short -s        \
+            -v --tb=long -s         \
             -p no:cacheprovider     \
             2>&1 | tee /tmp/pytest.out
-          # Capture pytest's exit code before any other command resets PIPESTATUS
-          TEST_RC=${PIPESTATUS[0]}
-          echo "pytest exit: $TEST_RC"
-          exit "$TEST_RC"
+          exit ${PIPESTATUS[0]}
+
+      - name: Emit pytest results as CI annotations
+        if: always()
+        run: |
+          grep -E '(PASSED|FAILED|ERROR|====|AssertionError|assert |RuntimeError)' \
+            /tmp/pytest.out 2>/dev/null | head -80 | \
+          while IFS= read -r line; do echo "::notice::$line"; done || \
+          echo "::notice::/tmp/pytest.out not found"
 
       - name: Pytest results summary
         if: always()
