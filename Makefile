@@ -13,7 +13,8 @@ BUILD    := build
 
 # ── Source files ──────────────────────────────────────────────────────
 
-LIB_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c
+LIB_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
+            src/tcp.c src/tcp_buf_saw.c
 
 # Platform-specific driver
 UNAME_S  := $(shell uname -s)
@@ -30,7 +31,8 @@ LIB_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(LIB_SRCS))
 # ── Unit test executables ─────────────────────────────────────────────
 
 # Core stack sources needed by most tests
-STACK_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c
+STACK_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
+              src/tcp.c src/tcp_buf_saw.c
 
 TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_checksum.c \
@@ -39,7 +41,9 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_arp.c \
              tests/unit/test_ipv4.c \
              tests/unit/test_icmp.c \
-             tests/unit/test_udp.c
+             tests/unit/test_udp.c \
+             tests/unit/test_tcp_buf.c \
+             tests/unit/test_tcp.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -122,6 +126,16 @@ $(BUILD)/tests/test_icmp: tests/unit/test_icmp.c $(STACK_SRCS)
 $(BUILD)/tests/test_udp: tests/unit/test_udp.c $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_udp.c $(STACK_SRCS)
+
+# Test for TCP buffer (stop-and-wait)
+$(BUILD)/tests/test_tcp_buf: tests/unit/test_tcp_buf.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tcp_buf.c $(STACK_SRCS)
+
+# Test for TCP state machine
+$(BUILD)/tests/test_tcp: tests/unit/test_tcp.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tcp.c $(STACK_SRCS)
 
 # ── Demo ──────────────────────────────────────────────────────────────
 
