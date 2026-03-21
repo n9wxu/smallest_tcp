@@ -64,7 +64,7 @@ jobs:
             python3-pip iproute2 socat
 
       - name: Install Python deps
-        run: sudo pip3 install --break-system-packages -r tests/blackbox/requirements.txt
+        run: sudo pip3 install --break-system-packages -r tests/blackbox/requirements.txt pytest-github-actions-annotate-failures
 
       - name: Build tcp_echo_demo
         run: |
@@ -99,9 +99,22 @@ jobs:
             --sut-ip  10.0.0.2      \
             --our-ip  10.0.0.100    \
             --sut-port 7            \
-            -v --tb=short           \
+            -v --tb=short -s        \
             -p no:cacheprovider     \
-            2>&1
+            2>&1 | tee /tmp/pytest.out
+          # Capture pytest's exit code before any other command resets PIPESTATUS
+          TEST_RC=${PIPESTATUS[0]}
+          echo "pytest exit: $TEST_RC"
+          exit "$TEST_RC"
+
+      - name: Pytest results summary
+        if: always()
+        run: |
+          echo "## Pytest Output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 10000 /tmp/pytest.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Stop SUT
         if: always()
