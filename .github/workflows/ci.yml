@@ -64,7 +64,7 @@ jobs:
             python3-pip iproute2 socat
 
       - name: Install Python deps
-        run: pip3 install -r tests/blackbox/requirements.txt
+        run: sudo pip3 install --break-system-packages -r tests/blackbox/requirements.txt
 
       - name: Build tcp_echo_demo
         run: |
