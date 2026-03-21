@@ -57,6 +57,13 @@ def test_tcp_002_synack_ack_equals_our_syn_plus_one(ctx):
     assert synack[TCP].ack == syn_seq + 1, (
         f"SYN-ACK.ACK={synack[TCP].ack} expected {syn_seq + 1}"
     )
+    # RST the half-open connection so the SUT can re-enter LISTEN for the next test.
+    # Without this, the SUT's only connection slot stays in SYN_RECEIVED and
+    # every subsequent test that tries to connect gets RST instead of SYN-ACK.
+    conn.our_seq += 1
+    conn.our_ack = synack[TCP].seq + 1
+    send_pkt(ctx, conn.rst())
+    time.sleep(0.05)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -74,6 +81,11 @@ def test_tcp_076_synack_contains_mss_option(ctx):
     mss = parse_mss(replies[0])
     assert mss is not None, "MSS option absent from SYN-ACK"
     assert 0 < mss <= 1460, f"MSS={mss} out of expected range (0..1460]"
+    # RST the half-open connection so the SUT can re-enter LISTEN.
+    conn.our_seq += 1
+    conn.our_ack = replies[0][TCP].seq + 1
+    send_pkt(ctx, conn.rst())
+    time.sleep(0.05)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -101,6 +113,11 @@ def test_tcp_082_window_nonzero_in_synack(ctx):
     replies = send_recv(ctx, conn.syn(our_mss=536), count=1)
     assert replies, "No SYN-ACK"
     assert replies[0][TCP].window > 0, "SUT advertised zero window in SYN-ACK"
+    # RST the half-open connection so the SUT can re-enter LISTEN.
+    conn.our_seq += 1
+    conn.our_ack = replies[0][TCP].seq + 1
+    send_pkt(ctx, conn.rst())
+    time.sleep(0.05)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

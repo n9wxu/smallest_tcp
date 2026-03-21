@@ -177,15 +177,21 @@ class TcpConn:
         return synack
 
     def close(self, timeout=RECV_TIMEOUT):
-        """Send FIN+ACK and wait for SUT's FIN+ACK, then send final ACK."""
-        send_pkt(self.ctx, self.fin_ack())
+        """Send FIN+ACK and wait for SUT's FIN+ACK, then send final ACK.
+
+        Uses send_recv (AsyncSniffer) so we don't miss the SUT's ACK/FIN
+        on a fast TAP interface where the reply can arrive before a naive
+        send-then-sniff socket is even open.
+        """
+        fin_pkt = self.fin_ack()
         self.our_seq += 1  # FIN consumes a sequence number
-        replies = recv_tcp(self.ctx, timeout=timeout, count=1)
-        if replies:
-            sut_fin = replies[0]
-            if sut_fin[TCP].flags & 0x01:  # FIN flag
-                self.our_ack = sut_fin[TCP].seq + 1
+        # Expect up to 2 replies: ACK of our FIN, then SUT's own FIN+ACK
+        replies = send_recv(self.ctx, fin_pkt, timeout=timeout, count=2)
+        for pkt in replies:
+            if pkt[TCP].flags & 0x01:  # FIN flag set
+                self.our_ack = pkt[TCP].seq + 1
                 send_pkt(self.ctx, self.ack())
+                break
         return replies
 
 

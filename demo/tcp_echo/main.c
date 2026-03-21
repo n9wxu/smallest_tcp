@@ -225,8 +225,12 @@ int main(int argc, char *argv[]) {
     if (want_close) {
       want_close = 0;
       /* Reply to peer's FIN with our own FIN */
-      if (echo_conn.state == TCP_CLOSE_WAIT)
+      if (echo_conn.state == TCP_CLOSE_WAIT) {
         tcp_close(&net, &echo_conn);
+      } else if (echo_conn.state == TCP_CLOSED) {
+        /* Close sequence complete — re-arm the listener */
+        want_listen = 1;
+      }
     }
     if (want_listen) {
       /* Brief delay to allow final ACKs to drain, then re-arm */
