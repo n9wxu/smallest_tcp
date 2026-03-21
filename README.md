@@ -117,6 +117,47 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+**CMake output directory layout** — binaries mirror the source tree:
+
+| What | Path after `cmake --build build` |
+|---|---|
+| Unit tests | `build/tests/test_tcp`, `build/tests/test_arp`, … |
+| Demo binaries | `build/demo/tcp_echo_demo`, `build/demo/frame_dump` |
+
+> ⚠️ **Do not** use `build/tcp_echo_demo` — that path does not exist.
+> Always use `build/demo/tcp_echo_demo`.  Getting this wrong is the most
+> common cause of blackbox test failures (all tests ERROR with
+> `ARP timeout: no reply from 10.0.0.2`).
+
+### Running Blackbox Conformance Tests (Linux)
+
+The full TCP conformance suite runs against the live `tcp_echo_demo` over
+a Linux TAP interface.  Requires `sudo` / `CAP_NET_RAW`.
+
+```bash
+# 1. Build
+cmake -S . -B build && cmake --build build --target tcp_echo_demo
+# Binary lives at build/demo/tcp_echo_demo  ← NOT build/tcp_echo_demo
+
+# 2. Set up the TAP interface
+sudo ip tuntap add dev tap0 mode tap user $(whoami)
+sudo ip link set tap0 up
+sudo ip addr add 10.0.0.100/24 dev tap0
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+
+# 3. Start the SUT
+sudo ./build/demo/tcp_echo_demo &
+
+# 4. Run the suite
+pip install -r tests/blackbox/requirements.txt
+sudo python3 -m pytest tests/blackbox/test_tcp_conform.py \
+    --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 -v
+```
+
+> ⚠️ If every test reports `ERROR: ARP timeout: no reply from 10.0.0.2`,
+> the SUT is not running.  The most common cause is a wrong binary path —
+> see [Test Plan §6 Troubleshooting](docs/test-plan.md#6-troubleshooting--known-pitfalls).
+
 ---
 
 ## 📦 Using In Your Project

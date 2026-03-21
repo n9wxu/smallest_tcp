@@ -130,25 +130,40 @@ Test harness (Scapy, our_ip=10.0.0.100)
 ### Running Blackbox Tests (Local)
 
 ```sh
-# Install deps
+# 1. Build the SUT binary
+cmake -S . -B build
+cmake --build build --target tcp_echo_demo
+# Binary is at: build/demo/tcp_echo_demo   ← note the demo/ subdirectory
+
+# 2. Install Python deps
 pip install -r tests/blackbox/requirements.txt
 
-# Start the SUT (e.g. tcp_echo_demo on a TAP interface)
+# 3. Set up TAP interface (Linux only)
 sudo ip tuntap add dev tap0 mode tap user $(whoami)
 sudo ip link set tap0 up
 sudo ip addr add 10.0.0.100/24 dev tap0
-sudo ./build/tcp_echo_demo tap0 10.0.0.2
+# Drop kernel RSTs so Scapy connections aren't torn down:
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 
-# In another terminal — run conformance tests
-cd tests/blackbox
-sudo python3 -m pytest test_tcp_conform.py \
+# 4. Start the SUT in the background
+sudo ./build/demo/tcp_echo_demo &   # ← build/DEMO/tcp_echo_demo, not build/
+
+# 5. In another terminal — run conformance tests
+sudo python3 -m pytest tests/blackbox/test_tcp_conform.py \
     --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 -v
 
 # Run fuzz tests (200 iterations, ~60 seconds)
-sudo python3 -m pytest test_tcp_fuzz.py \
+sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
     --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \
     --fuzz-count 200 -v
 ```
+
+> ⚠️ **Common mistake:** CMake places the demo binary under
+> `build/demo/tcp_echo_demo` (mirroring the `demo/` source subdirectory),
+> **not** at `build/tcp_echo_demo`.  Using the wrong path causes `sudo`
+> to silently fail, the SUT never starts, and every test ERRORs with
+> `ARP timeout: no reply from 10.0.0.2`.  See
+> [§6 Troubleshooting](#6-troubleshooting--known-pitfalls) for more.
 
 ### Blackbox TCP Conformance Coverage
 
@@ -269,6 +284,122 @@ The `fuzz.yml` workflow includes the `fuzz-tcp-hw` job that:
 | 4 | REQ-TCP-130/132-134 | TCP_NODELAY, Keep-alive | Low (MAY) |
 | 5 | Blackbox ETH/ARP/IPv4/ICMPv4/UDP | Retroactive Scapy suites for all pre-TCP protocols | Medium (next sprint) |
 | 6 | Hardware fixture | Procure BOM, set up self-hosted runner | Medium |
+
+---
+
+## 6. Troubleshooting / Known Pitfalls
+
+This section captures issues encountered during CI debugging so they are
+not repeated.
+
+---
+
+### ❌ All blackbox tests ERROR: `ARP timeout: no reply from 10.0.0.2`
+
+**Symptom:** Every test in `test_tcp_conform.py` reports `ERROR` (not
+`FAILED`).  The conftest `ctx` fixture cannot resolve the SUT's MAC via
+ARP and raises `RuntimeError: ARP timeout …`.
+
+**Root cause:** The SUT (`tcp_echo_demo`) is not running — or is not
+attached to the TAP interface — so no process is listening for ARP
+requests on tap0.
+
+**Diagnostic checklist:**
+
+| Check | Command | Expected |
+|---|---|---|
+| SUT process alive? | `pgrep -a tcp_echo_demo` | Shows the PID |
+| SUT log shows TAP open | check sut.log / stderr | `[TAP] Opened tap0 (fd=N)` |
+| `/dev/net/tun` exists | `ls -la /dev/net/tun` | `crw-rw-rw- … 10, 200` |
+| tap0 is UP | `ip link show tap0` | `state UP` or `state UNKNOWN` |
+| SUT binary path correct? | `ls build/demo/tcp_echo_demo` | file exists |
+
+**Most frequent cause — wrong binary path:**  
+CMake mirrors the source tree.  `demo/tcp_echo/main.c` → binary at
+`build/demo/tcp_echo_demo`, **not** `build/tcp_echo_demo`.
+
+```sh
+# WRONG — sudo silently exits with "command not found"
+sudo ./build/tcp_echo_demo &
+
+# CORRECT
+sudo ./build/demo/tcp_echo_demo &
+```
+
+---
+
+### ❌ `sudo: ./build/tcp_echo_demo: command not found`
+
+The binary path is wrong.  CMake places every target in a directory that
+mirrors its `CMakeLists.txt` location:
+
+| Target | Source | Binary |
+|---|---|---|
+| `tcp_echo_demo` | `demo/tcp_echo/main.c` | `build/demo/tcp_echo_demo` |
+| `frame_dump` | `demo/frame_dump/main.c` | `build/demo/frame_dump` |
+| `test_tcp` | `tests/unit/test_tcp.c` | `build/tests/test_tcp` |
+
+Always verify the full path with `find build/ -name tcp_echo_demo` after
+a clean build.
+
+---
+
+### ❌ `tap_init: open /dev/net/tun: No such file or directory`
+
+The Linux TUN/TAP kernel module is not loaded (or `/dev/net/tun` does
+not exist as a device node).
+
+- On **GitHub Actions ubuntu-latest**: TUN is always available.
+- On **LXC containers** (e.g. Proxmox): TUN/TAP may not be forwarded
+  into the container.  You must enable TUN in the container's Proxmox
+  configuration (`lxc.cgroup2.devices.allow = c 10:200 rwm`), or use a
+  KVM VM instead of an LXC container for blackbox testing.
+- On a **bare-metal or KVM** machine without TUN loaded:
+  `modprobe tun && ls /dev/net/tun` to verify.
+
+---
+
+### ❌ SUT starts but ARP still times out
+
+If `[TAP] Opened tap0 (fd=N)` appears in the SUT log but ARP still
+times out, investigate the data path:
+
+```sh
+# Watch all frames on tap0 while sending an ARP
+sudo tcpdump -i tap0 -en &
+sudo python3 -c "
+from scapy.all import *
+r = srp1(Ether(dst='ff:ff:ff:ff:ff:ff')/ARP(op=1, pdst='10.0.0.2'),
+         iface='tap0', timeout=5, verbose=True)
+print('reply:', r)"
+```
+
+- If tcpdump shows the ARP request but no reply: SUT is not processing
+  or not sending — check `arp_input()` logic and SUT's IP configuration.
+- If tcpdump shows both request and reply but `srp1` times out: Scapy's
+  AF_PACKET socket is not receiving the reply — check Scapy version and
+  interface binding.
+
+---
+
+### CI Debugging: reading the SUT log from GitHub annotations
+
+The `blackbox-linux` CI job emits the SUT's startup log as
+`::notice::SUT:` annotations.  To read them without a browser:
+
+```sh
+# List recent runs
+curl -s "https://api.github.com/repos/n9wxu/smallest_tcp/actions/runs?per_page=3" \
+  | jq '.workflow_runs[] | {id, status, conclusion, head_sha}'
+
+# Get job IDs for a run
+curl -s "https://api.github.com/repos/n9wxu/smallest_tcp/actions/runs/<RUN_ID>/jobs" \
+  | jq '.jobs[] | {id, name, conclusion}'
+
+# Read annotations for the blackbox job
+curl -s "https://api.github.com/repos/n9wxu/smallest_tcp/check-runs/<JOB_ID>/annotations" \
+  | jq '.[].message'
+```
 
 ---
 
