@@ -77,6 +77,12 @@ jobs:
           sudo ip tuntap add dev tap0 mode tap user $(whoami)
           sudo ip link set tap0 up
           sudo ip addr add 10.0.0.100/24 dev tap0
+          # The phantom-IP trick: Scapy uses 10.0.0.100 as the source IP in
+          # hand-crafted frames (via AF_PACKET), bypassing the kernel TCP stack.
+          # However, the SUT's replies to 10.0.0.100 re-enter the kernel (via
+          # the TAP device) and the kernel finds no socket → it sends RST back
+          # through the TAP, aborting the SUT's connection.  Drop those RSTs.
+          sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 
       - name: Start tcp_echo_demo in background
         run: |
