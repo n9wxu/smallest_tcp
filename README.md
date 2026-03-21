@@ -44,9 +44,10 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 
 ## 📊 Current Status
 
-**70 unit tests passing** across 8 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.
+**89 unit tests passing** across 10 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**18 TCP blackbox conformance tests passing** (Scapy/TAP on Linux, every push/PR).
 
-### ✅ Implemented (Milestones 1–5)
+### ✅ Implemented (Milestones 1–6)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -58,19 +59,26 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | IPv4 | `ipv4.h` / `ipv4.c` | 10 | Parse/build/send, protocol dispatch, broadcast detection |
 | ICMPv4 | `icmp.h` / `icmp.c` | 4 | Echo reply (ping), destination unreachable |
 | UDP | `udp.h` / `udp.c` | 7 | Parse/send, port dispatch, pseudo-header checksum |
+| **TCP** | **`tcp.h` / `tcp.c`** | **23 unit + 18 blackbox** | **Full state machine, retransmit, MSS, window, close** |
+| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 6 | Stop-and-wait TX buffer |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
-| CI | `.github/workflows/ci.yml` | — | Linux + macOS build & test on every push |
-| **Total** | **8 source + 3 drivers** | **70** | |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS build, unit tests, blackbox TAP on every push |
+| **Total** | **10 source + 3 drivers** | **89 unit + 18 blackbox** | |
+
+> ⚠️ **TCP known gap:** REQ-TCP-085/086/087 (zero-window **persist timer**) are
+> MUST-level RFC 9293 requirements that are **not yet implemented**.  Without
+> the persist timer, a connection will stall permanently if the peer advertises
+> a zero receive window.  This is tracked as the first item of Milestone 7.
 
 ### 🔜 Roadmap
 
 | Milestone | Status | What's Coming |
 |---|---|---|
-| **6 — TCP** | 🔜 Next | Full state machine, app-managed connections, retransmit |
-| **7 — Integration** | Planned | Event loop, timer tick, ARP+ping+UDP+TCP simultaneously |
+| **6 — TCP core** | ✅ Done (gap: persist timer) | Full state machine, retransmit, MSS, echo demo |
+| **7 — TCP persist + integration** | 🔜 Next | Zero-window persist timer, event loop, ARP+TCP simultaneously |
 | **8 — DHCP** | Planned | Auto-configure IP from any DHCP server |
 | **9 — TFTP** | Planned | Fetch files over the network — bootloader data path |
 | **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
@@ -95,7 +103,7 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 ```bash
 make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run all 70 unit tests
+make test     # Build and run all 89 unit tests
 make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
