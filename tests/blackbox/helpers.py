@@ -209,11 +209,16 @@ def tcp_connect(ctx, sport, dport=None, our_mss=536, timeout=RECV_TIMEOUT):
 
 def tcp_send_recv_data(ctx, conn, payload, timeout=RECV_TIMEOUT):
     """
-    Send payload bytes and collect all TCP replies (data + ACK).
-    Returns list of reply packets.
+    Send payload bytes and collect the immediate TCP replies (ACK + echo data).
+
+    count=2 captures the SUT's pure ACK of our data and its echo segment.
+    Using count > 2 would force a 3-second wait while the sniffer hunts for
+    more packets; during that time the SUT retransmits its un-ACKed echo
+    segment, causing concatenated duplicate payloads ("HelloHello" instead
+    of "Hello") and false test failures.
     """
     pkt = conn.ack(extra_flags="P", payload=payload)
-    return send_recv(ctx, pkt, timeout=timeout, count=4)
+    return send_recv(ctx, pkt, timeout=timeout, count=2)
 
 
 # ── TCP option parsing ─────────────────────────────────────────────────────────

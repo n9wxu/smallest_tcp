@@ -175,6 +175,12 @@ int main(int argc, char *argv[]) {
   net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
            NULL, drv, &mac_ctx);
 
+  /* ── Open the MAC driver (TAP fd / BPF fd) ──────────────────── */
+  if (drv->init(&mac_ctx) != 0) {
+    fprintf(stderr, "[tcp_echo] Failed to open MAC driver\n");
+    return 1;
+  }
+
   /* ── TCP connection table ───────────────────────────────────── */
   conn_table[0] = &echo_conn;
   tcp_connections.conns = conn_table;
