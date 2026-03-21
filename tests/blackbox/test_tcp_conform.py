@@ -194,16 +194,18 @@ def test_tcp_005_graceful_close_active(ctx):
 def test_tcp_006_fin_ack_correct_seq(ctx):
     """REQ-TCP-068: FIN advances RCV.NXT by 1; ACK must equal FIN.seq+1."""
     conn, _ = tcp_connect(ctx, alloc_port())
-    # Ask SUT to close by sending FIN; collect SUT's FIN
-    send_pkt(ctx, conn.fin_ack())
-    conn.our_seq += 1
-    replies = recv_tcp(ctx, timeout=RECV_TIMEOUT, count=2)
+    # Use send_recv (AsyncSniffer) to avoid missing SUT's immediate ACK+FIN
+    # on a fast TAP interface.  Expect ACK of our FIN + SUT's own FIN+ACK.
+    fin_pkt = conn.fin_ack()
+    conn.our_seq += 1  # FIN consumes one sequence number
+    replies = send_recv(ctx, fin_pkt, count=2, timeout=RECV_TIMEOUT)
     fin_pkts = [p for p in replies if p[TCP].flags & 0x01]
     if fin_pkts:
         sut_fin = fin_pkts[0]
-        # Send final ACK
+        # Send final ACK so SUT transitions LAST_ACK → CLOSED → re-listen
         conn.our_ack = sut_fin[TCP].seq + 1
         send_pkt(ctx, conn.ack())
+    time.sleep(0.1)  # allow re-listen to complete before next test
     # Test passes if no crash / no assertion; SUT handled FIN cleanly
 
 
