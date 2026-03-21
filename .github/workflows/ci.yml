@@ -87,7 +87,7 @@ jobs:
       - name: Start tcp_echo_demo in background
         run: |
           # The demo listens on TAP with IP 10.0.0.2, MAC 02:00:00:00:00:01
-          sudo ./build/tcp_echo_demo tap0 10.0.0.2 >/tmp/sut.log 2>&1 &
+          sudo ./build/demo/tcp_echo_demo tap0 10.0.0.2 >/tmp/sut.log 2>&1 &
           echo $! > /tmp/sut.pid
           sleep 2   # let the SUT initialize
           # Emit SUT log as annotations visible via GitHub API
