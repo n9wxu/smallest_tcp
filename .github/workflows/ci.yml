@@ -87,9 +87,18 @@ jobs:
       - name: Start tcp_echo_demo in background
         run: |
           # The demo listens on TAP with IP 10.0.0.2, MAC 02:00:00:00:00:01
-          sudo ./build/tcp_echo_demo tap0 10.0.0.2 &
+          sudo ./build/tcp_echo_demo tap0 10.0.0.2 >/tmp/sut.log 2>&1 &
           echo $! > /tmp/sut.pid
-          sleep 1   # let the SUT initialize
+          sleep 2   # let the SUT initialize
+          # Emit SUT log as annotations visible via GitHub API
+          while IFS= read -r line; do echo "::notice::SUT: $line"; done < /tmp/sut.log || true
+          ip link show tap0 2>&1 | while IFS= read -r l; do echo "::notice::TAP: $l"; done
+          ls -la /dev/net/tun 2>&1 | while IFS= read -r l; do echo "::notice::TUN: $l"; done
+          # Health-check: fail fast if SUT died
+          if ! kill -0 "$(cat /tmp/sut.pid)" 2>/dev/null; then
+            echo "::error::SUT crashed at startup — see SUT: annotations above"
+            exit 1
+          fi
 
       - name: Run TCP conformance suite
         run: |
