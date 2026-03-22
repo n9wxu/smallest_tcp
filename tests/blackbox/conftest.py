@@ -228,9 +228,16 @@ def dhcp_sut_fresh(request):
                 pass  # already dead or stale PID file
 
         # ── Start a fresh SUT ────────────────────────────────────────────────
-        log = open("/tmp/dhcp_sut.log", "a")
-        proc = subprocess.Popen([sut_bin], stdout=log, stderr=log)
-        log.close()
+        # Discard SUT output to avoid PermissionError on /tmp/dhcp_sut.log:
+        # the initial "Start DHCP SUT" CI step creates that file via shell
+        # redirection (owned by the runner user) while the DHCP SUT process
+        # itself runs as root via sudo.  Subsequent open("/tmp/dhcp_sut.log","a")
+        # calls from the same sudo-pytest process can hit permission issues on
+        # some GitHub Actions Ubuntu images.  Using DEVNULL is simpler and
+        # sufficient — we do not need per-restart SUT logs here.
+        proc = subprocess.Popen([sut_bin],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
         with open(pid_file, "w") as f:
             f.write(str(proc.pid))
         # Allow the SUT to open the TAP device and broadcast its first DISCOVER

@@ -65,7 +65,7 @@ def recv_tcp(ctx, timeout=RECV_TIMEOUT, count=1, extra_filter=""):
     return pkts
 
 
-def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
+def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1, sport=None):
     """Send pkt and wait for up to `count` TCP replies from the SUT.
 
     Uses AsyncSniffer to open the AF_PACKET capture socket BEFORE sending.
@@ -74,8 +74,16 @@ def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
     is not yet open when the reply arrives.  AsyncSniffer eliminates that
     race: we arm the socket, yield briefly to let the kernel register it,
     then send the stimulus.
+
+    sport: if provided, adds 'tcp dst port {sport}' to the BPF filter.
+           This prevents cross-test contamination where the SUT's retransmit
+           timer fires and sends packets for a PREVIOUS test's connection
+           (different source port) that then satisfy the count= quota before
+           our echo arrives.  Always pass conn.sport for TCP data tests.
     """
     bpf = f"tcp and ether src {ctx.sut_mac}"
+    if sport is not None:
+        bpf += f" and tcp dst port {sport}"
     sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
                            count=count, timeout=timeout)
     sniffer.start()
@@ -154,8 +162,11 @@ class TcpConn:
         Perform SYN → SYN-ACK → ACK handshake.
         Returns the SYN-ACK packet on success, raises AssertionError on failure.
         """
+        # sport filter: only capture SYN-ACK addressed back to our source port,
+        # not retransmits the SUT may be sending for a previous test's half-open
+        # connection on a different sport.
         replies = send_recv(self.ctx, self.syn(our_mss=our_mss),
-                            timeout=timeout, count=1)
+                            timeout=timeout, count=1, sport=self.sport)
         assert replies, (
             f"No SYN-ACK from {self.ctx.sut_ip}:{self.dport} "
             f"(sport={self.sport})"
@@ -183,8 +194,10 @@ class TcpConn:
             if kind == "MSS":
                 self.sut_mss = val
 
-        # Send ACK to complete handshake
+        # Send ACK to complete handshake.  Brief pause after so the SUT has
+        # time to process the ACK and enter ESTABLISHED before we send data.
         send_pkt(self.ctx, self.ack())
+        time.sleep(0.02)
         return synack
 
     def close(self, timeout=RECV_TIMEOUT):
@@ -196,13 +209,29 @@ class TcpConn:
         """
         fin_pkt = self.fin_ack()
         self.our_seq += 1  # FIN consumes a sequence number
-        # Expect up to 2 replies: ACK of our FIN, then SUT's own FIN+ACK
-        replies = send_recv(self.ctx, fin_pkt, timeout=timeout, count=2)
+        # Expect up to 2 replies: ACK of our FIN, then SUT's own FIN+ACK.
+        # Use sport filter so retransmitted data for a previous test's connection
+        # does not satisfy the count=2 quota before the SUT's actual FIN arrives.
+        replies = send_recv(self.ctx, fin_pkt, timeout=timeout, count=2,
+                            sport=self.sport)
+        fin_seen = False
         for pkt in replies:
             if pkt[TCP].flags & 0x01:  # FIN flag set
                 self.our_ack = pkt[TCP].seq + 1
                 send_pkt(self.ctx, self.ack())
+                fin_seen = True
                 break
+        if not fin_seen:
+            # The first 2 packets may have been retransmitted data arriving
+            # before the SUT's FIN (e.g. when the SUT had unsent echo segments
+            # buffered when we sent FIN).  Try once more with a short window.
+            extras = recv_tcp(self.ctx, timeout=1, count=2,
+                              extra_filter=f"tcp dst port {self.sport}")
+            for pkt in extras:
+                if pkt[TCP].flags & 0x01:
+                    self.our_ack = pkt[TCP].seq + 1
+                    send_pkt(self.ctx, self.ack())
+                    break
         # Give the SUT time to process the final ACK, exit LAST_ACK, run the
         # do_listen() usleep(50 ms), and return to LISTEN before the next test
         # sends a SYN.  Without this pause the next test's SYN can arrive
@@ -232,9 +261,13 @@ def tcp_send_recv_data(ctx, conn, payload, timeout=RECV_TIMEOUT):
     more packets; during that time the SUT retransmits its un-ACKed echo
     segment, causing concatenated duplicate payloads ("HelloHello" instead
     of "Hello") and false test failures.
+
+    sport filter: prevents the SUT's retransmit timer (firing for a stale
+    connection from a previous test on a different sport) from satisfying the
+    count=2 quota before our actual echo data arrives.
     """
     pkt = conn.ack(extra_flags="P", payload=payload)
-    return send_recv(ctx, pkt, timeout=timeout, count=2)
+    return send_recv(ctx, pkt, timeout=timeout, count=2, sport=conn.sport)
 
 
 # ── TCP option parsing ─────────────────────────────────────────────────────────
@@ -270,7 +303,7 @@ def send_recv_arp(ctx, pkt, timeout=RECV_TIMEOUT):
     sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
                            count=1, timeout=timeout)
     sniffer.start()
-    time.sleep(0.02)
+    time.sleep(0.05)   # 50 ms — same as TCP/ICMP/UDP helpers (was 20 ms)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return list(sniffer.results)
