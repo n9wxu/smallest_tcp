@@ -45,7 +45,7 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 ## 📊 Current Status
 
 **89 unit tests passing** across 10 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
-**18 TCP blackbox conformance tests passing** (Scapy/TAP on Linux, every push/PR).
+**47 blackbox conformance tests passing** across 5 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20), plus 5 fuzz tests — all run on every push/PR via Scapy + TAP on Linux.
 
 ### ✅ Implemented (Milestones 1–7)
 
@@ -55,18 +55,19 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | Byte order | `net_endian.h` | 10 | Portable wire read/write + host/network conversion |
 | Checksum | `net_cksum.h` / `net_cksum.c` | 12 | RFC 1071 Internet checksum — incremental, one-shot, verify |
 | Ethernet | `eth.h` / `eth.c` | 11 | Ethernet II parse/build, zero-copy, protocol dispatch |
-| ARP | `arp.h` / `arp.c` | 8 | Fast-path reply, gateway MAC learning, next-hop routing |
-| IPv4 | `ipv4.h` / `ipv4.c` | 10 | Parse/build/send, protocol dispatch, broadcast detection |
-| ICMPv4 | `icmp.h` / `icmp.c` | 4 | Echo reply (ping), destination unreachable |
-| UDP | `udp.h` / `udp.c` | 7 | Parse/send, port dispatch, pseudo-header checksum |
-| **TCP** | **`tcp.h` / `tcp.c`** | **23 unit + 18 blackbox** | **Full state machine, retransmit, MSS, window, close** |
+| ARP | `arp.h` / `arp.c` | 8 unit + **5 blackbox** | Fast-path reply, gateway MAC learning, next-hop routing |
+| IPv4 | `ipv4.h` / `ipv4.c` | 10 unit + **8 blackbox** | Parse/build/send, protocol dispatch, broadcast detection, ICMP Protocol Unreachable |
+| ICMPv4 | `icmp.h` / `icmp.c` | 4 unit + **7 blackbox** | Echo reply (ping), destination unreachable, checksum validation |
+| UDP | `udp.h` / `udp.c` | 7 unit + **7 blackbox** | Parse/send, port dispatch, pseudo-header checksum, ICMP Port Unreachable |
+| **TCP** | **`tcp.h` / `tcp.c`** | **23 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit, MSS, window, persist timer, close** |
 | TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 6 | Stop-and-wait TX buffer |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
-| CI | `.github/workflows/ci.yml` | — | Linux + macOS build, unit tests, blackbox TAP on every push |
-| **Total** | **10 source + 3 drivers** | **89 unit + 18 blackbox** | |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests + full blackbox suite on every push |
+| Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
+| **Total** | **10 source + 3 drivers** | **89 unit + 47 blackbox + 5 fuzz** | |
 
 > ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
 > are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
@@ -144,15 +145,35 @@ ctest --test-dir build --output-on-failure
 
 ### Running Blackbox Conformance Tests (Linux)
 
-The full TCP conformance suite runs against the live `tcp_echo_demo` over
-a Linux TAP interface.  Requires `sudo` / `CAP_NET_RAW`.
+All five conformance suites (ARP, IPv4, ICMPv4, UDP, TCP — 47 tests total) run
+against the live `tcp_echo_demo` over a Linux TAP interface.
+Requires `sudo` / `CAP_NET_RAW`.
+
+#### Option A — `run_blackbox.sh` (recommended, all suites)
 
 ```bash
 # 1. Build
 cmake -S . -B build && cmake --build build --target tcp_echo_demo
-# Binary lives at build/demo/tcp_echo_demo  ← NOT build/tcp_echo_demo
 
-# 2. Set up the TAP interface
+# 2. Install Python deps once
+pip install -r tests/blackbox/requirements.txt
+
+# 3. Run everything — sets up TAP, starts SUT, runs all 5 suites, tears down
+sudo tests/blackbox/run_blackbox.sh \
+    --sut-bin ./build/demo/tcp_echo_demo \
+    --setup-tap --teardown-tap -v
+```
+
+`run_blackbox.sh` creates `tap0`, starts the SUT, runs each suite in order,
+prints a `✓ / ✗` summary, and cleans up — even if a suite fails.
+
+#### Option B — Run a single suite manually
+
+```bash
+# 1. Build
+cmake -S . -B build && cmake --build build --target tcp_echo_demo
+
+# 2. Set up TAP and iptables
 sudo ip tuntap add dev tap0 mode tap user $(whoami)
 sudo ip link set tap0 up
 sudo ip addr add 10.0.0.100/24 dev tap0
@@ -161,10 +182,10 @@ sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 # 3. Start the SUT
 sudo ./build/demo/tcp_echo_demo &
 
-# 4. Run the suite
+# 4. Run one suite (replace test_tcp_conform.py with any suite name)
 pip install -r tests/blackbox/requirements.txt
 sudo python3 -m pytest tests/blackbox/test_tcp_conform.py \
-    --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 -v
+    --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 --sut-port 7 -v
 ```
 
 > ⚠️ If every test reports `ERROR: ARP timeout: no reply from 10.0.0.2`,

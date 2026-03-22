@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-03-19 (Tasks 1–5 implemented, 70 unit tests passing)
+**Last updated:** 2026-03-22 (Tasks 1–7 complete; 89 unit tests + 47 blackbox + 5 fuzz passing)
 
 ## Objective
 
