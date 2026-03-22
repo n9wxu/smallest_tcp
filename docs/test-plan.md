@@ -268,10 +268,20 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 | `make-macos` | ci.yml | macos-latest | make test | push/PR |
 | `cmake-linux` | ci.yml | ubuntu-latest | ctest | push/PR |
 | `cmake-macos` | ci.yml | macos-latest | ctest | push/PR |
-| `blackbox-linux` | ci.yml | ubuntu-latest | Scapy full conformance — ARP/IPv4/ICMP/UDP/TCP via `run_blackbox.sh` (TAP) | push/PR |
+| `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` (TAP) | push/PR |
+| `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
 | `fuzz-tcp-tap` | fuzz.yml | ubuntu-latest | Scapy fuzz (TAP) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |
+
+### Two-Job Interpretation
+
+`blackbox-linux` and `blackbox-validate` run the same test files with different SUTs:
+
+- **`blackbox-validate` FAILS** → the test itself is wrong (assertion, timing, operator precedence). Fix the test.
+- **`blackbox-validate` PASSES, `blackbox-linux` FAILS** → our SUT has a real RFC compliance bug. Fix the SUT.
+
+Tests marked `@pytest.mark.sut_specific` are excluded from `blackbox-validate` because they depend on `smallest_tcp`'s specific timer values (e.g. 500 ms RTO), not RFC-mandated behaviour.  See [`docs/ci-debugging.md`](ci-debugging.md) for the full debugging workflow.
 
 ---
 
