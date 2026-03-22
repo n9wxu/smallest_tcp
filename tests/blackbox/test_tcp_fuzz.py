@@ -56,14 +56,31 @@ def _sanity_connect(ctx, label="sanity", retries=3, retry_delay=2.5):
     This accounts for the SUT being temporarily stuck in SYN_RECEIVED after
     a fuzzed SYN landed — the SUT's retransmit timer will time out the
     half-open connection within ~2-3 s, after which it returns to LISTEN.
+
+    Critical: we must fully ACK the SUT's echo data *before* sending our FIN.
+    If conn.our_ack is stale (doesn't cover the echo bytes), the SUT will
+    not advance past CLOSE_WAIT / LAST_ACK, leaving the single connection
+    slot occupied when the post-fuzz conformance suite tries to connect.
     """
+    from helpers import tcp_send_recv_data  # avoid circular import at module level
     time.sleep(0.5)   # initial settle
     last_exc = None
     for attempt in range(retries):
         try:
             conn, _ = tcp_connect(ctx, alloc_port(), timeout=4)
-            send_pkt(ctx, conn.ack(extra_flags="P", payload=b"fuzz-ok"))
+
+            # Send data and collect the SUT's echo reply, then ACK it.
+            # This updates conn.our_ack to cover the echo bytes so the
+            # subsequent FIN is sent with a correct ACK field.
+            echo_replies = tcp_send_recv_data(ctx, conn, b"fuzz-ok")
+            for p in echo_replies:
+                d = bytes(p[TCP].payload)
+                if d:
+                    conn.our_ack = p[TCP].seq + len(d)
+            send_pkt(ctx, conn.ack())   # ACK the echo before we FIN
+
             conn.close()
+            time.sleep(0.3)   # let SUT process final ACK and return to LISTEN
             return           # success
         except AssertionError as e:
             last_exc = e
