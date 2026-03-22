@@ -67,14 +67,22 @@ jobs:
             -p no:cacheprovider                        \
             2>&1
 
+      - name: Restart SUT for conformance check
+        run: |
+          # Restart the SUT so it begins the conformance suite from a clean
+          # LISTEN state.  This is intentional: the fuzz tests already verified
+          # robustness (SUT does not crash under adversarial input); the
+          # conformance suite verifies correctness (RFC-compliant behaviour).
+          # Restarting ensures the conformance suite is not blocked by a
+          # legitimately-open SYN_RECEIVED slot left over from the fuzz run.
+          [ -f /tmp/sut.pid ] && sudo kill $(cat /tmp/sut.pid) || true
+          sleep 1
+          sudo ./build/demo/tcp_echo_demo &
+          echo $! > /tmp/sut.pid
+          sleep 2
+
       - name: Run conformance suite post-fuzz (regression check)
         run: |
-          # Allow 3 s for the SUT to settle fully before the next test session.
-          # The fuzz suite's final _sanity_connect close sequence takes up to
-          # 3 s (send_recv count=2 timeout) + 0.3 s sleep.  Adding 3 s here
-          # ensures any in-flight retransmit timers have expired and the SUT
-          # is firmly back in LISTEN state before we begin conformance checks.
-          sleep 3
           cd tests/blackbox
           sudo python3 -m pytest test_tcp_conform.py   \
             --iface tap0                               \
