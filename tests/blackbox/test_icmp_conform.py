@@ -23,18 +23,25 @@ from helpers import (
 
 
 def _icmp_checksum_ok(pkt):
-    """Recompute ICMP checksum over the ICMP portion and verify it is 0xFFFF."""
-    from scapy.all import ICMP as ScapyICMP
+    """Verify ICMP checksum.
+
+    The correct approach: compute the one's-complement sum of ALL bytes of
+    the ICMP message (including the checksum field as received).  If the
+    checksum is valid the result must equal 0xFFFF.
+
+    The previous implementation zeroed the checksum field and then checked
+    (~s & 0xFFFF) == 0xFFFF, which requires s == 0 — true only when the
+    checksum itself happens to be 0x0000.  That incorrectly fails valid
+    non-zero checksums.
+    """
     raw = bytes(pkt[ICMP])
-    # Zero out checksum field (bytes 2-3)
-    data = raw[:2] + b"\x00\x00" + raw[4:]
     s = 0
-    for i in range(0, len(data), 2):
-        word = (data[i] << 8) + (data[i + 1] if i + 1 < len(data) else 0)
+    for i in range(0, len(raw), 2):
+        word = (raw[i] << 8) + (raw[i + 1] if i + 1 < len(raw) else 0)
         s += word
     while s >> 16:
         s = (s & 0xFFFF) + (s >> 16)
-    return (~s & 0xFFFF) == 0xFFFF
+    return s == 0xFFFF
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -154,10 +161,14 @@ def test_icmp_006_broadcast_ping_silent(ctx):
 def test_icmp_007_no_error_for_icmp_error(ctx):
     """REQ-ICMPv4-034: SUT MUST NOT send ICMP error in response to an ICMP error."""
     # Send an ICMP Destination Unreachable (type 3 code 3) to the SUT
-    # The body must include a fake original IP header + 8 bytes
+    # The body must include a fake original IP header + 8 bytes of original
+    # datagram (here: a minimal UDP header dport=7, sport=7, len=12, cksum=0).
+    # Parentheses around the bytes literal are required: without them the
+    # expression `IP(...) / b"A" + b"B"` is parsed as `(IP/b"A") + b"B"`
+    # (/ has higher precedence than +), causing a TypeError.
     fake_orig_ip = bytes(
         IP(src=ctx.sut_ip, dst=ctx.our_ip, proto=17) /
-        b"\x00\x07" + b"\x00\x07" + b"\x00\x0c" + b"\x00\x00"  # fake UDP hdr
+        (b"\x00\x07\x00\x07\x00\x0c\x00\x00")  # fake UDP hdr (8 bytes)
     )[:28]
     pkt = (
         Ether(dst=ctx.sut_mac, src=ctx.our_mac) /

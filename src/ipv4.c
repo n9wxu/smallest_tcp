@@ -197,8 +197,15 @@ void ipv4_input(net_t *net, const eth_frame_t *eth) {
     break;
 #endif
   default:
-    /* REQ-IPv4-020,021: unrecognized protocol */
+    /* REQ-IPv4-020,021: unrecognized protocol → ICMP Protocol Unreachable */
     NET_LOG("ipv4_input: unknown proto %u", ip.protocol);
+#if NET_USE_IPV4
+    if (!ipv4_is_broadcast(net, ip.dst_ip) && ip.dst_ip != 0xFFFFFFFFu) {
+      icmp_send_dest_unreach(
+          net, ICMP_CODE_PROTO_UNREACH, ip.header, ip.header_len,
+          ip.payload_len >= 8 ? ip.payload : NULL, ip.src_ip, eth->src_mac);
+    }
+#endif
     break;
   }
 }
