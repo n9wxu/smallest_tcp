@@ -54,18 +54,22 @@
 /* ── UDP Echo Handler (port 7) ────────────────────────────────────── */
 
 static void udp_echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                             const uint8_t *src_mac, const uint8_t *data,
-                             uint16_t data_len) {
+                             const uint8_t *src_mac, uint16_t payload_offset,
+                             uint16_t payload_len) {
   printf("  UDP echo: %u.%u.%u.%u:%u -> port 7, %u bytes\n",
          (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF, (src_ip >> 8) & 0xFF,
-         src_ip & 0xFF, src_port, data_len);
+         src_ip & 0xFF, src_port, payload_len);
 
-  /* Echo the data back to sender */
-  net_err_t err = udp_send(n, src_ip, src_mac, 7, src_port, data, data_len);
+  /* Read payload via peek-based interface, then echo it back */
+  uint8_t buf[512];
+  uint16_t n_read = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
+  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, n_read);
+
+  net_err_t err = udp_send(n, src_ip, src_mac, 7, src_port, buf, n_read);
   if (err != NET_OK) {
     printf("  UDP echo send failed: %d\n", err);
   } else {
-    printf("  UDP echo: sent %u bytes back\n", data_len);
+    printf("  UDP echo: sent %u bytes back\n", n_read);
   }
 }
 

@@ -61,9 +61,51 @@ Protocol layers use `#if` to select the code path at compile time. The compiler 
 
 ## peek + discard Pattern
 
-The key design insight: on hardware MACs (e.g., ENC28J60 via SPI), reading a full frame is expensive. For ARP/NDP fast-path filtering, we only need to check a few bytes (e.g., the ARP target IP at offset 38). `peek()` reads those bytes via SPI without consuming the frame. If the frame isn't for us, `discard()` drops it without the full read.
+### Basic fast-path filtering
 
-For software MACs (TAP, feth+BPF), `recv()` has already read the full frame into the buffer. `peek()` is a `memcpy` from the buffer, and `discard()` is a no-op (the frame is already consumed by `recv`).
+On hardware MACs (e.g., ENC28J60 via SPI), reading a full frame is expensive.
+For ARP/NDP fast-path filtering, we only need a few bytes (e.g., the ARP target
+IP at offset 38).  `peek()` reads those bytes via SPI without consuming the
+frame.  If the frame isn't for us, `discard()` drops it without the full read.
+
+For software MACs (TAP, feth+BPF), `recv()` has already read the full frame
+into the driver's internal buffer.  `peek()` is a `memcpy` from that buffer,
+and `discard()` is a no-op (frame already consumed by `recv`).
+
+### Full receive path — peek-based header parsing
+
+The `peek` / `discard` idiom extends beyond ARP filtering to the **entire
+receive path**.  Rather than staging the whole frame in `net->rx.buf` before
+dispatch, each protocol layer `peek()`s only its own header:
+
+| Layer | peek offset | bytes | Purpose |
+|---|---|---|---|
+| Ethernet | 0 | 14 | dst_mac, src_mac, EtherType |
+| IPv4 | 14 | 20 | src_ip, dst_ip, protocol, length |
+| UDP | 14 + ip_hlen | 8 | src_port, dst_port, udp_len, cksum |
+| UDP payload | 14 + ip_hlen + 8 | `payload_len` | passed to port handler as offset |
+| ARP | 14 | 28 | operation, sender/target IP+MAC |
+| ICMP | 14 + 20 | 4 | type, code |
+
+The MAC frame is never staged into a large `net->rx.buf`.  `net->rx.buf` can
+therefore shrink from the traditional 1514 bytes down to just enough for the
+largest single header region (typically 20 bytes for the IPv4 header).
+
+**UDP port handler contract:** The UDP dispatch layer calls the port handler
+with `(src_ip, src_port, src_mac, payload_offset, payload_len)`.  The handler
+calls `mac_driver->peek(ctx, payload_offset, buf, n)` for only the bytes it
+needs, then returns.  After the handler returns, `udp_input()` calls
+`mac_driver->discard()` to release the frame.  See
+[docs/design/udp.md §4](udp.md#4-receive-path) for the full receive path
+diagram.
+
+### RAM comparison — full-frame staging vs. peek-based dispatch
+
+| Approach | `net->rx.buf` size |
+|---|---|
+| Current (full-frame staging) | 1514 bytes (max Ethernet frame) |
+| Peek-based header parsing | ≤ 20 bytes (largest header region) |
+| Handler's receive buffer | allocated on handler's stack, sized to protocol need |
 
 ## Driver Implementations
 
@@ -73,6 +115,45 @@ For software MACs (TAP, feth+BPF), `recv()` has already read the full frame into
 | `bpf.c` | macOS | memcpy from rx buffer | advance BPF read pointer |
 | `enc28j60.c` | SPI MCU | SPI read at offset | SPI advance RX pointer |
 | `cdc_ecm.c` | USB | memcpy from USB buffer | discard USB buffer |
+
+## Scatter-Gather TX Extension (Future Enhancement)
+
+The current `send(ctx, frame, len)` signature requires the caller to assemble a
+complete, contiguous Ethernet frame before transmitting.  This forces the stack
+to `memcpy` every payload into `net->tx.buf`, meaning the tx buffer must be
+large enough for the full frame including payload (e.g., 618 bytes for DHCP).
+
+For the TFTP bootloader use case — sending 512-byte data blocks that live in
+flash — this represents a significant RAM waste on targets with 1 KB total RAM.
+
+The solution is to add an optional scatter-gather entry to the vtable:
+
+```c
+/* Iovec descriptor — one memory region */
+typedef struct {
+    const uint8_t *base;
+    uint16_t       len;
+} net_iov_t;
+
+/* Optional: send from multiple non-contiguous regions (header + payload) */
+int (*send_iov)(void *ctx, const net_iov_t *iov, uint8_t iovcnt);
+```
+
+With `send_iov`, the stack builds only the 42-byte ETH+IP+UDP header into
+`net->tx.buf` and passes the application's payload pointer directly to the
+MAC — no copy.  `net->tx.buf` shrinks from `42 + payload_len` to just 42 bytes.
+
+**Driver implementations:**
+- `tap.c`: use `writev(fd, ...)` — Linux supports scatter-gather on TAP file descriptors
+- `bpf.c`: BPF `write()` is single-buffer; driver falls back to a small internal combine buffer
+- ENC28J60 (SPI): write header bytes via SPI, then payload bytes via SPI — naturally sequential, no staging buffer needed
+- DMA MACs (STM32 EMAC, etc.): scatter-gather DMA descriptors natively support multi-region sends
+
+**Backward compatibility:** `send_iov` is an optional vtable field.  When NULL,
+the stack falls back to the current `send()` path with memcpy.  Existing drivers
+continue to work unchanged.
+
+See [docs/design/udp.md §8](udp.md#8-transmit-buffer--current-limitation-and-the-scatter-gather-path) for the full analysis and RAM savings table.
 
 ## Context
 

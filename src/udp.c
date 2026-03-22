@@ -81,7 +81,7 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   uint16_t dst_port = net_read16be(udp + UDP_OFF_DPORT);
   /* REQ-UDP-004: data length from UDP Length, not IP */
   uint16_t data_len = udp_len - UDP_HDR_SIZE;
-  uint8_t *data = udp + UDP_HDR_SIZE;
+  /* payload bytes are accessed by the handler via mac_driver->peek() */
 
   NET_LOG("udp_input: %u.%u.%u.%u:%u -> port %u (%u bytes)",
           (unsigned)((ip->src_ip >> 24) & 0xFF),
@@ -90,12 +90,16 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
           src_port, dst_port, data_len);
 
   /* REQ-UDP-016: dispatch by destination port */
+  /* payload_offset = ETH header + IP header + UDP header */
+  uint16_t payload_offset =
+      (uint16_t)(ETH_HDR_SIZE + ip->header_len + UDP_HDR_SIZE);
   uint8_t i;
   for (i = 0; i < udp_ports.count; i++) {
     if (udp_ports.entries[i].port == dst_port) {
-      /* REQ-UDP-020,037: handler gets src info + zero-copy payload */
+      /* REQ-UDP-020,037: handler gets src info + MAC frame offset; handler
+       * calls mac_driver->peek(ctx, payload_offset, buf, n) for payload */
       udp_ports.entries[i].handler(net, ip->src_ip, src_port, eth->src_mac,
-                                   data, data_len);
+                                   payload_offset, data_len);
       return;
     }
   }

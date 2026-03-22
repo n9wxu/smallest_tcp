@@ -84,6 +84,7 @@ int net_poll(net_t *net) {
                                                  : (uint16_t)frame_len;
   net->mac_driver->peek(net->mac_ctx, 0, net->rx.buf, len);
   net->rx.frame_len = len;
-  net->mac_driver->discard(net->mac_ctx);
+  /* discard() is called by eth_input() after all dispatch is complete,
+   * so that UDP/TCP handlers can call mac_driver->peek() during dispatch. */
   return (int)len;
 }

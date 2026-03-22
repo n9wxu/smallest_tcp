@@ -66,6 +66,7 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
 
   if (eth_parse(frame, len, &eth) != NET_OK) {
     NET_LOG("eth_input: parse failed (len=%u)", len);
+    net->mac_driver->discard(net->mac_ctx);
     return;
   }
 
@@ -73,6 +74,7 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
   if (!net_mac_equal(eth.dst_mac, net->mac) &&
       !net_mac_is_broadcast(eth.dst_mac)) {
     /* Not for us and not broadcast — discard silently */
+    net->mac_driver->discard(net->mac_ctx);
     return;
   }
 
@@ -100,4 +102,8 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
     NET_LOG("eth_input: unknown EtherType 0x%04x, discarding", eth.ethertype);
     break;
   }
+
+  /* Release the MAC frame now that all dispatch (and any peek() calls from
+   * protocol handlers) is complete. */
+  net->mac_driver->discard(net->mac_ctx);
 }

@@ -1,6 +1,11 @@
 # Demo applications for smallest_tcp
 
 # ── Helper: add a demo that needs a platform MAC driver ──────────────
+#
+# On Linux and Darwin, the platform driver carries PUBLIC smallest_tcp_core,
+# so core is pulled in transitively — no explicit core link needed here.
+# On other platforms (e.g., bare-metal), link core directly; the demo
+# will fail to compile anyway due to the #error guard in main.c.
 
 function(add_demo_with_driver name)
     target_compile_options(${name} PRIVATE -Wall -Wextra -Werror -pedantic)
@@ -9,17 +14,17 @@ function(add_demo_with_driver name)
         target_link_libraries(${name} PRIVATE smallest_tcp_driver_tap)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         target_link_libraries(${name} PRIVATE smallest_tcp_driver_bpf)
+    else()
+        target_link_libraries(${name} PRIVATE smallest_tcp_core)
     endif()
 endfunction()
 
 # ── frame_dump ────────────────────────────────────────────────────────
 
 add_executable(frame_dump frame_dump/main.c)
-target_link_libraries(frame_dump PRIVATE smallest_tcp_core)
 add_demo_with_driver(frame_dump)
 
 # ── tcp_echo (TCP echo server on port 7) ──────────────────────────────
 
 add_executable(tcp_echo_demo tcp_echo/main.c)
-target_link_libraries(tcp_echo_demo PRIVATE smallest_tcp_core)
 add_demo_with_driver(tcp_echo_demo)

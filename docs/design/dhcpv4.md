@@ -252,15 +252,21 @@ it unicasts.
 /* Port-67 handler for the server */
 static void dhcp_server_udp(net_t *net, uint32_t src_ip, uint16_t src_port,
                              const uint8_t *src_mac,
-                             const uint8_t *data, uint16_t len) {
-    dhcpv4_server_input(net, &srv, src_ip, src_mac, data, len);
+                             uint16_t payload_offset, uint16_t payload_len) {
+    uint8_t buf[576];
+    uint16_t n = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
+    net->mac_driver->peek(net->mac_ctx, payload_offset, buf, n);
+    dhcpv4_server_input(net, &srv, src_ip, src_mac, buf, n);
 }
 
 /* Port-68 handler for the client */
 static void dhcp_client_udp(net_t *net, uint32_t src_ip, uint16_t src_port,
                              const uint8_t *src_mac,
-                             const uint8_t *data, uint16_t len) {
-    dhcpv4_client_input(net, &cli, src_ip, data, len);
+                             uint16_t payload_offset, uint16_t payload_len) {
+    uint8_t buf[576];
+    uint16_t n = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
+    net->mac_driver->peek(net->mac_ctx, payload_offset, buf, n);
+    dhcpv4_client_input(net, &cli, src_ip, buf, n);
 }
 ```
 

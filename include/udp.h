@@ -27,16 +27,22 @@
 /**
  * @brief Callback invoked when a UDP datagram arrives for a registered port.
  *
- * @param net       Network context.
- * @param src_ip    Sender's IPv4 address (host byte order).
- * @param src_port  Sender's port (host byte order).
- * @param src_mac   Sender's MAC address (6 bytes).
- * @param data      Pointer to UDP payload data (in rx buffer, zero-copy).
- * @param data_len  Length of UDP payload data.
+ * The handler receives source information and the byte offset within the
+ * current MAC frame where the UDP payload begins.  To read payload bytes,
+ * call net->mac_driver->peek(net->mac_ctx, payload_offset, buf, n).
+ *
+ * The handler MUST NOT call discard() — eth_input() does so after dispatch.
+ *
+ * @param net             Network context.
+ * @param src_ip          Sender's IPv4 address (host byte order).
+ * @param src_port        Sender's port (host byte order).
+ * @param src_mac         Sender's MAC address (6 bytes).
+ * @param payload_offset  Byte offset into the MAC frame where payload starts.
+ * @param payload_len     Length of UDP payload in bytes.
  */
 typedef void (*udp_handler_t)(net_t *net, uint32_t src_ip, uint16_t src_port,
-                              const uint8_t *src_mac, const uint8_t *data,
-                              uint16_t data_len);
+                              const uint8_t *src_mac, uint16_t payload_offset,
+                              uint16_t payload_len);
 
 /**
  * @brief Port-to-handler binding.

@@ -34,12 +34,19 @@ static int stub_poll(void *ctx) {
   (void)ctx;
   return 0;
 }
-static int stub_peek(void *ctx, uint16_t o, uint8_t *b, uint16_t l) {
+/* Frame buffer for peek-based handlers — populated before each udp_input call
+ */
+static uint8_t stub_rx_frame[1514];
+static uint16_t stub_rx_len;
+
+static int stub_peek(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len) {
   (void)ctx;
-  (void)o;
-  (void)b;
-  (void)l;
-  return 0;
+  if (offset >= stub_rx_len)
+    return -1;
+  if ((uint16_t)(offset + len) > stub_rx_len)
+    len = (uint16_t)(stub_rx_len - offset);
+  memcpy(buf, stub_rx_frame + offset, len);
+  return (int)len;
 }
 static void stub_discard(void *ctx) { (void)ctx; }
 static void stub_close(void *ctx) { (void)ctx; }
@@ -65,16 +72,16 @@ static uint16_t handler_data_len;
 static uint8_t handler_data[256];
 
 static void echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                         const uint8_t *src_mac, const uint8_t *data,
-                         uint16_t data_len) {
-  (void)n;
+                         const uint8_t *src_mac, uint16_t payload_offset,
+                         uint16_t payload_len) {
   (void)src_mac;
   handler_called = 1;
   handler_src_ip = src_ip;
   handler_src_port = src_port;
-  handler_data_len = data_len;
-  if (data_len > 0 && data_len <= sizeof(handler_data)) {
-    memcpy(handler_data, data, data_len);
+  handler_data_len = payload_len;
+  if (payload_len > 0 && payload_len <= sizeof(handler_data)) {
+    /* Use peek-based interface to read payload from the MAC frame */
+    n->mac_driver->peek(n->mac_ctx, payload_offset, handler_data, payload_len);
   }
 }
 
@@ -86,6 +93,8 @@ static void setup(void) {
   int ctx = 0;
   memset(&net, 0, sizeof(net));
   memset(sent_frame, 0, sizeof(sent_frame));
+  memset(stub_rx_frame, 0, sizeof(stub_rx_frame));
+  stub_rx_len = 0;
   sent_len = 0;
   send_count = 0;
   handler_called = 0;
@@ -145,6 +154,9 @@ TEST(test_udp_dispatch_to_handler) {
   eth_parse(frame, len, &eth);
   ipv4_hdr_t ip;
   ipv4_parse(eth.payload, eth.payload_len, &ip);
+  /* Populate stub MAC frame so peek() works inside the handler */
+  memcpy(stub_rx_frame, frame, len);
+  stub_rx_len = len;
   udp_input(&net, &ip, &eth);
 
   ASSERT_TRUE(handler_called);
@@ -215,6 +227,9 @@ TEST(test_udp_zero_checksum_accepted) {
   eth_parse(frame, len, &eth);
   ipv4_hdr_t ip;
   ipv4_parse(eth.payload, eth.payload_len, &ip);
+  /* Populate stub MAC frame so peek() works inside the handler */
+  memcpy(stub_rx_frame, frame, len);
+  stub_rx_len = len;
   udp_input(&net, &ip, &eth);
 
   ASSERT_TRUE(handler_called);
