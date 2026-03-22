@@ -73,8 +73,13 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 
 ### 🔜 Roadmap
 
-| Milestone | Status | What's Coming |
+| Milestone | Status | What's Included |
 |---|---|---|
+| **1 — Project skeleton** | ✅ Done | MAC abstraction, Linux TAP driver, frame hex-dump demo |
+| **2 — Ethernet** | ✅ Done | Ethernet II parse/build, zero-copy, protocol dispatch |
+| **3 — ARP** | ✅ Done | Fast-path filter, ARP reply, gateway MAC learning |
+| **4 — IPv4 + ICMPv4** | ✅ Done | IPv4 parse/build/send, ICMP echo reply (`ping` works) |
+| **5 — UDP** | ✅ Done | UDP parse/send, port dispatch, pseudo-header checksum |
 | **6 — TCP core** | ✅ Done | Full state machine, retransmit, MSS, echo demo |
 | **7 — TCP persist + integration** | ✅ Done | Zero-window persist timer, `net_poll()` API, ARP+TCP integration |
 | **8 — DHCP** | Planned | Auto-configure IP from any DHCP server |
