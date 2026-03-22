@@ -86,6 +86,8 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | **9 — TFTP** | Planned | Fetch files over the network — bootloader data path |
 | **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
 | **11 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
+| **12 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
+| **13 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
 ### 📐 Target Platforms
 
@@ -259,7 +261,9 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [Memory Model](docs/design/memory-model.md) — Zero-allocation factory methods
   - [Configuration](docs/design/configuration.md) — Compile-time vs. runtime taxonomy
   - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
-- **[RFC Requirements](docs/requirements/)** — 785 requirements traced to RFC sections across 16 protocol specifications
+  - [TLS 1.3](docs/design/tls.md) — Pluggable crypto backend, PSK + cert modes, record + handshake SM *(Milestone 12)*
+  - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 13)*
+- **[RFC Requirements](docs/requirements/)** — RFC-traced requirements across 18 protocol specifications
 - **[Test Plan](docs/test-plan.md)** — Black-box conformance testing strategy with Python/Scapy/pytest
 
 ---
