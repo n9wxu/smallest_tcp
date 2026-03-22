@@ -114,15 +114,23 @@ def ctx(request):
 @pytest.fixture(autouse=True)
 def sut_settle():
     """
-    After every test, sleep 100 ms so the SUT has time to finish any in-flight
-    do_listen() → usleep(50 ms) and return to LISTEN before the next test sends
-    a SYN.  Without this gap, tests that intentionally abort a connection (RST,
-    out-of-window RST, etc.) can leave the SUT in CLOSED for a brief window that
-    causes the immediately-following test's SYN to arrive while the SUT is still
-    not in LISTEN and receive RST.
+    Sleep 50 ms BEFORE every test so Scapy's AsyncSniffer has time to open
+    its AF_PACKET socket and register its BPF filter before we send any
+    stimulus frames.  On a loaded CI runner the kernel thread-scheduling
+    window can exceed the 20 ms sleep inside send_recv_* helpers, causing
+    the SUT's reply to arrive before the socket is registered — this is
+    especially visible on the very first test, which runs immediately after
+    the session-level ctx fixture's srp1() socket closes.
+
+    Sleep 100 ms AFTER every test so the SUT has time to finish any
+    in-flight do_listen() → usleep(50 ms) and return to LISTEN before the
+    next test sends a SYN.  Without this gap, tests that intentionally
+    abort a connection (RST, out-of-window RST, etc.) can leave the SUT in
+    CLOSED for a brief window and cause the next test's SYN to get RST.
     """
+    time.sleep(0.05)   # pre-test: let socket layer settle
     yield
-    time.sleep(0.10)
+    time.sleep(0.10)   # post-test: let SUT return to LISTEN
 
 
 # ── Per-test port counter (avoids TIME_WAIT port reuse collisions) ─────────────
