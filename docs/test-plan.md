@@ -121,10 +121,15 @@ Test harness (Scapy, our_ip=10.0.0.100)
 
 | File | Purpose |
 |---|---|
-| `tests/blackbox/conftest.py` | pytest fixtures, CLI options, ARP pre-flight, port allocator |
-| `tests/blackbox/helpers.py` | `TcpConn`, `tcp_connect()`, `send_recv()`, `silence()`, frame builders |
-| `tests/blackbox/test_tcp_conform.py` | 18 conformance tests (REQ-TCP-002..153) |
+| `tests/blackbox/conftest.py` | pytest fixtures, CLI options, ARP pre-flight, port allocator, `sut_settle` autouse fixture |
+| `tests/blackbox/helpers.py` | `TcpConn`, `tcp_connect()`, `send_recv()`, `silence()`, ARP/ICMP/UDP/IPv4 frame builders |
+| `tests/blackbox/test_arp_conform.py` | 5 conformance tests (REQ-ARP-001..005) |
+| `tests/blackbox/test_ipv4_conform.py` | 8 conformance tests (REQ-IPv4-002..044) |
+| `tests/blackbox/test_icmp_conform.py` | 7 conformance tests (REQ-ICMPv4-001..034) |
+| `tests/blackbox/test_udp_conform.py` | 7 conformance tests (REQ-UDP-001..008) |
+| `tests/blackbox/test_tcp_conform.py` | 20 conformance tests (REQ-TCP-002..153) |
 | `tests/blackbox/test_tcp_fuzz.py` | 5 fuzz tests (header fields, flags, options, truncation) |
+| `tests/blackbox/run_blackbox.sh` | Shell runner: starts SUT, runs all suites in order, reports summary |
 | `tests/blackbox/requirements.txt` | `pytest>=7.0`, `scapy>=2.5` |
 
 ### Running Blackbox Tests (Local)
@@ -148,7 +153,13 @@ sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 # 4. Start the SUT in the background
 sudo ./build/demo/tcp_echo_demo &   # ← build/DEMO/tcp_echo_demo, not build/
 
-# 5. In another terminal — run conformance tests
+# 5. Option A — run ALL conformance suites via the shell runner
+#    (starts SUT, runs every suite, stops SUT, prints ✓/✗ summary)
+sudo tests/blackbox/run_blackbox.sh \
+    --sut-bin ./build/demo/tcp_echo_demo \
+    --setup-tap --teardown-tap -v
+
+# 5. Option B — run a single suite manually
 sudo python3 -m pytest tests/blackbox/test_tcp_conform.py \
     --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 -v
 
@@ -185,9 +196,57 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 | test_tcp_076 | REQ-TCP-076,077 | SYN-ACK contains MSS ≤ 1460 |
 | test_tcp_078 | REQ-TCP-078,081 | SUT honors peer MSS |
 | test_tcp_082 | REQ-TCP-082,083 | Window > 0 in SYN-ACK |
+| test_tcp_085 | REQ-TCP-085,086,087 | Zero-window persist: probe sent, window reopened |
 | test_tcp_090 | REQ-TCP-095,096 | SYN-ACK retransmit on RTO |
 | test_tcp_097 | REQ-TCP-097,098 | No spurious retransmit after ACK |
 | test_tcp_153 | REQ-TCP-153 | ISS different across connections |
+
+### Blackbox ARP Conformance Coverage
+
+| Test | REQ(s) | Description |
+|---|---|---|
+| test_arp_001 | REQ-ARP-001 | ARP who-has for SUT IP → reply received |
+| test_arp_002 | REQ-ARP-001,002 | Reply hwsrc and sender IP are correct |
+| test_arp_003 | REQ-ARP-003 | who-has for unrelated IP → silence |
+| test_arp_004 | REQ-ARP-005 | ARP request populates SUT's cache (verified via ICMP) |
+| test_arp_005 | REQ-ARP-001 | Repeated who-has → consistent MAC returned |
+
+### Blackbox IPv4 Conformance Coverage
+
+| Test | REQ(s) | Description |
+|---|---|---|
+| test_ipv4_001 | REQ-IPv4-005 | Bad IP header checksum → silent drop |
+| test_ipv4_002 | REQ-IPv4-011 | Wrong destination IP → silent drop |
+| test_ipv4_003 | REQ-IPv4-020, REQ-ICMPv4-017 | Unknown protocol → ICMP Protocol Unreachable (type 3 code 2) |
+| test_ipv4_004 | REQ-IPv4-024 | Fragment (MF=1) → silent drop |
+| test_ipv4_005 | REQ-IPv4-002 | IHL < 5 → silent drop |
+| test_ipv4_006 | REQ-IPv4-044 | TTL=1 packet accepted (hosts do not check TTL on RX) |
+| test_ipv4_007 | REQ-IPv4-023 | SUT outbound packets have DF=1 |
+| test_ipv4_008 | REQ-IPv4-026 | IP options (IHL=6) accepted; payload still processed |
+
+### Blackbox ICMPv4 Conformance Coverage
+
+| Test | REQ(s) | Description |
+|---|---|---|
+| test_icmp_001 | REQ-ICMPv4-001 | Echo Request → Echo Reply (type 0) |
+| test_icmp_002 | REQ-ICMPv4-002 | Identifier and Sequence Number preserved in reply |
+| test_icmp_003 | REQ-ICMPv4-003 | Payload data preserved verbatim in reply |
+| test_icmp_004 | REQ-ICMPv4-006,032 | Echo Reply checksum is valid |
+| test_icmp_005 | REQ-ICMPv4-031 | Bad ICMP checksum → silent drop |
+| test_icmp_006 | REQ-ICMPv4-009 | Broadcast ping (255.255.255.255) → no reply |
+| test_icmp_007 | REQ-ICMPv4-034 | No ICMP error generated in response to ICMP error |
+
+### Blackbox UDP Conformance Coverage
+
+| Test | REQ(s) | Description |
+|---|---|---|
+| test_udp_001 | REQ-UDP-001 | Echo on port 7 — data returned verbatim |
+| test_udp_002 | REQ-UDP-003 | Echo reply has src/dst ports correctly swapped |
+| test_udp_003 | REQ-UDP-005, REQ-ICMPv4-018 | Unknown port → ICMP Destination Unreachable, Port Unreachable (type 3 code 3) |
+| test_udp_004 | REQ-ICMPv4-038 | ICMP Unreachable body contains original IP header + 8 UDP bytes |
+| test_udp_005 | REQ-UDP-006 | Bad UDP checksum → silent drop |
+| test_udp_006 | REQ-UDP-007 | Zero UDP checksum (disabled) accepted and echoed |
+| test_udp_007 | REQ-UDP-008 | UDP Length < 8 → silent drop |
 
 ### Fuzz Test Coverage
 
@@ -209,7 +268,7 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 | `make-macos` | ci.yml | macos-latest | make test | push/PR |
 | `cmake-linux` | ci.yml | ubuntu-latest | ctest | push/PR |
 | `cmake-macos` | ci.yml | macos-latest | ctest | push/PR |
-| `blackbox-linux` | ci.yml | ubuntu-latest | Scapy conform (TAP) | push/PR |
+| `blackbox-linux` | ci.yml | ubuntu-latest | Scapy full conformance — ARP/IPv4/ICMP/UDP/TCP via `run_blackbox.sh` (TAP) | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
 | `fuzz-tcp-tap` | fuzz.yml | ubuntu-latest | Scapy fuzz (TAP) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |
@@ -282,7 +341,7 @@ The `fuzz.yml` workflow includes the `fuzz-tcp-hw` job that:
 | 2 | REQ-TCP-004/007 | Simultaneous open/close | Low (MAY, rare) |
 | 3 | REQ-TCP-113/114/117/122-124 | Window Scale, Timestamps, SACK options | Low (MAY) |
 | 4 | REQ-TCP-130/132-134 | TCP_NODELAY, Keep-alive | Low (MAY) |
-| 5 | Blackbox ETH/ARP/IPv4/ICMPv4/UDP | Retroactive Scapy suites for all pre-TCP protocols | Medium (next sprint) |
+| 5 | Blackbox ETH/ARP/IPv4/ICMPv4/UDP | Retroactive Scapy suites — **IMPLEMENTED** (5+8+7+7 tests, `run_blackbox.sh` runner) | ✅ Closed |
 | 6 | Hardware fixture | Procure BOM, set up self-hosted runner | Medium |
 
 ---
@@ -403,4 +462,4 @@ curl -s "https://api.github.com/repos/n9wxu/smallest_tcp/check-runs/<JOB_ID>/ann
 
 ---
 
-*Last updated: Milestone 6 — TCP core implementation complete.*
+*Last updated: Milestone 6 — Full blackbox conformance suite (ARP/IPv4/ICMP/UDP/TCP) complete.*
