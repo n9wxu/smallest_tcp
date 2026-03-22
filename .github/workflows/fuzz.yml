@@ -29,7 +29,7 @@ jobs:
             python3-pip iproute2
 
       - name: Install Python deps
-        run: pip3 install -r tests/blackbox/requirements.txt
+        run: sudo pip3 install --break-system-packages -r tests/blackbox/requirements.txt
 
       - name: Build tcp_echo_demo
         run: |
@@ -41,10 +41,12 @@ jobs:
           sudo ip tuntap add dev tap0 mode tap user $(whoami)
           sudo ip link set tap0 up
           sudo ip addr add 10.0.0.100/24 dev tap0
+          # Drop kernel RSTs so Scapy connections aren't torn down by the host
+          sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 
       - name: Start tcp_echo_demo (SUT)
         run: |
-          sudo ./build/tcp_echo_demo tap0 10.0.0.2 &
+          sudo ./build/demo/tcp_echo_demo &
           echo $! > /tmp/sut.pid
           sleep 1
 
