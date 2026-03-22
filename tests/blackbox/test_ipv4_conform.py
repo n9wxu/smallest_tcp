@@ -129,8 +129,15 @@ def test_ipv4_006_ttl_1_packet_accepted(ctx):
 # REQ-IPv4-023
 # ══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.sut_specific
 def test_ipv4_007_outbound_df_bit_set(ctx):
-    """REQ-IPv4-023: every SUT outbound IPv4 packet MUST have DF=1."""
+    """REQ-IPv4-023: every SUT outbound IPv4 packet MUST have DF=1.
+
+    sut_specific: our embedded stack always sets DF=1 on outbound packets
+    (REQ-IPv4-023).  The Linux kernel reference SUT does NOT always set DF
+    on ICMP echo replies over simple veth/TAP interfaces, so this test is
+    skipped during blackbox-validate.
+    """
     ping = build_icmp_echo(ctx, id=7, seq=1, data=b"df")
     replies = send_recv_icmp(ctx, ping)
     assert replies, "No ICMP reply (needed to inspect DF bit)"
