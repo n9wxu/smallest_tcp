@@ -90,44 +90,70 @@ def _assert_sut_alive(ctx, label="sanity"):
         )
 
 
-def _release_syn_received(ctx, max_wait_s=5):
+def _release_syn_received(ctx, max_wait_s=12):
     """
-    If the SUT is stuck in SYN_RECEIVED (because a fuzz SYN was accepted),
-    free it by catching one of the SUT's SYN-ACK retransmits and sending a
-    valid in-window RST.
+    Free the SUT from SYN_RECEIVED (or ESTABLISHED) left over from a fuzz run.
 
-    Algorithm:
-      1. Sniff for any SYN+ACK from the SUT (it retransmits at ~1, 3, 7 … s).
-      2. The SYN-ACK tells us:
-           sport = 7         (SUT's local port)
-           dport = fuzz_sport (the fuzz SYN's source port — what we need)
-           ack   = rcv_nxt   (the next seq the SUT expects from that peer)
-      3. Send RST(sport=fuzz_sport, dport=7, seq=ack).
-         This RST is in-window (seq == rcv_nxt) so the SUT processes it in
-         SYN_RECEIVED step 2 → CLOSED → TCP_EVT_RESET → want_listen →
-         do_listen().
-      4. Brief sleep so do_listen() completes before the caller sends a SYN.
+    After a fuzz barrage the SUT may be stuck in SYN_RECEIVED or ESTABLISHED
+    because a fuzz SYN was accepted and the completing ACK never arrived.
+    The SUT's retransmit timer will fire SYN-ACK retransmits (SYN_RECEIVED)
+    or data retransmits (ESTABLISHED) at ~1 s, 3 s, 7 s, 15 s, … intervals.
 
-    Returns True if a SYN-ACK was found and RST sent, False if none seen.
+    When we catch one of those retransmits we know:
+        pkt[TCP].dport  = the fuzz connection's remote port (our RST sport)
+        pkt[TCP].ack    = SUT's rcv_nxt (the seq that passes the in-window check)
+
+    This formula works for any TCP packet from the SUT with ACK set (SYN-ACK,
+    data echo, FIN+ACK, etc.) because the SUT always piggybacks rcv_nxt in the
+    ACK field of every outbound segment on that connection.
+
+    Implementation notes:
+    - No BPF extra_filter is used.  Bitwise-AND expressions in pcap-filter
+      have lower precedence than '==' (C-style), so `tcp[13] & 18 == 18`
+      evaluates as `tcp[13] & (18==18)` = `tcp[13] & 1` (FIN bit only).
+      Python-level filtering inside stop_filter avoids this pitfall entirely.
+    - stop_filter stops sniffing the moment a qualifying packet arrives so
+      we do not wait the full max_wait_s when the retransmit arrives early.
+    - max_wait_s=12 covers retransmit 3 (t≈7 s) and retransmit 4 (t≈15 s)
+      from fuzz-SYN acceptance, with margin for RTO timer jitter.
+
+    Returns True if a qualifying packet was found and RST sent, False otherwise.
     """
-    # BPF: TCP packets from the SUT with both SYN and ACK bits set (0x12).
-    # 'tcp[13] & 18 == 18' matches flags byte where bits 1 (SYN) and 4 (ACK)
-    # are both set.
-    synacks = recv_tcp(ctx, timeout=max_wait_s, count=1,
-                       extra_filter="tcp[13] & 18 == 18")
-    if not synacks:
-        return False
+    from scapy.all import sniff as _sniff
 
-    sa = synacks[0]
-    fuzz_sport = sa[TCP].dport   # the half-open connection's remote port
-    rst_seq    = sa[TCP].ack     # SUT's rcv_nxt — the RST must have this seq
+    def _usable(pkt):
+        """True iff this TCP-from-SUT packet can guide our RST."""
+        if TCP not in pkt:
+            return False
+        f = int(pkt[TCP].flags)
+        if f & 0x04:       # RST set  → this is SUT's reply to one of our own SYNs
+            return False
+        if not (f & 0x10): # ACK clear → no rcv_nxt encoded in ACK field
+            return False
+        return True
 
-    rst = _eth_ip_tcp(ctx,
-                      sport=fuzz_sport, dport=ctx.sut_port,
-                      seq=rst_seq, ack=0, flags="R")
-    send_pkt(ctx, rst)
-    time.sleep(0.15)   # let SUT process RST, EVT_RESET, do_listen()
-    return True
+    pkts = _sniff(
+        iface=ctx.iface,
+        filter=f"tcp and ether src {ctx.sut_mac}",
+        timeout=max_wait_s,
+        stop_filter=_usable,   # stop as soon as we find a useful packet
+        store=True,
+    )
+
+    for pkt in pkts:
+        if not _usable(pkt):
+            continue
+        fuzz_sport = pkt[TCP].dport   # the fuzz connection's remote port
+        rst_seq    = pkt[TCP].ack     # SUT's rcv_nxt → in-window RST seq
+
+        rst = _eth_ip_tcp(ctx,
+                          sport=fuzz_sport, dport=ctx.sut_port,
+                          seq=rst_seq, ack=0, flags="R")
+        send_pkt(ctx, rst)
+        time.sleep(0.20)   # let SUT process RST, fire EVT_RESET, do_listen()
+        return True
+
+    return False
 
 
 def _sanity_connect(ctx, label="sanity", retries=2, retry_delay=2.0):
@@ -168,10 +194,13 @@ def _sanity_connect(ctx, label="sanity", retries=2, retry_delay=2.0):
         except AssertionError as e:
             last_exc = e
             # Got RST instead of SYN-ACK → SUT likely in SYN_RECEIVED.
-            # Sniff for SUT's retransmit and RST the half-open connection.
-            freed = _release_syn_received(ctx, max_wait_s=retry_delay)
+            # Sniff for SUT's SYN-ACK (or data) retransmit and RST the
+            # half-open connection.  Use the full 12 s default window so
+            # we reliably catch retransmit 3 (~7 s) or 4 (~15 s from
+            # SYN-acceptance) regardless of when the fuzz ended.
+            freed = _release_syn_received(ctx)
             if not freed and attempt < retries - 1:
-                time.sleep(retry_delay)   # retransmit not seen; wait and retry
+                time.sleep(retry_delay)   # no retransmit seen; wait and retry
 
     pytest.fail(
         f"[{label}] SUT alive (ARP OK) but TCP unresponsive "
