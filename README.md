@@ -68,17 +68,15 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS build, unit tests, blackbox TAP on every push |
 | **Total** | **10 source + 3 drivers** | **89 unit + 18 blackbox** | |
 
-> ⚠️ **TCP known gap:** REQ-TCP-085/086/087 (zero-window **persist timer**) are
-> MUST-level RFC 9293 requirements that are **not yet implemented**.  Without
-> the persist timer, a connection will stall permanently if the peer advertises
-> a zero receive window.  This is tracked as the first item of Milestone 7.
+> ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
+> are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
 
 ### 🔜 Roadmap
 
 | Milestone | Status | What's Coming |
 |---|---|---|
-| **6 — TCP core** | ✅ Done (gap: persist timer) | Full state machine, retransmit, MSS, echo demo |
-| **7 — TCP persist + integration** | 🔜 Next | Zero-window persist timer, event loop, ARP+TCP simultaneously |
+| **6 — TCP core** | ✅ Done | Full state machine, retransmit, MSS, echo demo |
+| **7 — TCP persist + integration** | ✅ Done | Zero-window persist timer, `net_poll()` API, ARP+TCP integration |
 | **8 — DHCP** | Planned | Auto-configure IP from any DHCP server |
 | **9 — TFTP** | Planned | Fetch files over the network — bootloader data path |
 | **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |

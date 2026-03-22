@@ -196,10 +196,8 @@ int main(int argc, char *argv[]) {
   uint32_t last_tick = now_ms();
 
   while (running) {
-    /* Receive one frame */
-    int r = drv->recv(&mac_ctx, net.rx.buf, net.rx.capacity);
-    if (r > 0) {
-      net.rx.frame_len = (uint16_t)r;
+    /* Poll for one frame; net_poll() fills net.rx.buf / net.rx.frame_len */
+    if (net_poll(&net) > 0) {
       eth_frame_t eth;
       if (eth_parse(net.rx.buf, net.rx.frame_len, &eth) == NET_OK) {
         switch (eth.ethertype) {

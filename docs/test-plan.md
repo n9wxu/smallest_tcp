@@ -82,11 +82,11 @@ make test
 | 109/111 | NOP/unknown option ignored | test_tcp_options_nop_unknown_ignored | ✅ |
 | 112 | MSS parsed from options | test_tcp_options_nop_unknown_ignored | ✅ |
 | 115 | Unknown option skipped | test_tcp_options_nop_unknown_ignored | ✅ |
-| 085–087 | Zero-window persist timer | — | ⚠️ **NOT IMPLEMENTED** |
+| 085–087 | Zero-window persist timer | `test_tcp_persist_starts_on_zero_window`, `test_tcp_persist_probe_sent_on_timeout`, `test_tcp_persist_stops_when_window_opens`, `test_tcp_085_persist_probe_on_zero_window` (blackbox) | ✅ pass |
 | 028/029/153 | ISS non-predictable | (blackbox only) | 🔲 Blackbox |
 | 155 | RST rate limiting | (blackbox only) | 🔲 Blackbox |
 
-> **⚠️ Implementation gap**: REQ-TCP-085, 086, 087 (zero-window persist timer)
+> ✅ REQ-TCP-085, 086, 087 (zero-window persist timer) are now implemented and covered by 3 unit tests and 1 blackbox test.
 > are MUST requirements that are **not yet implemented**. These are tracked
 > as a future milestone work item.
 
@@ -278,7 +278,7 @@ The `fuzz.yml` workflow includes the `fuzz-tcp-hw` job that:
 
 | # | Requirement(s) | Description | Priority |
 |---|---|---|---|
-| 1 | REQ-TCP-085/086/087 | Zero-window persist timer **NOT IMPLEMENTED** | High (next milestone) |
+| 1 | REQ-TCP-085/086/087 | Zero-window persist timer — **IMPLEMENTED, all tests pass** | ✅ Closed |
 | 2 | REQ-TCP-004/007 | Simultaneous open/close | Low (MAY, rare) |
 | 3 | REQ-TCP-113/114/117/122-124 | Window Scale, Timestamps, SACK options | Low (MAY) |
 | 4 | REQ-TCP-130/132-134 | TCP_NODELAY, Keep-alive | Low (MAY) |

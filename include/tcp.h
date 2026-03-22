@@ -143,6 +143,12 @@ typedef struct tcp_conn_s {
   uint8_t rto_active;        /**< 1 if timer is running */
   uint8_t retransmit_count;  /**< Consecutive timeouts (for abort) */
 
+  /* ── Persist timer (REQ-TCP-085..087) ─────────────────────── */
+  uint32_t persist_ms;           /**< Current probe interval (exponential
+                                      backoff, cloned from rto_ms family) */
+  uint32_t persist_remaining_ms; /**< Countdown — decremented by tcp_tick() */
+  uint8_t persist_active;        /**< 1 if probing a peer zero window */
+
   /* ── TIME-WAIT timer (REQ-TCP-008) ────────────────────────── */
   uint32_t timewait_remaining_ms; /**< 2×MSL countdown */
 

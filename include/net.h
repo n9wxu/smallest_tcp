@@ -108,6 +108,22 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
                    uint8_t *tx_buf, uint16_t tx_size, const uint8_t mac[6],
                    const net_mac_t *driver, void *driver_ctx);
 
+/**
+ * Poll for one incoming Ethernet frame.
+ *
+ * Calls mac_driver->poll(). If a frame is available, copies it into
+ * net->rx.buf via peek() and sets net->rx.frame_len, then calls
+ * discard() to release the MAC's RX slot.
+ *
+ * The frame is accessible via net->rx.buf and net->rx.frame_len after
+ * this call returns a positive value.
+ *
+ * @param net  Network context.
+ * @return Frame length in bytes (>0) if a frame was received,
+ *         0 if no frame was available, <0 on driver error.
+ */
+int net_poll(net_t *net);
+
 /* ── Debug / Assert ───────────────────────────────────────────────── */
 
 #if NET_DEBUG

@@ -38,10 +38,8 @@ static int stub_send(void *ctx, const uint8_t *f, uint16_t l) {
   send_count++;
   return (int)l;
 }
-static int stub_recv(void *ctx, uint8_t *f, uint16_t m) {
+static int stub_poll(void *ctx) {
   (void)ctx;
-  (void)f;
-  (void)m;
   return 0;
 }
 static int stub_peek(void *ctx, uint16_t o, uint8_t *b, uint16_t l) {
@@ -57,7 +55,7 @@ static void stub_close(void *ctx) { (void)ctx; }
 static const net_mac_t stub_mac_drv = {
     .init = stub_init,
     .send = stub_send,
-    .recv = stub_recv,
+    .poll = stub_poll,
     .peek = stub_peek,
     .discard = stub_discard,
     .close = stub_close,
@@ -923,6 +921,113 @@ TEST(test_tcp_options_nop_unknown_ignored) {
   ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_SYN) != 0);
 }
 
+/* ══════════════════════════════════════════════════════════════════
+ * Persist timer (REQ-TCP-085..087)
+ * ══════════════════════════════════════════════════════════════════ */
+
+TEST(test_tcp_persist_starts_on_zero_window) {
+  /* REQ-TCP-085: when peer advertises zero window, persist timer MUST start */
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+
+  /* SYN-ACK with window = 0 */
+  uint8_t frame[512];
+  uint16_t len = build_tcp_frame(
+      frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 5000u, our_isn + 1u,
+      TCP_FLAG_SYN | TCP_FLAG_ACK, 0 /* zero window */, NULL, 0, 1460);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  ASSERT_EQ(conn.snd_wnd, 0u); /* Peer window is zero */
+  send_count = 0;
+
+  /* Queue data — tcp_do_flush() sees window=0 → persist_start() */
+  uint8_t data[4] = {1, 2, 3, 4};
+  int accepted = tcp_send(&net, &conn, data, sizeof(data));
+  ASSERT_EQ(accepted, 4);   /* All bytes accepted into TX buffer */
+  ASSERT_EQ(send_count, 0); /* Nothing sent yet */
+  /* REQ-TCP-085: persist timer MUST be running */
+  ASSERT_TRUE(conn.persist_active);
+  ASSERT_FALSE(conn.rto_active); /* RTO is NOT running (no segment in-flight) */
+}
+
+TEST(test_tcp_persist_probe_sent_on_timeout) {
+  /* REQ-TCP-086/087: persist timer fires → 1-byte probe sent, interval doubles
+   */
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+
+  uint8_t frame[512];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 5000u, our_isn + 1u,
+                                 TCP_FLAG_SYN | TCP_FLAG_ACK, 0, NULL, 0, 1460);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  send_count = 0;
+
+  /* Queue 8 bytes and wait for persist to arm */
+  uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  tcp_send(&net, &conn, data, sizeof(data));
+  ASSERT_TRUE(conn.persist_active);
+  ASSERT_EQ(send_count, 0);
+
+  /* Advance past persist interval → probe fires */
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS + 1u);
+
+  /* REQ-TCP-086: exactly ONE 1-byte probe segment sent */
+  ASSERT_EQ(send_count, 1);
+  /* Probe is ETH(14) + IP(20) + TCP(20) + 1 data byte = 55 bytes */
+  uint16_t expected_len =
+      (uint16_t)(ETH_HDR_SIZE + IPV4_HDR_SIZE + TCP_HDR_SIZE + 1u);
+  ASSERT_EQ(sent_lens[0], expected_len);
+
+  /* REQ-TCP-087: interval MUST double (exponential backoff) */
+  ASSERT_EQ(conn.persist_ms, NET_DEFAULT_TCP_RTO_INIT_MS * 2u);
+  /* Timer re-armed with doubled interval */
+  ASSERT_TRUE(conn.persist_active);
+}
+
+TEST(test_tcp_persist_stops_when_window_opens) {
+  /* REQ-TCP-085: persist timer cancelled when peer reopens window */
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  uint32_t our_isn = sent_tcp_seq(0);
+  send_count = 0;
+
+  uint8_t frame[512];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 5000u, our_isn + 1u,
+                                 TCP_FLAG_SYN | TCP_FLAG_ACK, 0, NULL, 0, 1460);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  send_count = 0;
+
+  /* Queue data, persist starts */
+  uint8_t data[4] = {1, 2, 3, 4};
+  tcp_send(&net, &conn, data, sizeof(data));
+  ASSERT_TRUE(conn.persist_active);
+
+  /* Fire one probe */
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS + 1u);
+  ASSERT_EQ(send_count, 1); /* Probe sent */
+  send_count = 0;
+
+  /* Peer ACKs the 1-byte probe AND reopens window (seq=5001 > snd_wl1=5000
+   * so the window update triggers, persist_stop() is called in tcp_do_flush) */
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 5001u,
+                        our_isn + 2u, TCP_FLAG_ACK, 8192 /* non-zero window */,
+                        NULL, 0, 0);
+  inject(frame, len);
+
+  /* REQ-TCP-085: persist timer MUST stop when window reopens */
+  ASSERT_FALSE(conn.persist_active);
+  /* Remaining data in TX buffer flushed now that window > 0 */
+  ASSERT_TRUE(send_count >= 1);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -951,6 +1056,10 @@ int main(void) {
   RUN_TEST(test_tcp_no_ack_bit_discarded);
   RUN_TEST(test_tcp_rst_in_last_ack_closes);
   RUN_TEST(test_tcp_options_nop_unknown_ignored);
+  /* ── Persist timer tests (REQ-TCP-085..087) ─── */
+  RUN_TEST(test_tcp_persist_starts_on_zero_window);
+  RUN_TEST(test_tcp_persist_probe_sent_on_timeout);
+  RUN_TEST(test_tcp_persist_stops_when_window_opens);
   TEST_REPORT();
   return test_failures;
 }

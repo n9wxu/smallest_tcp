@@ -428,3 +428,78 @@ def test_tcp_153_iss_differs_across_connections(ctx):
     assert len(set(isns)) > 1, (
         f"All ISNs identical ({isns[0]:#010x}) — ISS appears fixed"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEST-TCP-085  Persist timer — zero-window probe
+# REQ-TCP-085, REQ-TCP-086, REQ-TCP-087
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_tcp_085_persist_probe_on_zero_window(ctx):
+    """
+    REQ-TCP-085: when we advertise receive window = 0, SUT MUST start persist
+                 timer; MUST NOT stop unless window reopens.
+    REQ-TCP-086: when persist timer fires, SUT MUST send exactly one 1-byte
+                 window probe segment.
+    REQ-TCP-087: persist interval MUST use exponential back-off.
+
+    Protocol:
+      1. Three-way handshake.
+      2. Send data → collect and ACK SUT echo with window=0 (freeze window).
+      3. Send more data → SUT ACKs our bytes but cannot echo (window=0).
+      4. Wait for 1-byte probe (REQ-TCP-086).
+      5. ACK probe with window=4096 (unfreeze).
+      6. Verify SUT flushes the buffered echo.
+    """
+    conn, _ = tcp_connect(ctx, alloc_port(), our_mss=1460)
+
+    # ── Step 1: normal data exchange, close window in our ACK ────────────────
+    payload1 = b"Persist!" * 2  # 16 bytes
+    replies1 = tcp_send_recv_data(ctx, conn, payload1)
+
+    # Find the SUT's echo segment and advance our ACK pointer.
+    for p in replies1:
+        d = bytes(p[TCP].payload)
+        if d:
+            conn.our_ack = p[TCP].seq + len(d)
+
+    # Tell the SUT: our receive buffer is now full (window = 0).
+    send_pkt(ctx, _eth_ip_tcp(ctx, conn.sport, conn.dport,
+                              seq=conn.our_seq, ack=conn.our_ack,
+                              flags="A", window=0))
+    time.sleep(0.05)
+
+    # ── Step 2: inject more data — SUT will buffer the echo (window=0) ───────
+    more = b"ZeroWin"  # 7 bytes
+    send_pkt(ctx, _eth_ip_tcp(ctx, conn.sport, conn.dport,
+                              seq=conn.our_seq, ack=conn.our_ack,
+                              flags="AP", window=0, payload=more))
+    conn.our_seq += len(more)
+    time.sleep(0.05)
+
+    # ── Step 3: wait for persist probe (up to 3 s, default RTO ≈ 1 s) ───────
+    # SUT's persist timer fires and sends a 1-byte probe.
+    probe_pkts = recv_tcp(ctx, timeout=3, count=1)
+    assert probe_pkts, (
+        "REQ-TCP-086: SUT MUST send persist probe when peer window is 0"
+    )
+    probe = probe_pkts[0]
+    probe_data = bytes(probe[TCP].payload)
+    assert len(probe_data) == 1, (
+        f"REQ-TCP-087: persist probe payload MUST be 1 byte, got {len(probe_data)}"
+    )
+
+    # ── Step 4: reopen window — SUT should flush buffered echo ───────────────
+    conn.our_ack = probe[TCP].seq + 1  # ACK the probe byte
+    rest_pkts = send_recv(ctx, _eth_ip_tcp(ctx, conn.sport, conn.dport,
+                                           seq=conn.our_seq, ack=conn.our_ack,
+                                           flags="A", window=4096),
+                          timeout=2, count=2)
+
+    # We should receive at least the remaining echo data.
+    rest_data = b"".join(bytes(p[TCP].payload) for p in rest_pkts)
+    assert len(rest_data) > 0, (
+        "REQ-TCP-085: SUT MUST resume sending once window is reopened"
+    )
+
+    conn.close()

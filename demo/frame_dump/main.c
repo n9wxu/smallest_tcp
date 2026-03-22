@@ -99,7 +99,7 @@ int main(void) {
 
   /* Main receive loop */
   while (running) {
-    int n = drv_ops->recv(&drv_ctx, rx_buf, sizeof(rx_buf));
+    int n = net_poll(&net);
     if (n <= 0) {
       /* No frame available — brief sleep to avoid busy loop */
       struct timespec ts = {0, 10000000}; /* 10ms */
@@ -108,10 +108,10 @@ int main(void) {
     }
 
     printf("=== Frame received: %d bytes ===\n", n);
-    hex_dump(rx_buf, (uint16_t)n);
+    hex_dump(net.rx.buf, net.rx.frame_len);
 
     /* Parse and dispatch through Ethernet layer */
-    eth_input(&net, rx_buf, (uint16_t)n);
+    eth_input(&net, net.rx.buf, net.rx.frame_len);
     printf("\n");
   }
 

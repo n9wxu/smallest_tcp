@@ -30,10 +30,8 @@ static int stub_send(void *ctx, const uint8_t *f, uint16_t l) {
   send_count++;
   return (int)l;
 }
-static int stub_recv(void *ctx, uint8_t *f, uint16_t m) {
+static int stub_poll(void *ctx) {
   (void)ctx;
-  (void)f;
-  (void)m;
   return 0;
 }
 static int stub_peek(void *ctx, uint16_t o, uint8_t *b, uint16_t l) {
@@ -49,7 +47,7 @@ static void stub_close(void *ctx) { (void)ctx; }
 static const net_mac_t stub_mac_drv = {
     .init = stub_init,
     .send = stub_send,
-    .recv = stub_recv,
+    .poll = stub_poll,
     .peek = stub_peek,
     .discard = stub_discard,
     .close = stub_close,

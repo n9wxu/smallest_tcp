@@ -143,7 +143,7 @@ int main(void) {
 
   /* Main receive loop */
   while (running) {
-    int n = drv_ops->recv(&drv_ctx, rx_buf, sizeof(rx_buf));
+    int n = net_poll(&net);
     if (n <= 0) {
       struct timespec ts = {0, 1000000}; /* 1ms */
       nanosleep(&ts, NULL);
@@ -151,7 +151,7 @@ int main(void) {
     }
 
     /* Dispatch through the full stack */
-    eth_input(&net, rx_buf, (uint16_t)n);
+    eth_input(&net, net.rx.buf, net.rx.frame_len);
   }
 
   printf("\nShutting down...\n");

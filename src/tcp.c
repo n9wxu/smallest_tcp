@@ -284,6 +284,30 @@ static void rto_restart(tcp_conn_t *conn) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * Persist timer helpers (REQ-TCP-085..087)
+ * ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * Start the persist timer.  On first start, initialises the probe interval
+ * to NET_DEFAULT_TCP_RTO_INIT_MS.  On re-arm (subsequent probe after backoff)
+ * the interval has already been doubled by the caller.
+ */
+static void persist_start(tcp_conn_t *conn) {
+  if (!conn->persist_active) {
+    conn->persist_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
+  }
+  conn->persist_remaining_ms = conn->persist_ms;
+  conn->persist_active = 1;
+}
+
+/** Stop the persist timer and reset the probe interval. */
+static void persist_stop(tcp_conn_t *conn) {
+  conn->persist_active = 0;
+  conn->persist_remaining_ms = 0;
+  conn->persist_ms = 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * Internal: flush outbound data from the TX buffer
  * ══════════════════════════════════════════════════════════════════ */
 
@@ -299,8 +323,17 @@ static void tcp_do_flush(net_t *net, tcp_conn_t *conn) {
   /* Honor peer's window (REQ-TCP-084) */
   uint16_t can_send =
       (conn->snd_wnd < (uint32_t)mss) ? (uint16_t)conn->snd_wnd : mss;
-  if (can_send == 0)
-    return; /* peer zero-window — persist handled by tcp_tick */
+  if (can_send == 0) {
+    /* REQ-TCP-085: peer zero window.  Start persist timer so tcp_tick()
+     * can send probe segments until the window reopens.
+     * Condition: nothing currently in flight (RTO not running). */
+    if (!conn->persist_active && !conn->rto_active)
+      persist_start(conn);
+    return;
+  }
+
+  /* Window is non-zero — cancel any active persist timer */
+  persist_stop(conn);
 
   uint16_t seg_len =
       conn->txbuf_ops->next_segment(conn->txbuf_ctx, &seg_data, can_send);
@@ -603,6 +636,7 @@ net_err_t tcp_abort(net_t *net, tcp_conn_t *conn) {
     conn->state = TCP_CLOSED;
 
   rto_stop(conn);
+  persist_stop(conn);
 
   if (conn->on_event)
     conn->on_event(conn, TCP_EVT_RESET);
@@ -1119,71 +1153,127 @@ void tcp_tick(net_t *net, uint32_t elapsed_ms) {
       continue;
     }
 
-    /* ── Retransmit timer (REQ-TCP-090..100) ──────────────────── */
-    if (!conn->rto_active || conn->state == TCP_CLOSED)
+    if (conn->state == TCP_CLOSED)
       continue;
 
-    if (conn->rto_remaining_ms <= elapsed_ms) {
-      conn->rto_remaining_ms = 0;
+    /* ── Retransmit timer (REQ-TCP-090..100) ──────────────────── */
+    if (conn->rto_active) {
+      if (conn->rto_remaining_ms <= elapsed_ms) {
+        conn->rto_remaining_ms = 0;
 
-      /* REQ-TCP-095: retransmit earliest unacknowledged segment */
-      if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0 ||
-          conn->state == TCP_SYN_SENT || conn->state == TCP_SYN_RECEIVED) {
+        /* REQ-TCP-095: retransmit earliest unacknowledged segment */
+        if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0 ||
+            conn->state == TCP_SYN_SENT || conn->state == TCP_SYN_RECEIVED) {
 
-        conn->retransmit_count++;
+          conn->retransmit_count++;
 
-        if (conn->retransmit_count > TCP_MAX_RETRANSMITS) {
-          /* Give up — abort connection */
-          NET_LOG("tcp: max retransmits reached, aborting");
-          tcp_send_rst_conn(net, conn);
-          if (conn->on_event)
-            conn->on_event(conn, TCP_EVT_ERROR);
-          continue;
-        }
+          if (conn->retransmit_count > TCP_MAX_RETRANSMITS) {
+            /* Give up — abort connection */
+            NET_LOG("tcp: max retransmits reached, aborting");
+            tcp_send_rst_conn(net, conn);
+            if (conn->on_event)
+              conn->on_event(conn, TCP_EVT_ERROR);
+            continue;
+          }
 
-        /* REQ-TCP-096: double RTO (exponential backoff) */
-        conn->rto_ms *= 2u;
-        if (conn->rto_ms > NET_DEFAULT_TCP_RTO_MAX_MS)
-          conn->rto_ms = NET_DEFAULT_TCP_RTO_MAX_MS;
+          /* REQ-TCP-096: double RTO (exponential backoff) */
+          conn->rto_ms *= 2u;
+          if (conn->rto_ms > NET_DEFAULT_TCP_RTO_MAX_MS)
+            conn->rto_ms = NET_DEFAULT_TCP_RTO_MAX_MS;
 
-        NET_LOG("tcp: retransmit (count=%u, rto=%lums)", conn->retransmit_count,
-                (unsigned long)conn->rto_ms);
+          NET_LOG("tcp: retransmit (count=%u, rto=%lums)",
+                  conn->retransmit_count, (unsigned long)conn->rto_ms);
 
-        /* Mark buffer for retransmit and re-send */
-        if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0)
-          conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
+          /* Mark buffer for retransmit and re-send */
+          if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0)
+            conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
 
-        if (conn->state == TCP_SYN_SENT) {
-          /* Retransmit SYN */
-          uint16_t wnd =
-              (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
-          tcp_send_segment(net, conn, TCP_FLAG_SYN, conn->iss, 0, NULL, 0, 1,
-                           wnd);
-        } else if (conn->state == TCP_SYN_RECEIVED) {
-          /* Retransmit SYN-ACK */
-          uint16_t wnd =
-              (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
-          tcp_send_segment(net, conn, TCP_FLAG_SYN | TCP_FLAG_ACK, conn->iss,
-                           conn->rcv_nxt, NULL, 0, 1, wnd);
-        } else if (conn->state == TCP_FIN_WAIT_1 ||
-                   conn->state == TCP_LAST_ACK) {
-          /* Retransmit FIN */
-          uint16_t wnd =
-              (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
-          tcp_send_segment(net, conn, TCP_FLAG_FIN | TCP_FLAG_ACK,
-                           conn->snd_nxt - 1u, conn->rcv_nxt, NULL, 0, 0, wnd);
+          if (conn->state == TCP_SYN_SENT) {
+            /* Retransmit SYN */
+            uint16_t wnd =
+                (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
+            tcp_send_segment(net, conn, TCP_FLAG_SYN, conn->iss, 0, NULL, 0, 1,
+                             wnd);
+          } else if (conn->state == TCP_SYN_RECEIVED) {
+            /* Retransmit SYN-ACK */
+            uint16_t wnd =
+                (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
+            tcp_send_segment(net, conn, TCP_FLAG_SYN | TCP_FLAG_ACK, conn->iss,
+                             conn->rcv_nxt, NULL, 0, 1, wnd);
+          } else if (conn->state == TCP_FIN_WAIT_1 ||
+                     conn->state == TCP_LAST_ACK) {
+            /* Retransmit FIN */
+            uint16_t wnd =
+                (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
+            tcp_send_segment(net, conn, TCP_FLAG_FIN | TCP_FLAG_ACK,
+                             conn->snd_nxt - 1u, conn->rcv_nxt, NULL, 0, 0,
+                             wnd);
+          } else {
+            /* Retransmit data */
+            tcp_do_flush(net, conn);
+          }
+
+          /* Restart timer with doubled RTO */
+          conn->rto_remaining_ms = conn->rto_ms;
         } else {
-          /* Retransmit data */
-          tcp_do_flush(net, conn);
+          rto_stop(conn);
+        }
+      } else {
+        conn->rto_remaining_ms -= elapsed_ms;
+      }
+    }
+
+    /* ── Persist timer (REQ-TCP-085..087) ─────────────────────── */
+    if (conn->persist_active && !conn->rto_active &&
+        (conn->state == TCP_ESTABLISHED || conn->state == TCP_CLOSE_WAIT)) {
+
+      if (conn->persist_remaining_ms <= elapsed_ms) {
+        conn->persist_remaining_ms = 0;
+
+        /* REQ-TCP-086: send 1-byte zero-window probe.
+         * If a previous probe was not yet ACKed (in_flight > 0), reset
+         * snd_nxt back to snd_una and mark_retransmit() so that
+         * next_segment() will return the same data byte again. */
+        if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0) {
+          conn->snd_nxt = conn->snd_una; /* re-send at same SEQ */
+          conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
         }
 
-        /* Restart timer with doubled RTO */
-        conn->rto_remaining_ms = conn->rto_ms;
+        const uint8_t *probe_data = NULL;
+        uint16_t probe_len =
+            conn->txbuf_ops->next_segment(conn->txbuf_ctx, &probe_data, 1);
+
+        if (probe_len == 0) {
+          /* No data waiting — nothing to probe; cancel timer */
+          persist_stop(conn);
+        } else {
+          uint16_t wnd =
+              (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
+          net_err_t err =
+              tcp_send_segment(net, conn, TCP_FLAG_ACK, conn->snd_nxt,
+                               conn->rcv_nxt, probe_data, 1, 0, wnd);
+          if (err == NET_OK) {
+            conn->snd_nxt += 1u;
+            /* in_flight = 1 in SAW buf; cleared by ACK (ack()) or
+             * next probe fire (mark_retransmit above). */
+          } else {
+            /* TX failed — undo in_flight so we retry next probe */
+            conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
+          }
+
+          /* REQ-TCP-087: exponential backoff, cap at RTO_MAX */
+          conn->persist_ms *= 2u;
+          if (conn->persist_ms > NET_DEFAULT_TCP_RTO_MAX_MS)
+            conn->persist_ms = NET_DEFAULT_TCP_RTO_MAX_MS;
+          conn->persist_remaining_ms = conn->persist_ms;
+
+          NET_LOG("tcp: persist probe sent (snd_nxt=%lu), next in %lums",
+                  (unsigned long)(conn->snd_nxt - 1u),
+                  (unsigned long)conn->persist_ms);
+        }
       } else {
-        rto_stop(conn);
+        conn->persist_remaining_ms -= elapsed_ms;
       }
-    } else {
-      conn->rto_remaining_ms -= elapsed_ms;
     }
   }
 }

@@ -4,6 +4,17 @@
  *
  * Uses /dev/bpfN bound to an feth interface.
  * Only compiled on macOS (Darwin).
+ *
+ * Driver model: CACHING.
+ * A single read() from the BPF fd may return multiple Ethernet frames,
+ * each prefixed by a struct bpf_hdr.  poll() reads a batch into the
+ * driver's internal read_buf[] and extracts one frame at a time into
+ * cur_frame[].  peek() reads from cur_frame[].  discard() clears
+ * cur_frame so the next poll() advances to the next frame in the batch
+ * (or reads a new batch from the fd if the current batch is exhausted).
+ *
+ * The caller never receives a pointer to the driver's internal buffers —
+ * data is accessed exclusively via peek().
  */
 
 #ifdef __APPLE__
@@ -124,9 +135,9 @@ static int bpf_mac_send(void *ctx, const uint8_t *frame, uint16_t len) {
 }
 
 /**
- * Extract the next frame from the BPF read buffer.
+ * Extract the next frame from the BPF read buffer into cur_frame[].
  * BPF reads may return multiple frames, each prefixed with a bpf_hdr.
- * Returns 1 if a frame was extracted, 0 if no more frames.
+ * Returns 1 if a frame was extracted, 0 if no more frames in buffer.
  */
 static int bpf_extract_next_frame(bpf_ctx_t *bpf) {
   while (bpf->read_offset < bpf->read_len) {
@@ -165,38 +176,50 @@ static int bpf_extract_next_frame(bpf_ctx_t *bpf) {
   return 0;
 }
 
-static int bpf_mac_recv(void *ctx, uint8_t *frame, uint16_t maxlen) {
+/**
+ * poll() — Check for a new RX frame.
+ *
+ * If cur_frame[] already holds a frame (discard() not yet called),
+ * returns its length immediately (idempotent).
+ *
+ * Otherwise: tries to extract the next frame from read_buf[] (which
+ * may hold a batch from a previous fd read).  If read_buf[] is empty,
+ * reads a new batch from the BPF fd.
+ *
+ * @return Frame length in bytes if a frame is ready, 0 if no frame
+ *         is available, <0 on error.
+ */
+static int bpf_mac_poll(void *ctx) {
   bpf_ctx_t *bpf = (bpf_ctx_t *)ctx;
 
-  /* Try to extract from existing buffer first */
+  /* Already have a frame buffered — return its length */
+  if (bpf->cur_frame_len > 0) {
+    return bpf->cur_frame_len;
+  }
+
+  /* Try to extract from existing read_buf batch */
+  if (bpf_extract_next_frame(bpf)) {
+    return bpf->cur_frame_len;
+  }
+
+  /* Need to read a new batch from BPF fd */
+  ssize_t n = read(bpf->fd, bpf->read_buf, sizeof(bpf->read_buf));
+  if (n < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0; /* No frame available — not an error */
+    }
+    return -1;
+  }
+  if (n == 0) {
+    return 0;
+  }
+  bpf->read_len = (uint16_t)n;
+  bpf->read_offset = 0;
+
   if (!bpf_extract_next_frame(bpf)) {
-    /* Need to read more from BPF */
-    ssize_t n = read(bpf->fd, bpf->read_buf, sizeof(bpf->read_buf));
-    if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return 0;
-      }
-      return -1;
-    }
-    if (n == 0) {
-      return 0;
-    }
-    bpf->read_len = (uint16_t)n;
-    bpf->read_offset = 0;
-
-    if (!bpf_extract_next_frame(bpf)) {
-      return 0;
-    }
+    return 0;
   }
-
-  /* Copy current frame to caller's buffer */
-  uint16_t copy_len = bpf->cur_frame_len;
-  if (copy_len > maxlen) {
-    copy_len = maxlen;
-  }
-  memcpy(frame, bpf->cur_frame, copy_len);
-
-  return (int)copy_len;
+  return bpf->cur_frame_len;
 }
 
 static int bpf_mac_peek(void *ctx, uint16_t offset, uint8_t *buf,
@@ -219,6 +242,8 @@ static int bpf_mac_peek(void *ctx, uint16_t offset, uint8_t *buf,
 
 static void bpf_mac_discard(void *ctx) {
   bpf_ctx_t *bpf = (bpf_ctx_t *)ctx;
+  /* Clear cur_frame — the next poll() will advance to the next frame
+   * in the batch (or read a new batch from the fd). */
   bpf->cur_frame_len = 0;
 }
 
@@ -236,7 +261,7 @@ static void bpf_mac_close(void *ctx) {
 const net_mac_t bpf_mac_ops = {
     .init = bpf_mac_init,
     .send = bpf_mac_send,
-    .recv = bpf_mac_recv,
+    .poll = bpf_mac_poll,
     .peek = bpf_mac_peek,
     .discard = bpf_mac_discard,
     .close = bpf_mac_close,

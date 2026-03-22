@@ -54,7 +54,7 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
   net->gateway_ipv4 = NET_DEFAULT_GATEWAY;
 #endif
 
-  net->gateway_mac_valid = 0;
+  net->gateway_mac_valid = 0u;
 
   net->arp_retry_ms = NET_DEFAULT_ARP_RETRY_MS;
   net->arp_max_retries = NET_DEFAULT_ARP_MAX_RETRIES;
@@ -64,4 +64,26 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
           net->mac[4], net->mac[5]);
 
   return NET_OK;
+}
+
+int net_poll(net_t *net) {
+  int frame_len;
+  uint16_t len;
+
+  if (!net || !net->mac_driver)
+    return -1;
+
+  frame_len = net->mac_driver->poll(net->mac_ctx);
+  if (frame_len <= 0) {
+    net->rx.frame_len = 0;
+    return frame_len;
+  }
+
+  /* Clamp to rx buffer capacity */
+  len = ((uint16_t)frame_len > net->rx.capacity) ? net->rx.capacity
+                                                 : (uint16_t)frame_len;
+  net->mac_driver->peek(net->mac_ctx, 0, net->rx.buf, len);
+  net->rx.frame_len = len;
+  net->mac_driver->discard(net->mac_ctx);
+  return (int)len;
 }

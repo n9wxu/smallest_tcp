@@ -4,6 +4,13 @@
  *
  * Uses /dev/net/tun with IFF_TAP | IFF_NO_PI.
  * Only compiled on Linux.
+ *
+ * Driver model: CACHING.
+ * poll() reads the next frame from the TAP fd into the driver's
+ * internal rx_frame[] buffer.  All subsequent peek() calls read from
+ * that buffer.  discard() clears the buffer, allowing the next poll()
+ * to read a new frame.  The caller never receives a pointer to the
+ * driver's internal buffer — data is accessed exclusively via peek().
  */
 
 #ifdef __linux__
@@ -53,7 +60,7 @@ static int tap_init(void *ctx) {
     return -1;
   }
 
-  /* Set non-blocking for recv() */
+  /* Set non-blocking for poll() */
   int flags = fcntl(tap->fd, F_GETFL, 0);
   if (flags >= 0) {
     fcntl(tap->fd, F_SETFL, flags | O_NONBLOCK);
@@ -76,34 +83,38 @@ static int tap_send(void *ctx, const uint8_t *frame, uint16_t len) {
   return (int)n;
 }
 
-static int tap_recv(void *ctx, uint8_t *frame, uint16_t maxlen) {
+/**
+ * poll() — Check for a new RX frame.
+ *
+ * Reads the next Ethernet frame from the TAP fd into the driver's
+ * internal rx_frame[] buffer.  Non-blocking: returns 0 immediately
+ * if no frame is pending.
+ *
+ * @return Frame length in bytes if a frame was read, 0 if no frame
+ *         is available, <0 on error.
+ */
+static int tap_poll(void *ctx) {
   tap_ctx_t *tap = (tap_ctx_t *)ctx;
 
-  /* Read into internal buffer first (for peek support) */
+  /* If a frame is already buffered (discard() not yet called), return
+   * its length — poll() is idempotent until discard() is called. */
+  if (tap->rx_len > 0) {
+    return tap->rx_len;
+  }
+
   ssize_t n = read(tap->fd, tap->rx_frame, sizeof(tap->rx_frame));
   if (n < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      tap->rx_len = 0;
-      return 0;
+      return 0; /* No frame available — not an error */
     }
-    tap->rx_len = 0;
     return -1;
   }
   if (n == 0) {
-    tap->rx_len = 0;
     return 0;
   }
 
   tap->rx_len = (uint16_t)n;
-
-  /* Copy to caller's buffer (up to maxlen) */
-  uint16_t copy_len = (uint16_t)n;
-  if (copy_len > maxlen) {
-    copy_len = maxlen;
-  }
-  memcpy(frame, tap->rx_frame, copy_len);
-
-  return (int)copy_len;
+  return (int)tap->rx_len;
 }
 
 static int tap_peek(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len) {
@@ -125,8 +136,7 @@ static int tap_peek(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len) {
 
 static void tap_discard(void *ctx) {
   tap_ctx_t *tap = (tap_ctx_t *)ctx;
-  /* Frame was already consumed by recv() into rx_frame.
-   * Just clear the length to indicate no pending frame. */
+  /* Clear the internal buffer — the next poll() will read a new frame. */
   tap->rx_len = 0;
 }
 
@@ -142,7 +152,7 @@ static void tap_close(void *ctx) {
 const net_mac_t tap_mac_ops = {
     .init = tap_init,
     .send = tap_send,
-    .recv = tap_recv,
+    .poll = tap_poll,
     .peek = tap_peek,
     .discard = tap_discard,
     .close = tap_close,

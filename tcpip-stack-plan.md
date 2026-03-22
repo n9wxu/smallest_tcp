@@ -115,7 +115,7 @@ typedef struct {
 typedef struct {
     int  (*init)(void *ctx);
     int  (*send)(void *ctx, const uint8_t *frame, uint16_t len);
-    int  (*recv)(void *ctx, uint8_t *frame, uint16_t maxlen);  // non-blocking, returns 0 if no frame
+    int  (*poll)(void *ctx);  // non-blocking, returns frame length or 0 if no frame available
     int  (*peek)(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len);  // read bytes without consuming
     void (*discard)(void *ctx);  // skip current RX frame without full read
     void (*close)(void *ctx);
@@ -123,7 +123,7 @@ typedef struct {
 ```
 
 - `peek` + `discard`: enables fast ARP filtering on hardware MACs (ENC28J60) — read just the target IP via SPI, discard if not ours, without reading the full frame.
-- For TAP/feth: `recv()` reads the whole frame into the buffer; `peek` is a memcpy from the buffer; `discard` is a no-op.
+- For TAP/feth: `poll()` returns the frame length available; `peek` copies from the buffer; `discard` releases the slot.  `net_poll()` in `net.c` wraps poll+peek+discard into a single application-facing call.
 
 ### Flash Size Estimates (custom stack on RISC-V/ARM)
 
@@ -152,7 +152,7 @@ typedef struct {
 
 ### ✅ Task 1: Project skeleton + MAC abstraction + Linux TAP driver *(DONE)*
 - Directory structure: `src/`, `src/driver/`, `include/`, `demo/`
-- Define `net_mac.h` (init, send, recv, peek, discard, close)
+- Define `net_mac.h` (init, send, poll, peek, discard, close)
 - Implement `tap.c` for Linux
 - Makefile (C99, `-Wall -Werror`)
 - Demo: open TAP, send hardcoded frame, hex-dump received frames
@@ -185,7 +185,7 @@ typedef struct {
 - UDP checksum over pseudo-header
 - Demo: UDP echo server, `nc -u 10.0.0.2 7`
 
-### Task 6: TCP (tcp.c) — minimal state machine
+### Task 6: TCP (tcp.c) — minimal state machine  ✅ COMPLETE
 - Application-managed `tcp_conn_t`
 - States: LISTEN → SYN_RCVD → ESTABLISHED → FIN_WAIT/CLOSE_WAIT → CLOSED
 - `tcp_listen()`, `tcp_input()`, `tcp_send()`
@@ -194,7 +194,7 @@ typedef struct {
 - No Nagle, no slow-start
 - Demo: TCP echo server, `nc 10.0.0.2 7`
 
-### Task 7: Main event loop + integration demo
+### Task 7: Main event loop + integration demo  ✅ COMPLETE
 - RX drain loop: prioritize emptying MAC over processing
 - Timer tick: `net_tick(net, ms)` for ARP timeout, TCP retransmit
 - Demo: static IP, ARP + ping + UDP echo + TCP echo all working simultaneously

@@ -22,10 +22,8 @@ static int stub_send(void *ctx, const uint8_t *frame, uint16_t len) {
   return (int)len;
 }
 
-static int stub_recv(void *ctx, uint8_t *frame, uint16_t maxlen) {
+static int stub_poll(void *ctx) {
   (void)ctx;
-  (void)frame;
-  (void)maxlen;
   return 0; /* no frame available */
 }
 
@@ -44,7 +42,7 @@ static void stub_close(void *ctx) { (void)ctx; }
 const net_mac_t stub_mac_ops = {
     .init = stub_init,
     .send = stub_send,
-    .recv = stub_recv,
+    .poll = stub_poll,
     .peek = stub_peek,
     .discard = stub_discard,
     .close = stub_close,
