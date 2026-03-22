@@ -1,4 +1,4 @@
-"""
+r"""
 conftest.py — Shared fixtures for smallest_tcp black-box tests.
 
 Usage

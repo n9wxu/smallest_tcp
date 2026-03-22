@@ -1,4 +1,4 @@
-"""
+r"""
 test_tcp_fuzz.py — Scapy fuzz-based robustness tests for TCP.
 
 Uses scapy.fuzz() to generate randomized TCP header fields while keeping
@@ -48,22 +48,30 @@ def fuzz_count(request):
 
 # ── Sanity check helper ────────────────────────────────────────────────────────
 
-def _sanity_connect(ctx, label="sanity"):
+def _sanity_connect(ctx, label="sanity", retries=3, retry_delay=2.5):
     """
-    Verify the SUT is still alive after fuzzing by completing a full
-    handshake + echo exchange + clean close.
-    Fails the calling test with a descriptive message if the SUT is dead.
+    Verify the SUT is still alive after fuzzing.
+
+    Retries up to `retries` times with `retry_delay` seconds between attempts.
+    This accounts for the SUT being temporarily stuck in SYN_RECEIVED after
+    a fuzzed SYN landed — the SUT's retransmit timer will time out the
+    half-open connection within ~2-3 s, after which it returns to LISTEN.
     """
-    time.sleep(0.2)   # let SUT settle
-    try:
-        conn, synack = tcp_connect(ctx, alloc_port(), timeout=4)
-        payload = b"fuzz-ok"
-        replies = send_pkt(ctx, conn.ack(extra_flags="P", payload=payload))
-        conn.close()
-    except AssertionError as e:
-        pytest.fail(
-            f"[{label}] SUT appears unresponsive after fuzz: {e}"
-        )
+    time.sleep(0.5)   # initial settle
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            conn, _ = tcp_connect(ctx, alloc_port(), timeout=4)
+            send_pkt(ctx, conn.ack(extra_flags="P", payload=b"fuzz-ok"))
+            conn.close()
+            return           # success
+        except AssertionError as e:
+            last_exc = e
+            if attempt < retries - 1:
+                time.sleep(retry_delay)   # wait for SYN_RECEIVED to expire
+    pytest.fail(
+        f"[{label}] SUT unresponsive after fuzz ({retries} attempts): {last_exc}"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

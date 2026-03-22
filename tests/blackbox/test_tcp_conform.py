@@ -1,4 +1,4 @@
-"""
+r"""
 test_tcp_conform.py — Black-box TCP RFC 9293 conformance tests.
 
 Targets any stack reachable via an Ethernet interface. All tests use raw
