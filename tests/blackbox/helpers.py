@@ -161,7 +161,18 @@ class TcpConn:
             f"(sport={self.sport})"
         )
         synack = replies[0]
-        assert synack[TCP].flags & 0x12, "Expected SYN+ACK flags"  # SA
+        # Check SYN and ACK bits independently.
+        # flags & 0x12 is NOT sufficient: RST+ACK (0x14) also satisfies it
+        # because 0x14 & 0x12 = 0x10 (truthy) even though SYN bit is absent.
+        # A false positive here would accept an RST as a SYN-ACK, causing
+        # _sanity_connect() to return "success" while the SUT is still stuck
+        # in SYN_RECEIVED, corrupting all subsequent tests.
+        assert synack[TCP].flags & 0x02, (
+            f"SYN flag missing — got {synack[TCP].flags!r} instead of SYN+ACK"
+        )
+        assert synack[TCP].flags & 0x10, (
+            f"ACK flag missing — got {synack[TCP].flags!r} instead of SYN+ACK"
+        )
 
         self.sut_seq = synack[TCP].seq
         self.our_ack = self.sut_seq + 1   # ACK = SYN-ACK.seq + 1
@@ -192,6 +203,11 @@ class TcpConn:
                 self.our_ack = pkt[TCP].seq + 1
                 send_pkt(self.ctx, self.ack())
                 break
+        # Give the SUT time to process the final ACK, exit LAST_ACK, run the
+        # do_listen() usleep(50 ms), and return to LISTEN before the next test
+        # sends a SYN.  Without this pause the next test's SYN can arrive
+        # while the SUT is still in CLOSED/LAST_ACK and receive RST.
+        time.sleep(0.15)
         return replies
 
 
