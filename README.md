@@ -260,6 +260,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [ARP Resolution](docs/design/arp-resolution.md) — Distributed cache, gateway-only mode
   - [Memory Model](docs/design/memory-model.md) — Zero-allocation factory methods
   - [Configuration](docs/design/configuration.md) — Compile-time vs. runtime taxonomy
+  - [UDP](docs/design/udp.md) — Port dispatch table, zero-copy RX, checksum, ICMP port unreachable
   - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
   - [TLS 1.3](docs/design/tls.md) — Pluggable crypto backend, PSK + cert modes, record + handshake SM *(Milestone 12)*
   - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 13)*
