@@ -82,7 +82,7 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | **5 — UDP** | ✅ Done | UDP parse/send, port dispatch, pseudo-header checksum |
 | **6 — TCP core** | ✅ Done | Full state machine, retransmit, MSS, echo demo |
 | **7 — TCP persist + integration** | ✅ Done | Zero-window persist timer, `net_poll()` API, ARP+TCP integration |
-| **8 — DHCP** | Planned | Auto-configure IP from any DHCP server |
+| **8 — DHCP** | Planned | DHCPv4 client (auto-configure IP) + minimal stateless server (USB peer assignment) + option handler callback API (TFTP, NTP, DNS, …) |
 | **9 — TFTP** | Planned | Fetch files over the network — bootloader data path |
 | **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
 | **11 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
@@ -258,6 +258,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [ARP Resolution](docs/design/arp-resolution.md) — Distributed cache, gateway-only mode
   - [Memory Model](docs/design/memory-model.md) — Zero-allocation factory methods
   - [Configuration](docs/design/configuration.md) — Compile-time vs. runtime taxonomy
+  - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
 - **[RFC Requirements](docs/requirements/)** — 785 requirements traced to RFC sections across 16 protocol specifications
 - **[Test Plan](docs/test-plan.md)** — Black-box conformance testing strategy with Python/Scapy/pytest
 

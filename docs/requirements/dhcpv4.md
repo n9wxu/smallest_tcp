@@ -8,7 +8,22 @@
 
 ## Overview
 
-DHCPv4 provides automatic IPv4 address assignment and network configuration. It operates over UDP (client port 68, server port 67) using broadcast before an address is assigned. This stack implements a DHCP client only (no server/relay).
+DHCPv4 provides automatic IPv4 address assignment and network configuration.  It
+operates over UDP (client port 68, server port 67) using broadcast before an
+address is assigned.
+
+This stack provides two independent compilation units:
+
+- **`dhcpv4_client.c`** — full client state machine (DISCOVER → OFFER → REQUEST →
+  ACK, renewal, rebinding, lease expiry) plus an option handler callback API that
+  lets higher-layer protocols (TFTP, NTP, DNS, …) receive option values without
+  the DHCP layer knowing anything about them.
+- **`dhcpv4_server.c`** — minimal stateless single-client server, designed for
+  USB/CDC-ECM devices that must assign an IP address to a single connected peer.
+
+The two files are independent: link only what you need.  See
+[docs/design/dhcpv4.md](../design/dhcpv4.md) for the full design rationale and
+API reference.
 
 ## Message Format
 
@@ -142,6 +157,60 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 | REQ-DHCPv4-050 | MUST | Minimum buffer size for DHCP: 576 bytes (RFC 2131 §2 minimum message size) | RFC 2131 §2 | TEST-DHCPv4-050 |
 | REQ-DHCPv4-051 | MUST | Verify buffer is large enough at DHCP init; return error if too small | Architecture | TEST-DHCPv4-051 |
 
+### Option Handler Callback API (dhcpv4_client.c)
+
+| ID | Level | Requirement | Source | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-052 | MUST | Provide an `dhcpv4_opt_table_t` mechanism: application registers `{option_code, handler_fn, ctx}` entries before calling `dhcpv4_client_start()` | Architecture | TEST-DHCPv4-052 |
+| REQ-DHCPv4-053 | MUST | For each option found during DHCPACK parsing, if a matching entry exists in `opt_table`, invoke its `handler_fn(option, data, len, ctx)` with the raw TLV value bytes | Architecture | TEST-DHCPv4-053 |
+| REQ-DHCPv4-054 | MUST | If an option is absent from the server's DHCPACK, the corresponding handler MUST NOT be called | Architecture | TEST-DHCPv4-054 |
+| REQ-DHCPv4-055 | MUST | Option handlers MUST be called once per DHCPACK receipt, including renewal ACKs | Architecture | TEST-DHCPv4-055 |
+| REQ-DHCPv4-056 | MUST | The `ctx` pointer from the registration entry MUST be passed unchanged to the handler | Architecture | TEST-DHCPv4-056 |
+| REQ-DHCPv4-057 | MUST | Option handler invocation MUST NOT require dynamic memory allocation | Architecture | TEST-DHCPv4-057 |
+| REQ-DHCPv4-058 | MUST | `opt_table` MAY be NULL; if NULL, no option callbacks are made (mandatory options subnet/router/lease are still applied) | Architecture | TEST-DHCPv4-058 |
+| REQ-DHCPv4-059 | MUST | When building DHCPDISCOVER and DHCPREQUEST, automatically include Parameter Request List option (55) populated from: (a) mandatory codes {1, 3, 51} and (b) all option codes present in `opt_table` | Architecture | TEST-DHCPv4-059 |
+
+### DHCPv4 Server (dhcpv4_server.c)
+
+#### Server Design Constraints
+
+| ID | Level | Requirement | Source | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-060 | MUST | The server MUST be stateless: it always offers the same pre-configured IP regardless of the client's MAC address | Architecture | TEST-DHCPv4-060 |
+| REQ-DHCPv4-061 | MUST | The server MUST NOT require dynamic memory allocation | Architecture | TEST-DHCPv4-061 |
+| REQ-DHCPv4-062 | MUST | All server configuration (offered IP, subnet, gateway, DNS, lease time) MUST be provided by the application via a `dhcpv4_server_cfg_t` struct at init time | Architecture | TEST-DHCPv4-062 |
+| REQ-DHCPv4-063 | MUST | The server MUST operate as a pure stimulus/response handler: `dhcpv4_server_input()` processes one message and may send one reply; no timers are needed | Architecture | TEST-DHCPv4-063 |
+
+#### Server Message Handling
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-064 | MUST | On DHCPDISCOVER: reply with DHCPOFFER containing the configured `offered_ip` | RFC 2131 §4.3.1 | TEST-DHCPv4-064 |
+| REQ-DHCPv4-065 | MUST | DHCPOFFER MUST include: yiaddr=offered_ip, Server Identifier option (54), IP Lease Time option (51), Subnet Mask option (1) | RFC 2131 §4.3.1, RFC 2132 | TEST-DHCPv4-065 |
+| REQ-DHCPv4-066 | SHOULD | DHCPOFFER SHOULD include Router option (3) if `gateway != 0` in the server config | RFC 2132 §3.5 | TEST-DHCPv4-066 |
+| REQ-DHCPv4-067 | SHOULD | DHCPOFFER SHOULD include DNS Server option (6) if `dns != 0` in the server config | RFC 2132 §3.8 | TEST-DHCPv4-067 |
+| REQ-DHCPv4-068 | MUST | On DHCPREQUEST with Requested IP = offered_ip: reply with DHCPACK | RFC 2131 §4.3.2 | TEST-DHCPv4-068 |
+| REQ-DHCPv4-069 | MUST | On DHCPREQUEST with Requested IP ≠ offered_ip: reply with DHCPNAK | RFC 2131 §4.3.2 | TEST-DHCPv4-069 |
+| REQ-DHCPv4-070 | MUST | On DHCPRELEASE: ignore silently (no lease table) | RFC 2131 §4.3.4 | TEST-DHCPv4-070 |
+| REQ-DHCPv4-071 | SHOULD | On DHCPINFORM: reply with DHCPACK containing options, yiaddr = 0 (no IP allocation) | RFC 2131 §4.3.5 | TEST-DHCPv4-071 |
+| REQ-DHCPv4-072 | MUST | Silently ignore all other DHCP message types | RFC 2131 | TEST-DHCPv4-072 |
+
+#### Server Reply Addressing
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-073 | MUST | Validate op=1 (BOOTREQUEST) and magic cookie before processing any message | RFC 2131 §3 | TEST-DHCPv4-073 |
+| REQ-DHCPv4-074 | MUST | Set op=2 (BOOTREPLY) in all server replies | RFC 2131 §2 | TEST-DHCPv4-074 |
+| REQ-DHCPv4-075 | MUST | Echo the client's xid unchanged in all replies | RFC 2131 §4.1 | TEST-DHCPv4-075 |
+| REQ-DHCPv4-076 | MUST | If client's broadcast flag (flags bit 0) is set or ciaddr=0, broadcast reply to 255.255.255.255 / FF:FF:FF:FF:FF:FF | RFC 2131 §4.1 | TEST-DHCPv4-076 |
+| REQ-DHCPv4-077 | MUST | If ciaddr is set and broadcast flag is clear, unicast reply to ciaddr | RFC 2131 §4.1 | TEST-DHCPv4-077 |
+
+#### Server Buffer Requirements
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-078 | MUST | Verify tx buffer ≥ 576 bytes at `dhcpv4_server_init()`; return error if too small | RFC 2131 §2, Architecture | TEST-DHCPv4-078 |
+
 ## Notes
 
 - **DHCP uses broadcast before address assignment.** The stack must accept packets to IP 255.255.255.255 and to IP 0.0.0.0 during bootstrap (REQ-IPv4-009, REQ-IPv4-012).
@@ -150,3 +219,5 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 - **Lease renewal is mandatory** to maintain the IP address assignment. The stack must track timers and renew proactively.
 - **Gateway MAC resolution:** After DHCP assigns an IP and gateway, the stack must ARP for the gateway MAC before any off-subnet communication is possible.
 - **Option 61 (Client Identifier):** Not required but MAY be included for uniqueness beyond MAC address.
+- **Client and server are mutually exclusive on a single interface.** A device either gets an IP from a DHCP server (client) or provides one (server); link only the file you need.
+- **Option handler raw bytes:** The `data` pointer in a handler callback points into the DHCP receive buffer. Handlers MUST NOT retain this pointer past the return of `dhcpv4_client_input()`; copy any data they need into their own storage.
