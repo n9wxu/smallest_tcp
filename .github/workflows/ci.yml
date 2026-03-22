@@ -64,7 +64,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            python3-pip iproute2
+            python3-pip iproute2 iputils-arping netcat-openbsd
 
       - name: Install Python deps
         run: |
@@ -77,20 +77,51 @@ jobs:
           cmake -S . -B build
           cmake --build build --target tcp_echo_demo
 
-      - name: Run full conformance suite via run_blackbox.sh
+      - name: Set up TAP interface
+        run: |
+          sudo ip tuntap add dev tap0 mode tap user $(whoami)
+          sudo ip link set tap0 up
+          sudo ip addr add 10.0.0.100/24 dev tap0
+
+      - name: Start SUT
+        run: |
+          sudo ./build/demo/tcp_echo_demo > /tmp/sut.log 2>&1 &
+          echo $! > /tmp/sut.pid
+          sleep 1
+
+      - name: Linux kernel sanity checks (validates interop with production stack)
+        run: |
+          echo "=== ARP sanity (arping) ==="
+          sudo arping -I tap0 -c 3 -w 5 10.0.0.2
+          echo "=== ICMP sanity (ping) ==="
+          ping -c 3 -W 2 -I tap0 10.0.0.2
+          echo "=== TCP sanity (nc) ==="
+          echo "hello_tcp" | nc -w 2 10.0.0.2 7 | grep -q "hello_tcp"
+          echo "=== UDP sanity (nc -u) ==="
+          echo "hello_udp" | nc -u -w 1 10.0.0.2 7 || true  # best-effort
+          echo "All Linux sanity checks passed."
+
+      - name: Run full Scapy conformance suite
         run: |
           chmod +x tests/blackbox/run_blackbox.sh
+          # SUT and TAP are already up; pass --no-start-sut so the script
+          # doesn't launch a second competing SUT process.
           sudo tests/blackbox/run_blackbox.sh \
             --sut-bin  ./build/demo/tcp_echo_demo \
             --iface    tap0                        \
             --sut-ip   10.0.0.2                    \
             --our-ip   10.0.0.100                  \
             --sut-port 7                           \
-            --setup-tap                            \
-            --teardown-tap                         \
+            --no-start-sut                         \
             -v                                     \
             2>&1 | tee /tmp/blackbox.out
           exit ${PIPESTATUS[0]}
+
+      - name: Stop SUT and teardown TAP
+        if: always()
+        run: |
+          [ -f /tmp/sut.pid ] && sudo kill $(cat /tmp/sut.pid) 2>/dev/null || true
+          sudo ip tuntap del dev tap0 mode tap 2>/dev/null || true
 
       - name: Blackbox results summary
         if: always()
@@ -98,6 +129,68 @@ jobs:
           echo "## Blackbox Conformance Output" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           tail -c 12000 /tmp/blackbox.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Blackbox validation: run same tests against Linux kernel reference SUT ──
+  # If a test FAILS here, the test itself is wrong (not our stack).
+  # If a test PASSES here but FAILS in blackbox-linux, our SUT has a bug.
+  blackbox-validate:
+    name: Blackbox — Validate Tests Against Linux Kernel (Reference SUT)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip iproute2 socat
+
+      - name: Install Python deps
+        run: |
+          sudo pip3 install --break-system-packages \
+            -r tests/blackbox/requirements.txt \
+            pytest-github-actions-annotate-failures
+
+      - name: Set up TAP + Linux reference SUT (kernel owns 10.0.0.2)
+        run: |
+          sudo ip tuntap add dev tap0 mode tap user $(whoami)
+          sudo ip link set tap0 up
+          sudo ip addr add 10.0.0.2/24 dev tap0      # Linux kernel IS the SUT
+          sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+          # Start socat echo servers (TCP + UDP port 7)
+          sudo socat TCP-LISTEN:7,fork,reuseaddr EXEC:'cat' &
+          sudo socat UDP-LISTEN:7,fork,reuseaddr EXEC:'cat' &
+          sleep 0.5
+
+      - name: Run conformance suite against Linux reference SUT
+        run: |
+          # Skip sut_specific tests — they depend on our stack's timer values,
+          # not on RFC correctness.  A failure here means the TEST is wrong.
+          sudo python3 -m pytest tests/blackbox/ \
+            --ignore=tests/blackbox/test_tcp_fuzz.py \
+            --iface tap0 \
+            --sut-ip  10.0.0.2 \
+            --our-ip  10.0.0.100 \
+            --sut-port 7 \
+            -m "not sut_specific" \
+            -v \
+            2>&1 | tee /tmp/validate.out
+          exit ${PIPESTATUS[0]}
+
+      - name: Teardown
+        if: always()
+        run: |
+          sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -j DROP 2>/dev/null || true
+          sudo ip tuntap del dev tap0 mode tap 2>/dev/null || true
+
+      - name: Validation results summary
+        if: always()
+        run: |
+          echo "## Reference-SUT Validation Output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 12000 /tmp/validate.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
