@@ -44,6 +44,8 @@ def pytest_addoption(parser):
                      help="Phantom source IP (must NOT be assigned to --iface)")
     parser.addoption("--sut-port", default=7, type=int,
                      help="TCP port the SUT echo service listens on (default 7)")
+    parser.addoption("--fuzz-count", default=200, type=int,
+                     help="Number of fuzz iterations per test (default 200)")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────
