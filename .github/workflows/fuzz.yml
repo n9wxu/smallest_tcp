@@ -67,31 +67,20 @@ jobs:
             -p no:cacheprovider                        \
             2>&1
 
-      - name: Restart SUT for conformance check
+      - name: Full conformance suite post-fuzz (regression check — all protocols)
         run: |
-          # Restart the SUT so it begins the conformance suite from a clean
-          # LISTEN state.  This is intentional: the fuzz tests already verified
-          # robustness (SUT does not crash under adversarial input); the
-          # conformance suite verifies correctness (RFC-compliant behaviour).
-          # Restarting ensures the conformance suite is not blocked by a
-          # legitimately-open SYN_RECEIVED slot left over from the fuzz run.
-          [ -f /tmp/sut.pid ] && sudo kill $(cat /tmp/sut.pid) || true
+          # Stop the fuzz SUT; run_blackbox.sh will start its own fresh
+          # instance so the conformance suite begins from a clean LISTEN state.
+          [ -f /tmp/sut.pid ] && sudo kill $(cat /tmp/sut.pid) 2>/dev/null || true
           sleep 1
-          sudo ./build/demo/tcp_echo_demo &
-          echo $! > /tmp/sut.pid
-          sleep 2
-
-      - name: Run conformance suite post-fuzz (regression check)
-        run: |
-          cd tests/blackbox
-          sudo python3 -m pytest test_tcp_conform.py   \
-            --iface tap0                               \
-            --sut-ip  10.0.0.2                         \
-            --our-ip  10.0.0.100                       \
+          chmod +x tests/blackbox/run_blackbox.sh
+          sudo tests/blackbox/run_blackbox.sh          \
+            --sut-bin  ./build/demo/tcp_echo_demo      \
+            --iface    tap0                            \
+            --sut-ip   10.0.0.2                        \
+            --our-ip   10.0.0.100                      \
             --sut-port 7                               \
-            -v --tb=short                              \
-            -p no:cacheprovider                        \
-            2>&1
+            -v
 
       - name: Stop SUT
         if: always()
@@ -155,10 +144,16 @@ jobs:
           sleep 2
 
           cd tests/blackbox
-          sudo python3 -m pytest test_tcp_conform.py   \
+          sudo python3 -m pytest                       \
+            test_arp_conform.py                        \
+            test_ipv4_conform.py                       \
+            test_icmp_conform.py                       \
+            test_udp_conform.py                        \
+            test_tcp_conform.py                        \
             --iface eth1                               \
             --sut-ip  10.0.0.2                         \
             --our-ip  10.0.0.100                       \
             --sut-port 7                               \
             -v --tb=short                              \
+            -p no:cacheprovider                        \
             2>&1
