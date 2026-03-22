@@ -247,3 +247,123 @@ def parse_mss(pkt):
         if kind == "MSS":
             return val
     return None
+
+
+# ── ARP helpers ────────────────────────────────────────────────────────────────
+
+from scapy.all import ARP, ICMP, UDP, IP as ScapyIP
+
+def build_arp(ctx, op="who-has", target_ip=None):
+    """Build an ARP request (who-has) or reply directed at the SUT."""
+    if target_ip is None:
+        target_ip = ctx.sut_ip
+    return (
+        Ether(dst="ff:ff:ff:ff:ff:ff", src=ctx.our_mac) /
+        ARP(op=op, hwsrc=ctx.our_mac, psrc=ctx.our_ip,
+            hwdst="00:00:00:00:00:00", pdst=target_ip)
+    )
+
+
+def send_recv_arp(ctx, pkt, timeout=RECV_TIMEOUT):
+    """Send pkt and return ARP replies from the SUT."""
+    bpf = f"arp and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=1, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.02)
+    send_pkt(ctx, pkt)
+    sniffer.join(timeout=timeout + 1)
+    return list(sniffer.results)
+
+
+# ── ICMP helpers ───────────────────────────────────────────────────────────────
+
+def build_icmp_echo(ctx, id=1, seq=1, data=b"ping", dst_ip=None, dst_mac=None):
+    """Build an ICMP Echo Request toward the SUT."""
+    if dst_ip is None:
+        dst_ip = ctx.sut_ip
+    if dst_mac is None:
+        dst_mac = ctx.sut_mac
+    return (
+        Ether(dst=dst_mac, src=ctx.our_mac) /
+        ScapyIP(src=ctx.our_ip, dst=dst_ip) /
+        ICMP(type=8, code=0, id=id, seq=seq) /
+        data
+    )
+
+
+def send_recv_icmp(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
+    """Send pkt and return ICMP replies from the SUT."""
+    bpf = f"icmp and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=count, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.02)
+    send_pkt(ctx, pkt)
+    sniffer.join(timeout=timeout + 1)
+    return list(sniffer.results)
+
+
+# ── UDP helpers ────────────────────────────────────────────────────────────────
+
+def build_udp(ctx, sport, dport, payload=b"", bad_checksum=False,
+              udp_len_override=None):
+    """Build an Ethernet/IP/UDP frame using the phantom IP."""
+    pkt = (
+        Ether(dst=ctx.sut_mac, src=ctx.our_mac) /
+        ScapyIP(src=ctx.our_ip, dst=ctx.sut_ip) /
+        UDP(sport=sport, dport=dport) /
+        payload
+    )
+    if bad_checksum:
+        pkt[UDP].chksum = 0xDEAD
+    if udp_len_override is not None:
+        pkt[UDP].len = udp_len_override
+    return pkt
+
+
+def send_recv_udp(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
+    """Send pkt and return UDP replies from the SUT."""
+    bpf = f"udp and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=count, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.02)
+    send_pkt(ctx, pkt)
+    sniffer.join(timeout=timeout + 1)
+    return list(sniffer.results)
+
+
+# ── Raw IPv4 helpers ───────────────────────────────────────────────────────────
+
+def build_ip_raw(ctx, proto, payload=b"", bad_ip_checksum=False,
+                 ihl=5, flags=2, frag=0, ttl=64, dst_ip=None):
+    """Build Ethernet/IP with arbitrary protocol and payload."""
+    if dst_ip is None:
+        dst_ip = ctx.sut_ip
+    pkt = (
+        Ether(dst=ctx.sut_mac, src=ctx.our_mac) /
+        ScapyIP(src=ctx.our_ip, dst=dst_ip, proto=proto,
+                ihl=ihl, flags=flags, frag=frag, ttl=ttl) /
+        payload
+    )
+    if bad_ip_checksum:
+        pkt[ScapyIP].chksum = 0xDEAD
+    return pkt
+
+
+# ── Multi-protocol silence check ───────────────────────────────────────────────
+
+def silence_any(ctx, pkt, timeout=2):
+    """
+    Send pkt and verify no IP reply (TCP/UDP/ICMP) arrives from SUT.
+    Returns True on silence (test passes).
+    """
+    bpf = f"ip and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=1, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.02)
+    send_pkt(ctx, pkt)
+    sniffer.join(timeout=timeout + 1)
+    return len(sniffer.results) == 0

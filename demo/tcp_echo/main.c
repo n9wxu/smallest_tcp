@@ -24,6 +24,7 @@
 #include "net_endian.h"
 #include "tcp.h"
 #include "tcp_buf.h"
+#include "udp.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -66,6 +67,23 @@ static void sig_handler(int s) {
   (void)s;
   running = 0;
 }
+
+/* ── UDP echo handler (port 7) ──────────────────────────────────── */
+
+static void udp_echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
+                             const uint8_t *src_mac, uint16_t payload_offset,
+                             uint16_t payload_len) {
+  uint8_t buf[512];
+  uint16_t n_read = (payload_len < (uint16_t)sizeof(buf))
+                        ? payload_len
+                        : (uint16_t)sizeof(buf);
+  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, n_read);
+  udp_send(n, src_ip, src_mac, ECHO_PORT, src_port, buf, n_read);
+}
+
+static const udp_port_entry_t udp_handlers[] = {
+    {ECHO_PORT, udp_echo_handler},
+};
 
 /* ── TCP event callback (called from tcp_input / tcp_tick) ──────── */
 
@@ -178,6 +196,10 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "[tcp_echo] Failed to open MAC driver\n");
     return 1;
   }
+
+  /* ── UDP port table ─────────────────────────────────────────── */
+  udp_ports.entries = udp_handlers;
+  udp_ports.count = 1;
 
   /* ── TCP connection table ───────────────────────────────────── */
   conn_table[0] = &echo_conn;
