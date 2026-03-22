@@ -359,20 +359,25 @@ def test_tcp_090_syn_retransmit_on_timeout(ctx):
     assert replies, "No initial SYN-ACK"
     first_synack_seq = replies[0][TCP].seq
 
-    # Wait for retransmit (default RTO is typically 1–2 seconds)
-    time.sleep(2.5)
-    retransmits = recv_tcp(ctx, timeout=3, count=1)
-    assert retransmits, "SUT did not retransmit SYN-ACK within 5.5s"
-    # Retransmitted SYN-ACK must have the same ISN
-    assert retransmits[0][TCP].seq == first_synack_seq, (
-        f"Retransmit ISN changed: {retransmits[0][TCP].seq} != {first_synack_seq}"
-    )
-    # Complete handshake to clean up
-    conn.sut_seq = replies[0][TCP].seq
-    conn.our_ack = conn.sut_seq + 1
-    conn.our_seq += 1
-    send_pkt(ctx, conn.ack())
-    conn.close()
+    try:
+        # Wait for retransmit (default RTO is typically 1–2 seconds)
+        time.sleep(2.5)
+        retransmits = recv_tcp(ctx, timeout=3, count=1)
+        assert retransmits, "SUT did not retransmit SYN-ACK within 5.5s"
+        # Retransmitted SYN-ACK must have the same ISN
+        assert retransmits[0][TCP].seq == first_synack_seq, (
+            f"Retransmit ISN changed: {retransmits[0][TCP].seq} != {first_synack_seq}"
+        )
+    finally:
+        # Always complete the handshake to release the SUT from SYN_RECEIVED.
+        # If the test fails (assert above), skipping cleanup leaves the SUT's
+        # single connection slot stuck in SYN_RECEIVED, causing the next test's
+        # tcp_connect to receive RST instead of SYN-ACK.
+        conn.sut_seq = replies[0][TCP].seq
+        conn.our_ack = conn.sut_seq + 1
+        conn.our_seq += 1
+        send_pkt(ctx, conn.ack())
+        conn.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -109,6 +109,22 @@ def ctx(request):
     return ctx
 
 
+# ── Post-test SUT settle fixture ──────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def sut_settle():
+    """
+    After every test, sleep 100 ms so the SUT has time to finish any in-flight
+    do_listen() → usleep(50 ms) and return to LISTEN before the next test sends
+    a SYN.  Without this gap, tests that intentionally abort a connection (RST,
+    out-of-window RST, etc.) can leave the SUT in CLOSED for a brief window that
+    causes the immediately-following test's SYN to arrive while the SUT is still
+    not in LISTEN and receive RST.
+    """
+    yield
+    time.sleep(0.10)
+
+
 # ── Per-test port counter (avoids TIME_WAIT port reuse collisions) ─────────────
 
 _port_counter = 50000
