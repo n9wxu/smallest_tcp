@@ -166,6 +166,13 @@ jobs:
           # Start socat echo servers (TCP + UDP port 7)
           sudo socat TCP-LISTEN:7,bind=10.0.0.2,fork,reuseaddr EXEC:'cat' &
           sudo socat UDP-LISTEN:7,bind=10.0.0.2,fork,reuseaddr EXEC:'cat' &
+          # Add a permanent neighbor entry for 10.0.0.100 (scapy phantom IP).
+          # The kernel's ARP cache for a phantom IP expires ~15–30 s after the
+          # initial ARP handshake.  Once it enters PROBE/FAILED the kernel can
+          # no longer send ICMP/TCP/UDP replies to 10.0.0.100, causing all
+          # response-based tests to fail.  A permanent entry never expires.
+          OUR_MAC=$(cat /sys/class/net/veth-test/address)
+          sudo ip neigh add 10.0.0.100 lladdr "$OUR_MAC" dev veth-sut nud permanent
           sleep 0.5
 
       - name: Run conformance suite against Linux reference SUT

@@ -47,7 +47,7 @@
 #define NET_DEFAULT_GATEWAY NET_IPV4(10, 0, 0, 1)
 #define NET_DEFAULT_DNS_SERVER NET_IPV4(0, 0, 0, 0)
 
-#define NET_DEFAULT_MAC {0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
+#define NET_DEFAULT_MAC {0x02, 0x00, 0x00, 0xde, 0xad, 0x01}
 
 /* ── ARP tuning ───────────────────────────────────────────────────── */
 #define NET_DEFAULT_ARP_RETRY_MS 1000

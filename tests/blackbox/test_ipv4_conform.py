@@ -59,8 +59,14 @@ def test_ipv4_002_wrong_dst_silently_dropped(ctx):
 # REQ-IPv4-020, REQ-ICMPv4-017
 # ══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.sut_specific
 def test_ipv4_003_unknown_proto_icmp_unreachable(ctx):
-    """REQ-IPv4-020: unrecognized IP protocol MUST elicit ICMP type 3 code 2."""
+    """REQ-IPv4-020: unrecognized IP protocol MUST elicit ICMP type 3 code 2.
+
+    sut_specific: our stack sends ICMP Protocol Unreachable for unknown
+    IP protocols; the Linux kernel reference SUT may not (it silently drops
+    proto=253 in some configurations).  Skip during blackbox-validate.
+    """
     pkt = build_ip_raw(ctx, proto=_PROTO_UNKNOWN, payload=b"\x00" * 8)
     replies = send_recv_icmp(ctx, pkt)
     assert replies, (
