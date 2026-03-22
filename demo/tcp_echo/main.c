@@ -19,9 +19,7 @@
  * tcp_tick() every ~10ms for timer management.
  */
 
-#include "arp.h"
 #include "eth.h"
-#include "ipv4.h"
 #include "net.h"
 #include "net_endian.h"
 #include "tcp.h"
@@ -196,21 +194,12 @@ int main(int argc, char *argv[]) {
   uint32_t last_tick = now_ms();
 
   while (running) {
-    /* Poll for one frame; net_poll() fills net.rx.buf / net.rx.frame_len */
+    /* Poll for one frame; net_poll() fills net.rx.buf / net.rx.frame_len.
+     * eth_input() dispatches ARP + IPv4 (TCP/UDP/ICMP) and calls
+     * mac_driver->discard() on exit, releasing the caching driver's
+     * internal buffer so the next poll() reads a fresh frame. */
     if (net_poll(&net) > 0) {
-      eth_frame_t eth;
-      if (eth_parse(net.rx.buf, net.rx.frame_len, &eth) == NET_OK) {
-        switch (eth.ethertype) {
-        case NET_ETHERTYPE_ARP:
-          arp_input(&net, &eth);
-          break;
-        case NET_ETHERTYPE_IPV4:
-          ipv4_input(&net, &eth);
-          break;
-        default:
-          break;
-        }
-      }
+      eth_input(&net, net.rx.buf, net.rx.frame_len);
     }
 
     /* Timer tick */
