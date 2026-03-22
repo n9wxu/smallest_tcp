@@ -28,3 +28,15 @@ add_demo_with_driver(frame_dump)
 
 add_executable(tcp_echo_demo tcp_echo/main.c)
 add_demo_with_driver(tcp_echo_demo)
+
+# ── tftp_client (TFTP GET demo) ───────────────────────────────────────
+
+add_executable(tftp_client_demo tftp_client/main.c)
+add_demo_with_driver(tftp_client_demo)
+target_link_libraries(tftp_client_demo PRIVATE smallest_tcp_tftp)
+
+# ── dhcp_echo (DHCP client + TCP/UDP echo — blackbox SUT) ────────────
+
+add_executable(dhcp_echo_demo dhcp_echo/main.c)
+add_demo_with_driver(dhcp_echo_demo)
+target_link_libraries(dhcp_echo_demo PRIVATE smallest_tcp_dhcpv4_client)

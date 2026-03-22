@@ -47,6 +47,48 @@ endif()
 # Create a namespaced alias for FetchContent consumers
 add_library(smallest_tcp::smallest_tcp ALIAS smallest_tcp_core)
 
+# ── DHCPv4 client (optional — link only what you need) ───────────────
+
+add_library(smallest_tcp_dhcpv4_client STATIC
+    src/dhcpv4_client.c
+)
+target_link_libraries(smallest_tcp_dhcpv4_client PUBLIC smallest_tcp_core)
+target_compile_features(smallest_tcp_dhcpv4_client PUBLIC c_std_99)
+if(PROJECT_IS_TOP_LEVEL)
+    target_compile_options(smallest_tcp_dhcpv4_client PRIVATE
+        -Wall -Wextra -Werror -pedantic
+    )
+endif()
+add_library(smallest_tcp::dhcpv4_client ALIAS smallest_tcp_dhcpv4_client)
+
+# ── TFTP client (optional — link only what you need) ─────────────────
+
+add_library(smallest_tcp_tftp STATIC
+    src/tftp.c
+)
+target_link_libraries(smallest_tcp_tftp PUBLIC smallest_tcp_core)
+target_compile_features(smallest_tcp_tftp PUBLIC c_std_99)
+if(PROJECT_IS_TOP_LEVEL)
+    target_compile_options(smallest_tcp_tftp PRIVATE
+        -Wall -Wextra -Werror -pedantic
+    )
+endif()
+add_library(smallest_tcp::tftp ALIAS smallest_tcp_tftp)
+
+# ── DHCPv4 server (optional) ─────────────────────────────────────────
+
+add_library(smallest_tcp_dhcpv4_server STATIC
+    src/dhcpv4_server.c
+)
+target_link_libraries(smallest_tcp_dhcpv4_server PUBLIC smallest_tcp_core)
+target_compile_features(smallest_tcp_dhcpv4_server PUBLIC c_std_99)
+if(PROJECT_IS_TOP_LEVEL)
+    target_compile_options(smallest_tcp_dhcpv4_server PRIVATE
+        -Wall -Wextra -Werror -pedantic
+    )
+endif()
+add_library(smallest_tcp::dhcpv4_server ALIAS smallest_tcp_dhcpv4_server)
+
 # ── Platform MAC drivers (optional) ──────────────────────────────────
 
 if(SMALLEST_TCP_BUILD_DRIVERS)
