@@ -117,7 +117,7 @@ def _complete_handshake(dctx, discover_pkt, timeout=5):
 # REQ-DHCPv4-013: message-type option = 1 (DISCOVER)
 # REQ-DHCPv4-016: UDP dport = 67
 # REQ-DHCPv4-017: dst IP = 255.255.255.255
-def test_sut_sends_discover(dhcp_ctx):
+def test_sut_sends_discover(dhcp_ctx, dhcp_sut_fresh):
     """SUT broadcasts a well-formed DHCPDISCOVER on startup."""
     d = _wait_for_discover(dhcp_ctx)
 
@@ -147,7 +147,7 @@ def test_sut_sends_discover(dhcp_ctx):
 # REQ-DHCPv4-018: OFFER triggers REQUEST
 # REQ-DHCPv4-019: REQUEST echoes xid
 # REQ-DHCPv4-020: REQUEST contains Requested IP option = offered IP
-def test_offer_triggers_request(dhcp_ctx):
+def test_offer_triggers_request(dhcp_ctx, dhcp_sut_fresh):
     """OFFER → SUT sends a valid DHCPREQUEST with correct XID and Requested IP."""
     d = _wait_for_discover(dhcp_ctx)
     xid = d[BOOTP].xid
@@ -171,7 +171,7 @@ def test_offer_triggers_request(dhcp_ctx):
 
 # REQ-DHCPv4-028..036: ACK → SUT configures IP, replies to ARP
 @pytest.mark.sut_specific
-def test_ack_binds_ip(dhcp_ctx):
+def test_ack_binds_ip(dhcp_ctx, dhcp_sut_fresh):
     """Full DISCOVER→OFFER→REQUEST→ACK; after ACK the SUT's IP is reachable via ARP."""
     d = _wait_for_discover(dhcp_ctx)
     _complete_handshake(dhcp_ctx, d)
@@ -196,7 +196,7 @@ def test_ack_binds_ip(dhcp_ctx):
 
 # REQ-DHCPv4-037: NAK → SUT restarts discovery (sends new DISCOVER)
 @pytest.mark.sut_specific
-def test_nak_triggers_rediscover(dhcp_ctx):
+def test_nak_triggers_rediscover(dhcp_ctx, dhcp_sut_fresh):
     """NAK after REQUEST causes SUT to restart DISCOVER."""
     d = _wait_for_discover(dhcp_ctx)
     xid, _req = _offer_and_get_request(dhcp_ctx, d)
@@ -222,7 +222,7 @@ def test_nak_triggers_rediscover(dhcp_ctx):
 
 # REQ-DHCPv4-023: OFFER with wrong XID must be silently ignored
 @pytest.mark.sut_specific
-def test_wrong_xid_offer_ignored(dhcp_ctx):
+def test_wrong_xid_offer_ignored(dhcp_ctx, dhcp_sut_fresh):
     """OFFER with a wrong XID must not trigger a REQUEST."""
     d = _wait_for_discover(dhcp_ctx)
     correct_xid = d[BOOTP].xid
@@ -255,7 +255,7 @@ def test_wrong_xid_offer_ignored(dhcp_ctx):
 
 
 # REQ-DHCPv4-025: DISCOVER ciaddr must be 0.0.0.0 (no IP before binding)
-def test_discover_ciaddr_is_zero(dhcp_ctx):
+def test_discover_ciaddr_is_zero(dhcp_ctx, dhcp_sut_fresh):
     """DISCOVER ciaddr must be 0.0.0.0 (SUT has no IP yet)."""
     d = _wait_for_discover(dhcp_ctx)
     assert d[BOOTP].ciaddr == "0.0.0.0", (
@@ -265,7 +265,7 @@ def test_discover_ciaddr_is_zero(dhcp_ctx):
 
 # REQ-DHCPv4-045: SUT retransmits DISCOVER if no reply arrives
 @pytest.mark.sut_specific
-def test_discover_retransmit(dhcp_ctx):
+def test_discover_retransmit(dhcp_ctx, dhcp_sut_fresh):
     """SUT retransmits DISCOVER if no server responds (REQ-DHCPv4-045)."""
     # Capture first DISCOVER but DON'T reply
     d1 = _wait_for_discover(dhcp_ctx, timeout=8)
@@ -286,7 +286,7 @@ def test_discover_retransmit(dhcp_ctx):
 # (tested here as a parse-only check — the SUT must be killed externally)
 # This test is marked 'sut_specific' and skipped in the reference-SUT run.
 @pytest.mark.sut_specific
-def test_request_contains_server_id(dhcp_ctx):
+def test_request_contains_server_id(dhcp_ctx, dhcp_sut_fresh):
     """REQUEST contains the Server Identifier option (RFC 2131 §4.3.2)."""
     d = _wait_for_discover(dhcp_ctx)
     _, req = _offer_and_get_request(dhcp_ctx, d)

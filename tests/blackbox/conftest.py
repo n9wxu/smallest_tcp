@@ -26,6 +26,9 @@ Platform notes
 - CI     : Use iface=``tap0`` with the SUT running as a userspace process.
 """
 
+import os
+import signal
+import subprocess
 import time
 import pytest
 from scapy.all import (
@@ -33,6 +36,16 @@ from scapy.all import (
     srp1, sendp, sniff,
     get_if_hwaddr, conf,
 )
+
+
+# ── Custom marks ───────────────────────────────────────────────────────────────
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "sut_specific: test behaviour is specific to the SUT under test "
+        "(timing, MSS handling, etc.) and may not hold for all TCP stacks",
+    )
 
 
 # ── CLI options ────────────────────────────────────────────────────────────────
@@ -53,6 +66,11 @@ def pytest_addoption(parser):
                      help="IP address the test harness pretends to be a DHCP server on")
     parser.addoption("--dhcp-offered-ip", default="10.0.0.50",
                      help="IP address the test DHCP server will offer to the SUT")
+    parser.addoption("--dhcp-sut-bin", default=None,
+                     help="Path to dhcp_echo_demo binary; enables per-test SUT restart "
+                          "so each test begins with the SUT in the INIT/SELECTING state")
+    parser.addoption("--dhcp-sut-pid-file", default="/tmp/dhcp_sut.pid",
+                     help="PID file written by the CI workflow for the DHCP SUT process")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────
@@ -180,6 +198,45 @@ def dhcp_ctx(request):
     ctx = DhcpSutContext(iface, our_ip, our_mac, sut_mac, server_ip, offered_ip)
     print(f"\nDHCP SUT context: {ctx}")
     return ctx
+
+
+# ── DHCP per-test SUT restart fixture ────────────────────────────────────────
+
+@pytest.fixture
+def dhcp_sut_fresh(request):
+    """
+    Kill and restart dhcp_echo_demo before each DHCP test.
+
+    After test_ack_binds_ip the SUT holds a bound IP and stops sending
+    DISCOVERs; subsequent tests that call _wait_for_discover() would time out
+    without a restart.  This fixture is only active when --dhcp-sut-bin is
+    supplied on the CLI; omitting it falls back to the externally-managed SUT
+    (useful for local development where the developer manually controls the SUT).
+    """
+    sut_bin  = request.config.getoption("--dhcp-sut-bin")
+    pid_file = request.config.getoption("--dhcp-sut-pid-file")
+
+    if sut_bin:
+        # ── Terminate the current SUT ────────────────────────────────────────
+        if os.path.exists(pid_file):
+            try:
+                with open(pid_file) as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(0.3)
+            except (OSError, ValueError, ProcessLookupError):
+                pass  # already dead or stale PID file
+
+        # ── Start a fresh SUT ────────────────────────────────────────────────
+        log = open("/tmp/dhcp_sut.log", "a")
+        proc = subprocess.Popen([sut_bin], stdout=log, stderr=log)
+        log.close()
+        with open(pid_file, "w") as f:
+            f.write(str(proc.pid))
+        # Allow the SUT to open the TAP device and broadcast its first DISCOVER
+        time.sleep(1.0)
+
+    yield
 
 
 # ── Per-test port counter (avoids TIME_WAIT port reuse collisions) ─────────────

@@ -163,9 +163,12 @@ jobs:
           sudo ip link set veth-test up
           sudo ip addr add 10.0.0.2/24 dev veth-sut   # Linux kernel IS the SUT
           sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
-          # Start socat echo servers (TCP + UDP port 7)
+          # TCP echo: socat works fine for stream sockets.
           sudo socat TCP-LISTEN:7,bind=10.0.0.2,fork,reuseaddr EXEC:'cat' &
-          sudo socat UDP-LISTEN:7,bind=10.0.0.2,fork,reuseaddr EXEC:'cat' &
+          # UDP echo: socat EXEC:'cat' buffers (non-tty stdout is line-buffered
+          # and cat never flushes), so datagrams are silently swallowed.
+          # Single-line Python avoids YAML block-scalar indentation issues.
+          sudo python3 -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('10.0.0.2',7)); exec('while 1:\n d,a=s.recvfrom(65535)\n s.sendto(d,a)')" &
           # Add a permanent neighbor entry for 10.0.0.100 (scapy phantom IP).
           # The kernel's ARP cache for a phantom IP expires ~15–30 s after the
           # initial ARP handshake.  Once it enters PROBE/FAILED the kernel can
@@ -247,14 +250,20 @@ jobs:
 
       - name: Run DHCP client conformance suite
         run: |
+          # --dhcp-sut-bin activates the dhcp_sut_fresh fixture which kills and
+          # restarts dhcp_echo_demo before each test.  Without this, after the
+          # first test_ack_binds_ip the SUT holds a bound IP and never sends
+          # DISCOVER again, causing all subsequent tests to time out.
           sudo python3 -m pytest tests/blackbox/test_dhcpv4_conform.py \
-            --iface           tap0               \
-            --our-ip          10.0.0.100         \
-            --dhcp-sut-mac    02:00:00:de:ad:01  \
-            --dhcp-server-ip  10.0.0.1           \
-            --dhcp-offered-ip 10.0.0.50          \
-            -p no:cacheprovider                  \
-            --tb=short -v                        \
+            --iface           tap0                            \
+            --our-ip          10.0.0.100                     \
+            --dhcp-sut-mac    02:00:00:de:ad:01               \
+            --dhcp-server-ip  10.0.0.1                        \
+            --dhcp-offered-ip 10.0.0.50                       \
+            --dhcp-sut-bin    ./build/demo/dhcp_echo_demo     \
+            --dhcp-sut-pid-file /tmp/dhcp_sut.pid             \
+            -p no:cacheprovider                               \
+            --tb=short -v                                     \
             2>&1 | tee /tmp/dhcp_blackbox.out
           exit ${PIPESTATUS[0]}
 

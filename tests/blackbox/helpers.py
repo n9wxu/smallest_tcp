@@ -79,7 +79,7 @@ def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
     sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
                            count=count, timeout=timeout)
     sniffer.start()
-    time.sleep(0.02)          # give the kernel time to register the socket
+    time.sleep(0.05)          # give the kernel time to register the socket
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return list(sniffer.results)
@@ -96,7 +96,7 @@ def silence(ctx, pkt, timeout=2):
     sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
                            count=1, timeout=timeout)
     sniffer.start()
-    time.sleep(0.02)
+    time.sleep(0.05)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return len(sniffer.results) == 0

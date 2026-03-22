@@ -130,20 +130,24 @@ def test_tcp_014_data_echo_seq_ack(ctx):
     conn, _ = tcp_connect(ctx, alloc_port())
     payload = b"Hello"
 
-    replies = tcp_send_recv_data(ctx, conn, payload)
-    data_pkts = [p for p in replies if bytes(p[TCP].payload)]
-    assert data_pkts, "No data echoed back"
+    try:
+        replies = tcp_send_recv_data(ctx, conn, payload)
+        data_pkts = [p for p in replies if bytes(p[TCP].payload)]
+        assert data_pkts, "No data echoed back"
 
-    echo = b"".join(bytes(p[TCP].payload) for p in data_pkts)
-    assert echo == payload, f"Echo mismatch: got {echo!r} want {payload!r}"
+        echo = b"".join(bytes(p[TCP].payload) for p in data_pkts)
+        assert echo == payload, f"Echo mismatch: got {echo!r} want {payload!r}"
 
-    # ACK for our data: SUT's ACK should equal our_seq (after payload)
-    ack_pkts = [p for p in replies if p[TCP].flags & 0x10]
-    assert ack_pkts
-    assert ack_pkts[0][TCP].ack == conn.our_seq, (
-        f"ACK={ack_pkts[0][TCP].ack} expected {conn.our_seq}"
-    )
-    conn.close()
+        # ACK for our data: SUT's ACK should equal our_seq (after payload)
+        ack_pkts = [p for p in replies if p[TCP].flags & 0x10]
+        assert ack_pkts
+        assert ack_pkts[0][TCP].ack == conn.our_seq, (
+            f"ACK={ack_pkts[0][TCP].ack} expected {conn.our_seq}"
+        )
+    finally:
+        # Always close so the SUT's single connection slot returns to LISTEN,
+        # preventing cascade failures in subsequent tests.
+        conn.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -151,6 +155,7 @@ def test_tcp_014_data_echo_seq_ack(ctx):
 # REQ-TCP-078, REQ-TCP-081
 # ══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.sut_specific  # Linux kernel ignores tiny peer MSS (100) on veth/loopback with TSO
 def test_tcp_078_sut_honors_our_mss(ctx):
     """REQ-TCP-081: SUT MUST NOT send segments larger than min(our MSS, SUT MSS)."""
     small_mss = 100
@@ -158,15 +163,19 @@ def test_tcp_078_sut_honors_our_mss(ctx):
 
     # Request 200 bytes of data (> small_mss) so the SUT *would* fragment
     payload = b"X" * 200
-    replies = tcp_send_recv_data(ctx, conn, payload)
-
-    for pkt in replies:
-        tcp_payload_len = len(bytes(pkt[TCP].payload))
-        if tcp_payload_len > 0:
-            assert tcp_payload_len <= small_mss, (
-                f"SUT sent {tcp_payload_len} bytes, exceeds our MSS={small_mss}"
-            )
-    conn.close()
+    try:
+        replies = tcp_send_recv_data(ctx, conn, payload)
+        for pkt in replies:
+            tcp_payload_len = len(bytes(pkt[TCP].payload))
+            if tcp_payload_len > 0:
+                assert tcp_payload_len <= small_mss, (
+                    f"SUT sent {tcp_payload_len} bytes, exceeds our MSS={small_mss}"
+                )
+    finally:
+        # Always close to free the SUT's connection slot; an uncleaned
+        # ESTABLISHED connection would orphan socat's echo server side and
+        # cause stale TCP retransmits that corrupt subsequent tests' sniffers.
+        conn.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -288,19 +297,22 @@ def test_tcp_041_out_of_window_segment_gets_ack(ctx):
     """REQ-TCP-042: unacceptable segment MUST elicit ACK; data must not be accepted."""
     conn, _ = tcp_connect(ctx, alloc_port())
 
-    # Send a data segment with SEQ far outside the receive window
-    out_of_window_seq = conn.our_seq + 65000
-    pkt = _eth_ip_tcp(ctx, conn.sport, ctx.sut_port,
-                      seq=out_of_window_seq, ack=conn.our_ack,
-                      flags="AP", payload=b"BADDATA")
-    replies = send_recv(ctx, pkt, count=1)
-    assert replies, "No ACK for out-of-window segment"
-    assert replies[0][TCP].flags & 0x10, "Expected ACK"
-    # ACK should not advance past what we actually sent
-    assert replies[0][TCP].ack == conn.our_seq, (
-        f"SUT's ACK advanced to {replies[0][TCP].ack}, expected {conn.our_seq}"
-    )
-    conn.close()
+    try:
+        # Send a data segment with SEQ far outside the receive window
+        out_of_window_seq = conn.our_seq + 65000
+        pkt = _eth_ip_tcp(ctx, conn.sport, ctx.sut_port,
+                          seq=out_of_window_seq, ack=conn.our_ack,
+                          flags="AP", payload=b"BADDATA")
+        replies = send_recv(ctx, pkt, count=1)
+        assert replies, "No ACK for out-of-window segment"
+        assert replies[0][TCP].flags & 0x10, "Expected ACK"
+        # ACK should not advance past what we actually sent
+        assert replies[0][TCP].ack == conn.our_seq, (
+            f"SUT's ACK advanced to {replies[0][TCP].ack}, expected {conn.our_seq}"
+        )
+    finally:
+        # Always close to free the SUT's connection slot.
+        conn.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -361,10 +373,12 @@ def test_tcp_090_syn_retransmit_on_timeout(ctx):
     first_synack_seq = replies[0][TCP].seq
 
     try:
-        # Wait for retransmit (default RTO is typically 1–2 seconds)
-        time.sleep(2.5)
-        retransmits = recv_tcp(ctx, timeout=3, count=1)
-        assert retransmits, "SUT did not retransmit SYN-ACK within 5.5s"
+        # Wait past the first RTO (SUT RTO_INIT=1000ms), then sniff for 5s.
+        # Using a shorter sleep (1.5s vs 2.5s) keeps us well within the
+        # retransmit window even if the CI runner's sleep overshoots by 500ms.
+        time.sleep(1.5)
+        retransmits = recv_tcp(ctx, timeout=5, count=1)
+        assert retransmits, "SUT did not retransmit SYN-ACK within 6.5s"
         # Retransmitted SYN-ACK must have the same ISN
         assert retransmits[0][TCP].seq == first_synack_seq, (
             f"Retransmit ISN changed: {retransmits[0][TCP].seq} != {first_synack_seq}"
@@ -486,7 +500,8 @@ def test_tcp_085_persist_probe_on_zero_window(ctx):
 
     # ── Step 3: wait for persist probe (up to 3 s, default RTO ≈ 1 s) ───────
     # SUT's persist timer fires and sends a 1-byte probe.
-    probe_pkts = recv_tcp(ctx, timeout=3, count=1)
+    # Persist timer fires after RTO_INIT (~1s); allow up to 5s for CI jitter.
+    probe_pkts = recv_tcp(ctx, timeout=5, count=1)
     assert probe_pkts, (
         "REQ-TCP-086: SUT MUST send persist probe when peer window is 0"
     )
