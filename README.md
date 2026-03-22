@@ -47,7 +47,7 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 **89 unit tests passing** across 10 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
 **18 TCP blackbox conformance tests passing** (Scapy/TAP on Linux, every push/PR).
 
-### ✅ Implemented (Milestones 1–6)
+### ✅ Implemented (Milestones 1–7)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -219,7 +219,7 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 ├─────────────────────────────────────┤
 │  L7: dhcp.c  tftp.c  http.c        │  ← optional, link what you need
 ├─────────────────────────────────────┤
-│  L4: udp.c ✅       tcp.c          │  ← optional independently
+│  L4: udp.c ✅       tcp.c ✅       │  ← optional independently
 ├─────────────────────────────────────┤
 │  L3: ipv4.c ✅  icmp.c ✅          │
 ├─────────────────────────────────────┤
