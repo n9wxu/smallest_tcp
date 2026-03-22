@@ -46,6 +46,13 @@ def pytest_addoption(parser):
                      help="TCP port the SUT echo service listens on (default 7)")
     parser.addoption("--fuzz-count", default=200, type=int,
                      help="Number of fuzz iterations per test (default 200)")
+    # DHCP client blackbox options
+    parser.addoption("--dhcp-sut-mac", default="02:00:00:de:ad:01",
+                     help="SUT MAC for DHCP client tests (dhcp_echo_demo)")
+    parser.addoption("--dhcp-server-ip", default="10.0.0.1",
+                     help="IP address the test harness pretends to be a DHCP server on")
+    parser.addoption("--dhcp-offered-ip", default="10.0.0.50",
+                     help="IP address the test DHCP server will offer to the SUT")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────
@@ -131,6 +138,48 @@ def sut_settle():
     time.sleep(0.05)   # pre-test: let socket layer settle
     yield
     time.sleep(0.10)   # post-test: let SUT return to LISTEN
+
+
+# ── DHCP client blackbox fixture ──────────────────────────────────────────────
+
+class DhcpSutContext:
+    """
+    Minimal context for DHCP-client blackbox tests (dhcp_echo_demo SUT).
+
+    The SUT starts with no IP address — we cannot ARP-resolve it upfront.
+    The SUT MAC is taken from the CLI option (default matches the hard-coded
+    MAC in demo/dhcp_echo/main.c: 02:00:00:de:ad:01).
+    """
+    def __init__(self, iface, our_ip, our_mac, sut_mac,
+                 server_ip, offered_ip):
+        self.iface       = iface
+        self.our_ip      = our_ip
+        self.our_mac     = our_mac
+        self.sut_mac     = sut_mac
+        self.server_ip   = server_ip
+        self.offered_ip  = offered_ip
+        self.sut_ip      = None   # filled in after BOUND
+
+    def __repr__(self):
+        return (f"DhcpSutContext(iface={self.iface!r}, sut_mac={self.sut_mac}, "
+                f"server={self.server_ip}, offer={self.offered_ip})")
+
+
+@pytest.fixture(scope="session")
+def dhcp_ctx(request):
+    """Session fixture for DHCP client blackbox tests."""
+    iface       = request.config.getoption("--iface")
+    our_ip      = request.config.getoption("--our-ip")
+    sut_mac     = request.config.getoption("--dhcp-sut-mac")
+    server_ip   = request.config.getoption("--dhcp-server-ip")
+    offered_ip  = request.config.getoption("--dhcp-offered-ip")
+    our_mac     = get_if_hwaddr(iface)
+
+    conf.iface = iface
+
+    ctx = DhcpSutContext(iface, our_ip, our_mac, sut_mac, server_ip, offered_ip)
+    print(f"\nDHCP SUT context: {ctx}")
+    return ctx
 
 
 # ── Per-test port counter (avoids TIME_WAIT port reuse collisions) ─────────────

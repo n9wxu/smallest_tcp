@@ -352,6 +352,143 @@ def build_ip_raw(ctx, proto, payload=b"", bad_ip_checksum=False,
     return pkt
 
 
+# ── DHCP helpers ──────────────────────────────────────────────────────────────
+
+from scapy.all import BOOTP, DHCP
+
+# Well-known DHCP field constants
+DHCP_SERVER_PORT = 67
+DHCP_CLIENT_PORT = 68
+DHCP_BCAST_IP    = "255.255.255.255"
+DHCP_BCAST_MAC   = "ff:ff:ff:ff:ff:ff"
+
+
+def build_dhcp(ctx, msg_type, xid=None,
+               server_ip="0.0.0.0", our_ip="0.0.0.0",
+               offered_ip="0.0.0.0", extra_opts=None,
+               yiaddr="0.0.0.0", siaddr="0.0.0.0",
+               src_ip="0.0.0.0", dst_ip=None, dst_mac=None,
+               chaddr=None):
+    """
+    Build a raw Ethernet/IP/UDP/BOOTP/DHCP packet.
+
+    msg_type: "discover" | "offer" | "request" | "ack" | "nak" | "release"
+    xid     : transaction ID (int); auto-generated if None
+    """
+    import random
+    if xid is None:
+        xid = random.randint(0, 0xFFFFFFFF)
+    if dst_ip is None:
+        dst_ip = DHCP_BCAST_IP
+    if dst_mac is None:
+        dst_mac = DHCP_BCAST_MAC
+    if chaddr is None:
+        chaddr = ctx.our_mac
+
+    dhcp_opts = [("message-type", msg_type), "end"]
+    if extra_opts:
+        # Insert before "end"
+        dhcp_opts = [("message-type", msg_type)] + list(extra_opts) + ["end"]
+
+    pkt = (
+        Ether(dst=dst_mac, src=ctx.our_mac) /
+        IP(src=src_ip, dst=dst_ip) /
+        UDP(sport=DHCP_CLIENT_PORT, dport=DHCP_SERVER_PORT) /
+        BOOTP(op=1, xid=xid, chaddr=chaddr,
+              yiaddr=yiaddr, siaddr=siaddr,
+              flags=0x8000) /  # broadcast flag
+        DHCP(options=dhcp_opts)
+    )
+    return pkt, xid
+
+
+def build_dhcp_server(ctx, msg_type, xid,
+                      yiaddr, server_ip,
+                      lease=3600, t1=0, t2=0,
+                      subnet="255.255.255.0", router=None,
+                      dst_mac=None):
+    """
+    Build a DHCP server reply (OFFER / ACK / NAK) to send to the SUT.
+
+    The SUT's MAC is used as dst_mac and the src_ip is server_ip.
+    """
+    if dst_mac is None:
+        dst_mac = ctx.sut_mac if hasattr(ctx, "sut_mac") else DHCP_BCAST_MAC
+
+    opts = [
+        ("server_id", server_ip),
+        ("lease_time", lease),
+    ]
+    if subnet:
+        opts.append(("subnet_mask", subnet))
+    if router:
+        opts.append(("router", router))
+    if t1:
+        opts.append(("renewal_time", t1))
+    if t2:
+        opts.append(("rebinding_time", t2))
+
+    dhcp_opts = [("message-type", msg_type)] + opts + ["end"]
+
+    pkt = (
+        Ether(dst=dst_mac, src=ctx.our_mac) /
+        IP(src=server_ip, dst=DHCP_BCAST_IP) /
+        UDP(sport=DHCP_SERVER_PORT, dport=DHCP_CLIENT_PORT) /
+        BOOTP(op=2, xid=xid, yiaddr=yiaddr, siaddr=server_ip,
+              chaddr=ctx.sut_mac if hasattr(ctx, "sut_mac") else DHCP_BCAST_MAC,
+              flags=0x8000) /
+        DHCP(options=dhcp_opts)
+    )
+    return pkt
+
+
+def send_recv_dhcp(ctx, pkt, timeout=5, count=1):
+    """
+    Send a DHCP packet and return DHCP replies (UDP port 67) from the SUT.
+    Uses AsyncSniffer to avoid the send-then-sniff race.
+    """
+    bpf = f"udp port 67 and ether src {ctx.sut_mac}"
+    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
+                           count=count, timeout=timeout)
+    sniffer.start()
+    time.sleep(0.05)
+    send_pkt(ctx, pkt)
+    sniffer.join(timeout=timeout + 1)
+    return list(sniffer.results)
+
+
+def sniff_dhcp_from_sut(ctx, timeout=5, count=1, bpf_extra=""):
+    """
+    Sniff DHCP messages sent BY the SUT (UDP sport=68) without sending anything.
+    Useful for waiting for the first DISCOVER after SUT startup.
+    """
+    bpf = f"udp port 67 and ether src {ctx.sut_mac}"
+    if bpf_extra:
+        bpf += f" and {bpf_extra}"
+    pkts = sniff(iface=ctx.iface, filter=bpf, timeout=timeout, count=count)
+    return list(pkts)
+
+
+def dhcp_msg_type(pkt):
+    """Return the DHCP message-type integer from a captured Scapy packet."""
+    if DHCP not in pkt:
+        return None
+    for opt in pkt[DHCP].options:
+        if isinstance(opt, tuple) and opt[0] == "message-type":
+            return opt[1]
+    return None
+
+
+def dhcp_get_opt(pkt, name):
+    """Return a DHCP option value by name, or None."""
+    if DHCP not in pkt:
+        return None
+    for opt in pkt[DHCP].options:
+        if isinstance(opt, tuple) and opt[0] == name:
+            return opt[1]
+    return None
+
+
 # ── Multi-protocol silence check ───────────────────────────────────────────────
 
 def silence_any(ctx, pkt, timeout=2):

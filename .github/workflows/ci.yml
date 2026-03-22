@@ -168,8 +168,11 @@ jobs:
         run: |
           # Skip sut_specific tests — they depend on our stack's timer values,
           # not on RFC correctness.  A failure here means the TEST is wrong.
+          # Also skip test_dhcpv4_conform.py — it needs dhcp_echo_demo as SUT,
+          # not the Linux kernel.
           sudo python3 -m pytest tests/blackbox/ \
             --ignore=tests/blackbox/test_tcp_fuzz.py \
+            --ignore=tests/blackbox/test_dhcpv4_conform.py \
             --iface tap0 \
             --sut-ip  10.0.0.2 \
             --our-ip  10.0.0.100 \
@@ -191,6 +194,71 @@ jobs:
           echo "## Reference-SUT Validation Output" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           tail -c 12000 /tmp/validate.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ── DHCP client blackbox tests (TAP, Linux only) ──────────────────
+  blackbox-dhcp:
+    name: Blackbox — DHCPv4 Client Conformance (dhcp_echo_demo, TAP)
+    runs-on: ubuntu-latest
+    needs: cmake-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip iproute2
+
+      - name: Install Python deps
+        run: |
+          sudo pip3 install --break-system-packages \
+            -r tests/blackbox/requirements.txt \
+            pytest-github-actions-annotate-failures
+
+      - name: Build dhcp_echo_demo
+        run: |
+          cmake -S . -B build
+          cmake --build build --target dhcp_echo_demo
+
+      - name: Set up TAP interface
+        run: |
+          sudo ip tuntap add dev tap0 mode tap user $(whoami)
+          sudo ip link set tap0 up
+          sudo ip addr add 10.0.0.100/24 dev tap0
+
+      - name: Start DHCP SUT (dhcp_echo_demo)
+        run: |
+          sudo ./build/demo/dhcp_echo_demo > /tmp/dhcp_sut.log 2>&1 &
+          echo $! > /tmp/dhcp_sut.pid
+          sleep 1
+
+      - name: Run DHCP client conformance suite
+        run: |
+          sudo python3 -m pytest tests/blackbox/test_dhcpv4_conform.py \
+            --iface           tap0               \
+            --our-ip          10.0.0.100         \
+            --dhcp-sut-mac    02:00:00:de:ad:01  \
+            --dhcp-server-ip  10.0.0.1           \
+            --dhcp-offered-ip 10.0.0.50          \
+            -p no:cacheprovider                  \
+            --tb=short -v                        \
+            2>&1 | tee /tmp/dhcp_blackbox.out
+          exit ${PIPESTATUS[0]}
+
+      - name: Stop DHCP SUT and teardown TAP
+        if: always()
+        run: |
+          [ -f /tmp/dhcp_sut.pid ] && sudo kill $(cat /tmp/dhcp_sut.pid) 2>/dev/null || true
+          sudo ip tuntap del dev tap0 mode tap 2>/dev/null || true
+
+      - name: DHCP results summary
+        if: always()
+        run: |
+          echo "## DHCP Blackbox Output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 12000 /tmp/dhcp_blackbox.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 

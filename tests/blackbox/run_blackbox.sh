@@ -17,6 +17,8 @@
 #   --teardown-tap     Destroy tap0 on exit
 #   --no-start-sut     Skip starting the SUT (caller already started it)
 #   --fuzz             Also run fuzz tests (slow, default: off)
+#   --dhcp             Also run DHCP client conformance tests
+#   --dhcp-sut-bin P   Path to dhcp_echo_demo (default: ./build/demo/dhcp_echo_demo)
 #   -v / --verbose     Pass -v to pytest
 
 set -euo pipefail
@@ -31,21 +33,28 @@ SETUP_TAP=0
 TEARDOWN_TAP=0
 NO_START_SUT=0
 RUN_FUZZ=0
+RUN_DHCP=0
+DHCP_SUT_BIN="${DHCP_SUT_BIN:-./build/demo/dhcp_echo_demo}"
+DHCP_SERVER_IP="10.0.0.1"
+DHCP_OFFERED_IP="10.0.0.50"
+DHCP_SUT_MAC="02:00:00:de:ad:01"
 VERBOSE=""
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --sut-bin)      SUT_BIN="$2";    shift 2 ;;
-    --iface)        IFACE="$2";      shift 2 ;;
-    --sut-ip)       SUT_IP="$2";     shift 2 ;;
-    --our-ip)       OUR_IP="$2";     shift 2 ;;
-    --sut-port)     SUT_PORT="$2";   shift 2 ;;
-    --setup-tap)    SETUP_TAP=1;     shift   ;;
-    --teardown-tap) TEARDOWN_TAP=1;  shift   ;;
-    --no-start-sut) NO_START_SUT=1;  shift   ;;
-    --fuzz)         RUN_FUZZ=1;      shift   ;;
-    -v|--verbose)   VERBOSE="-v";    shift   ;;
+    --sut-bin)        SUT_BIN="$2";        shift 2 ;;
+    --iface)          IFACE="$2";          shift 2 ;;
+    --sut-ip)         SUT_IP="$2";         shift 2 ;;
+    --our-ip)         OUR_IP="$2";         shift 2 ;;
+    --sut-port)       SUT_PORT="$2";       shift 2 ;;
+    --setup-tap)      SETUP_TAP=1;         shift   ;;
+    --teardown-tap)   TEARDOWN_TAP=1;      shift   ;;
+    --no-start-sut)   NO_START_SUT=1;      shift   ;;
+    --fuzz)           RUN_FUZZ=1;          shift   ;;
+    --dhcp)           RUN_DHCP=1;          shift   ;;
+    --dhcp-sut-bin)   DHCP_SUT_BIN="$2";   shift 2 ;;
+    -v|--verbose)     VERBOSE="-v";        shift   ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -143,6 +152,66 @@ for SUITE in "${SUITES[@]}"; do
     FAILED+=("$SUITE")
   fi
 done
+
+# ── Optional DHCP client conformance tests ───────────────────────────────────
+# Runs dhcp_echo_demo as a separate SUT (different binary, no static IP),
+# acts as a DHCP server using Scapy, and verifies client protocol behaviour.
+DHCP_SUT_PID=""
+
+if [[ $RUN_DHCP -eq 1 ]]; then
+  echo ""
+  echo "══════════════════════════════════════════════════════════════════"
+  echo "  DHCP client conformance — starting dhcp_echo_demo"
+  echo "══════════════════════════════════════════════════════════════════"
+
+  if [[ ! -x "$DHCP_SUT_BIN" ]]; then
+    echo "WARN: DHCP SUT binary not found: $DHCP_SUT_BIN — skipping DHCP tests" >&2
+    FAILED+=("test_dhcpv4_conform.py (binary missing)")
+  else
+    # Stop the TCP SUT so it doesn't consume TAP frames
+    if [[ -n "$SUT_PID" ]] && kill -0 "$SUT_PID" 2>/dev/null; then
+      kill "$SUT_PID" 2>/dev/null || true
+      wait "$SUT_PID" 2>/dev/null || true
+      SUT_PID=""
+    fi
+
+    "$DHCP_SUT_BIN" "$IFACE" >/tmp/dhcp_sut.log 2>&1 &
+    DHCP_SUT_PID=$!
+    echo "DHCP SUT pid: $DHCP_SUT_PID"
+    sleep 1   # let the SUT open the TAP fd and send its first DISCOVER
+
+    if ! kill -0 "$DHCP_SUT_PID" 2>/dev/null; then
+      echo "ERROR: DHCP SUT crashed at startup." >&2
+      cat /tmp/dhcp_sut.log >&2
+      FAILED+=("test_dhcpv4_conform.py (SUT crash)")
+    else
+      echo "DHCP SUT log:"
+      cat /tmp/dhcp_sut.log || true
+
+      DHCP_ARGS=(
+        --iface           "$IFACE"
+        --our-ip          "$OUR_IP"
+        --dhcp-sut-mac    "$DHCP_SUT_MAC"
+        --dhcp-server-ip  "$DHCP_SERVER_IP"
+        --dhcp-offered-ip "$DHCP_OFFERED_IP"
+        -p no:cacheprovider
+        --tb=short
+      )
+      [[ -n "$VERBOSE" ]] && DHCP_ARGS+=("$VERBOSE")
+
+      if python3 -m pytest "$SCRIPT_DIR/test_dhcpv4_conform.py" \
+                           "${DHCP_ARGS[@]}" 2>&1; then
+        PASSED+=("test_dhcpv4_conform.py")
+      else
+        FAILED+=("test_dhcpv4_conform.py")
+      fi
+
+      kill "$DHCP_SUT_PID" 2>/dev/null || true
+      wait "$DHCP_SUT_PID" 2>/dev/null || true
+      DHCP_SUT_PID=""
+    fi
+  fi
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
