@@ -87,10 +87,11 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | **7 — TCP persist + integration** | ✅ Done | Zero-window persist timer, `net_poll()` API, ARP+TCP integration |
 | **8 — DHCP** | ✅ Done | DHCPv4 client (auto-configure IP) + minimal stateless server (USB peer assignment) + option handler callback API (TFTP, NTP, DNS, …) |
 | **9 — TFTP** | ✅ Done | Fetch files over the network — bootloader data path |
-| **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
-| **11 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
-| **12 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
-| **13 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
+| **10 — mDNS + DNS-SD** | Planned | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
+| **11 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
+| **12 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
+| **13 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
+| **14 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
 ### 📐 Target Platforms
 
@@ -293,9 +294,12 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [Configuration](docs/design/configuration.md) — Compile-time vs. runtime taxonomy
   - [UDP](docs/design/udp.md) — Port dispatch table, zero-copy RX, checksum, ICMP port unreachable
   - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
-  - [TLS 1.3](docs/design/tls.md) — Pluggable crypto backend, PSK + cert modes, record + handshake SM *(Milestone 12)*
-  - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 13)*
-- **[RFC Requirements](docs/requirements/)** — RFC-traced requirements across 18 protocol specifications
+  - [mDNS + DNS-SD](docs/design/mdns.md) — Zero-config hostname + service discovery design, probing/announcing state machine, DNS-SD PTR/SRV/TXT composition *(Milestone 10)*
+  - [TLS 1.3](docs/design/tls.md) — Pluggable crypto backend, PSK + cert modes, record + handshake SM *(Milestone 13)*
+  - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 14)*
+- **[RFC Requirements](docs/requirements/)** — RFC-traced requirements across 20 protocol specifications:
+  - [mDNS](docs/requirements/mdns.md) — RFC 6762: probing, announcing, responding, goodbye, known-answer suppression
+  - [DNS-SD](docs/requirements/dns-sd.md) — RFC 6763: PTR/SRV/TXT advertisement, service-type enumeration, conflict detection
 - **[Test Plan](docs/test-plan.md)** — Black-box conformance testing strategy with Python/Scapy/pytest
 
 ---
