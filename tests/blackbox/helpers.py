@@ -68,37 +68,47 @@ def recv_tcp(ctx, timeout=RECV_TIMEOUT, count=1, extra_filter=""):
 def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1, sport=None):
     """Send pkt and wait for up to `count` TCP replies from the SUT.
 
-    Uses AsyncSniffer to open the AF_PACKET capture socket BEFORE sending.
-    On a fast TAP/loopback interface the SUT can reply within microseconds;
-    the classic send-then-sniff pattern misses the reply because the socket
-    is not yet open when the reply arrives.  AsyncSniffer eliminates that
-    race: we arm the socket, yield briefly to let the kernel register it,
-    then send the stimulus.
+    Uses Scapy's synchronous sniff() with started_callback so the stimulus
+    packet is sent only AFTER the AF_PACKET socket is registered with the
+    kernel.  This eliminates the race condition where the SUT's reply arrives
+    before the socket is open (no more fixed 50 ms sleep needed).
 
-    sport: if provided, adds 'tcp dst port {sport}' to the BPF filter.
-           This prevents cross-test contamination where the SUT's retransmit
-           timer fires and sends packets for a PREVIOUS test's connection
-           (different source port) that then satisfy the count= quota before
-           our echo arrives.  Always pass conn.sport for TCP data tests.
+    sport: if provided, only packets with TCP.dport == sport are counted
+           toward the `count` quota.  All BPF-matching packets are still
+           captured internally for diagnostic output when the result is empty.
     """
     bpf = f"tcp and ether src {ctx.sut_mac}"
-    # Use a Python-level lfilter for the sport check instead of appending
-    # "tcp dst port N" to the BPF string.  Combined BPF expressions like
-    # "ether src X and tcp dst port N" can be silently mis-compiled by
-    # libpcap on some Linux kernel / libc versions, causing the sniffer to
-    # capture zero packets even when matching traffic is present.
-    # The simpler BPF ("tcp and ether src X") reliably captures all TCP
-    # frames from the SUT; the per-sport discrimination is then done in
-    # Python (fast enough for test-rate traffic).
-    lfilter = (lambda p: TCP in p and p[TCP].dport == sport) if sport is not None else None
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=count, timeout=timeout,
-                           lfilter=lfilter)
-    sniffer.start()
-    time.sleep(0.05)          # give the kernel time to register the socket
-    send_pkt(ctx, pkt)
-    sniffer.join(timeout=timeout + 1)
-    return list(sniffer.results)
+    sport_val = sport
+    _all_raw = []   # every BPF-matching packet, sport-filtered or not
+
+    def _lfilter(p):
+        _all_raw.append(p)
+        if sport_val is None:
+            return True
+        return TCP in p and p[TCP].dport == sport_val
+
+    def _on_started():
+        """Called by Scapy once the capture socket is open."""
+        send_pkt(ctx, pkt)
+
+    result = sniff(iface=ctx.iface, filter=bpf,
+                   lfilter=_lfilter, count=count,
+                   timeout=timeout, started_callback=_on_started)
+
+    result_list = list(result)
+    if not result_list:
+        # Diagnostic: show everything the SUT sent on the wire so we can
+        # tell the difference between "SUT never replied" and "SUT replied
+        # to wrong port / wrong connection".
+        raw_info = ", ".join(
+            f"sport={p[TCP].sport} dport={p[TCP].dport} "
+            f"flags={int(p[TCP].flags):#04x} seq={p[TCP].seq}"
+            for p in _all_raw if TCP in p
+        ) or "(none)"
+        print(f"\n[send_recv] EMPTY RESULT "
+              f"filter_sport={sport_val} bpf='{bpf}' "
+              f"raw_from_sut=[{raw_info}]")
+    return result_list
 
 
 def silence(ctx, pkt, timeout=2):

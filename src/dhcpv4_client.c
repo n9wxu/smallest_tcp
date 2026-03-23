@@ -305,8 +305,9 @@ void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   switch (c->state) {
 
   case DHCPV4_CLI_SELECTING:
-    /* REQ-DHCPv4-045: retransmit DISCOVER with exponential backoff */
-    c->xid = rand_xid();
+    /* REQ-DHCPv4-045: retransmit DISCOVER with exponential backoff.
+     * RFC 2131 §3.1: XID must stay constant for all retransmits of the
+     * same DISCOVER session; do NOT regenerate it here. */
     send_discover(net, c);
     c->timer_ms = next_retry_ms(c->retries);
     if (c->retries < 255u)

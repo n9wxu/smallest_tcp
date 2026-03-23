@@ -117,6 +117,12 @@ jobs:
             2>&1 | tee /tmp/blackbox.out
           exit ${PIPESTATUS[0]}
 
+      - name: Dump SUT log on failure
+        if: failure()
+        run: |
+          echo "=== SUT stdout/stderr (/tmp/sut.log) ==="
+          cat /tmp/sut.log 2>/dev/null || echo "(no sut.log found)"
+
       - name: Stop SUT and teardown TAP
         if: always()
         run: |
