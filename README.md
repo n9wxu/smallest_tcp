@@ -44,10 +44,10 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 
 ## 📊 Current Status
 
-**89 unit tests passing** across 10 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
-**47 blackbox conformance tests passing** across 5 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20), plus 5 fuzz tests — all run on every push/PR via Scapy + TAP on Linux.
+**Unit tests passing** across 12 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**55 blackbox conformance tests passing** across 6 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8), plus 5 fuzz tests — all run on every push/PR via Scapy + TAP on Linux.
 
-### ✅ Implemented (Milestones 1–7)
+### ✅ Implemented (Milestones 1–8)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -61,13 +61,15 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | UDP | `udp.h` / `udp.c` | 7 unit + **7 blackbox** | Parse/send, port dispatch, pseudo-header checksum, ICMP Port Unreachable |
 | **TCP** | **`tcp.h` / `tcp.c`** | **23 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit, MSS, window, persist timer, close** |
 | TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 6 | Stop-and-wait TX buffer |
+| **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
+| TFTP | `tftp.h` / `tftp.c` | unit | RFC 1350 TFTP client — block-read, retransmit, error handling |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests + full blackbox suite on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
-| **Total** | **10 source + 3 drivers** | **89 unit + 47 blackbox + 5 fuzz** | |
+| **Total** | **12 source + 3 drivers** | **unit + 55 blackbox + 5 fuzz** | |
 
 > ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
 > are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
@@ -83,8 +85,8 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | **5 — UDP** | ✅ Done | UDP parse/send, port dispatch, pseudo-header checksum |
 | **6 — TCP core** | ✅ Done | Full state machine, retransmit, MSS, echo demo |
 | **7 — TCP persist + integration** | ✅ Done | Zero-window persist timer, `net_poll()` API, ARP+TCP integration |
-| **8 — DHCP** | Planned | DHCPv4 client (auto-configure IP) + minimal stateless server (USB peer assignment) + option handler callback API (TFTP, NTP, DNS, …) |
-| **9 — TFTP** | Planned | Fetch files over the network — bootloader data path |
+| **8 — DHCP** | ✅ Done | DHCPv4 client (auto-configure IP) + minimal stateless server (USB peer assignment) + option handler callback API (TFTP, NTP, DNS, …) |
+| **9 — TFTP** | ✅ Done | Fetch files over the network — bootloader data path |
 | **10 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
 | **11 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
 | **12 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
@@ -145,8 +147,8 @@ ctest --test-dir build --output-on-failure
 
 ### Running Blackbox Conformance Tests (Linux)
 
-All five conformance suites (ARP, IPv4, ICMPv4, UDP, TCP — 47 tests total) run
-against the live `tcp_echo_demo` over a Linux TAP interface.
+Six conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4 — 55 tests total) run
+against the live `tcp_echo_demo` or `dhcp_echo_demo` over a Linux TAP interface.
 Requires `sudo` / `CAP_NET_RAW`.
 
 #### Option A — `run_blackbox.sh` (recommended, all suites)
@@ -158,7 +160,7 @@ cmake -S . -B build && cmake --build build --target tcp_echo_demo
 # 2. Install Python deps once
 pip install -r tests/blackbox/requirements.txt
 
-# 3. Run everything — sets up TAP, starts SUT, runs all 5 suites, tears down
+# 3. Run everything — sets up TAP, starts SUT, runs all suites, tears down
 sudo tests/blackbox/run_blackbox.sh \
     --sut-bin ./build/demo/tcp_echo_demo \
     --setup-tap --teardown-tap -v
@@ -177,7 +179,11 @@ cmake -S . -B build && cmake --build build --target tcp_echo_demo
 sudo ip tuntap add dev tap0 mode tap user $(whoami)
 sudo ip link set tap0 up
 sudo ip addr add 10.0.0.100/24 dev tap0
-sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
+# Scope the iptables rule to tap0 only.
+# The kernel sees the SUT's SYN-ACKs (10.0.0.100 is assigned to tap0)
+# and auto-RSTs them. Scoped drop prevents this while leaving other
+# interfaces unaffected.
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o tap0 -j DROP
 
 # 3. Start the SUT
 sudo ./build/demo/tcp_echo_demo &
@@ -186,6 +192,10 @@ sudo ./build/demo/tcp_echo_demo &
 pip install -r tests/blackbox/requirements.txt
 sudo python3 -m pytest tests/blackbox/test_tcp_conform.py \
     --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 --sut-port 7 -v
+
+# 5. Cleanup when done
+sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o tap0 -j DROP
+sudo ip tuntap del dev tap0 mode tap
 ```
 
 > ⚠️ If every test reports `ERROR: ARP timeout: no reply from 10.0.0.2`,

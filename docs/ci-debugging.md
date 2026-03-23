@@ -1,6 +1,6 @@
 # CI/CD Debugging Guide — smallest_tcp
 
-**Last updated:** 2026-03-22
+**Last updated:** 2026-03-23
 
 This document captures every significant CI/CD failure encountered during
 development, along with the diagnostic workflow that resolved each one.  Consult
@@ -220,6 +220,107 @@ fuzz.yml invoke it rather than calling pytest directly.
 **Fix:** Always update `docs/test-plan.md` in the same commit that adds or
 modifies a test suite.  The test plan is the authoritative list of what CI
 validates; stale docs erode trust in the suite.
+
+---
+
+### 3.8 TCP tests fail: "No data echoed" / "Expected ACK" — kernel auto-RSTs the SUT
+
+**Symptom:** `test_tcp_014_data_echo_seq_ack`, `test_tcp_005_graceful_close_active`,
+and `test_tcp_041_out_of_window_segment_gets_ack` fail.  Tests that only need
+a SYN-ACK (e.g. `test_tcp_002`, `test_tcp_076`) continue to pass.  The SUT
+log (added to CI in 2026-03) shows a characteristic double-RST pattern:
+
+```
+tcp: SYN from 10.0.0.100:50005 → SYN_RECEIVED, ISS=...
+tcp_input: 10.0.0.100:50005 → flags=0x04 ack=0        ← KERNEL AUTO-RST
+tcp: listen on port 7
+tcp_input: 10.0.0.100:50005 → flags=0x04 ack=<ISN+1>  ← our test RST (harmless)
+```
+
+**Root cause:** `10.0.0.100` (Scapy's phantom source IP) is **assigned to
+`tap0`** via `ip addr add 10.0.0.100/24 dev tap0`.  When the SUT writes its
+SYN-ACK to the TAP fd, the Linux kernel processes the packet as if it arrived
+on the `tap0` interface.  Because `10.0.0.100` is a local address and no TCP
+socket is listening on the ephemeral source port (50001–50N), the kernel
+generates a RST segment addressed to the SUT.  This RST is written to the TAP
+fd FIFO **before** our Scapy handshake ACK, so the SUT receives it first and
+resets to LISTEN.  All subsequent data / FIN packets find the SUT in LISTEN,
+which replies with RST (ACK-to-LISTEN behaviour) instead of echoing data.
+
+Tests that PASS despite this bug:
+- `test_tcp_002/076/082` — only check the SYN-ACK, which arrives before the RST
+- `test_tcp_078` — vacuously passes: no payload in the RST replies,
+  so the `assert tcp_payload_len <= small_mss` loop never fires
+- `test_tcp_097` — vacuously passes: no echo data → `echo_pkts` is empty →
+  no ACK sent → no retransmits → "no spurious retransmits" passes
+
+**Fix applied (`.github/workflows/ci.yml`):** Drop kernel-generated RSTs on
+`tap0` only (same rule that `blackbox-validate` uses for `veth-test`):
+
+```yaml
+sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -o tap0 -j DROP
+```
+
+Scoping to `-o tap0` is critical: it only affects traffic leaving through
+the TAP interface, leaving the SUT's own RSTs (sport=7 → dport=ephemeral)
+intact so tests like `test_tcp_031` and `test_tcp_072` still work.
+
+Cleanup in teardown:
+```yaml
+sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o tap0 -j DROP 2>/dev/null || true
+```
+
+**Diagnostic tip:** Enable the "Dump SUT log on failure" step in `ci.yml` (it is
+already present from 2026-03) and look for the double-RST pattern above.  If you
+see `flags=0x04 ack=0` immediately after `SYN_RECEIVED`, this is the kernel
+auto-RST; if you only see one RST, look elsewhere.
+
+**Key lesson:** When a TAP interface has the phantom IP assigned, the Linux
+kernel participates in TCP for that address.  Always drop kernel RSTs on the
+TAP interface when the phantom IP is local.
+
+---
+
+### 3.9 DHCP test fails: "XID changed across retransmit" (RFC 2131 §3.1 violation)
+
+**Symptom:** `test_dhcpv4_conform.py::test_discover_retransmit` fails with:
+
+```
+AssertionError: XID changed across retransmit: 0xcd305e6a → 0x25dbfac1
+```
+
+**Root cause in SUT (`src/dhcpv4_client.c`):** The `DHCPV4_CLI_SELECTING`
+retransmit case in `dhcpv4_client_tick()` called `c->xid = rand_xid()` before
+every retransmit:
+
+```c
+case DHCPV4_CLI_SELECTING:
+    c->xid = rand_xid();    // ← BUG: regenerates XID on every retransmit
+    send_discover(net, c);
+```
+
+RFC 2131 §3.1 requires the XID to remain constant for all retransmits of the
+same DISCOVER session.  A server that caches the initial DISCOVER's XID (or a
+test that captures it) will never match subsequent retransmits, causing the
+handshake to fail or the retransmit test to detect the changed XID.
+
+**Fix applied:** Removed the `c->xid = rand_xid()` line from the retransmit
+path.  The XID is correctly initialised once in `dhcpv4_client_start()` and
+`restart_init()` (when starting a new session); it must not change during
+retransmission of the same session.
+
+```c
+case DHCPV4_CLI_SELECTING:
+    /* RFC 2131 §3.1: XID stays constant for all retransmits */
+    send_discover(net, c);
+    c->timer_ms = next_retry_ms(c->retries);
+    …
+```
+
+**Key lesson:** Any field whose purpose is to correlate a response with a
+request (XID, seq, ISN) must be stable for the lifetime of that transaction.
+Always add a retransmit-XID conformance test when implementing request/response
+protocols.
 
 ---
 
