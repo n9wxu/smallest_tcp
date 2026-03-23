@@ -202,6 +202,31 @@ def dhcp_ctx(request):
 
 # ── DHCP per-test SUT restart fixture ────────────────────────────────────────
 
+# Module-level handle to the most recently spawned dhcp_echo_demo subprocess.
+# Using a module variable avoids writing a PID file (which triggers PermissionError
+# on some GitHub Actions Ubuntu runners when pytest runs as root but /tmp/dhcp_sut.pid
+# was created by the non-root runner user).
+_dhcp_sut_proc = None
+
+
+def _dhcp_sut_fresh(sut_bin):
+    """Spawn a new dhcp_echo_demo, storing it in _dhcp_sut_proc."""
+    global _dhcp_sut_proc
+    # Kill existing tracked process (if any) before starting a fresh one.
+    if _dhcp_sut_proc is not None:
+        try:
+            _dhcp_sut_proc.terminate()
+            _dhcp_sut_proc.wait(timeout=2)
+        except Exception:
+            pass
+        _dhcp_sut_proc = None
+    _dhcp_sut_proc = subprocess.Popen(
+        [sut_bin],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 @pytest.fixture
 def dhcp_sut_fresh(request):
     """
@@ -228,18 +253,13 @@ def dhcp_sut_fresh(request):
                 pass  # already dead or stale PID file
 
         # ── Start a fresh SUT ────────────────────────────────────────────────
-        # Discard SUT output to avoid PermissionError on /tmp/dhcp_sut.log:
-        # the initial "Start DHCP SUT" CI step creates that file via shell
-        # redirection (owned by the runner user) while the DHCP SUT process
-        # itself runs as root via sudo.  Subsequent open("/tmp/dhcp_sut.log","a")
-        # calls from the same sudo-pytest process can hit permission issues on
-        # some GitHub Actions Ubuntu images.  Using DEVNULL is simpler and
-        # sufficient — we do not need per-restart SUT logs here.
-        proc = subprocess.Popen([sut_bin],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
-        with open(pid_file, "w") as f:
-            f.write(str(proc.pid))
+        # Track the new process in a module-level variable rather than writing
+        # back to the PID file.  Writing to /tmp/dhcp_sut.pid can raise a
+        # PermissionError on some GitHub Actions Ubuntu runners even when
+        # pytest is running as root, because the file was originally created
+        # by the runner user (non-root) in the CI "Start DHCP SUT" step.
+        # Using a module-level variable avoids all file-permission issues.
+        _dhcp_sut_fresh(sut_bin)
         # Allow the SUT to open the TAP device and broadcast its first DISCOVER
         time.sleep(1.0)
 

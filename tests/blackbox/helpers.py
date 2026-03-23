@@ -82,10 +82,18 @@ def send_recv(ctx, pkt, timeout=RECV_TIMEOUT, count=1, sport=None):
            our echo arrives.  Always pass conn.sport for TCP data tests.
     """
     bpf = f"tcp and ether src {ctx.sut_mac}"
-    if sport is not None:
-        bpf += f" and tcp dst port {sport}"
+    # Use a Python-level lfilter for the sport check instead of appending
+    # "tcp dst port N" to the BPF string.  Combined BPF expressions like
+    # "ether src X and tcp dst port N" can be silently mis-compiled by
+    # libpcap on some Linux kernel / libc versions, causing the sniffer to
+    # capture zero packets even when matching traffic is present.
+    # The simpler BPF ("tcp and ether src X") reliably captures all TCP
+    # frames from the SUT; the per-sport discrimination is then done in
+    # Python (fast enough for test-rate traffic).
+    lfilter = (lambda p: TCP in p and p[TCP].dport == sport) if sport is not None else None
     sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=count, timeout=timeout)
+                           count=count, timeout=timeout,
+                           lfilter=lfilter)
     sniffer.start()
     time.sleep(0.05)          # give the kernel time to register the socket
     send_pkt(ctx, pkt)
