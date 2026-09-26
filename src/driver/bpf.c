@@ -102,6 +102,13 @@ static int bpf_mac_init(void *ctx) {
     perror("bpf_init: BIOCPROMISC");
   }
 
+  /* Don't read back our own transmitted frames (macOS delivers them by
+   * default); a Linux TAP fd never sees its own writes either. */
+  unsigned int see_sent = 0;
+  if (ioctl(bpf->fd, BIOCSSEESENT, &see_sent) < 0) {
+    perror("bpf_init: BIOCSSEESENT");
+  }
+
   /* Get the kernel's required BPF buffer length */
   if (ioctl(bpf->fd, BIOCGBLEN, &buf_len) < 0) {
     perror("bpf_init: BIOCGBLEN");

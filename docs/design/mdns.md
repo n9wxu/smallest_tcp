@@ -252,7 +252,7 @@ Each test launches a fresh `mdns_demo` on tap0 so start-up and shutdown are obse
 
 ### Interop (`tests/blackbox/mdns_interop.sh`)
 
-Runs in CI after the Scapy suite, with `avahi-daemon` on tap0: `avahi-resolve` finds `pyro-dead01.local`, `avahi-browse` resolves the service (host, IP, port, TXT), the advertised TCP port answers, and the service is withdrawn when the SUT sends its goodbye.  Not yet verified: macOS discovery (`dns-sd -B _pyro._tcp local`) of the demo on a feth pair, which needs root to create the interfaces.
+Runs in CI after the Scapy suite, with `avahi-daemon` on tap0: `avahi-resolve` finds `pyro-dead01.local`, `avahi-browse` resolves the service (host, IP, port, TXT), the advertised TCP port answers, and the service is withdrawn when the SUT sends its goodbye.  On macOS, `tests/blackbox/mdns_interop_macos.sh` does the same with mDNSResponder (`dns-sd -B/-L/-G`) over a feth pair.
 
 ---
 

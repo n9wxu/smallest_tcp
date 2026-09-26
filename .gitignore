@@ -74,3 +74,4 @@ compile_commands.json
 # Python (blackbox tests)
 __pycache__/
 .pytest_cache/
+.venv/

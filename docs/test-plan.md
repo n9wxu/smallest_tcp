@@ -135,6 +135,8 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
 | `tests/blackbox/test_mdns_conform.py` | 18 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
 | `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
+| `tests/blackbox/run_blackbox_macos.sh` | macOS runner over a `feth` pair: every suite + `dns-sd` interop |
+| `tests/blackbox/mdns_interop_macos.sh` | mDNSResponder interop: `dns-sd -B/-L/-G`, TCP echo, goodbye removal |
 | `tests/blackbox/run_blackbox.sh` | Shell runner: starts SUT, runs all suites in order, reports summary |
 | `tests/blackbox/requirements.txt` | `pytest>=7.0`, `scapy>=2.5` |
 

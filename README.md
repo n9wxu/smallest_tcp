@@ -224,6 +224,30 @@ sudo tests/blackbox/mdns_interop.sh ./build/demo/mdns_demo
 > the SUT is not running.  The most common cause is a wrong binary path —
 > see [Test Plan §6 Troubleshooting](docs/test-plan.md#6-troubleshooting--known-pitfalls).
 
+### Running Blackbox Conformance Tests (macOS)
+
+The same suites run on macOS over a `feth` pair: the tests use `feth0`, the demos
+open `feth1` through BPF.  All 73 tests plus a `dns-sd` interop check pass.
+
+```bash
+# Once per boot (root): create the pair.  10.0.0.100, the tests' source
+# address, stays off the Mac, so no firewall rule is needed.
+sudo ifconfig feth0 create && sudo ifconfig feth1 create
+sudo ifconfig feth0 peer feth1
+sudo ifconfig feth0 inet 10.0.0.1/24 up && sudo ifconfig feth1 up
+
+# Once: Python deps in a venv (Homebrew Python refuses global pip installs)
+python3 -m venv .venv && .venv/bin/pip install -r tests/blackbox/requirements.txt
+
+# Build and run everything (ARP … TCP, DHCPv4, mDNS, dns-sd interop)
+cmake -S . -B build && cmake --build build
+tests/blackbox/run_blackbox_macos.sh build
+```
+
+Without `sudo`, the demos and Scapy need BPF access — Wireshark's ChmodBPF
+provides it via the `access_bpf` group; otherwise run the script with `sudo`.
+Remove the pair with `sudo ifconfig feth0 destroy; sudo ifconfig feth1 destroy`.
+
 ---
 
 ## 📦 Using In Your Project
