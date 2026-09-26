@@ -389,6 +389,69 @@ TEST(test_tcp_data_send) {
   ASSERT_MEM_EQ(tcp_seg, payload, 4);
 }
 
+/* Bring conn to ESTABLISHED via active open; clears the send log. */
+static void establish(void) {
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  uint32_t our_isn = sent_tcp_seq(0);
+  uint8_t frame[128];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 5000u, our_isn + 1u,
+                                 TCP_FLAG_SYN | TCP_FLAG_ACK, 8192, NULL, 0,
+                                 1460);
+  inject(frame, len);
+  send_count = 0;
+}
+
+/* tcp_write() only buffers: nothing goes on the wire */
+TEST(test_tcp_write_buffers_without_sending) {
+  setup();
+  establish();
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  ASSERT_EQ(tcp_write(&conn, (const uint8_t *)"HDR:", 4), 4);
+  ASSERT_EQ(send_count, 0);
+}
+
+/* tcp_output() pushes everything written so far as one segment */
+TEST(test_tcp_output_sends_one_segment) {
+  setup();
+  establish();
+  ASSERT_EQ(tcp_write(&conn, (const uint8_t *)"HDR:", 4), 4);
+  ASSERT_EQ(tcp_write(&conn, (const uint8_t *)"body", 4), 4);
+  tcp_output(&net, &conn);
+  ASSERT_EQ(send_count, 1);
+  uint8_t *ip = sent_frames[0] + ETH_HDR_SIZE;
+  ASSERT_EQ(net_read16be(ip + IPV4_OFF_TOTLEN), IPV4_HDR_SIZE + TCP_HDR_SIZE + 8);
+  ASSERT_MEM_EQ(ip + IPV4_HDR_SIZE + TCP_HDR_SIZE, "HDR:body", 8);
+  ASSERT_EQ(sent_tcp_flags(0) & TCP_FLAG_ACK, TCP_FLAG_ACK);
+}
+
+/* Stop-and-wait: no new data while a segment is unacknowledged */
+TEST(test_tcp_write_refused_while_in_flight) {
+  setup();
+  establish();
+  ASSERT_EQ(tcp_write(&conn, (const uint8_t *)"one", 3), 3);
+  tcp_output(&net, &conn);
+  ASSERT_EQ(tcp_write(&conn, (const uint8_t *)"two", 3), 0);
+  tcp_output(&net, &conn);
+  ASSERT_EQ(send_count, 1);
+}
+
+TEST(test_tcp_output_with_nothing_written) {
+  setup();
+  establish();
+  tcp_output(&net, &conn);
+  ASSERT_EQ(send_count, 0);
+}
+
+TEST(test_tcp_write_requires_open_connection) {
+  setup();
+  ASSERT_TRUE(tcp_write(&conn, (const uint8_t *)"x", 1) < 0); /* CLOSED */
+  tcp_listen(&conn, LOCAL_PORT);
+  ASSERT_TRUE(tcp_write(&conn, (const uint8_t *)"x", 1) < 0); /* LISTEN */
+  tcp_output(&net, &conn);
+  ASSERT_EQ(send_count, 0);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * Graceful close (active): FIN_WAIT_1 → FIN_WAIT_2 → TIME_WAIT
  * REQ-TCP-005, REQ-TCP-059, REQ-TCP-071
@@ -1037,6 +1100,11 @@ int main(void) {
   RUN_TEST(test_tcp_active_open_syn_synack_ack);
   RUN_TEST(test_tcp_data_receive);
   RUN_TEST(test_tcp_data_send);
+  RUN_TEST(test_tcp_write_buffers_without_sending);
+  RUN_TEST(test_tcp_output_sends_one_segment);
+  RUN_TEST(test_tcp_write_refused_while_in_flight);
+  RUN_TEST(test_tcp_output_with_nothing_written);
+  RUN_TEST(test_tcp_write_requires_open_connection);
   RUN_TEST(test_tcp_active_close);
   RUN_TEST(test_tcp_passive_close);
   RUN_TEST(test_tcp_rst_in_established_aborts);

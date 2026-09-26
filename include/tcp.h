@@ -302,6 +302,26 @@ tcp_state_t tcp_status(const tcp_conn_t *conn);
 int tcp_send(net_t *net, tcp_conn_t *conn, const uint8_t *data, uint16_t len);
 
 /**
+ * Append data to the TX buffer without transmitting.
+ *
+ * Lets a caller assemble one segment from several pieces (e.g. an HTTP
+ * header and the start of the body), then push it with tcp_output().
+ * With the stop-and-wait buffer nothing is accepted while a segment is
+ * in flight.  tcp_send() is tcp_write() followed by tcp_output().
+ *
+ * @return Bytes accepted (0..len), or negative if the connection is not
+ *         ESTABLISHED or CLOSE_WAIT.
+ */
+int tcp_write(tcp_conn_t *conn, const uint8_t *data, uint16_t len);
+
+/**
+ * Transmit buffered data (one segment, up to the peer's MSS and window).
+ * Does nothing if the buffer is empty, a segment is in flight, or the
+ * connection is not ESTABLISHED or CLOSE_WAIT.
+ */
+void tcp_output(net_t *net, tcp_conn_t *conn);
+
+/**
  * Read received data from an ESTABLISHED or CLOSE_WAIT connection.
  *
  * Delegates to rxbuf_ops->read(). Returns 0 if no data is available.

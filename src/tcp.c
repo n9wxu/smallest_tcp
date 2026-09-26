@@ -561,8 +561,8 @@ tcp_state_t tcp_status(const tcp_conn_t *conn) {
   return conn ? conn->state : TCP_CLOSED;
 }
 
-int tcp_send(net_t *net, tcp_conn_t *conn, const uint8_t *data, uint16_t len) {
-  if (!net || !conn)
+int tcp_write(tcp_conn_t *conn, const uint8_t *data, uint16_t len) {
+  if (!conn)
     return (int)NET_ERR_INVALID_PARAM;
 
   if (conn->state != TCP_ESTABLISHED && conn->state != TCP_CLOSE_WAIT)
@@ -572,13 +572,28 @@ int tcp_send(net_t *net, tcp_conn_t *conn, const uint8_t *data, uint16_t len) {
     return 0;
 
   /* Write into TX buffer via the injected ops */
-  uint16_t accepted = conn->txbuf_ops->write(conn->txbuf_ctx, data, len);
+  return (int)conn->txbuf_ops->write(conn->txbuf_ctx, data, len);
+}
+
+void tcp_output(net_t *net, tcp_conn_t *conn) {
+  if (!net || !conn)
+    return;
+  if (conn->state != TCP_ESTABLISHED && conn->state != TCP_CLOSE_WAIT)
+    return;
+  tcp_do_flush(net, conn);
+}
+
+int tcp_send(net_t *net, tcp_conn_t *conn, const uint8_t *data, uint16_t len) {
+  if (!net)
+    return (int)NET_ERR_INVALID_PARAM;
+
+  int accepted = tcp_write(conn, data, len);
 
   /* Immediately try to send (no Nagle, REQ-TCP-131 MAY) */
   if (accepted > 0)
     tcp_do_flush(net, conn);
 
-  return (int)accepted;
+  return accepted;
 }
 
 uint16_t tcp_recv(tcp_conn_t *conn, uint8_t *buf, uint16_t maxlen) {
