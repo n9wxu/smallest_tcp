@@ -43,7 +43,9 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_icmp.c \
              tests/unit/test_udp.c \
              tests/unit/test_tcp_buf.c \
-             tests/unit/test_tcp.c
+             tests/unit/test_tcp.c \
+             tests/unit/test_tftp.c \
+             tests/unit/test_dhcpv4.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -137,6 +139,17 @@ $(BUILD)/tests/test_tcp: tests/unit/test_tcp.c $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tcp.c $(STACK_SRCS)
 
+# Test for TFTP client
+$(BUILD)/tests/test_tftp: tests/unit/test_tftp.c src/tftp.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tftp.c src/tftp.c $(STACK_SRCS)
+
+# Test for DHCPv4 client + server
+$(BUILD)/tests/test_dhcpv4: tests/unit/test_dhcpv4.c src/dhcpv4_client.c src/dhcpv4_server.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_dhcpv4.c \
+		src/dhcpv4_client.c src/dhcpv4_server.c $(STACK_SRCS)
+
 # ── Demo ──────────────────────────────────────────────────────────────
 
 demo: $(BUILD)/demo/echo_server
@@ -156,26 +169,52 @@ ARM_CFLAGS := -std=c99 -Wall -Wextra -Werror -pedantic \
               -Iinclude
 ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=nosys.specs -nostartfiles
 
-ARM_SRCS   := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
-              src/driver/stub.c bench/size_measure.c
+# Two configurations, built into separate object dirs:
+#   arm-size      UDP echo, -DNET_USE_TCP=0 (the lwIP UDP-only comparison)
+#   arm-size-tcp  UDP echo + TCP echo server (adds tcp.c + tcp_buf_saw.c)
 
-.PHONY: arm-size arm-size-detail
+ARM_UDP_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
+                src/driver/stub.c bench/size_measure.c
+ARM_TCP_SRCS := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
 
-arm-size: $(BUILD)/arm/size_measure.elf
+ARM_UDP_OBJS := $(patsubst %.c,$(BUILD)/arm/udp/%.o,$(ARM_UDP_SRCS))
+ARM_TCP_OBJS := $(patsubst %.c,$(BUILD)/arm/tcp/%.o,$(ARM_TCP_SRCS))
+
+.PHONY: arm-size arm-size-tcp
+
+arm-size: $(BUILD)/arm/udp/size_measure.elf
 	@echo ""
 	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo, -Os -mthumb) ==="
 	@$(ARM_SIZE) $<
 	@echo ""
-	@echo "=== Per-module .text sizes ==="
-	@$(ARM_SIZE) $(patsubst %.c,$(BUILD)/arm/%.o,$(ARM_SRCS))
+	@echo "=== Per-module sizes ==="
+	@$(ARM_SIZE) $(ARM_UDP_OBJS)
 	@echo ""
 	@echo "Flash = .text + .data, RAM = .data + .bss"
 
-$(BUILD)/arm/size_measure.elf: $(patsubst %.c,$(BUILD)/arm/%.o,$(ARM_SRCS))
+arm-size-tcp: $(BUILD)/arm/tcp/size_measure.elf
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP + TCP echo, -Os -mthumb) ==="
+	@$(ARM_SIZE) $<
+	@echo ""
+	@echo "=== Per-module sizes ==="
+	@$(ARM_SIZE) $(ARM_TCP_OBJS)
+	@echo ""
+	@echo "Flash = .text + .data, RAM = .data + .bss"
+
+$(BUILD)/arm/udp/size_measure.elf: $(ARM_UDP_OBJS)
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 $(ARM_LDFLAGS) -o $@ $^
+
+$(BUILD)/arm/udp/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -c -o $@ $<
+
+$(BUILD)/arm/tcp/size_measure.elf: $(ARM_TCP_OBJS)
 	@mkdir -p $(dir $@)
 	$(ARM_CC) $(ARM_CFLAGS) $(ARM_LDFLAGS) -o $@ $^
 
-$(BUILD)/arm/%.o: %.c
+$(BUILD)/arm/tcp/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(ARM_CC) $(ARM_CFLAGS) -c -o $@ $<
 

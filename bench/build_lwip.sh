@@ -8,6 +8,12 @@ SIZE=arm-none-eabi-size
 LWIP=build/lwip/src
 OUT=build/arm/lwip
 
+if [ ! -d "$LWIP" ]; then
+  echo "=== Fetching lwIP 2.2.1 into build/lwip ==="
+  git clone --depth 1 --branch STABLE-2_2_1_RELEASE \
+      https://github.com/lwip-tcpip/lwip.git build/lwip
+fi
+
 mkdir -p $OUT
 
 SRCS="

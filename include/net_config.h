@@ -15,16 +15,34 @@
 #define NET_MAC_CAP_TX_CKSUM_UDP 0
 #define NET_MAC_CAP_RX_CKSUM_OK 0
 
-/* ── Protocol inclusion ───────────────────────────────────────────── */
+/* ── Protocol inclusion (override with -DNET_USE_xxx=0/1) ─────────── */
+#ifndef NET_USE_IPV4
 #define NET_USE_IPV4 1
+#endif
+#ifndef NET_USE_IPV6
 #define NET_USE_IPV6 0
+#endif
+#ifndef NET_USE_TCP
 #define NET_USE_TCP 1
+#endif
+#ifndef NET_USE_UDP
 #define NET_USE_UDP 1
+#endif
+#ifndef NET_USE_DHCPV4
 #define NET_USE_DHCPV4 0
+#endif
+#ifndef NET_USE_DHCPV6
 #define NET_USE_DHCPV6 0
+#endif
+#ifndef NET_USE_DNS
 #define NET_USE_DNS 0
+#endif
+#ifndef NET_USE_TFTP
 #define NET_USE_TFTP 0
+#endif
+#ifndef NET_USE_HTTP
 #define NET_USE_HTTP 0
+#endif
 
 /* ── Architecture ─────────────────────────────────────────────────── */
 #define NET_8BIT_TARGET 0
