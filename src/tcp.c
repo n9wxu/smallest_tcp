@@ -25,6 +25,10 @@
 #include <stddef.h>
 #include <string.h>
 
+#if NET_USE_IPV6
+#include "ipv6.h"
+#endif
+
 /* ── Sequence number comparison (REQ-TCP-026, REQ-TCP-027) ──────────
  *
  * Wrapping 32-bit arithmetic: cast the unsigned difference to int32_t.
@@ -42,6 +46,7 @@
 
 /* ── Default MSS per RFC 9293 §3.7.1 ────────────────────────────── */
 #define TCP_DEFAULT_MSS_IPV4 536u
+#define TCP_DEFAULT_MSS_IPV6 1220u /* IPv6 minimum MTU 1280 - 40 - 20 */
 
 /* ── Max consecutive retransmits before aborting ─────────────────── */
 #define TCP_MAX_RETRANSMITS 8u
@@ -97,6 +102,91 @@ uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const uint8_t *tcp_seg,
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * Endpoints: the other end of a segment, over IPv4 or IPv6
+ * ══════════════════════════════════════════════════════════════════ */
+
+/** The remote end of a segment — and, over IPv6, our address it uses. */
+typedef struct {
+  uint32_t ip4;       /**< IPv4 peer (host byte order) */
+  const uint8_t *mac; /**< Its MAC */
+#if NET_USE_IPV6
+  const uint8_t *ip6;  /**< IPv6 peer, or NULL for IPv4 */
+  const uint8_t *src6; /**< Our IPv6 address */
+#endif
+} tcp_ep_t;
+
+static void tcp_conn_ep(const net_t *net, const tcp_conn_t *conn,
+                        tcp_ep_t *ep) {
+  ep->ip4 = conn->remote_ip;
+  ep->mac = conn->remote_mac;
+#if NET_USE_IPV6
+  ep->ip6 = conn->ip_ver == 6 ? conn->remote_ip6 : NULL;
+  ep->src6 = net->ip6[conn->local_slot].addr;
+#else
+  (void)net;
+#endif
+}
+
+static uint16_t tcp_ip_hdr_size(const tcp_ep_t *ep) {
+#if NET_USE_IPV6
+  if (ep->ip6)
+    return IPV6_HDR_SIZE;
+#endif
+  (void)ep;
+  return IPV4_HDR_SIZE;
+}
+
+/** Largest segment our TX frame buffer carries to this endpoint
+ *  (REQ-TCP-077), capped at the Ethernet value. */
+static uint16_t tcp_mss_for(const net_t *net, const tcp_ep_t *ep) {
+  uint16_t mss = (uint16_t)(net->tx.capacity - ETH_HDR_SIZE -
+                            tcp_ip_hdr_size(ep) - TCP_HDR_SIZE);
+  return mss < 1460u ? mss : 1460u;
+}
+
+/**
+ * Start a frame for a TCP segment of @p tcp_len bytes: the Ethernet
+ * header, and room for the IP header.
+ * @return Where the TCP header goes, or NULL if the frame won't fit.
+ */
+static uint8_t *tcp_frame_start(net_t *net, const tcp_ep_t *ep,
+                                uint16_t tcp_len) {
+  uint16_t ip_len = tcp_ip_hdr_size(ep);
+  uint16_t type = NET_ETHERTYPE_IPV4;
+  if ((uint32_t)ETH_HDR_SIZE + ip_len + tcp_len > net->tx.capacity)
+    return NULL;
+#if NET_USE_IPV6
+  if (ep->ip6)
+    type = NET_ETHERTYPE_IPV6;
+#endif
+  eth_build(net->tx.buf, net->tx.capacity, ep->mac, net->mac, type);
+  return net->tx.buf + ETH_HDR_SIZE + ip_len;
+}
+
+/** Checksum the finished segment (its checksum field zero), write the IP
+ *  header, send. */
+static net_err_t tcp_frame_send(net_t *net, const tcp_ep_t *ep,
+                                uint8_t *tcp_hdr, uint16_t tcp_len) {
+  uint8_t *ip_hdr = net->tx.buf + ETH_HDR_SIZE;
+  uint16_t total = (uint16_t)(ETH_HDR_SIZE + tcp_ip_hdr_size(ep) + tcp_len);
+#if NET_USE_IPV6
+  if (ep->ip6) {
+    net_write16be(tcp_hdr + TCP_OFF_CKSUM,
+                  ipv6_cksum(ep->src6, ep->ip6, IPV6_NH_TCP, tcp_hdr, tcp_len));
+    ipv6_build(ip_hdr, tcp_len, IPV6_NH_TCP, ep->src6, ep->ip6,
+               net->ip6_hop_limit);
+  } else
+#endif
+  {
+    net_write16be(tcp_hdr + TCP_OFF_CKSUM,
+                  tcp_checksum(net->ipv4_addr, ep->ip4, tcp_hdr, tcp_len));
+    ipv4_build(ip_hdr, tcp_len, IPV4_PROTO_TCP, net->ipv4_addr, ep->ip4);
+  }
+  int r = net->mac_driver->send(net->mac_ctx, net->tx.buf, total);
+  return (r >= 0) ? NET_OK : NET_ERR_NO_FRAME;
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * Internal: Send a TCP segment
  * ══════════════════════════════════════════════════════════════════ */
 
@@ -121,21 +211,15 @@ static net_err_t tcp_send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
   uint8_t hdr_words = include_mss ? TCP_HDRLEN_WITH_MSS : 5u;
   uint16_t hdr_len = (uint16_t)hdr_words * 4u;
   uint16_t tcp_len = hdr_len + data_len;
-  uint16_t total = ETH_HDR_SIZE + IPV4_HDR_SIZE + tcp_len;
+  tcp_ep_t ep;
 
-  if (total > net->tx.capacity)
-    return NET_ERR_BUF_TOO_SMALL;
-
-  uint8_t *buf = net->tx.buf;
-
-  /* ── Ethernet header ──────────────────────────────────────────── */
-  uint8_t *ip_hdr = eth_build(buf, net->tx.capacity, conn->remote_mac, net->mac,
-                              NET_ETHERTYPE_IPV4);
-  if (!ip_hdr)
+  /* ── Ethernet header, room for the IPv4/IPv6 header ───────────── */
+  tcp_conn_ep(net, conn, &ep);
+  uint8_t *tcp_hdr = tcp_frame_start(net, &ep, tcp_len);
+  if (!tcp_hdr)
     return NET_ERR_BUF_TOO_SMALL;
 
   /* ── TCP header ───────────────────────────────────────────────── */
-  uint8_t *tcp_hdr = ip_hdr + IPV4_HDR_SIZE;
 
   net_write16be(tcp_hdr + TCP_OFF_SPORT, conn->local_port);
   net_write16be(tcp_hdr + TCP_OFF_DPORT, conn->remote_port);
@@ -159,17 +243,8 @@ static net_err_t tcp_send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
     memcpy(tcp_hdr + hdr_len, data, data_len);
   }
 
-  /* ── TCP checksum ─────────────────────────────────────────────── */
-  uint16_t cksum =
-      tcp_checksum(net->ipv4_addr, conn->remote_ip, tcp_hdr, tcp_len);
-  net_write16be(tcp_hdr + TCP_OFF_CKSUM, cksum);
-
-  /* ── IPv4 header ──────────────────────────────────────────────── */
-  ipv4_build(ip_hdr, tcp_len, IPV4_PROTO_TCP, net->ipv4_addr, conn->remote_ip);
-
-  /* ── Send ─────────────────────────────────────────────────────── */
-  int r = net->mac_driver->send(net->mac_ctx, buf, total);
-  return (r >= 0) ? NET_OK : NET_ERR_NO_FRAME;
+  /* ── Checksum, IP header, send ────────────────────────────────── */
+  return tcp_frame_send(net, &ep, tcp_hdr, tcp_len);
 }
 
 /**
@@ -187,8 +262,7 @@ static net_err_t tcp_send_ack(net_t *net, tcp_conn_t *conn) {
  * REQ-TCP-072, REQ-TCP-073, REQ-TCP-074.
  *
  * @param net        Network context.
- * @param src_ip     Segment source IP (becomes our dst).
- * @param src_mac    Segment source MAC.
+ * @param to         The segment's sender (becomes our destination).
  * @param src_port   Segment source port (becomes our dst port).
  * @param dst_port   Segment destination port (becomes our src port).
  * @param seg_flags  Flags of the triggering segment.
@@ -196,26 +270,18 @@ static net_err_t tcp_send_ack(net_t *net, tcp_conn_t *conn) {
  * @param seg_ack    SEG.ACK of the triggering segment.
  * @param seg_len    SEG.LEN of the triggering segment (data + SYN/FIN).
  */
-static void tcp_send_rst_noconn(net_t *net, uint32_t src_ip,
-                                const uint8_t *src_mac, uint16_t src_port,
-                                uint16_t dst_port, uint8_t seg_flags,
-                                uint32_t seg_seq, uint32_t seg_ack,
-                                uint16_t seg_len) {
+static void tcp_send_rst_noconn(net_t *net, const tcp_ep_t *to,
+                                uint16_t src_port, uint16_t dst_port,
+                                uint8_t seg_flags, uint32_t seg_seq,
+                                uint32_t seg_ack, uint16_t seg_len) {
   /* REQ-TCP-075: never send RST in response to RST */
   if (seg_flags & TCP_FLAG_RST)
     return;
 
-  uint16_t total = ETH_HDR_SIZE + IPV4_HDR_SIZE + TCP_HDR_SIZE;
-  if (total > net->tx.capacity)
+  uint8_t *tcp_hdr = tcp_frame_start(net, to, TCP_HDR_SIZE);
+  if (!tcp_hdr)
     return;
 
-  uint8_t *buf = net->tx.buf;
-  uint8_t *ip_hdr =
-      eth_build(buf, net->tx.capacity, src_mac, net->mac, NET_ETHERTYPE_IPV4);
-  if (!ip_hdr)
-    return;
-
-  uint8_t *tcp_hdr = ip_hdr + IPV4_HDR_SIZE;
   uint32_t rst_seq, rst_ack;
   uint8_t rst_flags;
 
@@ -242,11 +308,7 @@ static void tcp_send_rst_noconn(net_t *net, uint32_t src_ip,
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, 0);
   net_write16be(tcp_hdr + TCP_OFF_URG, 0);
 
-  uint16_t cksum = tcp_checksum(net->ipv4_addr, src_ip, tcp_hdr, TCP_HDR_SIZE);
-  net_write16be(tcp_hdr + TCP_OFF_CKSUM, cksum);
-
-  ipv4_build(ip_hdr, TCP_HDR_SIZE, IPV4_PROTO_TCP, net->ipv4_addr, src_ip);
-  net->mac_driver->send(net->mac_ctx, buf, total);
+  tcp_frame_send(net, to, tcp_hdr, TCP_HDR_SIZE);
 }
 
 /**
@@ -362,12 +424,12 @@ static void tcp_do_flush(net_t *net, tcp_conn_t *conn) {
  *
  * @param opt_ptr  Pointer to options area.
  * @param opt_len  Length of options area (header_len - 20).
- * @param mss_out  Output: peer's MSS (set to TCP_DEFAULT_MSS_IPV4 if not
- * found).
+ * @param mss_out  Output: peer's MSS (@p def_mss if not found).
+ * @param def_mss  Default MSS for the address family (536 / 1220).
  */
 static void tcp_parse_options(const uint8_t *opt_ptr, uint16_t opt_len,
-                              uint16_t *mss_out) {
-  *mss_out = TCP_DEFAULT_MSS_IPV4; /* REQ-TCP-079: default if not present */
+                              uint16_t *mss_out, uint16_t def_mss) {
+  *mss_out = def_mss; /* REQ-TCP-079: default if not present */
 
   uint16_t i = 0;
   while (i < opt_len) {
@@ -391,7 +453,7 @@ static void tcp_parse_options(const uint8_t *opt_ptr, uint16_t opt_len,
     if (kind == TCP_OPT_MSS && len == 4) { /* REQ-TCP-112 */
       *mss_out = net_read16be(opt_ptr + i + 2);
       if (*mss_out == 0)
-        *mss_out = TCP_DEFAULT_MSS_IPV4;
+        *mss_out = def_mss;
     }
     /* REQ-TCP-115: unknown options — skip by length */
     i += len;
@@ -441,18 +503,25 @@ static int tcp_seg_acceptable(uint32_t rcv_nxt, uint32_t rcv_wnd,
  *
  * Priority: full 4-tuple match first, then LISTEN match.
  *
- * @param local_ip    Destination IP from the IP header (our IP).
+ * @param from        The segment's sender.
  * @param local_port  Destination port from TCP header.
- * @param remote_ip   Source IP from IP header.
  * @param remote_port Source port from TCP header.
  * @return Matching tcp_conn_t or NULL.
  */
-static tcp_conn_t *tcp_find_conn(uint32_t local_ip, uint16_t local_port,
-                                 uint32_t remote_ip, uint16_t remote_port) {
+static int tcp_conn_is_peer(const tcp_conn_t *c, const tcp_ep_t *from) {
+#if NET_USE_IPV6
+  if (from->ip6)
+    return c->ip_ver == 6 && memcmp(c->remote_ip6, from->ip6, 16) == 0;
+  if (c->ip_ver != 4)
+    return 0;
+#endif
+  return c->remote_ip == from->ip4;
+}
+
+static tcp_conn_t *tcp_find_conn(const tcp_ep_t *from, uint16_t local_port,
+                                 uint16_t remote_port) {
   tcp_conn_t *listen_match = NULL;
   uint8_t i;
-
-  (void)local_ip; /* not used for matching in V1 (single interface) */
 
   for (i = 0; i < tcp_connections.count; i++) {
     tcp_conn_t *c = tcp_connections.conns[i];
@@ -464,7 +533,7 @@ static tcp_conn_t *tcp_find_conn(uint32_t local_ip, uint16_t local_port,
 
     /* Full 4-tuple match (REQ-TCP-148) */
     if (c->state != TCP_CLOSED && c->state != TCP_LISTEN) {
-      if (c->remote_ip == remote_ip && c->remote_port == remote_port) {
+      if (c->remote_port == remote_port && tcp_conn_is_peer(c, from)) {
         return c;
       }
     }
@@ -496,6 +565,9 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
   conn->on_event = on_event;
   conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
   conn->snd_mss = TCP_DEFAULT_MSS_IPV4;
+#if NET_USE_IPV6
+  conn->ip_ver = 4;
+#endif
 
   return NET_OK;
 }
@@ -514,22 +586,21 @@ net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port) {
   return NET_OK;
 }
 
-net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
-                      const uint8_t *remote_mac, uint16_t remote_port,
-                      uint16_t local_port) {
-  if (!net || !conn || !remote_mac || remote_port == 0 || local_port == 0)
-    return NET_ERR_INVALID_PARAM;
-
-  /* Compute our MSS from the TX buffer capacity (REQ-TCP-077) */
-  uint16_t mss_from_buf = NET_TCP_MSS_IPV4(net->tx.capacity);
-  conn->our_mss = mss_from_buf < 1460u ? mss_from_buf : 1460u;
-  conn->snd_mss = TCP_DEFAULT_MSS_IPV4; /* until peer tells us */
+/* Active open once the peer's address is in conn (REQ-TCP-003,013). */
+static net_err_t tcp_open(net_t *net, tcp_conn_t *conn,
+                          const uint8_t *remote_mac, uint16_t remote_port,
+                          uint16_t local_port, uint16_t default_mss) {
+  tcp_ep_t ep;
 
   conn->local_port = local_port;
   conn->remote_port = remote_port;
-  conn->remote_ip = remote_ip;
   memcpy(conn->remote_mac, remote_mac, 6);
   conn->mac_valid = 1;
+
+  /* Compute our MSS from the TX buffer capacity (REQ-TCP-077) */
+  tcp_conn_ep(net, conn, &ep);
+  conn->our_mss = tcp_mss_for(net, &ep);
+  conn->snd_mss = default_mss; /* until peer tells us */
 
   conn->iss = tcp_generate_iss();
   conn->snd_una = conn->iss;
@@ -551,11 +622,41 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
   }
 
   rto_start(conn);
-  NET_LOG("tcp: connect from port %u to %u.%u.%u.%u:%u", local_port,
-          (remote_ip >> 24) & 0xFF, (remote_ip >> 16) & 0xFF,
-          (remote_ip >> 8) & 0xFF, remote_ip & 0xFF, remote_port);
+  NET_LOG("tcp: connect from port %u to port %u", local_port, remote_port);
   return NET_OK;
 }
+
+net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
+                      const uint8_t *remote_mac, uint16_t remote_port,
+                      uint16_t local_port) {
+  if (!net || !conn || !remote_mac || remote_port == 0 || local_port == 0)
+    return NET_ERR_INVALID_PARAM;
+  conn->remote_ip = remote_ip;
+#if NET_USE_IPV6
+  conn->ip_ver = 4;
+#endif
+  return tcp_open(net, conn, remote_mac, remote_port, local_port,
+                  TCP_DEFAULT_MSS_IPV4);
+}
+
+#if NET_USE_IPV6
+net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
+                       const uint8_t *remote_mac, uint16_t remote_port,
+                       uint16_t local_port) {
+  if (!net || !conn || !remote_ip || !remote_mac || remote_port == 0 ||
+      local_port == 0)
+    return NET_ERR_INVALID_PARAM;
+  const uint8_t *src = ipv6_src_for(net, remote_ip);
+  if (!src)
+    return NET_ERR_INVALID_PARAM; /* no usable address to connect from */
+  conn->ip_ver = 6;
+  conn->local_slot = (uint8_t)ipv6_addr_slot(net, src);
+  conn->remote_ip = 0;
+  memcpy(conn->remote_ip6, remote_ip, 16);
+  return tcp_open(net, conn, remote_mac, remote_port, local_port,
+                  TCP_DEFAULT_MSS_IPV6);
+}
+#endif
 
 tcp_state_t tcp_status(const tcp_conn_t *conn) {
   return conn ? conn->state : TCP_CLOSED;
@@ -686,9 +787,17 @@ net_err_t tcp_abort(net_t *net, tcp_conn_t *conn) {
  * tcp_input — Main receive path (RFC 9293 §3.10.7)
  * ══════════════════════════════════════════════════════════════════ */
 
-void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
-  uint8_t *seg = ip->payload;
-  uint16_t seg_avail = ip->payload_len;
+/**
+ * Process a segment from @p from; @p dst4 is the IPv4 destination (for the
+ * pseudo-header; over IPv6 from->src6 plays that part).
+ */
+static void tcp_input_seg(net_t *net, const tcp_ep_t *from, uint32_t dst4,
+                          uint8_t *seg, uint16_t seg_avail) {
+  uint16_t def_mss = TCP_DEFAULT_MSS_IPV4;
+#if NET_USE_IPV6
+  if (from->ip6)
+    def_mss = TCP_DEFAULT_MSS_IPV6;
+#endif
 
   /* ── Validate minimum header (REQ-TCP-021) ────────────────────── */
   if (seg_avail < TCP_HDR_SIZE)
@@ -711,7 +820,13 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     /* Standard verification: include the stored checksum in the computation.
      * A valid TCP segment produces 0xFFFF when the ones-complement sum is
      * taken over pseudo-header + TCP segment (checksum field included). */
-    uint16_t computed = tcp_checksum(ip->src_ip, ip->dst_ip, seg, tcp_len);
+    uint16_t computed;
+#if NET_USE_IPV6
+    if (from->ip6)
+      computed = ipv6_cksum(from->ip6, from->src6, IPV6_NH_TCP, seg, tcp_len);
+    else
+#endif
+      computed = tcp_checksum(from->ip4, dst4, seg, tcp_len);
     /* net_cksum_finalize returns ~sum; a valid packet sums to 0xFFFF
      * before complement, so the finalized result is 0x0000. */
     if (computed != 0x0000u) {
@@ -742,17 +857,17 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 
   NET_LOG("tcp_input: %u.%u.%u.%u:%u -> :%u flags=0x%02x seq=%lu ack=%lu "
           "len=%u",
-          (ip->src_ip >> 24) & 0xFF, (ip->src_ip >> 16) & 0xFF,
-          (ip->src_ip >> 8) & 0xFF, ip->src_ip & 0xFF, src_port, dst_port,
+          (from->ip4 >> 24) & 0xFF, (from->ip4 >> 16) & 0xFF,
+          (from->ip4 >> 8) & 0xFF, from->ip4 & 0xFF, src_port, dst_port,
           seg_flags, (unsigned long)seg_seq, (unsigned long)seg_ack, data_len);
 
   /* ── Find matching connection (REQ-TCP-023) ───────────────────── */
-  tcp_conn_t *conn = tcp_find_conn(ip->dst_ip, dst_port, ip->src_ip, src_port);
+  tcp_conn_t *conn = tcp_find_conn(from, dst_port, src_port);
 
   /* ── No match → send RST (REQ-TCP-072) ───────────────────────── */
   if (!conn) {
     NET_LOG("tcp_input: no connection for port %u → RST", dst_port);
-    tcp_send_rst_noconn(net, ip->src_ip, eth->src_mac, src_port, dst_port,
+    tcp_send_rst_noconn(net, from, src_port, dst_port,
                         seg_flags, seg_seq, seg_ack, (uint16_t)seg_len);
     return;
   }
@@ -768,7 +883,7 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 
     /* REQ-TCP-031: if ACK, send RST */
     if (seg_flags & TCP_FLAG_ACK) {
-      tcp_send_rst_noconn(net, ip->src_ip, eth->src_mac, src_port, dst_port,
+      tcp_send_rst_noconn(net, from, src_port, dst_port,
                           seg_flags, seg_seq, seg_ack, (uint16_t)seg_len);
       return;
     }
@@ -776,23 +891,30 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     /* REQ-TCP-032: if SYN, start connection */
     if (seg_flags & TCP_FLAG_SYN) {
       /* REQ-TCP-033: record remote identity */
-      conn->remote_ip = ip->src_ip;
+      conn->remote_ip = from->ip4;
       conn->remote_port = src_port;
-      memcpy(conn->remote_mac, eth->src_mac, 6);
+      memcpy(conn->remote_mac, from->mac, 6);
       conn->mac_valid = 1;
+#if NET_USE_IPV6
+      conn->ip_ver = from->ip6 ? 6 : 4;
+      if (from->ip6) {
+        memcpy(conn->remote_ip6, from->ip6, 16);
+        conn->local_slot = (uint8_t)ipv6_addr_slot(net, from->src6);
+      }
+#endif
 
       /* REQ-TCP-034: set IRS, RCV.NXT */
       conn->irs = seg_seq;
       conn->rcv_nxt = seg_seq + 1u;
 
-      /* Parse options: peer's MSS (REQ-TCP-078, REQ-TCP-079) */
-      uint16_t peer_mss;
-      tcp_parse_options(opt_ptr, opt_len, &peer_mss);
-      conn->snd_mss = peer_mss;
-
       /* Compute our MSS from TX buffer (REQ-TCP-077) */
-      uint16_t our = NET_TCP_MSS_IPV4(net->tx.capacity);
-      conn->our_mss = (our < 1460u) ? our : 1460u;
+      conn->our_mss = tcp_mss_for(net, from);
+
+      /* Parse options: peer's MSS (REQ-TCP-078, REQ-TCP-079), no larger
+       * than a segment our TX buffer carries */
+      uint16_t peer_mss;
+      tcp_parse_options(opt_ptr, opt_len, &peer_mss, def_mss);
+      conn->snd_mss = peer_mss < conn->our_mss ? peer_mss : conn->our_mss;
 
       /* Generate ISS (REQ-TCP-028) */
       conn->iss = tcp_generate_iss();
@@ -817,8 +939,8 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
       rto_start(conn);
 
       NET_LOG("tcp: SYN from %u.%u.%u.%u:%u → SYN_RECEIVED, ISS=%lu",
-              (ip->src_ip >> 24) & 0xFF, (ip->src_ip >> 16) & 0xFF,
-              (ip->src_ip >> 8) & 0xFF, ip->src_ip & 0xFF, src_port,
+              (from->ip4 >> 24) & 0xFF, (from->ip4 >> 16) & 0xFF,
+              (from->ip4 >> 8) & 0xFF, from->ip4 & 0xFF, src_port,
               (unsigned long)conn->iss);
     }
     return;
@@ -835,7 +957,7 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 
     /* REQ-TCP-036: unacceptable ACK → RST */
     if ((seg_flags & TCP_FLAG_ACK) && !ack_ok) {
-      tcp_send_rst_noconn(net, ip->src_ip, eth->src_mac, src_port, dst_port,
+      tcp_send_rst_noconn(net, from, src_port, dst_port,
                           seg_flags, seg_seq, seg_ack, (uint16_t)seg_len);
       return;
     }
@@ -854,8 +976,8 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     /* REQ-TCP-038: SYN,ACK → ESTABLISHED */
     if ((seg_flags & TCP_FLAG_SYN) && ack_ok) {
       uint16_t peer_mss;
-      tcp_parse_options(opt_ptr, opt_len, &peer_mss);
-      conn->snd_mss = peer_mss;
+      tcp_parse_options(opt_ptr, opt_len, &peer_mss, def_mss);
+      conn->snd_mss = peer_mss < conn->our_mss ? peer_mss : conn->our_mss;
 
       conn->irs = seg_seq;
       conn->rcv_nxt = seg_seq + 1u;
@@ -884,8 +1006,8 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     /* REQ-TCP-039: SYN without ACK → simultaneous open → SYN_RECEIVED */
     if (seg_flags & TCP_FLAG_SYN) {
       uint16_t peer_mss;
-      tcp_parse_options(opt_ptr, opt_len, &peer_mss);
-      conn->snd_mss = peer_mss;
+      tcp_parse_options(opt_ptr, opt_len, &peer_mss, def_mss);
+      conn->snd_mss = peer_mss < conn->our_mss ? peer_mss : conn->our_mss;
 
       conn->irs = seg_seq;
       conn->rcv_nxt = seg_seq + 1u;
@@ -991,7 +1113,7 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
         conn->on_event(conn, TCP_EVT_CONNECTED);
     } else {
       /* Invalid ACK in SYN_RECEIVED */
-      tcp_send_rst_noconn(net, ip->src_ip, eth->src_mac, src_port, dst_port,
+      tcp_send_rst_noconn(net, from, src_port, dst_port,
                           seg_flags, seg_seq, seg_ack, (uint16_t)seg_len);
       return;
     }
@@ -1166,6 +1288,32 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     }
   }
 }
+
+/* ── Entry points: IPv4 and IPv6 segments ──────────────────────── */
+
+void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
+  tcp_ep_t from;
+  from.ip4 = ip->src_ip;
+  from.mac = eth->src_mac;
+#if NET_USE_IPV6
+  from.ip6 = NULL;
+  from.src6 = NULL;
+#endif
+  tcp_input_seg(net, &from, ip->dst_ip, ip->payload, ip->payload_len);
+}
+
+#if NET_USE_IPV6
+void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
+  tcp_ep_t from;
+  if (ipv6_is_multicast(ip->dst))
+    return; /* TCP is unicast only */
+  from.ip4 = 0;
+  from.mac = eth->src_mac;
+  from.ip6 = ip->src;
+  from.src6 = ip->dst;
+  tcp_input_seg(net, &from, 0, ip->payload, ip->payload_len);
+}
+#endif
 
 /* ══════════════════════════════════════════════════════════════════
  * tcp_tick — Timer management (REQ-TCP-090..100, REQ-TCP-008)

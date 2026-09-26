@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD) and 2 (UDP) done
+**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP) and 3 (TCP) done
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -155,9 +155,18 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
   is closed over IPv6 (ICMPv6 Port Unreachable).  `udp6_send()` /
   `udp6_send_inplace()` mirror the IPv4 calls (`UDP6_PAYLOAD_OFFSET` = 62).
 - **TCP**: `tcp_conn_t` gains the IP version, the peer's IPv6 address and
-  which of our addresses the peer used, so replies keep the same source.
-  One segment builder, IPv4 or IPv6 by the connection's version; the MSS
-  from the TX buffer is 20 bytes smaller over IPv6 (default 1220).
+  which of our addresses the peer used (a slot index), so replies keep the
+  same source.  Inside `tcp.c` an *endpoint* (peer address + MAC, and our
+  IPv6 address) replaces the IPv4 address everywhere a segment is built or
+  matched: one segment builder, one input state machine, with thin
+  `tcp_input()` / `tcp6_input()` entry points.  A listening connection
+  accepts either family.  `tcp6_connect()` mirrors `tcp_connect()`.
+- **MSS**: our MSS comes from the TX frame buffer and is 20 bytes smaller
+  over IPv6 (1440 on a 1514-byte buffer); without an MSS option the peer's
+  is 1220 over IPv6 (536 over IPv4).  The send MSS is also clamped to what
+  the TX frame buffer carries — before, a peer advertising more than a
+  small buffer holds stalled the connection (segments that could not be
+  built were never sent), which the larger IPv6 header makes likelier.
 
 ## 9. Deviations and deferred items
 

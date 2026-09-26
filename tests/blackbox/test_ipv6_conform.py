@@ -32,7 +32,7 @@ from scapy.all import (
     Ether, IPv6, Raw, conf, get_if_hwaddr, sendp,
     ICMPv6DestUnreach, ICMPv6EchoReply, ICMPv6EchoRequest, ICMPv6ND_NA,
     ICMPv6ND_NS, ICMPv6NDOptDstLLAddr, ICMPv6NDOptSrcLLAddr,
-    ICMPv6ParamProblem, IPv6ExtHdrFragment, IPv6ExtHdrHopByHop, UDP,
+    ICMPv6ParamProblem, IPv6ExtHdrFragment, IPv6ExtHdrHopByHop, TCP, UDP,
     in6_chksum,
 )
 
@@ -382,3 +382,78 @@ def test_ipv6_017_kernel_udp_echo(sut):
         s.close()
     assert data == b"kernel udp6"
     assert addr[0].split("%")[0] == sut.sut_ll
+
+
+# ── TCP over IPv6 (RFC 9293, RFC 8200 §8) ──────────────────────────────────────
+
+def is_synack(p):
+    return TCP in p and (p[TCP].flags & 0x12) == 0x12
+
+
+def tcp6_handshake(sut, sport):
+    """SYN → SYN-ACK → ACK from the phantom address; returns the SYN-ACK."""
+    syn = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+           TCP(sport=sport, dport=7, flags="S", seq=1000,
+               options=[("MSS", 1440)]))
+    synack = sut.exchange(syn, is_synack)
+    assert synack is not None, "no SYN-ACK over IPv6"
+    sendp(sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+          TCP(sport=sport, dport=7, flags="A", seq=1001,
+              ack=synack[TCP].seq + 1),
+          iface=sut.iface, verbose=False)
+    return synack
+
+
+def test_ipv6_018_tcp_syn_ack(sut):
+    """Passive open over IPv6: SYN-ACK from the link-local address, MSS for
+    a 1500-byte link (1440), valid checksum."""
+    sut.start()
+    synack = tcp6_handshake(sut, 41018)
+    assert synack[IPv6].src == sut.sut_ll
+    assert synack[IPv6].dst == OUR_LL
+    assert synack[TCP].ack == 1001
+    assert ("MSS", 1440) in synack[TCP].options
+    assert in6_chksum(6, synack[IPv6], bytes(synack[TCP])) == 0
+
+
+def test_ipv6_019_tcp_echo(sut):
+    """Data over an IPv6 connection is echoed."""
+    sut.start()
+    synack = tcp6_handshake(sut, 41019)
+    data = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+            TCP(sport=41019, dport=7, flags="PA", seq=1001,
+                ack=synack[TCP].seq + 1) / Raw(b"tcp over ipv6"))
+    echo = sut.exchange(data, lambda p: TCP in p and Raw in p)
+    assert echo is not None, "no echo over IPv6"
+    assert bytes(echo[Raw]) == b"tcp over ipv6"
+    assert echo[TCP].seq == synack[TCP].seq + 1
+
+
+def test_ipv6_020_tcp_closed_port_rst(sut):
+    """A SYN to a closed port draws RST+ACK over IPv6."""
+    sut.start()
+    syn = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+           TCP(sport=41020, dport=4444, flags="S", seq=5000))
+    rst = sut.exchange(syn, lambda p: TCP in p and p[TCP].flags & 0x04)
+    assert rst is not None, "no RST"
+    assert rst[TCP].flags & 0x10  # ACK
+    assert rst[TCP].ack == 5001
+    assert rst[IPv6].src == sut.sut_ll
+
+
+def test_ipv6_021_kernel_tcp_echo(sut):
+    """The host's own TCP stack connects over IPv6 and gets its echo."""
+    if not host_has_link_local(sut.iface):
+        pytest.skip(f"no IPv6 on {sut.iface}")
+    sut.start()
+    scope = socket.if_nametoindex(sut.iface)
+    with socket.create_connection((f"{sut.sut_ll}%{scope}", 7),
+                                  timeout=5) as c:
+        c.sendall(b"kernel tcp6")
+        data = b""
+        while len(data) < 11:
+            chunk = c.recv(64)
+            if not chunk:
+                break
+            data += chunk
+    assert data == b"kernel tcp6"

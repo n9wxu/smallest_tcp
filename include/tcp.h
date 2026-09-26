@@ -44,6 +44,10 @@
 #include "tcp_buf.h"
 #include <stdint.h>
 
+#if NET_USE_IPV6
+#include "ipv6.h"
+#endif
+
 /* ── TCP header offsets ──────────────────────────────────────────── */
 
 #define TCP_OFF_SPORT 0   /**< Source port (2 bytes) */
@@ -119,6 +123,11 @@ typedef struct tcp_conn_s {
   uint32_t remote_ip;    /**< Remote IPv4 (host byte order; 0 in LISTEN) */
   uint8_t remote_mac[6]; /**< Remote MAC address */
   uint8_t mac_valid;     /**< 1 if remote_mac is known */
+#if NET_USE_IPV6
+  uint8_t ip_ver;         /**< 4 or 6: the connection's address family */
+  uint8_t local_slot;     /**< IPv6: our address (net->ip6[]) the peer used */
+  uint8_t remote_ip6[16]; /**< IPv6: remote address (network order) */
+#endif
 
   /* ── Send sequence variables (REQ-TCP-024) ────────────────── */
   uint32_t iss;     /**< Initial Send Sequence Number */
@@ -250,6 +259,17 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
                       uint16_t local_port);
 
+#if NET_USE_IPV6
+/**
+ * Active open over IPv6, from the source address ipv6_src_for() picks.
+ * @param remote_ip  Destination IPv6 address (16 bytes, network order).
+ * @return NET_OK, or NET_ERR_INVALID_PARAM (also: no usable source).
+ */
+net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
+                       const uint8_t *remote_mac, uint16_t remote_port,
+                       uint16_t local_port);
+#endif
+
 /**
  * Initiate a graceful close (send FIN).
  *
@@ -359,6 +379,14 @@ void tcp_window_update(net_t *net, tcp_conn_t *conn);
  * @param eth  Parsed Ethernet frame (src MAC).
  */
 void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
+
+#if NET_USE_IPV6
+/**
+ * Process a received TCP segment that arrived over IPv6 (called from
+ * ipv6_input).  A listening connection accepts IPv4 and IPv6 peers.
+ */
+void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
+#endif
 
 /**
  * Advance all TCP timers by elapsed_ms milliseconds.

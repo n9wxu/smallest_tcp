@@ -16,6 +16,10 @@
 #include "udp.h"
 #endif
 
+#if NET_USE_TCP
+#include "tcp.h"
+#endif
+
 static const uint8_t all_nodes[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                       0,    0,    0, 0, 0, 0, 0, 1};
 
@@ -245,6 +249,11 @@ void ipv6_input(net_t *net, const eth_frame_t *eth) {
 #if NET_USE_UDP
   case IPV6_NH_UDP: /* REQ-IPv6-016 */
     udp6_input(net, &ip, eth);
+    break;
+#endif
+#if NET_USE_TCP
+  case IPV6_NH_TCP: /* REQ-IPv6-015 */
+    tcp6_input(net, &ip, eth);
     break;
 #endif
   default:

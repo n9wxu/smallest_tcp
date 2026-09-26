@@ -178,7 +178,7 @@ serving a static page.
 
 | Metric | UDP only | UDP + HTTP | Delta |
 |--------|---------:|-----------:|------:|
-| **Flash (code + rodata)** | 2,902 B | **11,010 B** | +8,108 B |
+| **Flash (code + rodata)** | 2,902 B | **11,014 B** | +8,112 B |
 | **RAM (static state)** | 672 B | **1,700 B** | +1,028 B |
 | Stack-only code (.o, before gc) | 2,708 B | 10,738 B | +8,030 B |
 | Stack-internal RAM | 10 B | 22 B | +12 B |
@@ -239,6 +239,7 @@ bash bench/build_lwip.sh
 | 2026-09-26 | …+TCP (retransmit fixes, no RX-ring `%`) | 6,798 B (6,886 stack) | — | — |
 | 2026-09-26 | …+mDNS/DNS-SD (+NSEC) | 9,272 B (8,879 stack) | — | — |
 | 2026-09-26 | …+TCP+HTTP | 11,010 B (10,738 stack) | — | — |
+| 2026-09-26 | …+TCP+HTTP (TCP refactored for IPv6; IPv4-only build) | 11,014 B (10,738 stack) | — | — |
 
 > The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
 > peek-based UDP dispatch, IPv4 Protocol Unreachable, and (Milestone 10, +80 B)
