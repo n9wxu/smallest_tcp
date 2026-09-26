@@ -1,6 +1,6 @@
 # Code Size Comparison — smallest_tcp vs lwIP
 
-**Last updated:** 2026-03-19 (Tasks 1–5: ETH + ARP + IPv4 + ICMP + UDP)
+**Last updated:** 2026-09-25 (Milestones 1–9; UDP comparison re-measured, TCP configuration added)
 
 ## Methodology
 
@@ -12,8 +12,8 @@ arm-none-eabi-gcc -std=c99 -Os -mthumb -mcpu=cortex-m0
 ```
 
 - **smallest_tcp:** Linked ELF with `-Wl,--gc-sections`, debug logging disabled (`-DNET_DEBUG=0`)
-- **lwIP:** Object files compiled with matching flags, minimal `lwipopts.h` (see below)
-- **Feature set:** ETH + ARP + IPv4 + ICMP + UDP (no TCP, no DHCP, no DNS)
+- **lwIP:** 2.2.1 (`STABLE-2_2_1_RELEASE`), object files compiled with matching flags, minimal `lwipopts.h` (see below)
+- **Feature set:** ETH + ARP + IPv4 + ICMP + UDP (no TCP, no DHCP, no DNS); smallest_tcp built with `-DNET_USE_TCP=0`
 - **Toolchain:** arm-none-eabi-gcc 13.2.1 (Arm GNU Toolchain 13.2.Rel1)
 
 ### lwIP Configuration
@@ -30,9 +30,9 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 | Metric | smallest_tcp | lwIP | Ratio |
 |--------|-------------|------|-------|
-| **Flash (code + rodata)** | **2,650 B** | 10,105 B | **3.8× smaller** |
+| **Flash (code + rodata)** | **2,822 B** | 10,089 B | **3.6× smaller** |
 | **RAM (static state)** | **672 B** | 2,619 B | **3.9× smaller** |
-| Stack-only code | **2,460 B** | 10,103 B | **4.1× smaller** |
+| Stack-only code | **2,604 B** | 10,087 B | **3.9× smaller** |
 | Stack-internal RAM | **10 B** | ~2,619 B | **262× smaller** |
 | Source modules | 7 | 16 | — |
 
@@ -42,25 +42,25 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 ## Per-Module Breakdown
 
-### smallest_tcp — 7 modules, 2,460 bytes code
+### smallest_tcp — 7 modules, 2,604 bytes code
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `net.c` | 166 | 0 | 0 | Core context init, MAC helpers |
+| `net.c` | 234 | 0 | 0 | Core context init, `net_poll()`, MAC helpers |
 | `net_cksum.c` | 158 | 0 | 0 | Internet checksum (RFC 1071) |
-| `eth.c` | 226 | 0 | 0 | Ethernet II parse/build/dispatch |
+| `eth.c` | 234 | 0 | 0 | Ethernet II parse/build/dispatch |
 | `arp.c` | 480 | 0 | 0 | ARP request/reply, gateway MAC |
-| `ipv4.c` | 496 | 0 | 2 | IPv4 parse/build, protocol dispatch |
+| `ipv4.c` | 564 | 0 | 2 | IPv4 parse/build, protocol dispatch, Protocol Unreachable |
 | `icmp.c` | 382 | 0 | 0 | ICMP echo reply, dest unreachable |
 | `udp.c` | 552 | 0 | 8 | UDP parse/send, port dispatch |
-| **Total** | **2,460** | **0** | **10** | |
+| **Total** | **2,604** | **0** | **10** | |
 
-### lwIP — 16 modules, 10,103 bytes code
+### lwIP 2.2.1 — 16 modules, 10,087 bytes code
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
 | `pbuf.c` | 1,706 | 0 | 0 | Packet buffer management |
-| `etharp.c` | 1,660 | 0 | 97 | ARP + Ethernet address resolution |
+| `etharp.c` | 1,644 | 0 | 97 | ARP + Ethernet address resolution |
 | `udp.c` | 1,280 | 2 | 4 | UDP protocol |
 | `ip4.c` | 922 | 0 | 2 | IPv4 processing |
 | `netif.c` | 862 | 0 | 9 | Network interface abstraction |
@@ -75,7 +75,7 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 | `init.c` | 24 | 0 | 0 | Stack initialization |
 | `ip.c` | 0 | 0 | 24 | IP globals |
 | `ip4_frag.c` | 0 | 0 | 0 | (disabled via config) |
-| **Total** | **10,103** | **2** | **2,619** | |
+| **Total** | **10,087** | **2** | **2,619** | |
 
 ## Where the Difference Comes From
 
@@ -99,13 +99,13 @@ Comparing just the protocol-equivalent modules:
 
 | Function | smallest_tcp | lwIP | Ratio |
 |----------|-------------|------|-------|
-| ARP | 480 B | 1,660 B | 3.5× |
-| IPv4 | 496 B | 922 B | 1.9× |
+| ARP | 480 B | 1,644 B | 3.4× |
+| IPv4 | 564 B | 922 B | 1.6× |
 | ICMP | 382 B | 504 B | 1.3× |
 | UDP | 552 B | 1,280 B | 2.3× |
 | Checksum | 158 B | 532 B | 3.4× |
-| Ethernet | 226 B | 264 B | 1.2× |
-| **Subtotal** | **2,294 B** | **5,162 B** | **2.2×** |
+| Ethernet | 234 B | 264 B | 1.1× |
+| **Subtotal** | **2,370 B** | **5,146 B** | **2.2×** |
 
 Even protocol-for-protocol, smallest_tcp is 2.2× smaller due to:
 - No pbuf chain traversal (operates on flat buffers)
@@ -113,22 +113,46 @@ Even protocol-for-protocol, smallest_tcp is 2.2× smaller due to:
 - No general-purpose netif callbacks
 - Simpler API (direct function calls vs. callback chains)
 
+## Adding TCP
+
+`make arm-size-tcp` builds the same benchmark with TCP enabled: a single-connection
+TCP echo server on port 7 using the stop-and-wait buffers (128 B TX + 128 B RX),
+alongside the UDP echo server.
+
+| Metric | UDP only | UDP + TCP | Delta |
+|--------|---------:|----------:|------:|
+| **Flash (code + rodata)** | 2,822 B | **7,114 B** | +4,292 B |
+| **RAM (static state)** | 672 B | **1,080 B** | +408 B |
+| Stack-only code | 2,604 B | 6,600 B | +3,996 B |
+| Stack-internal RAM | 10 B | 22 B | +12 B |
+
+| Module | .text | .data | .bss | Function |
+|--------|------:|------:|-----:|----------|
+| `tcp.c` | 3,530 | 4 | 8 | Full state machine, retransmit, persist timer, MSS/window |
+| `tcp_buf_saw.c` | 450 | 0 | 0 | Stop-and-wait TX/RX buffers |
+| `ipv4.c` | 580 | 0 | 2 | (+16 B for TCP dispatch) |
+
+The extra RAM is application-owned: the 256 B of TCP buffers, the `tcp_conn_t`,
+and the buffer contexts. TCP itself adds 12 bytes of static state (connection
+table pointer + ISN counter).
+
 ## Target Fit Analysis
 
 | Target | Flash | RAM | smallest_tcp UDP | lwIP UDP |
 |--------|-------|-----|-----------------|----------|
-| **PIC16F1454** | 14 KB | 1 KB | ✅ 2.6 KB + buffers | ❌ 10 KB code alone |
+| **PIC16F1454** | 14 KB | 1 KB | ✅ 2.8 KB + buffers | ❌ 10 KB code alone |
 | **CH32X033** | 62 KB | 20 KB | ✅ Plenty of room | ✅ Fits |
-| **STM32F042** | 32 KB | 6 KB | ✅ 2.6 KB + room for TCP | ⚠️ Tight with app |
+| **STM32F042** | 32 KB | 6 KB | ✅ 2.8 KB; 7.1 KB with TCP | ⚠️ Tight with app |
 | **CH32V203** | 256 KB | 10 KB | ✅ Plenty of room | ✅ Fits |
 
 ## How to Reproduce
 
 ```bash
 # Build smallest_tcp for ARM and show sizes
-make arm-size
+make arm-size        # UDP only (lwIP comparison)
+make arm-size-tcp    # UDP + TCP
 
-# Build lwIP for comparison
+# Build lwIP for comparison (clones lwIP 2.2.1 into build/lwip if missing)
 bash bench/build_lwip.sh
 ```
 
@@ -148,12 +172,20 @@ bash bench/build_lwip.sh
 | Date | Config | smallest_tcp Flash | lwIP Flash | Ratio |
 |------|--------|-------------------|------------|-------|
 | 2026-03-19 | ETH+ARP+IPv4+ICMP+UDP | 2,650 B (2,460 stack) | 10,103 B | 4.1× |
+| 2026-09-25 | ETH+ARP+IPv4+ICMP+UDP | 2,822 B (2,604 stack) | 10,087 B (2.2.1) | 3.9× |
+| 2026-09-25 | ETH+ARP+IPv4+ICMP+UDP+TCP | 7,114 B (6,600 stack) | — | — |
 
-> This table will be updated as more protocol layers (TCP, DHCP, HTTP) are implemented.
+> The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
+> peek-based UDP dispatch, and IPv4 Protocol Unreachable. The ratio column compares
+> stack-only code.
 
 ## Notes
 
 - lwIP sizes are .o file totals (before link-time gc-sections). Actual linked lwIP would be somewhat smaller depending on which functions the application calls.
 - smallest_tcp sizes are from a linked ELF with `--gc-sections`, representing real deployed size.
 - Both use nano newlib for memcpy/memset (not counted — same for both).
+- Flash totals depend on the toolchain's newlib. The figures here use the Arm GNU Toolchain
+  13.2.Rel1, whose `memcpy`/`memset`/`memcmp` total 62 B. Ubuntu's `libnewlib-arm-none-eabi`
+  (used by the `arm-size` CI job) ships speed-optimized versions totalling 376 B, so CI reports
+  3,140 B (UDP) and 7,572 B (UDP + TCP). Stack-only code is identical on both toolchains.
 - lwIP has more features even in minimal config (e.g., ARP queueing infrastructure, pbuf chaining, multi-netif support). smallest_tcp intentionally omits these for size.

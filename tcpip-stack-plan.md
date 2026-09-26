@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-03-22 (Tasks 1–7 complete; 89 unit tests + 47 blackbox + 5 fuzz passing)
+**Last updated:** 2026-09-25 (Tasks 1–9 complete; 146 unit tests + 55 blackbox + 5 fuzz passing; next: Task 10 mDNS + DNS-SD)
 
 ## Objective
 
@@ -199,21 +199,31 @@ typedef struct {
 - Timer tick: `net_tick(net, ms)` for ARP timeout, TCP retransmit
 - Demo: static IP, ARP + ping + UDP echo + TCP echo all working simultaneously
 
-### Task 8: DHCP client (dhcp.c)
+### ✅ Task 8: DHCPv4 client + server (dhcpv4_client.c, dhcpv4_server.c) *(DONE)*
 - DISCOVER → OFFER → REQUEST → ACK over UDP port 67/68
 - Sets `net->ip`, populates gateway MAC via ARP
 - Demo: device gets IP from dnsmasq, then ping works
 
-### Task 9: TFTP client (tftp.c)
+### ✅ Task 9: TFTP client (tftp.c) *(DONE)*
 - RFC 1350: RRQ → DATA/ACK loop
 - Block size adapts to app buffer
 - Demo: fetch file from TFTP server — proves bootloader data path
 
-### Task 10: HTTP server (http.c)
+### Task 10: mDNS + DNS-SD (mdns.c, dns_wire.c, igmp.c)
+- RFC 6762 responder: probe → announce → respond, goodbye packets, conflict handling
+- RFC 6763 service advertisement: PTR/SRV/TXT (+A) from an application-provided record table
+- Minimal IGMPv2 join for 224.0.0.251
+- Required for pyro_fw device discovery
+- Design: [docs/design/mdns.md](docs/design/mdns.md)
+
+### Task 11: HTTP server (http.c)
 - HTTP/1.0 only, `Connection: close`
 - Parse request line (method + path), call app handler
 - App handler returns body + content-type
 - Demo: browse to `http://10.0.0.2/` from host
+
+Later milestones (12 IPv6, 13 TLS 1.3, 14 DTLS 1.3) are tracked in the README roadmap
+and their design docs.
 
 ## Language & Build
 
@@ -242,8 +252,12 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/arp-resolution.md](docs/design/arp-resolution.md)** — Address resolution (distributed cache, gateway-only mode)
 - **[docs/design/memory-model.md](docs/design/memory-model.md)** — Zero-allocation memory model and factory methods
 - **[docs/design/configuration.md](docs/design/configuration.md)** — Configuration taxonomy (compile-time fixed vs. runtime tunable vs. runtime only)
+- **[docs/design/udp.md](docs/design/udp.md)** — UDP port dispatch, zero-copy RX, checksum, ICMP port unreachable
+- **[docs/design/dhcpv4.md](docs/design/dhcpv4.md)** — DHCPv4 client + server, option handler callback API
+- **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10)
+- **[docs/design/tls.md](docs/design/tls.md)** / **[docs/design/dtls.md](docs/design/dtls.md)** — TLS 1.3 / DTLS 1.3
 
-### RFC Requirements (~785 total, traced to RFC sections)
+### RFC Requirements (~950 total, traced to RFC sections)
 
 **V1 — IPv4 Core (~546 requirements):**
 - **[docs/requirements/ethernet.md](docs/requirements/ethernet.md)** — Ethernet II framing (20 reqs, RFC 894)
@@ -258,6 +272,14 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/requirements/tftp.md](docs/requirements/tftp.md)** — TFTP client (38 reqs, RFC 1350)
 - **[docs/requirements/http.md](docs/requirements/http.md)** — HTTP/1.0 server (43 reqs, RFC 9110/9112)
 
+**Service discovery (75 requirements):**
+- **[docs/requirements/mdns.md](docs/requirements/mdns.md)** — Multicast DNS (43 reqs, RFC 6762)
+- **[docs/requirements/dns-sd.md](docs/requirements/dns-sd.md)** — DNS-Based Service Discovery (32 reqs, RFC 6763)
+
+**Security (88 requirements):**
+- **[docs/requirements/tls.md](docs/requirements/tls.md)** — TLS 1.3 (43 reqs, RFC 8446)
+- **[docs/requirements/dtls.md](docs/requirements/dtls.md)** — DTLS 1.3 (45 reqs, RFC 9147)
+
 **V2 — IPv6 Fast-Follow (~239 requirements):**
 - **[docs/requirements/ipv6.md](docs/requirements/ipv6.md)** — IPv6 host behavior (47 reqs, RFC 8200)
 - **[docs/requirements/icmpv6.md](docs/requirements/icmpv6.md)** — ICMPv6 (41 reqs, RFC 4443)
@@ -266,7 +288,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/requirements/dhcpv6.md](docs/requirements/dhcpv6.md)** — DHCPv6 client (44 reqs, RFC 8415)
 
 ### Size Benchmarks
-- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (4.1× smaller)
+- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (3.9× smaller; UDP + TCP = 7.1 KB)
 
 ### Test Plan
 - **[docs/test-plan.md](docs/test-plan.md)** — Black-box conformance testing with Python/Scapy/pytest, CI strategy, traceability matrix

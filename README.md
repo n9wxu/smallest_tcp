@@ -8,7 +8,7 @@
 
 ## ✨ What Is This?
 
-**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — TCP, UDP, DHCP, HTTP, TFTP — using **zero dynamic memory allocation** and fitting in as little as **2.6 KB of flash**.
+**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — TCP, UDP, DHCP, HTTP, TFTP — using **zero dynamic memory allocation** and fitting in as little as **2.8 KB of flash**.
 
 Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding network connectivity to a $0.20 RISC-V MCU, or prototyping protocol logic on your laptop — this stack has you covered.
 
@@ -27,16 +27,17 @@ Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding n
 
 ## 📊 How Small Is It?
 
-Measured on ARM Cortex-M0 (`-Os -mthumb`), UDP echo server (ETH + ARP + IPv4 + ICMP + UDP):
+Measured on ARM Cortex-M0 (`-Os -mthumb`), UDP echo server (ETH + ARP + IPv4 + ICMP + UDP), vs lwIP 2.2.1:
 
 | Metric | smallest_tcp | lwIP (same features) | Ratio |
 |---|---|---|---|
-| **Flash** | **2,650 B** | 10,103 B | **3.8× smaller** |
+| **Flash** | **2,822 B** | 10,089 B | **3.6× smaller** |
 | **RAM** | **672 B** (600 = app buffers) | 2,619 B | **3.9× smaller** |
-| Stack-only code | **2,460 B** | 10,103 B | **4.1× smaller** |
+| Stack-only code | **2,604 B** | 10,087 B | **3.9× smaller** |
 | Stack-internal state | **10 B** | ~2,619 B | **262× smaller** |
 
 The stack itself uses only **10 bytes** of static state. All other memory is application-owned buffers that you size to your needs.
+Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
 
 > 📐 See [docs/design/size-comparison.md](docs/design/size-comparison.md) for the full comparison methodology, per-module breakdowns, and analysis.
 
@@ -44,10 +45,10 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 
 ## 📊 Current Status
 
-**Unit tests passing** across 12 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**146 unit tests passing** across 12 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
 **55 blackbox conformance tests passing** across 6 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8), plus 5 fuzz tests — all run on every push/PR via Scapy + TAP on Linux.
 
-### ✅ Implemented (Milestones 1–8)
+### ✅ Implemented (Milestones 1–9)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -59,17 +60,17 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 | IPv4 | `ipv4.h` / `ipv4.c` | 10 unit + **8 blackbox** | Parse/build/send, protocol dispatch, broadcast detection, ICMP Protocol Unreachable |
 | ICMPv4 | `icmp.h` / `icmp.c` | 4 unit + **7 blackbox** | Echo reply (ping), destination unreachable, checksum validation |
 | UDP | `udp.h` / `udp.c` | 7 unit + **7 blackbox** | Parse/send, port dispatch, pseudo-header checksum, ICMP Port Unreachable |
-| **TCP** | **`tcp.h` / `tcp.c`** | **23 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit, MSS, window, persist timer, close** |
-| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 6 | Stop-and-wait TX buffer |
-| **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
-| TFTP | `tftp.h` / `tftp.c` | unit | RFC 1350 TFTP client — block-read, retransmit, error handling |
+| **TCP** | **`tcp.h` / `tcp.c`** | **26 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit, MSS, window, persist timer, close** |
+| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 19 | Stop-and-wait TX buffer |
+| **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **16 unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
+| TFTP | `tftp.h` / `tftp.c` | 15 unit | RFC 1350 TFTP client — block-read, retransmit, error handling |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
-| CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests + full blackbox suite on every push |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests, full blackbox suite, and ARM size benchmark on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
-| **Total** | **12 source + 3 drivers** | **unit + 55 blackbox + 5 fuzz** | |
+| **Total** | **12 source + 3 drivers** | **146 unit + 55 blackbox + 5 fuzz** | |
 
 > ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
 > are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
@@ -97,9 +98,9 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 
 | Chip | Flash | RAM | Cost | smallest_tcp UDP | lwIP UDP |
 |---|---|---|---|---|---|
-| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ 2.6 KB + buffers | ❌ 10 KB code alone |
+| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ 2.8 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP too | ⚠️ Tight |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP too (7.1 KB) | ⚠️ Tight |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 
@@ -112,7 +113,7 @@ The stack itself uses only **10 bytes** of static state. All other memory is app
 ```bash
 make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run all 89 unit tests
+make test     # Build and run all 146 unit tests (12 suites)
 make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
@@ -120,8 +121,9 @@ make clean    # Clean all build artifacts
 ### ARM Size Measurement
 
 ```bash
-make arm-size           # Build for Cortex-M0 and show sizes
-bash bench/build_lwip.sh  # Build lwIP for comparison
+make arm-size             # Cortex-M0 sizes, UDP only (the lwIP comparison)
+make arm-size-tcp         # Cortex-M0 sizes, UDP + TCP
+bash bench/build_lwip.sh  # Build lwIP 2.2.1 for comparison (fetched on first run)
 ```
 
 Requires `arm-none-eabi-gcc` (install via Arm GNU Toolchain or `brew install --cask gcc-arm-embedded`).
@@ -233,7 +235,10 @@ That's it! Your app gets the headers and library automatically. When included vi
 
 | Target | Description |
 |---|---|
-| `smallest_tcp::smallest_tcp` | Core stack library (net, checksum, ethernet, ARP, IPv4, ICMP, UDP) |
+| `smallest_tcp::smallest_tcp` | Core stack library (net, checksum, ethernet, ARP, IPv4, ICMP, UDP, TCP) |
+| `smallest_tcp::dhcpv4_client` | DHCPv4 client (optional) |
+| `smallest_tcp::dhcpv4_server` | Minimal stateless DHCPv4 server (optional) |
+| `smallest_tcp::tftp` | TFTP client (optional) |
 | `smallest_tcp::driver_tap` | Linux TAP MAC driver (optional, top-level only) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (optional, top-level only) |
 
@@ -282,7 +287,7 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
 
 - **[Architecture](docs/architecture.md)** — System architecture, layer interaction, data flow
-- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (4.1× smaller)
+- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (3.9× smaller)
 - **Design Documents:**
   - [MAC HAL](docs/design/mac-hal.md) — Abstract hardware interface (vtable, peek+discard)
   - [Checksum](docs/design/checksum.md) — Incremental Internet checksum design

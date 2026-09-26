@@ -1,6 +1,6 @@
 # Test Plan — smallest_tcp
 
-*Revision: Milestone 6 (TCP core)*
+*Revision: Milestone 9 (TFTP)*
 
 ---
 
@@ -21,20 +21,22 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**10 test suites, 89 tests total — all passing.**
+**12 test suites, 146 tests total — all passing.**
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
-| `test_endian` | tests/unit/test_endian.c | 6 | Byte-order utilities |
+| `test_endian` | tests/unit/test_endian.c | 10 | Byte-order utilities |
 | `test_checksum` | tests/unit/test_checksum.c | 12 | net_cksum (REQ-CKS-*) |
-| `test_eth` | tests/unit/test_eth.c | 8 | Ethernet (REQ-ETH-*) |
-| `test_net` | tests/unit/test_net.c | 5 | net init/dispatch |
+| `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
+| `test_net` | tests/unit/test_net.c | 8 | net init/dispatch |
 | `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
 | `test_ipv4` | tests/unit/test_ipv4.c | 10 | IPv4 (REQ-IPV4-*) |
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
-| `test_tcp_buf` | tests/unit/test_tcp_buf.c | 6 | Stop-and-wait buffer |
-| `test_tcp` | tests/unit/test_tcp.c | **23** | TCP (REQ-TCP-*) |
+| `test_tcp_buf` | tests/unit/test_tcp_buf.c | 19 | Stop-and-wait buffer |
+| `test_tcp` | tests/unit/test_tcp.c | **26** | TCP (REQ-TCP-*) |
+| `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
+| `test_dhcpv4` | tests/unit/test_dhcpv4.c | 16 | DHCPv4 client + server (REQ-DHCPv4-*) |
 
 ### Running Unit Tests
 
@@ -87,8 +89,6 @@ make test
 | 155 | RST rate limiting | (blackbox only) | 🔲 Blackbox |
 
 > ✅ REQ-TCP-085, 086, 087 (zero-window persist timer) are now implemented and covered by 3 unit tests and 1 blackbox test.
-> are MUST requirements that are **not yet implemented**. These are tracked
-> as a future milestone work item.
 
 ---
 
