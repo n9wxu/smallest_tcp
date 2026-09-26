@@ -5,7 +5,7 @@
 **Supporting:** RFC 9112 — HTTP/1.1, RFC 7230 (obsoleted by RFC 9112)  
 **Supersession:** RFC 9110/9112 supersede RFC 7230-7235; RFC 9110 supersedes RFC 2616  
 **Scope:** V1 (IPv4), V2 (IPv6)  
-**Last updated:** 2026-03-19
+**Last updated:** 2026-09-26 (REQ-HTTP-010, 024, 040 aligned with RFC 9110/9112/6585 in the Milestone 11 design)
 
 ## Overview
 
@@ -26,7 +26,7 @@ This stack implements a minimal HTTP/1.0 server (with optional HTTP/1.1 support)
 | REQ-HTTP-007 | MUST | Parse headers as field-name ":" field-value CRLF | RFC 9110 §5.1, RFC 9112 §5 | TEST-HTTP-007 |
 | REQ-HTTP-008 | MUST | Detect end of headers: empty line (CRLF CRLF) | RFC 9112 §5 | TEST-HTTP-008 |
 | REQ-HTTP-009 | SHOULD | Extract Content-Length header (for POST body) | RFC 9110 §8.6 | TEST-HTTP-009 |
-| REQ-HTTP-010 | SHOULD | Extract Host header (required in HTTP/1.1) | RFC 9110 §7.2 | TEST-HTTP-010 |
+| REQ-HTTP-010 | MUST | Respond 400 (Bad Request) to an HTTP/1.1 request without a Host header | RFC 9112 §3.2 | TEST-HTTP-010 |
 | REQ-HTTP-011 | MUST | Tolerate missing Host header for HTTP/1.0 requests | RFC 9112 §3.3 | TEST-HTTP-011 |
 | REQ-HTTP-012 | SHOULD | Handle requests with unknown/unsupported headers by ignoring them | RFC 9110 §5.1 | TEST-HTTP-012 |
 
@@ -55,7 +55,7 @@ This stack implements a minimal HTTP/1.0 server (with optional HTTP/1.1 support)
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-HTTP-024 | MUST | Return 405 (Method Not Allowed) for unsupported methods | RFC 9110 §15.5.6 | TEST-HTTP-024 |
+| REQ-HTTP-024 | MUST | Return 501 (Not Implemented) for methods the server does not implement, and 405 (Method Not Allowed, with an Allow header) for a known method the resource does not allow | RFC 9110 §15.5.6, §15.6.2 | TEST-HTTP-024 |
 | REQ-HTTP-025 | MUST | Return 404 (Not Found) for unregistered paths | RFC 9110 §15.5.5 | TEST-HTTP-025 |
 | REQ-HTTP-026 | SHOULD | Return 400 (Bad Request) for malformed request lines | RFC 9110 §15.5.1 | TEST-HTTP-026 |
 | REQ-HTTP-027 | MUST | Return 500 (Internal Server Error) if handler fails | RFC 9110 §15.6.1 | TEST-HTTP-027 |
@@ -91,7 +91,7 @@ This stack implements a minimal HTTP/1.0 server (with optional HTTP/1.1 support)
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-HTTP-039 | MUST | Limit request line length to prevent buffer overflow | Architecture | TEST-HTTP-039 |
-| REQ-HTTP-040 | MUST | Limit total header size to prevent buffer overflow | Architecture | TEST-HTTP-040 |
+| REQ-HTTP-040 | MUST | Limit total header size to prevent buffer overflow; respond 431 (Request Header Fields Too Large) | Architecture, RFC 6585 §5 | TEST-HTTP-040 |
 | REQ-HTTP-041 | SHOULD | Reject requests with excessively long URIs (414 URI Too Long) | RFC 9110 §15.5.15 | TEST-HTTP-041 |
 
 ### Streaming / Chunked Responses (Optional)

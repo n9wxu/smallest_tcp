@@ -217,10 +217,12 @@ typedef struct {
 - Design: [docs/design/mdns.md](docs/design/mdns.md)
 
 ### Task 11: HTTP server (http.c)
-- HTTP/1.0 only, `Connection: close`
-- Parse request line (method + path), call app handler
-- App handler returns body + content-type
-- Demo: browse to `http://10.0.0.2/` from host
+- HTTP/1.0 semantics, `Connection: close`; GET, HEAD, POST
+- Route table → app handler; handler returns status, content type and a body pointer (streamed, any length)
+- Poll-driven connection slots, recycled out of TIME_WAIT; request/response timeouts
+- TCP gains `tcp_write()` + `tcp_output()` so header + body share a segment
+- Demo: browse to `http://pyro-dead01.local/` (advertised over mDNS)
+- Design: [docs/design/http.md](docs/design/http.md)
 
 Later milestones (12 IPv6, 13 TLS 1.3, 14 DTLS 1.3) are tracked in the README roadmap
 and their design docs.
