@@ -37,7 +37,7 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`), UDP echo server (ETH + ARP + IPv4 + I
 | Stack-internal state | **10 B** | ~2,619 B | **262× smaller** |
 
 The stack itself uses only **10 bytes** of static state. All other memory is application-owned buffers that you size to your needs.
-Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the mDNS + DNS-SD responder instead gives **9.3 KB flash / 0.7 KB RAM**; an HTTP server (with TCP) **11.0 KB flash / 1.7 KB RAM**.
+Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the mDNS + DNS-SD responder instead gives **9.3 KB flash / 0.7 KB RAM**; an HTTP server (with TCP) **11.0 KB flash / 1.7 KB RAM**. Dual stack — IPv6 with ICMPv6, neighbor discovery, SLAAC and MLD — makes the UDP echo **8.0 KB flash / 0.8 KB RAM**.
 
 > 📐 See [docs/design/size-comparison.md](docs/design/size-comparison.md) for the full comparison methodology, per-module breakdowns, and analysis.
 
@@ -48,7 +48,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 **476 unit tests passing** across 24 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
 **127 blackbox conformance tests passing** across 9 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×21, HTTP ×22, IPv6 ×29), plus 5 fuzz tests and interop checks with Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`) and dnsmasq (DHCPv6) — all run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
 
-### ✅ Implemented (Milestones 1–11)
+### ✅ Implemented (Milestones 1–12)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -68,8 +68,8 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | DNS wire format | `dns_wire.h` / `dns_wire.c` | 23 unit | RFC 1035 names with compression, bounds-checked readers (shared with the future DNS resolver) |
 | **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | **68 unit + 21 blackbox + interop** | **RFC 6762 responder: probe, announce, answer (A/AAAA/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression, conflict rename, goodbye; RFC 6763 service advertising; dual stack: ff02::fb, AAAA for every usable IPv6 address, answers on the query's family** |
 | **HTTP server** | **`http.h` / `http.c`** | **45 unit + 22 blackbox + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts; over IPv4 and IPv6** |
-| **IPv6** (Milestone 12, stages 1–4, 6a) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **126 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
-| **DHCPv6** (Milestone 12, stage 5) | **`dhcpv6_client.h/.c`** | **20 unit + 2 blackbox + dnsmasq interop** | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
+| **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **126 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
+| **DHCPv6** (Milestone 12) | **`dhcpv6_client.h/.c`** | **20 unit + 2 blackbox + dnsmasq interop** | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
@@ -97,7 +97,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | **9 — TFTP** | ✅ Done | Fetch files over the network — bootloader data path |
 | **10 — mDNS + DNS-SD** | ✅ Done | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
 | **11 — HTTP** | ✅ Done | HTTP/1.0 server — browse to your microcontroller at `http://pyro-dead01.local/` |
-| **12 — IPv6** | In progress | ✅ stage 1: IPv6 + ICMPv6 + NDP responder + DAD (ping6 by link-local); ✅ stage 2: UDP; ✅ stage 3: TCP; ✅ stage 4: router discovery + SLAAC; ✅ stage 5: DHCPv6; ✅ stage 6a: MLD + IPv6 multicast groups; ✅ stage 6b/6c: mDNS (AAAA, ff02::fb) and HTTP over IPv6 |
+| **12 — IPv6** | ✅ Done | Dual stack: IPv6 + ICMPv6, neighbor discovery + DAD, UDP and TCP over IPv6, router discovery + SLAAC, DHCPv6 (stateless + stateful), MLD, mDNS (AAAA, ff02::fb) and HTTP over IPv6 — 8.0 KB flash for a dual-stack UDP echo on Cortex-M0 |
 | **13 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
 | **14 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
@@ -107,7 +107,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 |---|---|---|---|---|---|
 | PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ 2.9 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (6.8 KB), mDNS (9.3 KB) or HTTP (11.0 KB) | ⚠️ Tight |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (6.8 KB), mDNS (9.3 KB) or HTTP (11.0 KB) | ✅ Dual-stack UDP 8.0 KB |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 

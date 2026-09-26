@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC) 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6) done
+**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 8,021 B flash / 780 B RAM for a dual-stack UDP echo (IPv4-only: 2,902 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 

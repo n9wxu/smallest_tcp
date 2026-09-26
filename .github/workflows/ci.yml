@@ -32,7 +32,7 @@ jobs:
   # ~310 B above docs/design/size-comparison.md (Arm GNU toolchain);
   # stack-only code is identical.
   arm-size:
-    name: ARM Size — Cortex-M0 (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP)
+    name: ARM Size — Cortex-M0 (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +48,7 @@ jobs:
           make arm-size-tcp | tee -a /tmp/arm-size.out
           make arm-size-mdns | tee -a /tmp/arm-size.out
           make arm-size-http | tee -a /tmp/arm-size.out
+          make arm-size-ipv6 | tee -a /tmp/arm-size.out
       - name: Size summary
         if: always()
         run: |

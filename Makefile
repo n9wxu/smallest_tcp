@@ -268,13 +268,18 @@ ARM_UDP_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icm
 ARM_TCP_SRCS := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
 ARM_MDNS_SRCS := $(ARM_UDP_SRCS) src/mdns.c src/dns_wire.c src/igmp.c
 ARM_HTTP_SRCS := $(ARM_TCP_SRCS) src/http.c
+ARM_IPV6_SRCS := $(ARM_UDP_SRCS) src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c
+# IPv6 benchmark: dual stack, no IPv4/IPv6 multicast groups to join
+ARM_IPV6_FLAGS := $(ARM_NOMCAST) -DNET_USE_TCP=0 -DNET_USE_IPV6=1 \
+                  -DNET_MAX_MCAST6_GROUPS=0 -DBENCH_IPV6
 
 ARM_UDP_OBJS := $(patsubst %.c,$(BUILD)/arm/udp/%.o,$(ARM_UDP_SRCS))
 ARM_TCP_OBJS := $(patsubst %.c,$(BUILD)/arm/tcp/%.o,$(ARM_TCP_SRCS))
 ARM_MDNS_OBJS := $(patsubst %.c,$(BUILD)/arm/mdns/%.o,$(ARM_MDNS_SRCS))
 ARM_HTTP_OBJS := $(patsubst %.c,$(BUILD)/arm/http/%.o,$(ARM_HTTP_SRCS))
+ARM_IPV6_OBJS := $(patsubst %.c,$(BUILD)/arm/ipv6/%.o,$(ARM_IPV6_SRCS))
 
-.PHONY: arm-size arm-size-tcp arm-size-mdns arm-size-http
+.PHONY: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6
 
 arm-size: $(BUILD)/arm/udp/size_measure.elf
 	@echo ""
@@ -347,6 +352,24 @@ $(BUILD)/arm/mdns/size_measure.elf: $(ARM_MDNS_OBJS)
 $(BUILD)/arm/mdns/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -DBENCH_MDNS -c -o $@ $<
+
+arm-size-ipv6: $(BUILD)/arm/ipv6/size_measure.elf
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo, dual stack IPv4 + IPv6, -Os -mthumb) ==="
+	@$(ARM_SIZE) $<
+	@echo ""
+	@echo "=== Per-module sizes ==="
+	@$(ARM_SIZE) $(ARM_IPV6_OBJS)
+	@echo ""
+	@echo "Flash = .text + .data, RAM = .data + .bss"
+
+$(BUILD)/arm/ipv6/size_measure.elf: $(ARM_IPV6_OBJS)
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_IPV6_FLAGS) $(ARM_LDFLAGS) -o $@ $^
+
+$(BUILD)/arm/ipv6/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_IPV6_FLAGS) -c -o $@ $<
 
 # ── Clean ─────────────────────────────────────────────────────────────
 

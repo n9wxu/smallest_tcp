@@ -11,6 +11,8 @@
  *   make arm-size-tcp  — UDP echo + TCP echo (adds tcp.c + tcp_buf_saw.c)
  *   make arm-size-mdns — UDP echo + mDNS/DNS-SD responder (-DBENCH_MDNS)
  *   make arm-size-http — UDP echo + HTTP server, one slot (-DBENCH_HTTP)
+ *   make arm-size-ipv6 — UDP echo over IPv4 and IPv6: + IPv6, ICMPv6, ND,
+ *                        DAD, router discovery, SLAAC, MLD (-DBENCH_IPV6)
  */
 
 #include "arp.h"
@@ -34,6 +36,10 @@
 #include "http.h"
 #endif
 
+#ifdef BENCH_IPV6
+#include "ipv6.h"
+#endif
+
 /* Application-owned memory (typical small MCU sizes) */
 static uint8_t rx_buf[300];
 static uint8_t tx_buf[300];
@@ -48,6 +54,19 @@ static void echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
   n->mac_driver->peek(n->mac_ctx, payload_offset, buf, len);
   udp_send(n, src_ip, src_mac, 7, src_port, buf, len);
 }
+
+#ifdef BENCH_IPV6
+/* The same echo over IPv6 */
+static void echo6_handler(net_t *n, const uint8_t *src_ip, uint16_t src_port,
+                          const uint8_t *src_mac, uint16_t payload_offset,
+                          uint16_t payload_len) {
+  uint8_t buf[64];
+  uint16_t len = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
+  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, len);
+  udp6_send(n, src_ip, src_mac, 7, src_port, buf, len);
+}
+static const udp6_port_entry_t ports6[] = {{7, echo6_handler}};
+#endif
 
 #ifdef BENCH_MDNS
 /* mDNS + DNS-SD: host name plus one advertised service */
@@ -122,6 +141,12 @@ void app_main(void) {
   udp_ports.entries = ports;
   udp_ports.count = sizeof(ports) / sizeof(ports[0]);
 
+#ifdef BENCH_IPV6
+  udp6_ports.entries = ports6;
+  udp6_ports.count = 1;
+  ipv6_start(&net); /* link-local address, DAD, then router discovery */
+#endif
+
 #ifdef BENCH_MDNS
   mdns_init(&mdns, &net, records, sizeof(records) / sizeof(records[0]),
             (mdns_conflict_fn_t)0, (void *)0);
@@ -177,6 +202,10 @@ void app_main(void) {
 #ifdef BENCH_MDNS
   mdns_tick(&mdns, 10);
   mdns_stop(&mdns);
+#endif
+
+#ifdef BENCH_IPV6
+  ipv6_tick(&net, 10); /* DAD, RS, SLAAC lifetimes, MLD */
 #endif
 
   dummy = n;

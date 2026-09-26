@@ -193,13 +193,39 @@ owned: the three 256 B buffers and the `http_conn_t` (which embeds the
 `tcp_conn_t`).  The response header is formatted on the stack (192 B while
 sending), without `printf` and without division.
 
+## Adding IPv6 (dual stack)
+
+`make arm-size-ipv6` builds the UDP benchmark dual stack (`-DNET_USE_IPV6=1`)
+with a UDP echo over IPv6 as well: IPv6 input/output with the extension-header
+walk, ICMPv6 (echo, errors), Neighbor Discovery (NS/NA responder, DAD, router
+discovery, SLAAC with lifetimes) and MLDv2/v1.  No multicast groups to join
+(`NET_MAX_MCAST_GROUPS=0`, `NET_MAX_MCAST6_GROUPS=0`).
+
+| Metric | UDP (IPv4) | UDP, dual stack | Delta |
+|--------|-----------:|----------------:|------:|
+| **Flash (code + rodata)** | 2,902 B | **8,021 B** | +5,119 B |
+| **RAM (static state)** | 672 B | **780 B** | +108 B |
+
+| Module | .text | Function |
+|--------|------:|----------|
+| `ipv6.c` | 1,475 | Header parse/build, extension headers, addresses and lifetimes, source selection, dispatch |
+| `ndp.c` | 1,495 | NS/NA, DAD, Router Solicitation/Advertisement, SLAAC |
+| `mld.c` | 1,021 | MLDv2 reports and query answers, MLDv1 fallback |
+| `icmpv6.c` | 612 | Checksum, echo, error messages |
+| `udp.c` (IPv6 part) | +474 | `udp6_input`, `udp6_send[_inplace]` |
+
+The RAM is `net_t`'s IPv6 part: two address slots with their lifetimes,
+the default router, and the MLD and router-solicitation timers.  No divide
+routine is linked (lifetimes count seconds by subtraction).  An IPv6-only
+build (no ARP, IPv4, ICMPv4) is not offered yet.
+
 ## Target Fit Analysis
 
 | Target | Flash | RAM | smallest_tcp UDP | lwIP UDP |
 |--------|-------|-----|-----------------|----------|
 | **PIC16F1454** | 14 KB | 1 KB | ✅ 2.9 KB + buffers | ❌ 10 KB code alone |
 | **CH32X033** | 62 KB | 20 KB | ✅ Plenty of room | ✅ Fits |
-| **STM32F042** | 32 KB | 6 KB | ✅ 2.9 KB; 6.8 KB with TCP; 9.3 KB with mDNS; 11.0 KB with HTTP | ⚠️ Tight with app |
+| **STM32F042** | 32 KB | 6 KB | ✅ 2.9 KB; 6.8 KB with TCP; 9.3 KB with mDNS; 11.0 KB with HTTP; 8.0 KB dual stack | ⚠️ Tight with app |
 | **CH32V203** | 256 KB | 10 KB | ✅ Plenty of room | ✅ Fits |
 
 ## How to Reproduce
@@ -210,6 +236,7 @@ make arm-size        # UDP only (lwIP comparison)
 make arm-size-tcp    # UDP + TCP
 make arm-size-mdns   # UDP + mDNS/DNS-SD responder
 make arm-size-http   # UDP + HTTP server (with TCP)
+make arm-size-ipv6   # UDP, dual stack IPv4 + IPv6 (ICMPv6, ND, SLAAC, MLD)
 
 # Build lwIP for comparison (clones lwIP 2.2.1 into build/lwip if missing)
 bash bench/build_lwip.sh
@@ -241,6 +268,7 @@ bash bench/build_lwip.sh
 | 2026-09-26 | …+TCP+HTTP | 11,010 B (10,738 stack) | — | — |
 | 2026-09-26 | …+TCP+HTTP (TCP refactored for IPv6; IPv4-only build) | 11,014 B (10,738 stack) | — | — |
 | 2026-09-26 | …+mDNS/DNS-SD (family-aware writer for IPv6; IPv4-only build) | 9,292 B | — | — |
+| 2026-09-26 | ETH+ARP+IPv4+ICMP+UDP, dual stack (+IPv6, ICMPv6, ND, SLAAC, MLD) | 8,021 B | — | — |
 
 > The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
 > peek-based UDP dispatch, IPv4 Protocol Unreachable, and (Milestone 10, +80 B)

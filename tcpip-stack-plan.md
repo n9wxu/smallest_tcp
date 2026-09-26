@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Milestone 12 IPv6 stages 1–6 done; 476 unit tests + 127 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers)
+**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Tasks 1–12 complete (Milestone 12: IPv6, dual stack, 8.0 KB for a dual-stack UDP echo on Cortex-M0); 476 unit tests + 127 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: Milestone 13, TLS 1.3)
 
 ## Objective
 
@@ -230,7 +230,7 @@ typedef struct {
 - Demo: browse to `http://pyro-dead01.local/` (advertised over mDNS)
 - Design: [docs/design/http.md](docs/design/http.md)
 
-### ⏳ Task 12: IPv6 (ipv6.c, icmpv6.c, ndp.c, …) *(IN PROGRESS)*
+### ✅ Task 12: IPv6 (ipv6.c, icmpv6.c, ndp.c, mld.c, dhcpv6_client.c) *(DONE)*
 - ✅ Stage 1: IPv6 header in/out + extension-header walk, EUI-64 link-local, ICMPv6 echo + Parameter Problem, NS/NA responder, DAD — `ping -6` by link-local
 - ✅ Stage 2: UDP over IPv6 (`udp6_ports`, `udp6_send`)
 - ✅ Stage 3: TCP over IPv6 (dual-stack listeners, `tcp6_connect`)
@@ -275,7 +275,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/dhcpv4.md](docs/design/dhcpv4.md)** — DHCPv4 client + server, option handler callback API
 - **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10, implemented)
 - **[docs/design/http.md](docs/design/http.md)** — HTTP/1.0 server (Task 11, implemented)
-- **[docs/design/ipv6.md](docs/design/ipv6.md)** — IPv6, ICMPv6, NDP, SLAAC (Task 12, in progress)
+- **[docs/design/ipv6.md](docs/design/ipv6.md)** — IPv6, ICMPv6, NDP, SLAAC, DHCPv6, MLD, mDNS/HTTP over IPv6 (Task 12, implemented)
 - **[docs/design/tls.md](docs/design/tls.md)** / **[docs/design/dtls.md](docs/design/dtls.md)** — TLS 1.3 / DTLS 1.3
 
 ### RFC Requirements (~950 total, traced to RFC sections)
