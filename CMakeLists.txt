@@ -91,6 +91,20 @@ if(PROJECT_IS_TOP_LEVEL)
 endif()
 add_library(smallest_tcp::mdns ALIAS smallest_tcp_mdns)
 
+# ── HTTP/1.0 server (optional) ───────────────────────────────────────
+
+add_library(smallest_tcp_http STATIC
+    src/http.c
+)
+target_link_libraries(smallest_tcp_http PUBLIC smallest_tcp_core)
+target_compile_features(smallest_tcp_http PUBLIC c_std_99)
+if(PROJECT_IS_TOP_LEVEL)
+    target_compile_options(smallest_tcp_http PRIVATE
+        -Wall -Wextra -Werror -pedantic
+    )
+endif()
+add_library(smallest_tcp::http ALIAS smallest_tcp_http)
+
 # ── DHCPv4 server (optional) ─────────────────────────────────────────
 
 add_library(smallest_tcp_dhcpv4_server STATIC
