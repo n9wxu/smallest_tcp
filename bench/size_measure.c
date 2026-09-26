@@ -5,11 +5,12 @@
  * This file exercises all implemented stack layers so the linker keeps them.
  * No OS dependencies (no stdio, no malloc, no syscalls).
  *
- * Three configurations are measured:
+ * Four configurations are measured:
  *   make arm-size      — UDP echo (ETH + ARP + IPv4 + ICMP + UDP),
  *                        built with -DNET_USE_TCP=0 (lwIP comparison baseline)
  *   make arm-size-tcp  — UDP echo + TCP echo (adds tcp.c + tcp_buf_saw.c)
  *   make arm-size-mdns — UDP echo + mDNS/DNS-SD responder (-DBENCH_MDNS)
+ *   make arm-size-http — UDP echo + HTTP server, one slot (-DBENCH_HTTP)
  */
 
 #include "arp.h"
@@ -27,6 +28,10 @@
 
 #ifdef BENCH_MDNS
 #include "mdns.h"
+#endif
+
+#ifdef BENCH_HTTP
+#include "http.h"
 #endif
 
 /* Application-owned memory (typical small MCU sizes) */
@@ -79,7 +84,23 @@ static const udp_port_entry_t ports[] = {{7, echo_handler},
 static const udp_port_entry_t ports[] = {{7, echo_handler}};
 #endif
 
-#if NET_USE_TCP
+#ifdef BENCH_HTTP
+/* HTTP server — one slot serving a static page */
+static const char page[] = "<h1>ok</h1>";
+static int page_root(const http_request_t *rq, http_response_t *rs, void *c) {
+  (void)rq;
+  (void)c;
+  rs->body = (const uint8_t *)page;
+  rs->body_len = sizeof(page) - 1;
+  return 0;
+}
+static const http_route_t routes[] = {{"/", HTTP_GET, page_root, (void *)0}};
+static uint8_t http_tx[256], http_rx[256];
+static char http_req[256];
+static http_conn_t http_slot;
+static tcp_conn_t *conn_table[1];
+static http_server_t http;
+#elif NET_USE_TCP
 /* TCP echo server — one connection, stop-and-wait buffers */
 static uint8_t tcp_tx_mem[128];
 static uint8_t tcp_rx_mem[128];
@@ -107,7 +128,14 @@ void app_main(void) {
   mdns_start(&mdns);
 #endif
 
-#if NET_USE_TCP
+#ifdef BENCH_HTTP
+  http_conn_init(&http_slot, http_tx, sizeof(http_tx), http_rx,
+                 sizeof(http_rx), http_req, sizeof(http_req));
+  conn_table[0] = http_conn_tcp(&http_slot);
+  tcp_connections.conns = conn_table;
+  tcp_connections.count = 1;
+  http_server_init(&http, &net, 80, routes, 1, &http_slot, 1);
+#elif NET_USE_TCP
   tcp_saw_tx_init(&tcp_tx_ctx, tcp_tx_mem, sizeof(tcp_tx_mem));
   tcp_saw_rx_init(&tcp_rx_ctx, tcp_rx_mem, sizeof(tcp_rx_mem));
   tcp_conn_init(&echo_conn, &tcp_saw_tx_ops, &tcp_tx_ctx, &tcp_saw_rx_ops,
@@ -123,7 +151,11 @@ void app_main(void) {
     eth_input(&net, net.rx.buf, net.rx.frame_len);
   }
 
-#if NET_USE_TCP
+#ifdef BENCH_HTTP
+  http_server_poll(&http);
+  tcp_tick(&net, 10);
+  http_server_tick(&http, 10);
+#elif NET_USE_TCP
   {
     uint8_t buf[64];
     uint16_t got = tcp_recv(&echo_conn, buf, sizeof(buf));

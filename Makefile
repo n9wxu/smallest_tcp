@@ -199,6 +199,8 @@ ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=
 #   arm-size-tcp   UDP echo + TCP echo server (adds tcp.c + tcp_buf_saw.c)
 #   arm-size-mdns  UDP echo + mDNS/DNS-SD responder (adds mdns.c, dns_wire.c,
 #                  igmp.c; one multicast group)
+#   arm-size-http  UDP echo + HTTP server, one connection slot (adds tcp.c,
+#                  tcp_buf_saw.c, http.c)
 # The first two compile multicast RX out (NET_MAX_MCAST_GROUPS=0): neither
 # app joins a group, and the lwIP build has IGMP off.
 ARM_NOMCAST := -DNET_MAX_MCAST_GROUPS=0
@@ -207,12 +209,14 @@ ARM_UDP_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icm
                 src/driver/stub.c bench/size_measure.c
 ARM_TCP_SRCS := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
 ARM_MDNS_SRCS := $(ARM_UDP_SRCS) src/mdns.c src/dns_wire.c src/igmp.c
+ARM_HTTP_SRCS := $(ARM_TCP_SRCS) src/http.c
 
 ARM_UDP_OBJS := $(patsubst %.c,$(BUILD)/arm/udp/%.o,$(ARM_UDP_SRCS))
 ARM_TCP_OBJS := $(patsubst %.c,$(BUILD)/arm/tcp/%.o,$(ARM_TCP_SRCS))
 ARM_MDNS_OBJS := $(patsubst %.c,$(BUILD)/arm/mdns/%.o,$(ARM_MDNS_SRCS))
+ARM_HTTP_OBJS := $(patsubst %.c,$(BUILD)/arm/http/%.o,$(ARM_HTTP_SRCS))
 
-.PHONY: arm-size arm-size-tcp arm-size-mdns
+.PHONY: arm-size arm-size-tcp arm-size-mdns arm-size-http
 
 arm-size: $(BUILD)/arm/udp/size_measure.elf
 	@echo ""
@@ -259,6 +263,24 @@ $(BUILD)/arm/tcp/size_measure.elf: $(ARM_TCP_OBJS)
 $(BUILD)/arm/tcp/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -c -o $@ $<
+
+arm-size-http: $(BUILD)/arm/http/size_measure.elf
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo + HTTP server, -Os -mthumb) ==="
+	@$(ARM_SIZE) $<
+	@echo ""
+	@echo "=== Per-module sizes ==="
+	@$(ARM_SIZE) $(ARM_HTTP_OBJS)
+	@echo ""
+	@echo "Flash = .text + .data, RAM = .data + .bss"
+
+$(BUILD)/arm/http/size_measure.elf: $(ARM_HTTP_OBJS)
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DBENCH_HTTP $(ARM_LDFLAGS) -o $@ $^
+
+$(BUILD)/arm/http/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DBENCH_HTTP -c -o $@ $<
 
 $(BUILD)/arm/mdns/size_measure.elf: $(ARM_MDNS_OBJS)
 	@mkdir -p $(dir $@)
