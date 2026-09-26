@@ -363,12 +363,7 @@ def test_tcp_051_syn_in_established_causes_error(ctx):
 # REQ-TCP-090, REQ-TCP-095, REQ-TCP-096
 # ══════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.sut_specific  # depends on SUT's RTO (500 ms); Linux RTO starts at 1–3 s
-@pytest.mark.xfail(
-    reason="tcp_echo_demo SYN-ACK retransmit depends on tcp_tick() retransmit "
-           "logic; passes once the feature is confirmed working",
-    strict=False,
-)
+@pytest.mark.sut_specific  # depends on SUT's RTO (1 s initial); Linux RTO starts at 1–3 s
 def test_tcp_090_syn_retransmit_on_timeout(ctx):
     """REQ-TCP-095: SUT must retransmit SYN-ACK after RTO if not ACKed."""
     sport = alloc_port()
@@ -461,12 +456,7 @@ def test_tcp_153_iss_differs_across_connections(ctx):
 # REQ-TCP-085, REQ-TCP-086, REQ-TCP-087
 # ══════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.sut_specific  # persist probe timeout=3s; Linux persist starts at 5 s
-@pytest.mark.xfail(
-    reason="tcp_echo_demo persist timer depends on tcp_tick() persist logic; "
-           "passes once the feature is confirmed working",
-    strict=False,
-)
+@pytest.mark.sut_specific  # SUT persist interval starts at 1 s (RTO_INIT); Linux persist starts at 5 s
 def test_tcp_085_persist_probe_on_zero_window(ctx):
     """
     REQ-TCP-085: when we advertise receive window = 0, SUT MUST start persist
