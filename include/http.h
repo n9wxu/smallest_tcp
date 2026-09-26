@@ -126,6 +126,7 @@ typedef struct {
   uint16_t req_len;   /**< Bytes received so far */
   uint16_t hdr_len;   /**< End of the header block, 0 until complete */
   uint32_t content_length;
+  http_request_t request; /**< Parsed request (valid once hdr_len != 0) */
   uint32_t timer_ms;
   uint8_t state;
   uint8_t head_only;  /**< HEAD: send the header block only */
@@ -134,6 +135,7 @@ typedef struct {
   const char *content_type;
   const uint8_t *body;
   uint32_t body_len;
+  uint16_t resp_hdr_len; /**< Length of the formatted response header */
   uint32_t sent;      /**< Header + body bytes accepted by TCP */
 } http_conn_t;
 

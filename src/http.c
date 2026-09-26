@@ -348,3 +348,282 @@ uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
     out[b.n] = '\0';
   return b.n;
 }
+
+/* ══ Server ═══════════════════════════════════════════════════════════ */
+
+/* Slot states (http_conn_t.state) */
+#define S_LISTEN 0  /* TCP listening or handshaking */
+#define S_RECV 1    /* reading the request */
+#define S_SEND 2    /* streaming the response */
+#define S_CLOSING 3 /* our FIN sent, waiting for the close to finish */
+
+#define HTTP_MIN_REQ 32
+
+net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
+                         uint8_t *rx_mem, uint16_t rx_size, char *req_buf,
+                         uint16_t req_size) {
+  if (!c || !tx_mem || !rx_mem || !req_buf || tx_size == 0 || rx_size == 0 ||
+      req_size < HTTP_MIN_REQ)
+    return NET_ERR_INVALID_PARAM;
+  memset(c, 0, sizeof(*c));
+  c->tx_mem = tx_mem;
+  c->tx_size = tx_size;
+  c->rx_mem = rx_mem;
+  c->rx_size = rx_size;
+  c->req = req_buf;
+  c->req_size = req_size;
+  tcp_saw_tx_init(&c->tx_ctx, tx_mem, tx_size);
+  tcp_saw_rx_init(&c->rx_ctx, rx_mem, rx_size);
+  return tcp_conn_init(&c->tcp, &tcp_saw_tx_ops, &c->tx_ctx, &tcp_saw_rx_ops,
+                       &c->rx_ctx, NULL);
+}
+
+/* (Re)arm a slot: fresh TCP state and buffers, LISTEN on the port.  Also
+ * how a slot leaves TIME_WAIT at once (docs/design/http.md §7). */
+static void slot_listen(http_server_t *s, http_conn_t *c) {
+  tcp_saw_tx_init(&c->tx_ctx, c->tx_mem, c->tx_size);
+  tcp_saw_rx_init(&c->rx_ctx, c->rx_mem, c->rx_size);
+  tcp_conn_init(&c->tcp, &tcp_saw_tx_ops, &c->tx_ctx, &tcp_saw_rx_ops,
+                &c->rx_ctx, NULL);
+  tcp_listen(&c->tcp, s->port);
+  c->state = S_LISTEN;
+  c->req_len = 0;
+  c->hdr_len = 0;
+  c->content_length = 0;
+  c->timer_ms = HTTP_REQUEST_TIMEOUT_MS;
+  c->head_only = 0;
+  c->allow = 0;
+  c->body = NULL;
+  c->body_len = 0;
+  c->sent = 0;
+}
+
+net_err_t http_server_init(http_server_t *s, net_t *net, uint16_t port,
+                           const http_route_t *routes, uint8_t n_routes,
+                           http_conn_t *conns, uint8_t n_conns) {
+  uint8_t i;
+  if (!s || !net || !conns || n_conns == 0 || port == 0 ||
+      (!routes && n_routes))
+    return NET_ERR_INVALID_PARAM;
+  s->net = net;
+  s->port = port;
+  s->routes = routes;
+  s->n_routes = n_routes;
+  s->conns = conns;
+  s->n_conns = n_conns;
+  for (i = 0; i < n_conns; i++)
+    slot_listen(s, &conns[i]);
+  return NET_OK;
+}
+
+static void respond(http_conn_t *c, uint16_t status, const char *content_type,
+                    const uint8_t *body, uint32_t body_len, uint8_t allow) {
+  char hdr[HTTP_HDR_MAX];
+  c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status, content_type,
+                                       body_len, allow);
+  if (c->resp_hdr_len == 0) { /* e.g. a very long content type */
+    status = 500;
+    content_type = "text/plain";
+    body = (const uint8_t *)http_reason(500);
+    body_len = (uint32_t)strlen((const char *)body);
+    allow = 0;
+    c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status,
+                                         content_type, body_len, 0);
+  }
+  c->status = status;
+  c->content_type = content_type;
+  c->body = body;
+  c->body_len = body_len;
+  c->allow = allow;
+  c->sent = 0;
+  c->state = S_SEND;
+  c->timer_ms = HTTP_RESPONSE_TIMEOUT_MS;
+}
+
+/* Error responses carry the reason phrase as a text/plain body */
+static void respond_error(http_conn_t *c, uint16_t status, uint8_t allow) {
+  const char *reason = http_reason(status);
+  respond(c, status, "text/plain", (const uint8_t *)reason,
+          (uint32_t)strlen(reason), allow);
+}
+
+static void begin_close(http_server_t *s, http_conn_t *c) {
+  tcp_close(s->net, &c->tcp);
+  c->state = S_CLOSING;
+  c->timer_ms = HTTP_RESPONSE_TIMEOUT_MS;
+}
+
+static void dispatch(http_server_t *s, http_conn_t *c) {
+  http_request_t *rq = &c->request;
+  uint32_t need = (uint32_t)c->hdr_len + c->content_length;
+  const http_route_t *route = NULL;
+  http_response_t rs;
+  uint8_t i;
+
+  for (i = 0; i < s->n_routes; i++) {
+    if (strcmp(s->routes[i].path, rq->path) == 0) {
+      route = &s->routes[i];
+      break;
+    }
+  }
+  if (!route) {
+    respond_error(c, 404, 0); /* REQ-HTTP-025 */
+    return;
+  }
+  uint8_t allowed =
+      (uint8_t)(route->methods | ((route->methods & HTTP_GET) ? HTTP_HEAD : 0));
+  if (!(allowed & rq->method)) {
+    respond_error(c, 405, allowed); /* REQ-HTTP-024 */
+    return;
+  }
+
+  rq->body = c->content_length ? (const uint8_t *)c->req + c->hdr_len : NULL;
+  rq->body_len = (uint16_t)c->content_length;
+  rq->remote_ip = c->tcp.remote_ip;
+  rs.status = 200;
+  rs.content_type = "text/html";
+  rs.body = NULL;
+  rs.body_len = 0;
+  rs.scratch = (uint8_t *)c->req + need;
+  rs.scratch_size = (uint16_t)(c->req_size - need);
+  if (route->handler(rq, &rs, route->ctx) < 0) {
+    respond_error(c, 500, 0); /* REQ-HTTP-027 */
+    return;
+  }
+  respond(c, rs.status, rs.content_type, rs.body, rs.body ? rs.body_len : 0,
+          0);
+}
+
+static void do_recv(http_server_t *s, http_conn_t *c) {
+  uint16_t n;
+  while (c->req_len < c->req_size &&
+         (n = tcp_recv(&c->tcp, (uint8_t *)c->req + c->req_len,
+                       (uint16_t)(c->req_size - c->req_len))) > 0)
+    c->req_len = (uint16_t)(c->req_len + n);
+
+  if (c->hdr_len == 0) {
+    uint16_t end = http_header_end(c->req, c->req_len);
+    if (end == 0) {
+      if (c->req_len >= c->req_size) /* REQ-HTTP-039..041 */
+        respond_error(c, memchr(c->req, '\n', c->req_len) ? 431 : 414, 0);
+      else if (c->tcp.state == TCP_CLOSE_WAIT)
+        begin_close(s, c); /* peer is done sending; request never ended */
+      return;
+    }
+    uint16_t status =
+        http_parse_request(c->req, end, &c->request, &c->content_length);
+    c->hdr_len = end;
+    if (status != HTTP_PARSE_OK) {
+      respond_error(c, status, 0);
+      return;
+    }
+    c->head_only = (uint8_t)(c->request.method == HTTP_HEAD);
+    if ((uint32_t)end + c->content_length > c->req_size) {
+      respond_error(c, 413, 0); /* REQ-HTTP-033, 034 */
+      return;
+    }
+  }
+
+  if ((uint32_t)c->req_len < (uint32_t)c->hdr_len + c->content_length) {
+    if (c->tcp.state == TCP_CLOSE_WAIT)
+      begin_close(s, c); /* the body can no longer arrive */
+    return;
+  }
+  dispatch(s, c);
+}
+
+/* Copy as much of header + body into the TCP TX buffer as it accepts, then
+ * push one segment.  Close once everything is sent and ACKed. */
+static void do_send(http_server_t *s, http_conn_t *c) {
+  uint32_t total =
+      (uint32_t)c->resp_hdr_len + (c->head_only ? 0u : c->body_len);
+
+  if (c->sent < c->resp_hdr_len) {
+    char hdr[HTTP_HDR_MAX];
+    http_format_header(hdr, sizeof(hdr), c->status, c->content_type,
+                       c->body_len, c->allow);
+    int w = tcp_write(&c->tcp, (const uint8_t *)hdr + c->sent,
+                      (uint16_t)(c->resp_hdr_len - c->sent));
+    if (w > 0)
+      c->sent += (uint32_t)w;
+  }
+  while (c->sent >= c->resp_hdr_len && c->sent < total) {
+    uint32_t off = c->sent - c->resp_hdr_len;
+    uint32_t left = c->body_len - off;
+    int w = tcp_write(&c->tcp, c->body + off,
+                      (uint16_t)(left > 0xFFFFu ? 0xFFFFu : left));
+    if (w <= 0)
+      break;
+    c->sent += (uint32_t)w;
+  }
+  tcp_output(s->net, &c->tcp);
+
+  if (c->sent >= total && c->tx_ctx.data_len == 0 &&
+      c->tcp.snd_una == c->tcp.snd_nxt)
+    begin_close(s, c); /* REQ-HTTP-029 */
+}
+
+void http_server_poll(http_server_t *s) {
+  uint8_t i;
+  for (i = 0; i < s->n_conns; i++) {
+    http_conn_t *c = &s->conns[i];
+    tcp_state_t st = c->tcp.state;
+    int open = (st == TCP_ESTABLISHED || st == TCP_CLOSE_WAIT);
+
+    switch (c->state) {
+    case S_LISTEN:
+      if (open) {
+        c->state = S_RECV;
+        c->timer_ms = HTTP_REQUEST_TIMEOUT_MS;
+      } else {
+        if (st == TCP_CLOSED) /* e.g. RST during the handshake */
+          slot_listen(s, c);
+        break;
+      }
+      /* Data may already be waiting: read it now. */
+      /* fall through */
+    case S_RECV:
+      if (!open) {
+        slot_listen(s, c); /* RST or unexpected close */
+        break;
+      }
+      do_recv(s, c);
+      if (c->state == S_SEND)
+        do_send(s, c);
+      break;
+    case S_SEND:
+      if (!open) {
+        slot_listen(s, c);
+        break;
+      }
+      do_send(s, c);
+      break;
+    case S_CLOSING:
+      if (st == TCP_TIME_WAIT || st == TCP_CLOSED)
+        slot_listen(s, c); /* recycle now instead of waiting 2xMSL */
+      break;
+    default:
+      slot_listen(s, c);
+      break;
+    }
+  }
+}
+
+void http_server_tick(http_server_t *s, uint32_t elapsed_ms) {
+  uint8_t i;
+  for (i = 0; i < s->n_conns; i++) {
+    http_conn_t *c = &s->conns[i];
+    if (c->state == S_LISTEN && c->tcp.state != TCP_SYN_RECEIVED) {
+      c->timer_ms = HTTP_REQUEST_TIMEOUT_MS; /* idle listener */
+      continue;
+    }
+    if (c->timer_ms > elapsed_ms) {
+      c->timer_ms -= elapsed_ms;
+      continue;
+    }
+    /* Timed out: free the slot for the next client */
+    if (c->tcp.state != TCP_CLOSED && c->tcp.state != TCP_LISTEN)
+      tcp_abort(s->net, &c->tcp);
+    slot_listen(s, c);
+  }
+}
