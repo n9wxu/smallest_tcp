@@ -84,13 +84,23 @@ def test_ipv4_003_unknown_proto_icmp_unreachable(ctx):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_ipv4_004_fragment_silently_dropped(ctx):
-    """REQ-IPv4-024: received IP fragment (MF=1) MUST be silently discarded."""
-    # flags=1 sets MF bit; frag=0 means first fragment
-    pkt = build_ip_raw(ctx, proto=1, payload=b"\x08\x00\x00\x00\x00\x01\x00\x01",
-                       flags=1, frag=0)
-    assert silence_any(ctx, pkt, timeout=2), (
-        "SUT responded to an IP fragment (MF=1) — MUST be silently dropped"
-    )
+    """REQ-IPv4-024: received IP fragment (MF=1 or offset≠0) MUST be silently discarded.
+
+    Only non-first fragments are sent.  A first fragment (offset 0) makes a
+    reassembling host (the Linux reference SUT in blackbox-validate) send
+    ICMP Time Exceeded ~30 s later when reassembly times out (RFC 1122
+    §3.3.2), which would land in a later test's silence window.
+    """
+    fragments = {
+        "middle fragment (MF=1, offset=8)": dict(flags=1, frag=1),
+        "last fragment (MF=0, offset=8)":   dict(flags=0, frag=1),
+    }
+    for name, frag_fields in fragments.items():
+        pkt = build_ip_raw(ctx, proto=1, payload=b"\x08\x00\x00\x00\x00\x01\x00\x01",
+                           **frag_fields)
+        assert silence_any(ctx, pkt, timeout=2), (
+            f"SUT responded to an IP {name} — MUST be silently dropped"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

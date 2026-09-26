@@ -218,7 +218,7 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 | test_ipv4_001 | REQ-IPv4-005 | Bad IP header checksum → silent drop |
 | test_ipv4_002 | REQ-IPv4-011 | Wrong destination IP → silent drop |
 | test_ipv4_003 | REQ-IPv4-020, REQ-ICMPv4-017 | Unknown protocol → ICMP Protocol Unreachable (type 3 code 2) |
-| test_ipv4_004 | REQ-IPv4-024 | Fragment (MF=1) → silent drop |
+| test_ipv4_004 | REQ-IPv4-024 | Non-first fragments (MF=1 or offset≠0) → silent drop |
 | test_ipv4_005 | REQ-IPv4-002 | IHL < 5 → silent drop |
 | test_ipv4_006 | REQ-IPv4-044 | TTL=1 packet accepted (hosts do not check TTL on RX) |
 | test_ipv4_007 | REQ-IPv4-023 | SUT outbound packets have DF=1 |
