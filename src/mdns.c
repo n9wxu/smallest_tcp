@@ -17,6 +17,16 @@
 #include "udp.h"
 #include <string.h>
 
+#if NET_USE_IPV6
+#include "ipv6.h"
+
+const uint8_t mdns_group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
+                                 0,    0,    0, 0, 0, 0, 0, 0xFB};
+
+#define FAM_V4 1u
+#define FAM_V6 2u
+#endif
+
 #if NET_MAX_MCAST_GROUPS < 1
 #error "mDNS needs NET_MAX_MCAST_GROUPS >= 1 to receive 224.0.0.251"
 #endif
@@ -53,6 +63,25 @@ static int is_service_type(const mdns_record_t *r) {
 static uint32_t rec_addr(const mdns_t *m, const mdns_record_t *r) {
   return r->rdata.a ? r->rdata.a : m->net->ipv4_addr;
 }
+
+#if NET_USE_IPV6
+/* The addresses an AAAA record stands for: its own, or every usable IPv6
+ * address of the interface (not tentative ones, RFC 4862 §5.4). */
+static uint8_t aaaa_addrs(const mdns_t *m, const mdns_record_t *r,
+                          const uint8_t *out[NET_IPV6_ADDRS]) {
+  uint8_t i, n = 0;
+  if (r->rdata.aaaa) {
+    out[0] = r->rdata.aaaa;
+    return 1;
+  }
+  for (i = 0; i < NET_IPV6_ADDRS; i++) {
+    const net_ip6_addr_t *a = &m->net->ip6[i];
+    if (a->state == NET_IP6_PREFERRED || a->state == NET_IP6_DEPRECATED)
+      out[n++] = a->addr;
+  }
+  return n;
+}
+#endif
 
 static char lower(char c) {
   return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
@@ -133,6 +162,17 @@ static int rr_matches(const mdns_t *m, const mdns_record_t *r,
                            r->rdata.srv.target);
   case DNS_TYPE_TXT:
     return txt_equals(r->rdata.txt, d, rr->rdlen);
+#if NET_USE_IPV6
+  case DNS_TYPE_AAAA: {
+    const uint8_t *addrs[NET_IPV6_ADDRS];
+    uint8_t n = aaaa_addrs(m, r, addrs), k;
+    for (k = 0; k < n && rr->rdlen == 16; k++) {
+      if (memcmp(d, addrs[k], 16) == 0)
+        return 1;
+    }
+    return 0;
+  }
+#endif
   default:
     return 0;
   }
@@ -141,9 +181,12 @@ static int rr_matches(const mdns_t *m, const mdns_record_t *r,
 /* ── Message building ─────────────────────────────────────────────── */
 
 typedef struct {
-  uint32_t ip;        /* destination IP */
-  const uint8_t *mac; /* destination MAC, NULL = 224.0.0.251's MAC */
+  uint32_t ip;        /* destination IPv4 */
+  const uint8_t *mac; /* destination MAC, NULL = the group's MAC */
   uint16_t port;      /* destination port */
+#if NET_USE_IPV6
+  const uint8_t *ip6; /* destination IPv6, NULL = send over IPv4 */
+#endif
 } dest_t;
 
 typedef struct {
@@ -160,13 +203,24 @@ typedef struct {
   uint16_t qtype;
 } resp_opts_t;
 
-static const dest_t mcast_dest = {MDNS_GROUP, NULL, MDNS_PORT};
+static const dest_t mcast_dest = {.ip = MDNS_GROUP, .port = MDNS_PORT};
+#if NET_USE_IPV6
+static const dest_t mcast6_dest = {.port = MDNS_PORT, .ip6 = mdns_group6};
+#endif
 
-static int pkt_begin(mdns_t *m, pkt_t *p, uint16_t id, uint16_t flags) {
-  uint16_t cap = (m->net->tx.capacity > UDP_PAYLOAD_OFFSET)
-                     ? (uint16_t)(m->net->tx.capacity - UDP_PAYLOAD_OFFSET)
+static int pkt_begin(mdns_t *m, pkt_t *p, const dest_t *d, uint16_t id,
+                     uint16_t flags) {
+  uint16_t off = UDP_PAYLOAD_OFFSET;
+#if NET_USE_IPV6
+  if (d->ip6)
+    off = UDP6_PAYLOAD_OFFSET;
+#else
+  (void)d;
+#endif
+  uint16_t cap = (m->net->tx.capacity > off)
+                     ? (uint16_t)(m->net->tx.capacity - off)
                      : 0;
-  dns_writer_init(&p->w, m->net->tx.buf + UDP_PAYLOAD_OFFSET, cap);
+  dns_writer_init(&p->w, m->net->tx.buf + off, cap);
   p->qd = p->an = p->ns = p->ar = 0;
   return dns_write_header(&p->w, id, flags, 0, 0, 0, 0);
 }
@@ -174,6 +228,19 @@ static int pkt_begin(mdns_t *m, pkt_t *p, uint16_t id, uint16_t flags) {
 static void pkt_send(mdns_t *m, pkt_t *p, const dest_t *d) {
   uint8_t mac[6];
   const uint8_t *dst_mac = d->mac;
+#if NET_USE_IPV6
+  if (d->ip6) {
+    if (!dst_mac) {
+      ipv6_mcast_mac(d->ip6, mac);
+      dst_mac = mac;
+    }
+    dns_set_counts(p->w.buf, p->qd, p->an, p->ns, p->ar);
+    /* RFC 6762 §11: Hop Limit 255 */
+    udp6_send_inplace(m->net, d->ip6, dst_mac, MDNS_PORT, d->port, p->w.len,
+                      MDNS_IP_TTL);
+    return;
+  }
+#endif
   if (!dst_mac) {
     ipv4_mcast_mac(MDNS_GROUP, mac);
     dst_mac = mac;
@@ -201,11 +268,13 @@ static int write_txt(dns_writer_t *w, const char *const *txt) {
   return 0;
 }
 
-/* Write one resource record; on overflow nothing is left behind. */
-static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
-                    uint32_t ttl, uint16_t class_) {
+/* Write one resource record (for AAAA, the address @p a6); on overflow
+ * nothing is left behind. */
+static int write_one(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
+                     uint32_t ttl, uint16_t class_, const uint8_t *a6) {
   dns_writer_mark_t mark = dns_writer_mark(w);
   int err;
+  (void)a6;
   if (dns_write_name(w, r->name) < 0 || dns_write_u16(w, r->type) < 0 ||
       dns_write_u16(w, class_) < 0 || dns_write_u32(w, ttl) < 0)
     goto fail;
@@ -229,6 +298,11 @@ static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
   case DNS_TYPE_TXT:
     err = write_txt(w, r->rdata.txt);
     break;
+#if NET_USE_IPV6
+  case DNS_TYPE_AAAA:
+    err = dns_write_bytes(w, a6, 16);
+    break;
+#endif
   default:
     err = -1;
     break;
@@ -240,6 +314,28 @@ static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
 fail:
   dns_writer_rollback(w, mark);
   return -1;
+}
+
+/* Write a record's RRs — one, or for an AAAA record one per address.
+ * @return RRs written (0 if an AAAA record has no usable address), or -1
+ *         on overflow (then nothing is left behind). */
+static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
+                    uint32_t ttl, uint16_t class_) {
+#if NET_USE_IPV6
+  if (r->type == DNS_TYPE_AAAA) {
+    const uint8_t *addrs[NET_IPV6_ADDRS];
+    dns_writer_mark_t mark = dns_writer_mark(w);
+    uint8_t n = aaaa_addrs(m, r, addrs), k;
+    for (k = 0; k < n; k++) {
+      if (write_one(m, w, r, ttl, class_, addrs[k]) < 0) {
+        dns_writer_rollback(w, mark);
+        return -1;
+      }
+    }
+    return n;
+  }
+#endif
+  return write_one(m, w, r, ttl, class_, NULL) < 0 ? -1 : 1;
 }
 
 /* NSEC for the unique name of record @p r, restricted form (RFC 6762
@@ -270,7 +366,7 @@ static int write_nsec(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
       dns_write_bytes(w, block, 2) < 0 || dns_write_bytes(w, bitmap, used) < 0)
     goto fail;
   net_write16be(w->buf + rdlen_pos, (uint16_t)(w->len - rdlen_pos - 2));
-  return 0;
+  return 1;
 fail:
   dns_writer_rollback(w, mark);
   return -1;
@@ -294,7 +390,7 @@ static uint16_t rr_class(const resp_opts_t *o, const mdns_record_t *r) {
 
 static void resp_begin(mdns_t *m, pkt_t *p, const resp_opts_t *o) {
   /* REQ-MDNS-004, 005: QR + AA, ID 0 on multicast */
-  pkt_begin(m, p, o->id, DNS_FLAG_QR | DNS_FLAG_AA);
+  pkt_begin(m, p, o->dest, o->id, DNS_FLAG_QR | DNS_FLAG_AA);
   if (o->legacy && o->qname) {
     if (dns_write_name(&p->w, o->qname) == 0 &&
         dns_write_u16(&p->w, o->qtype) == 0 &&
@@ -314,16 +410,18 @@ static int write_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
 
 static void add_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
                        const mdns_record_t *r, int nsec) {
-  if (write_answer(m, p, o, r, nsec) == 0) {
-    p->an++;
+  int n = write_answer(m, p, o, r, nsec);
+  if (n >= 0) {
+    p->an = (uint16_t)(p->an + n);
     return;
   }
   if (p->an == 0)
     return;
   pkt_send(m, p, o->dest);
   resp_begin(m, p, o);
-  if (write_answer(m, p, o, r, nsec) == 0)
-    p->an++;
+  n = write_answer(m, p, o, r, nsec);
+  if (n > 0)
+    p->an = (uint16_t)(p->an + n);
 }
 
 static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
@@ -366,9 +464,10 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
   /* REQ-DNSSD-007, 008: additionals are best effort in the last packet */
   for (i = 0; i < m->count; i++) {
     const mdns_record_t *r = &m->records[i];
+    int n;
     if ((additionals & BIT(i)) &&
-        write_rr(m, &p.w, r, rr_ttl(o, r->ttl), rr_class(o, r)) == 0)
-      p.ar++;
+        (n = write_rr(m, &p.w, r, rr_ttl(o, r->ttl), rr_class(o, r))) > 0)
+      p.ar = (uint16_t)(p.ar + n);
   }
 
   if (p.an > 0)
@@ -397,28 +496,60 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
       continue;
     for (j = 0; j < m->count; j++) {
       const mdns_record_t *s = &m->records[j];
-      if (s->type == DNS_TYPE_A && names_equal(s->name, r->rdata.srv.target))
+      if ((s->type == DNS_TYPE_A
+#if NET_USE_IPV6
+           || s->type == DNS_TYPE_AAAA
+#endif
+           ) &&
+          names_equal(s->name, r->rdata.srv.target))
         add |= BIT(j);
     }
   }
+#if NET_USE_IPV6
+  /* RFC 6762 §6.2: an answer with one address family's records carries
+   * the name's records of the other family as additionals */
+  for (i = 0; i < m->count; i++) {
+    const mdns_record_t *r = &m->records[i];
+    if (!(answers & BIT(i)) ||
+        (r->type != DNS_TYPE_A && r->type != DNS_TYPE_AAAA))
+      continue;
+    for (j = 0; j < m->count; j++) {
+      const mdns_record_t *s = &m->records[j];
+      if ((s->type == DNS_TYPE_A || s->type == DNS_TYPE_AAAA) &&
+          s->type != r->type && names_equal(s->name, r->name))
+        add |= BIT(j);
+    }
+  }
+#endif
   return add & ~answers;
 }
 
 static void announce(mdns_t *m, int goodbye) {
   resp_opts_t o;
   memset(&o, 0, sizeof(o));
-  o.dest = &mcast_dest;
   o.goodbye = (uint8_t)goodbye;
+#if NET_USE_IPV6
+  if (m->ann_fam & FAM_V4) {
+    o.dest = &mcast_dest;
+    send_response(m, all_mask(m), 0, 0, 0, &o);
+  }
+  if (m->ann_fam & FAM_V6) {
+    o.dest = &mcast6_dest;
+    send_response(m, all_mask(m), 0, 0, 0, &o);
+  }
+#else
+  o.dest = &mcast_dest;
   send_response(m, all_mask(m), 0, 0, 0, &o);
+#endif
 }
 
 /* ── Probing (RFC 6762 §8.1) ──────────────────────────────────────── */
 
 /* One probe for the unique names whose representative bits are in
  * @p names: an ANY/QU question per name, their records in Authority. */
-static int build_probe(mdns_t *m, pkt_t *p, uint32_t names) {
+static int build_probe(mdns_t *m, pkt_t *p, const dest_t *d, uint32_t names) {
   uint8_t i;
-  if (pkt_begin(m, p, 0, 0) < 0)
+  if (pkt_begin(m, p, d, 0, 0) < 0)
     return -1;
   for (i = 0; i < m->count; i++) {
     if (!(names & BIT(i)))
@@ -433,14 +564,15 @@ static int build_probe(mdns_t *m, pkt_t *p, uint32_t names) {
     const mdns_record_t *r = &m->records[i];
     if (is_shared(r) || !(names & BIT(name_rep(m, i))))
       continue;
-    if (write_rr(m, &p->w, r, r->ttl, DNS_CLASS_IN) < 0)
+    int n = write_rr(m, &p->w, r, r->ttl, DNS_CLASS_IN);
+    if (n < 0)
       return -1;
-    p->ns++;
+    p->ns = (uint16_t)(p->ns + n);
   }
   return 0;
 }
 
-static void send_probes(mdns_t *m) {
+static void send_probes_to(mdns_t *m, const dest_t *d) {
   uint32_t pending = 0;
   uint8_t i;
   pkt_t p;
@@ -454,7 +586,7 @@ static void send_probes(mdns_t *m) {
     for (i = 0; i < m->count; i++) {
       if (!(pending & BIT(i)))
         continue;
-      if (build_probe(m, &p, chosen | BIT(i)) == 0)
+      if (build_probe(m, &p, d, chosen | BIT(i)) == 0)
         chosen |= BIT(i);
       else if (chosen == 0)
         pending &= ~BIT(i); /* cannot fit even alone */
@@ -463,10 +595,18 @@ static void send_probes(mdns_t *m) {
     }
     if (!chosen)
       break;
-    build_probe(m, &p, chosen);
-    pkt_send(m, &p, &mcast_dest);
+    build_probe(m, &p, d, chosen);
+    pkt_send(m, &p, d);
     pending &= ~chosen;
   }
+}
+
+/* RFC 6762 §8.1: probe on every family the host answers on */
+static void send_probes(mdns_t *m) {
+  send_probes_to(m, &mcast_dest);
+#if NET_USE_IPV6
+  send_probes_to(m, &mcast6_dest);
+#endif
 }
 
 /* ── State machine ────────────────────────────────────────────────── */
@@ -478,6 +618,9 @@ static void enter_conflict(mdns_t *m, uint8_t index) {
   m->resp_answers = 0;
   m->resp_meta = 0;
   m->resp_nsec = 0;
+#if NET_USE_IPV6
+  m->resp_fam = 0;
+#endif
   if (m->on_conflict) /* REQ-MDNS-019, 020: may rename and mdns_start() */
     m->on_conflict(m, index, m->ctx);
 }
@@ -514,8 +657,21 @@ static void flush_delayed(mdns_t *m) {
   m->resp_meta = 0;
   m->resp_nsec = 0;
   memset(&o, 0, sizeof(o));
+#if NET_USE_IPV6
+  uint8_t fam = m->resp_fam;
+  m->resp_fam = 0;
+  if (fam & FAM_V4) {
+    o.dest = &mcast_dest;
+    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
+  }
+  if (fam & FAM_V6) {
+    o.dest = &mcast6_dest;
+    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
+  }
+#else
   o.dest = &mcast_dest;
   send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
+#endif
 }
 
 /* ── Conflict detection (RFC 6762 §8.1, §9) ───────────────────────── */
@@ -584,6 +740,9 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
       return NET_ERR_INVALID_PARAM;
     switch (r->type) {
     case DNS_TYPE_A:
+#if NET_USE_IPV6
+    case DNS_TYPE_AAAA:
+#endif
       break;
     case DNS_TYPE_PTR:
       if (!r->rdata.ptr || dns_name_wire_len(r->rdata.ptr) < 0)
@@ -624,6 +783,11 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
 
 void mdns_start(mdns_t *m) {
   igmp_join(m->net, MDNS_GROUP); /* REQ-MDNS-002 */
+#if NET_USE_IPV6
+  ipv6_mcast_join(m->net, mdns_group6); /* RFC 6762 §20, reported by MLD */
+  m->ann_fam = FAM_V4 | FAM_V6;
+  m->resp_fam = 0;
+#endif
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
   m->timer_ms = rnd_below(m, MDNS_PROBE_WAIT_MS + 1); /* REQ-MDNS-017 */
@@ -652,8 +816,9 @@ void mdns_tick(mdns_t *m, uint32_t elapsed_ms) {
   }
 }
 
-void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
-                uint16_t src_port, const uint8_t *msg, uint16_t len) {
+/* A message from @p from (its address, MAC and port; IPv6 if from->ip6). */
+static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
+                  uint16_t len) {
   uint32_t answers = 0, meta = 0, nsec = 0;
   const char *qname = NULL;
   uint16_t qtype = 0, qd, an, k;
@@ -755,19 +920,23 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
     return;
 
   resp_opts_t o;
-  dest_t d;
+  const dest_t *group = &mcast_dest;
+  int has_addr = from->ip != 0;
   memset(&o, 0, sizeof(o));
-  d.ip = src_ip;
-  d.mac = src_mac;
-  d.port = src_port;
+#if NET_USE_IPV6
+  if (from->ip6) {
+    group = &mcast6_dest;
+    has_addr = !ipv6_is_unspecified(from->ip6);
+  }
+#endif
 
-  if (src_port != MDNS_PORT) {
+  if (from->port != MDNS_PORT) {
     /* Legacy unicast (RFC 6762 §6.7): reply to the querier's port with its
      * ID and question, TTL <= 10 s, no cache-flush bits.  A querier with no
      * address cannot be answered this way. */
-    if (src_ip == 0)
+    if (!has_addr)
       return;
-    o.dest = &d;
+    o.dest = from;
     o.id = net_read16be(msg + DNS_OFF_ID);
     o.legacy = 1;
     o.qname = qname;
@@ -775,20 +944,24 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
     send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
     return;
   }
-  if (all_qu && src_ip != 0) {
+  if (all_qu && has_addr) {
     /* REQ-MDNS-028: every question asked for a unicast response (a querier
      * still at 0.0.0.0 gets the multicast answer instead) */
-    o.dest = &d;
+    o.dest = from;
     send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
     return;
   }
   if (!meta && !(answers & shared_mask(m))) {
-    /* Unique records only: answer immediately (RFC 6762 §6) */
-    o.dest = &mcast_dest;
+    /* Unique records only: answer immediately (RFC 6762 §6), on the
+     * family the query came on */
+    o.dest = group;
     send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
     return;
   }
   /* Shared records: aggregate and delay 20-120 ms (RFC 6762 §6) */
+#if NET_USE_IPV6
+  m->resp_fam |= from->ip6 ? FAM_V6 : FAM_V4;
+#endif
   m->resp_answers |= answers;
   m->resp_meta |= meta;
   m->resp_nsec |= nsec;
@@ -798,13 +971,58 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
         rnd_below(m, MDNS_RESP_DELAY_MAX_MS - MDNS_RESP_DELAY_MIN_MS + 1);
 }
 
+void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
+                uint16_t src_port, const uint8_t *msg, uint16_t len) {
+  dest_t from;
+  memset(&from, 0, sizeof(from));
+  from.ip = src_ip;
+  from.mac = src_mac;
+  from.port = src_port;
+  input(m, &from, msg, len);
+}
+
+#if NET_USE_IPV6
+void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
+                 uint16_t src_port, const uint8_t *msg, uint16_t len) {
+  dest_t from;
+  memset(&from, 0, sizeof(from));
+  from.ip6 = src_ip;
+  from.mac = src_mac;
+  from.port = src_port;
+  input(m, &from, msg, len);
+}
+
+void mdns_readdress6(mdns_t *m) {
+  if (m->state == MDNS_STATE_ANNOUNCING) {
+    /* Announce again from the start, IPv6 included, without cutting the
+     * sequence other families are in */
+    m->ann_fam |= FAM_V6;
+    m->step = 0;
+    return;
+  }
+  if (m->state != MDNS_STATE_RUNNING)
+    return;
+  m->state = MDNS_STATE_ANNOUNCING;
+  m->step = 0;
+  m->timer_ms = 0;
+  m->ann_fam = FAM_V6;
+}
+#endif
+
 void mdns_stop(mdns_t *m) {
   if (m->state == MDNS_STATE_STOPPED)
     return;
   /* REQ-MDNS-032, 033, REQ-DNSSD-018: withdraw what was announced */
+#if NET_USE_IPV6
+  m->ann_fam = FAM_V4 | FAM_V6;
+#endif
   if (m->state == MDNS_STATE_ANNOUNCING || m->state == MDNS_STATE_RUNNING)
     announce(m, 1);
   igmp_leave(m->net, MDNS_GROUP);
+#if NET_USE_IPV6
+  ipv6_mcast_leave(m->net, mdns_group6);
+  m->resp_fam = 0;
+#endif
   m->state = MDNS_STATE_STOPPED;
   m->timer_ms = 0;
   m->resp_timer_ms = 0;

@@ -33,6 +33,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "demo_ipv6.h"
 #include "demo_mac.h"
 
 #define SERVICE_PORT 80u
@@ -71,6 +72,12 @@ static const char *const txt[] = {"txtvers=1", "fw=1.2.3", "serial=DEAD01",
 
 static const mdns_record_t records[] = {
     {.type = DNS_TYPE_A, .ttl = MDNS_TTL_HOST, .name = host, .rdata.a = 0},
+#if NET_USE_IPV6
+    {.type = DNS_TYPE_AAAA,
+     .ttl = MDNS_TTL_HOST,
+     .name = host,
+     .rdata.aaaa = NULL}, /* our IPv6 addresses */
+#endif
     {.type = DNS_TYPE_PTR,
      .ttl = MDNS_TTL_OTHER,
      .name = "_pyro._tcp.local",
@@ -116,6 +123,22 @@ static void mdns_udp_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
 static const udp_port_entry_t udp_handlers[] = {
     {MDNS_PORT, mdns_udp_handler},
 };
+#if NET_USE_IPV6
+static void mdns_udp6_handler(net_t *n, const uint8_t *src_ip,
+                              uint16_t src_port, const uint8_t *src_mac,
+                              uint16_t payload_offset, uint16_t payload_len) {
+  static uint8_t buf[NET_BUF_SIZE];
+  uint16_t copy = (payload_len < sizeof(buf)) ? payload_len
+                                              : (uint16_t)sizeof(buf);
+  int got = n->mac_driver->peek(n->mac_ctx, payload_offset, buf, copy);
+  if (got > 0)
+    mdns_input6(&mdns, src_ip, src_mac, src_port, buf, (uint16_t)got);
+}
+
+static const udp6_port_entry_t udp6_handlers[] = {
+    {MDNS_PORT, mdns_udp6_handler},
+};
+#endif
 
 /* ── TCP echo on the advertised port ─────────────────────────────── */
 
@@ -188,6 +211,12 @@ int main(int argc, char *argv[]) {
 
   udp_ports.entries = udp_handlers;
   udp_ports.count = 1;
+#if NET_USE_IPV6
+  /* Dual stack: link-local address, mDNS on ff02::fb */
+  ipv6_start(&net);
+  udp6_ports.entries = udp6_handlers;
+  udp6_ports.count = 1;
+#endif
   conn_table[0] = &echo_conn;
   tcp_connections.conns = conn_table;
   tcp_connections.count = 1;
@@ -219,6 +248,11 @@ int main(int argc, char *argv[]) {
     if (elapsed >= 5u) {
       tcp_tick(&net, elapsed);
       mdns_tick(&mdns, elapsed);
+#if NET_USE_IPV6
+      ipv6_tick(&net, elapsed);
+      if (demo_ipv6_report(&net, "mdns"))
+        mdns_readdress6(&mdns); /* RFC 6762 §8.4: new address */
+#endif
       last_tick = now;
     }
 

@@ -482,7 +482,7 @@ jobs:
         run: |
           set -o pipefail
           sudo apt-get install -y --no-install-recommends avahi-daemon avahi-utils
-          sudo sed -i "s/^#\?allow-interfaces=.*/allow-interfaces=$TEST_IF/; s/^use-ipv6=.*/use-ipv6=no/" \
+          sudo sed -i "s/^#\?allow-interfaces=.*/allow-interfaces=$TEST_IF/; s/^use-ipv6=.*/use-ipv6=yes/" \
             /etc/avahi/avahi-daemon.conf
           sudo systemctl restart avahi-daemon
           sleep 2
@@ -562,12 +562,12 @@ jobs:
           set -o pipefail
           sudo apt-get install -y --no-install-recommends \
             avahi-daemon avahi-utils libnss-mdns
-          sudo sed -i "s/^#\?allow-interfaces=.*/allow-interfaces=$TEST_IF/; s/^use-ipv6=.*/use-ipv6=no/" \
+          sudo sed -i "s/^#\?allow-interfaces=.*/allow-interfaces=$TEST_IF/; s/^use-ipv6=.*/use-ipv6=yes/" \
             /etc/avahi/avahi-daemon.conf
           sudo systemctl restart avahi-daemon
           sleep 2
           grep '^hosts' /etc/nsswitch.conf
-          sudo tests/blackbox/http_interop.sh ./build/demo/http_demo "$SUT_IF" \
+          sudo tests/blackbox/http_interop.sh ./build/demo/http_demo "$SUT_IF" "$TEST_IF" \
             2>&1 | tee -a /tmp/http_blackbox.out
 
       - name: Tear down the link

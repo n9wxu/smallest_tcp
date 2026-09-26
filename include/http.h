@@ -55,7 +55,10 @@ typedef struct {
   const char *query;    /**< Text after '?', or "" */
   const uint8_t *body;  /**< POST body (NULL if none) */
   uint16_t body_len;
-  uint32_t remote_ip;   /**< Client IPv4, host byte order */
+  uint32_t remote_ip;   /**< Client IPv4, host byte order (0 over IPv6) */
+#if NET_USE_IPV6
+  const uint8_t *remote_ip6; /**< Client IPv6 address, NULL over IPv4 */
+#endif
 } http_request_t;
 
 typedef struct {

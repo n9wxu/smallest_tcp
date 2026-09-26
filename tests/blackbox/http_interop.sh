@@ -5,13 +5,14 @@
 # Requires root, avahi-daemon running on the test interface, avahi-utils,
 # libnss-mdns (hosts: ... mdns4_minimal ... in /etc/nsswitch.conf) and curl.
 #
-#   sudo tests/blackbox/http_interop.sh ./build/demo/http_demo
+#   sudo tests/blackbox/http_interop.sh ./build/demo/http_demo [SUT_IF] [TEST_IF]
 #   sudo tests/blackbox/http_interop.sh ./build/demo/http_demo raw:veth-sut   # raw socket
 
 set -u
 
 SUT_BIN=${1:-./build/demo/http_demo}
 SUT_IF=${2:-} # e.g. raw:veth-sut; empty: the demo's default (tap0)
+TEST_IF=${3:-tap0} # harness interface (for the IPv6 link-local check)
 SUT_IP=${SUT_IP:-10.0.0.2}
 HOST=pyro-dead01.local
 SUT_LOG=$(mktemp)
@@ -56,6 +57,15 @@ check "name lookup under 2 s (took ${LOOKUP}s)" \
 
 curl -sS --max-time 5 "http://$HOST/api/status" >"$OUT"
 check "JSON API by name reports $SUT_IP" grep -q "\"ip\":\"$SUT_IP\"" "$OUT"
+
+# A dual-stack demo serves the same pages over IPv6 (link-local, the EUI-64
+# of 02:00:00:de:ad:01), if the harness interface has IPv6
+if ip -6 addr show dev "$TEST_IF" 2>/dev/null | grep -q fe80 &&
+  grep -q 'IPv6 .* preferred' "$SUT_LOG"; then
+  URL6="http://[fe80::ff:fede:ad01%25$TEST_IF]/"
+  check "curl -6 $URL6 -> 200" \
+    test "$(curl -g -sS -o "$OUT" -w '%{http_code}' --max-time 5 "$URL6")" = 200
+fi
 
 kill -TERM "$SUT_PID"
 wait "$SUT_PID" 2>/dev/null

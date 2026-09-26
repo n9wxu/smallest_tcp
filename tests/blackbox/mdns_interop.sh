@@ -54,6 +54,13 @@ check "avahi-browse sees the TXT metadata" \
   grep -q '"txtvers=1"' "$BROWSE_LOG"
 check "advertised TCP port answers (echo)" \
   bash -c "echo interop | timeout 3 nc -q1 $SUT_IP 80 | grep -q interop"
+# A dual-stack demo also answers over IPv6 (ff02::fb) with its link-local
+# address, the EUI-64 of 02:00:00:de:ad:01, when Avahi runs IPv6
+if grep -q '^use-ipv6=yes' /etc/avahi/avahi-daemon.conf 2>/dev/null &&
+  grep -q 'IPv6 .* preferred' "$SUT_LOG"; then
+  check "avahi-resolve -6 $HOST -> fe80::ff:fede:ad01 (mDNS over IPv6)" \
+    bash -c "timeout 10 avahi-resolve -6 -n $HOST | grep -q 'fe80::ff:fede:ad01'"
+fi
 
 kill -TERM "$SUT_PID"
 wait "$SUT_PID" 2>/dev/null

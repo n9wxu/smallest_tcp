@@ -121,6 +121,8 @@ static void report_all(net_t *net, uint8_t v2_type) {
 }
 
 void mld_report_change(net_t *net, const uint8_t *leaving) {
+  if (net->ip6[0].state == NET_IP6_NONE)
+    return; /* IPv6 not started: DAD's report will include every group */
   if (leaving) {
     if (net->mld_v1_s)
       send_v1(net, MLD_V1_DONE, leaving);

@@ -326,8 +326,8 @@ TEST(test_init_validates_table) {
   bad_txt[0].rdata.txt = long_txt;
   static const mdns_record_t bad_name[] = {
       {.type = DNS_TYPE_A, .ttl = 120, .name = "a..local", .rdata.a = 0}};
-  static const mdns_record_t bad_type[] = {
-      {.type = DNS_TYPE_AAAA, .ttl = 120, .name = HOST, .rdata.a = 0}};
+  static const mdns_record_t bad_type[] = {/* HINFO: never supported */
+      {.type = 13, .ttl = 120, .name = HOST, .rdata.a = 0}};
   static const mdns_record_t bad_target[] = {
       {.type = DNS_TYPE_PTR, .ttl = 120, .name = SVC, .rdata.ptr = NULL}};
   static int ctx;

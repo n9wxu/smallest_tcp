@@ -24,12 +24,13 @@ Skipped when --mdns-sut-bin is not given.
 
 import os
 import signal
+import socket
 import subprocess
 import tempfile
 import time
 
 import pytest
-from scapy.all import Ether, IP, UDP, conf, get_if_hwaddr, sendp
+from scapy.all import Ether, IP, IPv6, UDP, conf, get_if_hwaddr, sendp
 from scapy.layers.dns import DNS, DNSQR, DNSRR
 
 from helpers import start_sniffer, sut_argv
@@ -158,7 +159,8 @@ def send_query(s, qname, qtype, qu=False, qid=0, sport=MDNS_PORT,
 
 
 def sut_filter(s, extra=""):
-    bpf = f"udp and src port {MDNS_PORT} and ether src {s.sut_mac}"
+    # IPv4 only: a dual-stack SUT sends the same over IPv6 (tests 020-021)
+    bpf = f"ip and udp and src port {MDNS_PORT} and ether src {s.sut_mac}"
     return f"{bpf} and {extra}" if extra else bpf
 
 
@@ -427,12 +429,79 @@ def test_mdns_018_any_query(sut):
 
 
 def test_mdns_019_nsec_for_missing_type(sut):
-    """RFC 6762 §6.1: AAAA for our host name (we only have A) → NSEC
-    asserting which types exist, so dual-stack lookups don't wait for a
-    timeout (curl http://pyro-dead01.local/ took 5 s without it)."""
+    """RFC 6762 §6.1: a type our host name doesn't have (HINFO) → NSEC
+    asserting which types exist, so lookups don't wait for a timeout (an
+    IPv4-only build answers AAAA this way: curl http://pyro-dead01.local/
+    took 5 s without it)."""
     sut.start()
-    resp = ask(sut, HOST, "AAAA")
-    assert resp, "no negative response to AAAA query"
+    resp = ask(sut, HOST, "HINFO")
+    assert resp, "no negative response to HINFO query"
     nsec = find(resp[0][DNS].an, HOST, 47)
     assert nsec, f"no NSEC answer: {resp[0][DNS].summary()}"
     assert nsec[0].ttl == 120 and nsec[0].cacheflush == 1
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mDNS over IPv6 (dual-stack SUT): ff02::fb, AAAA (RFC 6762 §6.2, §20)
+# ══════════════════════════════════════════════════════════════════════════════
+
+MDNS_GROUP6 = "ff02::fb"
+MDNS_MAC6 = "33:33:00:00:00:fb"
+OUR_LL = "fe80::100"
+
+
+def sut_ll(mac):
+    b = bytes.fromhex(mac.replace(":", ""))
+    iid = bytes([b[0] ^ 0x02]) + b[1:3] + b"\xff\xfe" + b[3:6]
+    return socket.inet_ntop(socket.AF_INET6, b"\xfe\x80" + bytes(6) + iid)
+
+
+def ipv6_up(sut):
+    """Wait until the dual-stack demo's link-local address is usable."""
+    try:
+        sut.wait_for(" preferred", 5)
+    except AssertionError:
+        pytest.skip("SUT is not dual-stack")
+
+
+def test_mdns_020_aaaa_over_ipv6(sut):
+    """A query to ff02::fb for AAAA → answer over IPv6 to ff02::fb (Hop
+    Limit 255) with the link-local address; the A record as additional."""
+    sut.start()
+    ipv6_up(sut)
+    ll = sut_ll(sut.sut_mac)
+    sn = start_sniffer(sut.iface,
+                       filter=f"ip6 and udp and src port {MDNS_PORT} and "
+                              f"ether src {sut.sut_mac}",
+                       lfilter=is_response, count=1, timeout=2)
+    sendp(Ether(src=sut.our_mac, dst=MDNS_MAC6) /
+          IPv6(src=OUR_LL, dst=MDNS_GROUP6, hlim=255) /
+          UDP(sport=MDNS_PORT, dport=MDNS_PORT) /
+          DNS(id=0, qr=0, qd=DNSQR(qname=HOST, qtype="AAAA")),
+          iface=sut.iface, verbose=False)
+    sn.join(timeout=3)
+    assert sn.results, "no answer over IPv6"
+    p = sn.results[0]
+    assert p[IPv6].dst == MDNS_GROUP6 and p[IPv6].hlim == 255
+    aaaa = find(p[DNS].an, HOST, 28)
+    assert aaaa and ll in {r.rdata for r in aaaa}
+    assert find(p[DNS].ar, HOST, T_A), "A record not in additionals"
+
+
+def test_mdns_021_announced_over_ipv6(sut):
+    """RFC 6762 §8.3/§8.4: the records are announced over IPv6 once the
+    link-local address is usable, AAAA included."""
+    sn = start_sniffer(sut.iface,
+                       filter=f"ip6 and udp and src port {MDNS_PORT} and "
+                              f"ether src {sut.sut_mac}",
+                       lfilter=is_response, count=1, timeout=6)
+    sut.start(wait_running=False)
+    sn.join(timeout=7)
+    if " preferred" not in sut.output():
+        pytest.skip("SUT is not dual-stack")
+    assert sn.results, "no announcement over IPv6"
+    p = sn.results[0]
+    assert p[IPv6].dst == MDNS_GROUP6
+    assert find(p[DNS].an, HOST, 28), "AAAA missing from the announcement"
+    assert find(p[DNS].an, HOST, T_A), "A missing from the announcement"

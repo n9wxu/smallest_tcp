@@ -39,9 +39,15 @@
  * with an NSEC record (RFC 6762 §6.1, restricted form) — without it a
  * dual-stack lookup of the host name waits seconds for an AAAA answer.
  *
- * V1 scope: IPv4 responder only.  Not implemented: querier/browser, AAAA,
- * the simultaneous-probe tiebreak (RFC 6762 §8.2) and multi-packet
- * known-answer lists.
+ * Dual stack (NET_USE_IPV6): the responder also listens on ff02::fb (feed
+ * datagrams from the udp6 port-5353 handler to mdns_input6()), advertises
+ * AAAA records (.rdata.aaaa = NULL: every usable IPv6 address), probes,
+ * announces and says goodbye on both families, and answers a query on the
+ * family it came on.  An answer with A records carries the name's AAAA
+ * records as additionals and vice versa (RFC 6762 §6.2).
+ *
+ * Not implemented: querier/browser, the simultaneous-probe tiebreak
+ * (RFC 6762 §8.2) and multi-packet known-answer lists.
  */
 
 #ifndef MDNS_H
@@ -53,6 +59,9 @@
 
 #define MDNS_PORT 5353
 #define MDNS_GROUP 0xE00000FBu /**< 224.0.0.251 */
+#if NET_USE_IPV6
+extern const uint8_t mdns_group6[16]; /**< ff02::fb */
+#endif
 #define MDNS_IP_TTL 255        /**< RFC 6762 §11: IP TTL of every mDNS packet */
 
 #define MDNS_TTL_HOST 120   /**< A / SRV / TXT record TTL (RFC 6762 §10) */
@@ -87,11 +96,14 @@
  * labels may contain spaces but not dots.
  */
 typedef struct {
-  uint16_t type;    /**< DNS_TYPE_A, _PTR, _SRV or _TXT */
+  uint16_t type;    /**< DNS_TYPE_A, _AAAA (IPv6 builds), _PTR, _SRV, _TXT */
   uint32_t ttl;     /**< Seconds (MDNS_TTL_HOST / MDNS_TTL_OTHER) */
   const char *name; /**< Owner name */
   union {
     uint32_t a;      /**< IPv4, host byte order; 0 = use net->ipv4_addr */
+    /** IPv6 address (16 bytes); NULL = every usable IPv6 address of the
+     *  interface — one AAAA RR each (RFC 6762 §6.2) */
+    const uint8_t *aaaa;
     const char *ptr; /**< PTR target (service instance name) */
     struct {
       uint16_t priority;
@@ -132,6 +144,10 @@ struct mdns_s {
   uint8_t count;
   uint8_t state; /**< MDNS_STATE_* */
   uint8_t step;  /**< Probes / announcements sent in the current state */
+#if NET_USE_IPV6
+  uint8_t resp_fam; /**< Families owed the delayed response (bit 0 v4, 1 v6) */
+  uint8_t ann_fam;  /**< Families announcements go to */
+#endif
 };
 
 /* ── API ──────────────────────────────────────────────────────────── */
@@ -160,9 +176,25 @@ void mdns_tick(mdns_t *m, uint32_t elapsed_ms);
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
                 uint16_t src_port, const uint8_t *msg, uint16_t len);
 
+#if NET_USE_IPV6
+/** As mdns_input(), for a message that arrived over IPv6 (ff02::fb or
+ *  unicast); @p src_ip is the sender's 16-byte address. */
+void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
+                 uint16_t src_port, const uint8_t *msg, uint16_t len);
+
+/**
+ * Our IPv6 addresses changed (e.g. SLAAC or DHCPv6 added one): announce
+ * again over IPv6 (RFC 6762 §8.4), without re-probing.  While running,
+ * over IPv6 only; while still announcing, the announcement sequence starts
+ * over with IPv6 added.  No-op while probing (the announcements to come
+ * include the new addresses).
+ */
+void mdns_readdress6(mdns_t *m);
+#endif
+
 /**
  * Withdraw all records: goodbye packet (TTL 0) if they were announced,
- * then leave 224.0.0.251.  State becomes STOPPED.
+ * then leave 224.0.0.251 (and ff02::fb).  State becomes STOPPED.
  */
 void mdns_stop(mdns_t *m);
 

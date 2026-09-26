@@ -352,3 +352,34 @@ def test_http_021_idle_connection_times_out(sut):
     finally:
         s.close()
     assert request(sut, "GET", "/")[0] == 200  # slot usable again
+
+
+# ── HTTP over IPv6 (dual-stack http_demo) ──────────────────────────────────────
+
+def test_http_022_get_over_ipv6(sut, request):
+    """The same server answers over IPv6: the host's TCP stack fetches the
+    status page from the demo's link-local address (Linux)."""
+    iface = request.config.getoption("--iface")
+    mac = request.config.getoption("--mdns-sut-mac")  # the demos' MAC
+    b = bytes.fromhex(mac.replace(":", ""))
+    iid = bytes([b[0] ^ 0x02]) + b[1:3] + b"\xff\xfe" + b[3:6]
+    ll = socket.inet_ntop(socket.AF_INET6, b"\xfe\x80" + bytes(6) + iid)
+    deadline = time.monotonic() + 5
+    while " preferred" not in sut.output() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if " preferred" not in sut.output():
+        pytest.skip("http_demo is not dual-stack")
+    try:
+        c = socket.create_connection((f"{ll}%{iface}", PORT), timeout=5)
+    except OSError as e:
+        pytest.skip(f"no IPv6 route to {ll}%{iface}: {e}")
+    with c:
+        c.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        data = b""
+        while True:
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    assert data.startswith(b"HTTP/1.0 200"), data[:80]
+    assert b"Pyro Unit 1" in data

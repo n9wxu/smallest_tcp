@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Milestone 12 IPv6 stages 1–5 and 6a (MLD) done; 457 unit tests + 124 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: mDNS and HTTP over IPv6)
+**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Milestone 12 IPv6 stages 1–6 done; 476 unit tests + 127 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers)
 
 ## Objective
 
@@ -237,7 +237,7 @@ typedef struct {
 - ✅ Stage 4: router discovery + SLAAC (default router, global address, lifetimes, `ipv6_addr_add`)
 - ✅ Stage 5: DHCPv6 client, stateless and stateful (`dhcpv6_client.c`), interop with dnsmasq
 - ✅ Stage 6a: MLDv2 (+ MLDv1 fallback), `ipv6_mcast_join/leave`
-- Stage 6b: mDNS over IPv6 (ff02::fb, AAAA) · Stage 6c: HTTP over IPv6
+- ✅ Stage 6b/6c: mDNS over IPv6 (ff02::fb, AAAA, both families) and HTTP over IPv6 — `curl -6` to the demo's link-local address, Avahi resolves it over IPv6
 - Dual stack is a compile-time choice (`NET_USE_IPV6`, CMake `SMALLEST_TCP_IPV6`); IPv4-only builds are unchanged
 - Design: [docs/design/ipv6.md](docs/design/ipv6.md)
 

@@ -240,6 +240,7 @@ bash bench/build_lwip.sh
 | 2026-09-26 | …+mDNS/DNS-SD (+NSEC) | 9,272 B (8,879 stack) | — | — |
 | 2026-09-26 | …+TCP+HTTP | 11,010 B (10,738 stack) | — | — |
 | 2026-09-26 | …+TCP+HTTP (TCP refactored for IPv6; IPv4-only build) | 11,014 B (10,738 stack) | — | — |
+| 2026-09-26 | …+mDNS/DNS-SD (family-aware writer for IPv6; IPv4-only build) | 9,292 B | — | — |
 
 > The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
 > peek-based UDP dispatch, IPv4 Protocol Unreachable, and (Milestone 10, +80 B)

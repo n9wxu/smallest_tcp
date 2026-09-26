@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC) 5 (DHCPv6) and 6a (MLD) done
+**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC) 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6) done
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -233,13 +233,43 @@ depends on, and later ff02::fb for mDNS.
   Older Version Querier Present Timeout, 260 s.  Linux bridges query with
   MLDv1 by default.
 
-## 10. Timers and randomness
+## 10. mDNS and HTTP over IPv6 (stages 6b, 6c)
+
+**mDNS** (`mdns.c`, RFC 6762 §6.2, §20), with IPv6 compiled in:
+
+- `mdns_start()` also joins ff02::fb (MLD reports it); `mdns_stop()`
+  leaves it.  The application feeds udp6 port-5353 datagrams to
+  `mdns_input6()`.
+- A `DNS_TYPE_AAAA` record whose `.rdata.aaaa` is NULL stands for every
+  usable (preferred or deprecated, never tentative) IPv6 address of the
+  interface: one AAAA RR each on the wire.  Known answers and conflicts
+  compare against any of them.
+- Probes, announcements and goodbyes go to 224.0.0.251 and to ff02::fb,
+  Hop Limit 255; answers go back on the family the query came on
+  (multicast, QU unicast or legacy unicast), and delayed shared answers
+  remember which families asked.  Responses over either family carry all
+  the interface's addresses (A and AAAA).
+- An A answer adds the name's AAAA records as additionals and vice versa;
+  an SRV answer adds both of its target's.
+- `mdns_readdress6()` re-announces over IPv6 when an address becomes usable
+  (RFC 6762 §8.4) — the demos call it when the link-local, SLAAC or DHCPv6
+  address comes up; during the start-up announcements it adds IPv6 to the
+  running sequence instead, so IPv4 still gets both announcements.
+- IPv4-only builds: +20 bytes (9,292 B for the Cortex-M0 mDNS benchmark),
+  from the family-aware writer.
+
+**HTTP**: nothing to do in the server — TCP listeners already accept IPv6.
+`http_request_t` gains `remote_ip6` (NULL over IPv4).  `mdns_demo` and
+`http_demo` are dual stack; `curl -6 'http://[fe80::ff:fede:ad01%25tap0]/'`
+and `avahi-resolve -6 -n pyro-dead01.local` work against them in CI.
+
+## 11. Timers and randomness
 
 `ipv6_tick(net, elapsed_ms)` drives DAD (and RS/lifetimes from stage 4),
 like `tcp_tick()`.  Delays are drawn from `ip6_rng`, an xorshift32 seeded
 from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 
-## 11. Dual-stack UDP and TCP (stages 2–3)
+## 12. Dual-stack UDP and TCP (stages 2–3)
 
 - **UDP**: IPv6 ports live in their own table, `udp6_ports`, whose
   handlers get the source as a 16-byte pointer.  `udp_port_entry_t` is
@@ -261,7 +291,7 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
   small buffer holds stalled the connection (segments that could not be
   built were never sent), which the larger IPv6 header makes likelier.
 
-## 12. Deviations and deferred items
+## 13. Deviations and deferred items
 
 | Item | Reason / plan |
 |---|---|

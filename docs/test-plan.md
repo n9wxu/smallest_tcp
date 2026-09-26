@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**23 test suites, 457 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
+**24 test suites, 476 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -46,6 +46,7 @@ verified at both the unit and integration levels:
 | `test_tcp6` | tests/unit/test_tcp6.c | 18 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
 | `test_slaac` | tests/unit/test_slaac.c | 26 | Router Solicitation (format, 3 × 4 s, stops at an RA), Router Advertisement (router + MAC, hop limit, M/O, lifetime 0/expiry, validation), SLAAC (A flag, /64, DAD, link-local prefix, duplicate), lifetimes (deprecate, remove, infinite, 2-hour rule, preferred again), `ipv6_addr_add`, on-link test, reply from the global address (REQ-NDP-034..048, REQ-SLAAC-014..031) |
 | `test_mld` | tests/unit/test_mld.c | 13 | MLDv2 report before the DAD probe (from ::), repeated once, one group per solicited-node address, `ipv6_mcast_join/leave` (report, frame filter, delivery), general / group queries (delay, validation), MLDv1 compatibility (v1 reports, Done, fallback timeout) — RFC 3810, RFC 2710 |
+| `test_mdns6` | tests/unit/test_mdns6.c | 19 | mDNS over IPv6: ff02::fb joined, probes / announcements / goodbyes on both families, AAAA per usable address (not tentative), answers on the query's family, A ↔ AAAA and SRV → AAAA additionals, QU and legacy unicast over IPv6, known-answer suppression, NSEC with AAAA, delayed shared answers, explicit AAAA, conflicts, re-announcing (RFC 6762 §6.2, §8.4, §20) |
 | `test_dhcpv6` | tests/unit/test_dhcpv6.c | 20 | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-*) |
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 
@@ -141,13 +142,13 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_tcp_conform.py` | 20 conformance tests (REQ-TCP-002..153) |
 | `tests/blackbox/test_tcp_fuzz.py` | 5 fuzz tests (header fields, flags, options, truncation) |
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
-| `tests/blackbox/test_mdns_conform.py` | 19 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
-| `tests/blackbox/test_http_conform.py` | 21 HTTP tests; the host's own TCP stack is the client (SUT: `http_demo`) |
+| `tests/blackbox/test_mdns_conform.py` | 21 mDNS / DNS-SD tests, 019 of them over IPv4 (SUT: dual-stack `mdns_demo`, launched fresh per test) |
+| `tests/blackbox/test_http_conform.py` | 22 HTTP tests; the host's own TCP stack is the client, over IPv4 and IPv6 (SUT: `http_demo`) |
 | `tests/blackbox/test_ipv6_conform.py` | 29 IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 / MLD tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
 | `tests/blackbox/dhcpv6_interop.sh` | dnsmasq as router + DHCPv6 server: RA with M → lease, DNS option, host ping + TCP echo at the leased address |
-| `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/` |
+| `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/`; `curl -6` over the link-local address |
 | `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
-| `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
+| `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve (IPv4, and IPv6 when Avahi runs it) + browse the demo, goodbye withdraws the service |
 | `tests/blackbox/run_blackbox_macos.sh` | macOS runner over a `feth` pair: every suite + `dns-sd` interop |
 | `tests/blackbox/mdns_interop_macos.sh` | mDNSResponder interop: `dns-sd -B/-L/-G`, TCP echo, goodbye removal |
 | `tests/blackbox/run_blackbox.sh` | Shell runner: starts SUT, runs all suites in order, reports summary |
@@ -296,7 +297,9 @@ Skipped when the option is not given.
 | test_mdns_016 | REQ-MDNS-030 | Foreign / unknown names ignored |
 | test_mdns_017 | REQ-DNSSD-003,011,013 | TXT key=value strings |
 | test_mdns_018 | REQ-MDNS-026 | ANY → SRV + TXT |
-| test_mdns_019 | RFC 6762 §6.1 | AAAA for our host → NSEC (types we have) |
+| test_mdns_019 | RFC 6762 §6.1 | A type our host lacks (HINFO) → NSEC listing the types we have |
+| test_mdns_020 | RFC 6762 §6.2, §20 | AAAA query to ff02::fb → answer over IPv6 (Hop Limit 255) with the link-local address, A as additional |
+| test_mdns_021 | RFC 6762 §8.3, §8.4 | Records announced over IPv6 (AAAA and A) once the link-local address is usable |
 
 `tests/blackbox/mdns_interop.sh` then checks REQ-MDNS-040 / REQ-DNSSD-027 with
 Avahi (`avahi-resolve`, `avahi-browse`) in the `blackbox-mdns` CI job.
@@ -368,6 +371,7 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | test_http_019 | REQ-HTTP-028, 029 | 30 back-to-back requests (no TIME_WAIT stall) |
 | test_http_020 | — | Two concurrent connections |
 | test_http_021 | — | Idle client reset after the 10 s request timeout (`sut_specific`) |
+| test_http_022 | RFC 9110 over IPv6 | The status page fetched from the demo's link-local address (Linux; skipped without host IPv6) |
 
 ### Fuzz Test Coverage
 

@@ -5,6 +5,7 @@
  * Call demo_ipv6_report() after ipv6_tick(): it prints a line when an
  * address becomes usable or fails Duplicate Address Detection, e.g.
  *   [tcp_echo] IPv6 fe80:0:0:0:0:ff:fede:ad01 preferred
+ * and returns 1 if an address became usable (mDNS demos re-announce).
  * The blackbox tests wait for these lines.
  */
 
@@ -23,9 +24,9 @@ static inline void demo_ipv6_print_addr(const uint8_t *a) {
     printf(i ? ":%x" : "%x", (unsigned)(a[i] << 8 | a[i + 1]));
 }
 
-static inline void demo_ipv6_report(const net_t *net, const char *tag) {
+static inline int demo_ipv6_report(const net_t *net, const char *tag) {
   static uint8_t last[NET_IPV6_ADDRS];
-  int i;
+  int i, usable = 0;
   for (i = 0; i < NET_IPV6_ADDRS; i++) {
     uint8_t state = net->ip6[i].state;
     if (state == last[i])
@@ -33,12 +34,15 @@ static inline void demo_ipv6_report(const net_t *net, const char *tag) {
     last[i] = state;
     if (state != NET_IP6_PREFERRED && state != NET_IP6_DUPLICATE)
       continue;
+    if (state == NET_IP6_PREFERRED)
+      usable = 1;
     printf("[%s] IPv6 ", tag);
     demo_ipv6_print_addr(net->ip6[i].addr);
     printf(state == NET_IP6_PREFERRED ? " preferred\n"
                                       : " duplicate (DAD failed), not used\n");
     fflush(stdout);
   }
+  return usable;
 }
 #endif
 
