@@ -1,6 +1,6 @@
 # Test Plan — smallest_tcp
 
-*Revision: Milestone 10 (mDNS + DNS-SD)*
+*Revision: Milestone 11 (HTTP server)*
 
 ---
 
@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**15 test suites, 232 tests total — all passing.**
+**16 test suites, 296 tests total — all passing.**
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -33,13 +33,14 @@ verified at both the unit and integration levels:
 | `test_ipv4` | tests/unit/test_ipv4.c | 10 | IPv4 (REQ-IPV4-*) |
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
-| `test_tcp_buf` | tests/unit/test_tcp_buf.c | 19 | Stop-and-wait buffer |
-| `test_tcp` | tests/unit/test_tcp.c | **26** | TCP (REQ-TCP-*) |
+| `test_tcp_buf` | tests/unit/test_tcp_buf.c | 20 | Stop-and-wait TX/RX buffers (incl. RX ring wrap) |
+| `test_tcp` | tests/unit/test_tcp.c | **39** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates |
 | `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 16 | DHCPv4 client + server (REQ-DHCPv4-*) |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
-| `test_mdns` | tests/unit/test_mdns.c | 44 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*) |
+| `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |
+| `test_http` | tests/unit/test_http.c | 45 | HTTP parser, formatter, server driven over the real TCP (REQ-HTTP-*) |
 
 ### Running Unit Tests
 
@@ -133,7 +134,10 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_tcp_conform.py` | 20 conformance tests (REQ-TCP-002..153) |
 | `tests/blackbox/test_tcp_fuzz.py` | 5 fuzz tests (header fields, flags, options, truncation) |
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
-| `tests/blackbox/test_mdns_conform.py` | 18 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
+| `tests/blackbox/test_mdns_conform.py` | 19 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
+| `tests/blackbox/test_http_conform.py` | 21 HTTP tests; the host's own TCP stack is the client (SUT: `http_demo`) |
+| `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/` |
+| `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
 | `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
 | `tests/blackbox/run_blackbox_macos.sh` | macOS runner over a `feth` pair: every suite + `dns-sd` interop |
 | `tests/blackbox/mdns_interop_macos.sh` | mDNSResponder interop: `dns-sd -B/-L/-G`, TCP echo, goodbye removal |
@@ -282,9 +286,39 @@ Skipped when the option is not given.
 | test_mdns_016 | REQ-MDNS-030 | Foreign / unknown names ignored |
 | test_mdns_017 | REQ-DNSSD-003,011,013 | TXT key=value strings |
 | test_mdns_018 | REQ-MDNS-026 | ANY → SRV + TXT |
+| test_mdns_019 | RFC 6762 §6.1 | AAAA for our host → NSEC (types we have) |
 
 `tests/blackbox/mdns_interop.sh` then checks REQ-MDNS-040 / REQ-DNSSD-027 with
 Avahi (`avahi-resolve`, `avahi-browse`) in the `blackbox-mdns` CI job.
+
+### Blackbox HTTP Conformance Coverage
+
+Run with `--http-sut-bin ./build/demo/http_demo`; the SUT is started once for the
+module and the client is the test host's TCP stack (no RST-drop iptables rule).
+
+| Test | REQ | Checks |
+|---|---|---|
+| test_http_001 | REQ-HTTP-002, 016, 019..022, 029 | GET / → 200, headers, body, server closes |
+| test_http_002 | REQ-HTTP-004, 023 | HEAD → same Content-Length, no body |
+| test_http_003 | REQ-HTTP-006, 010 | HTTP/1.1 + Host works; answered as HTTP/1.0 |
+| test_http_004 | RFC 9112 §3.2.2 | Absolute-form target |
+| test_http_005 | REQ-HTTP-003, 032, 036 | POST body echoed |
+| test_http_006 | REQ-HTTP-032 | Headers and body in separate segments |
+| test_http_007 | REQ-HTTP-037 | Generated JSON, query passed through |
+| test_http_008 | — | 8000-byte body streamed intact |
+| test_http_009 | — | Request trickled one byte per segment |
+| test_http_010 | REQ-HTTP-025 | 404 |
+| test_http_011 | REQ-HTTP-024 | 405 + Allow |
+| test_http_012 | REQ-HTTP-024 | 501 for PUT / DELETE |
+| test_http_013 | REQ-HTTP-026, 010 | 400: malformed line, 1.1 without Host, header without ':' |
+| test_http_014 | — | 505 for HTTP/2.0 |
+| test_http_015 | REQ-HTTP-039, 041 | 414 |
+| test_http_016 | REQ-HTTP-040 | 431 |
+| test_http_017 | REQ-HTTP-033, 034 | 413 |
+| test_http_018 | — | Transfer-Encoding → 501 |
+| test_http_019 | REQ-HTTP-028, 029 | 30 back-to-back requests (no TIME_WAIT stall) |
+| test_http_020 | — | Two concurrent connections |
+| test_http_021 | — | Idle client reset after the 10 s request timeout (`sut_specific`) |
 
 ### Fuzz Test Coverage
 
@@ -310,7 +344,8 @@ Avahi (`avahi-resolve`, `avahi-browse`) in the `blackbox-mdns` CI job.
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
 | `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP) | push/PR |
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP), then Avahi interop | push/PR |
-| `arm-size` | ci.yml | ubuntu-latest | Cortex-M0 size benchmark: UDP, UDP+TCP, UDP+mDNS | push/PR |
+| `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
+| `arm-size` | ci.yml | ubuntu-latest | Cortex-M0 size benchmark: UDP, UDP+TCP, UDP+mDNS, UDP+HTTP | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
 | `fuzz-tcp-tap` | fuzz.yml | ubuntu-latest | Scapy fuzz (TAP) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |

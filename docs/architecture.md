@@ -392,11 +392,13 @@ See individual requirements documents for complete RFC citations.
 | RFC 5227 | ARP Conflict Detection | arp.c |
 | RFC 5681 | TCP Congestion Control | tcp.c |
 | RFC 6298 | TCP Retransmit Timer | tcp.c |
+| RFC 6585 | HTTP 431 status | http.c |
 | RFC 6762 | Multicast DNS | mdns.c |
 | RFC 6763 | DNS-Based Service Discovery | mdns.c |
 | RFC 6724 | IPv6 Address Selection | ipv6.c |
 | RFC 6864 | IPv4 ID Field | ipv4.c |
 | RFC 7323 | TCP Extensions | tcp.c |
+| RFC 9110 / 9112 | HTTP semantics / HTTP/1.1 syntax | http.c |
 | RFC 8200 | IPv6 | ipv6.c |
 | RFC 8415 | DHCPv6 | dhcpv6.c |
 | RFC 9110 | HTTP Semantics | http.c |

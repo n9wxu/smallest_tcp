@@ -2,7 +2,7 @@
 
 **Protocol:** HTTP/1.0 server semantics (RFC 9110, RFC 9112)  
 **Milestone:** 11  
-**Status:** In progress  
+**Status:** Implemented (V1)  
 **Last updated:** 2026-09-26
 
 ---
@@ -161,9 +161,21 @@ LISTEN ──SYN──► (TCP handshake) ──ESTABLISHED──► RECV ──
 
 **Recycling out of TIME_WAIT.**  An HTTP/1.0 server closes first, which leaves its TCP side in TIME_WAIT for 2×MSL = 240 s.  With one or two slots that would make the device unreachable for minutes after each page.  Once the slot reaches TIME_WAIT, both FINs have been exchanged and ours has been ACKed, so the server re-initialises it and listens again at once.  The only cost: if our final ACK is lost, the client's retransmitted FIN meets a listener and draws a RST.  The response has already been delivered, so that is harmless.  Small embedded stacks commonly make this trade.
 
+**Simultaneous close.**  Clients such as curl close as soon as they have the body, so their FIN usually crosses ours and TCP lands in CLOSING rather than FIN_WAIT_2 → TIME_WAIT.  Both sides have closed and the response was ACKed, so CLOSING is recycled at once too.
+
+**Lingering close** (RFC 9112 §9.6).  After a response — especially an error for an oversized request — the client may still be sending.  While sending and closing, the server keeps reading and discarding, and calls `tcp_window_update()` so the client, which may have seen a zero window, can finish and close.  Without it a 414 left the slot stuck until the timeout.
+
 **Timeouts** (`http_server_tick()`): a slot that has not received a complete request within `HTTP_REQUEST_TIMEOUT_MS` (10 s), or has not finished sending and closing within `HTTP_RESPONSE_TIMEOUT_MS` (10 s), is aborted with a RST and recycled.  Without them one idle client could hold the only slot forever.
 
 ---
+
+### What real clients exposed
+
+Bringing the server up against the macOS and Linux TCP stacks found three problems below HTTP, fixed in their own commits:
+
+- **TCP retransmission** — a lost data segment was resent with a new sequence number; a FIN sent after all data was ACKed was never resent (FIN_WAIT_1 / CLOSING / LAST_ACK could hang); the ACK path stopped the timer with the FIN still outstanding.
+- **Receive-window updates** — `tcp_recv()` could not advertise freed space; `tcp_window_update()` now does (receiver SWS avoidance).
+- **mDNS NSEC** — a dual-stack lookup of `pyro-dead01.local` waited 5 s for an AAAA answer; the responder now answers missing types with NSEC (RFC 6762 §6.1).
 
 ## 8. Main Loop
 
@@ -183,11 +195,11 @@ while (running) {
 
 ## 9. Tests
 
-- **Unit, TCP** (`test_tcp.c`): `tcp_write()` buffers without sending; `tcp_output()` sends everything written in one segment; `tcp_write()` is refused while a segment is in flight.
-- **Unit, parser + formatter** (`test_http.c`): request line, versions, methods, absolute-form, query split, headers (Content-Length, Host, Transfer-Encoding), LF-only lines, every error status, status lines and reason phrases, header formatting.
-- **Unit, server** (`test_http.c`): a simulated client drives the real TCP stack with injected segments: GET/HEAD/POST, 404/405/501/413/414/431, responses larger than the TX buffer, requests arriving in pieces, the header and first body bytes in one segment, slot recycling from TIME_WAIT, timeouts, RST mid-request, two slots at once.
-- **Blackbox** (`tests/blackbox/test_http_conform.py`): the host kernel is the client (Python `http.client` and raw sockets) against `http_demo` over TAP or feth: every status above, large responses, trickled requests, 20 back-to-back requests (no TIME_WAIT stall), concurrent connections, idle-client timeout.
-- **Interop**: `curl` fetches `http://pyro-dead01.local/`, with the name resolved by mDNS, because `http_demo` also advertises `_http._tcp`.
+- **Unit, TCP** (`test_tcp.c`, 39): `tcp_write()` / `tcp_output()`, data and FIN retransmission in every closing state, window updates.
+- **Unit, parser + formatter** (`test_http.c`, 22): request line, versions, methods, absolute-form, query split, headers (Content-Length, Host, Transfer-Encoding), LF-only lines, every error status, status lines and reason phrases, header formatting.
+- **Unit, server** (`test_http.c`, 23): a simulated client drives the real TCP stack with injected segments: GET/HEAD/POST, 404/405/501/413/414/431, responses larger than the TX buffer, requests arriving in pieces, the header and first body bytes in one segment, slot recycling from TIME_WAIT and CLOSING (simultaneous close), draining after an error, timeouts, RST mid-request, two slots at once.
+- **Blackbox** (`tests/blackbox/test_http_conform.py`, 21): the host kernel is the client (Python `http.client` and raw sockets) against `http_demo` over TAP or feth: every status above, large responses, trickled requests, 20 back-to-back requests (no TIME_WAIT stall), concurrent connections, idle-client timeout.
+- **Interop**: `http_interop.sh` (Avahi + nss-mdns + curl, in CI) and `http_interop_macos.sh` (`dns-sd` + curl) fetch `http://pyro-dead01.local/` by name — `http_demo` also advertises `_http._tcp` — and bound the lookup time.
 
 ---
 

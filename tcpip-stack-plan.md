@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–10 complete; 232 unit tests + 73 blackbox + 5 fuzz + Avahi interop passing; next: Task 11 HTTP server)
+**Last updated:** 2026-09-26 (Tasks 1–11 complete; 296 unit tests + 95 blackbox + 5 fuzz + interop checks passing; next: Milestone 12 IPv6)
 
 ## Objective
 
@@ -216,7 +216,7 @@ typedef struct {
 - Required for pyro_fw device discovery
 - Design: [docs/design/mdns.md](docs/design/mdns.md)
 
-### Task 11: HTTP server (http.c)
+### ✅ Task 11: HTTP server (http.c) *(DONE)*
 - HTTP/1.0 semantics, `Connection: close`; GET, HEAD, POST
 - Route table → app handler; handler returns status, content type and a body pointer (streamed, any length)
 - Poll-driven connection slots, recycled out of TIME_WAIT; request/response timeouts
@@ -257,6 +257,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/udp.md](docs/design/udp.md)** — UDP port dispatch, zero-copy RX, checksum, ICMP port unreachable
 - **[docs/design/dhcpv4.md](docs/design/dhcpv4.md)** — DHCPv4 client + server, option handler callback API
 - **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10, implemented)
+- **[docs/design/http.md](docs/design/http.md)** — HTTP/1.0 server (Task 11, implemented)
 - **[docs/design/tls.md](docs/design/tls.md)** / **[docs/design/dtls.md](docs/design/dtls.md)** — TLS 1.3 / DTLS 1.3
 
 ### RFC Requirements (~950 total, traced to RFC sections)

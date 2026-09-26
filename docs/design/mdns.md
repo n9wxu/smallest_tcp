@@ -24,8 +24,9 @@ pyro_fw devices must be reachable on any local network without static IP configu
 | DNS-SD advertiser (PTR/SRV/TXT) | ✅ | |
 | Service-type meta-query (`_services._dns-sd._udp.local.`) | ✅ | |
 | Known-answer suppression, QU and legacy unicast responses | ✅ | |
+| NSEC negative answers for types a name lacks (RFC 6762 §6.1) | ✅ | |
 | Simultaneous-probe tiebreak (RFC 6762 §8.2) | | ✅ |
-| Multi-packet known-answer lists, NSEC negative answers | | ✅ |
+| Multi-packet known-answer lists | | ✅ |
 | mDNS querier (resolve `.local` names) | | ✅ |
 | DNS-SD browser (discover services by type) | | ✅ |
 | IPv6 / AAAA records | | ✅ |
@@ -51,7 +52,7 @@ All three build into the optional `smallest_tcp_mdns` library (`smallest_tcp::md
 
 ## 4. Memory Model
 
-The application owns the record table and an `mdns_t` (40 bytes on 32-bit targets); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`.
+The application owns the record table and an `mdns_t` (44 bytes on 32-bit targets); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`.
 
 ```c
 static const char *const txt[] = {"txtvers=1", "fw=1.2.3", "serial=DEAD01", NULL};
@@ -129,6 +130,8 @@ For each question (class IN or ANY) the responder collects matching records: sam
 > The requirements doc originally said 400–500 ms for all multicast responses.  In RFC 6762 §6 that delay applies only to queries with the TC bit set; unique answers go out immediately and shared answers after 20–120 ms.
 
 **Additional records (RFC 6763 §12):** a PTR answer adds the instance's SRV and TXT; an SRV (answered or added) adds the A record of its target.  Additionals go in the last packet if they fit.
+
+**Negative answers (RFC 6762 §6.1):** a question for one of our unique names asking for a type the name does not have (e.g. AAAA for the host) is answered with an NSEC record in the restricted form: Next Domain Name = the name itself, one bitmap block (0) listing the types it does have.  Without it, dual-stack resolvers (curl, browsers) waited 5 s for an AAAA answer before using the A record; with it the first lookup took 0.4 s and later ones about 8 ms.  No NSEC is sent for foreign or shared (PTR) names, for ANY, or while probing.
 
 **Known-answer suppression (RFC 6762 §7.1):** a record is not sent if the query's Answer section already holds it (same name, type and data) with TTL ≥ half our TTL.  Meta-query answers are suppressed the same way.
 
@@ -223,9 +226,9 @@ Random delays use an xorshift32 generator seeded from the MAC and IP, scaled rat
 |---|---|---|
 | `tests/unit/test_dns_wire.c` | 23 | Encoding, compression (suffix, whole name, prefix), limits, rollback, decode, pointer loops, truncation, question/RR parsing |
 | `tests/unit/test_mcast.c` | 19 | Group table, multicast accept/drop (incl. aliased MACs), no ICMP errors / echo for multicast, `udp_send_inplace()` TTL, IGMP report/leave format |
-| `tests/unit/test_mdns.c` | 44 | Table validation, probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression, QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
+| `tests/unit/test_mdns.c` | 49 | Table validation, probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression, QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
 
-### Blackbox (`tests/blackbox/test_mdns_conform.py`, 18 tests)
+### Blackbox (`tests/blackbox/test_mdns_conform.py`, 19 tests)
 
 Each test launches a fresh `mdns_demo` on tap0 so start-up and shutdown are observable:
 
@@ -249,6 +252,7 @@ Each test launches a fresh `mdns_demo` on tap0 so start-up and shutdown are obse
 | 016 foreign names | No answer for `.example` or unknown `.local` names |
 | 017 TXT | `txtvers=1`, `fw=1.2.3`, `serial=DEAD01` |
 | 018 ANY | SRV + TXT for the instance |
+| 019 NSEC | AAAA for the host → NSEC answer |
 
 ### Interop (`tests/blackbox/mdns_interop.sh`)
 
