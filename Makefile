@@ -1,7 +1,7 @@
 # Portable Minimal TCP/IP Stack — Makefile
 #
 # C99, -Wall -Werror. Builds library, unit tests, and demo.
-# Auto-detects Linux (TAP) or macOS (BPF) for the driver.
+# Auto-detects Linux (TAP + raw socket) or macOS (BPF) for the driver.
 
 CC       ?= cc
 CFLAGS   := -std=c99 -Wall -Wextra -Werror -pedantic
@@ -19,7 +19,7 @@ LIB_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c 
 # Platform-specific driver
 UNAME_S  := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-  LIB_SRCS += src/driver/tap.c
+  LIB_SRCS += src/driver/tap.c src/driver/rawsock.c
   DRIVER_DEMO := tap
 else ifeq ($(UNAME_S),Darwin)
   LIB_SRCS += src/driver/bpf.c
@@ -49,7 +49,8 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_dns_wire.c \
              tests/unit/test_mcast.c \
              tests/unit/test_mdns.c \
-             tests/unit/test_http.c
+             tests/unit/test_http.c \
+             tests/unit/test_rawsock.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -175,13 +176,19 @@ $(BUILD)/tests/test_http: tests/unit/test_http.c src/http.c $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_http.c src/http.c $(STACK_SRCS)
 
+# Test for the raw-socket driver (live veth tests need root on Linux)
+$(BUILD)/tests/test_rawsock: tests/unit/test_rawsock.c src/driver/rawsock.c src/net_cksum.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_rawsock.c \
+		src/driver/rawsock.c src/net_cksum.c
+
 # ── Demo ──────────────────────────────────────────────────────────────
 
 demo: $(BUILD)/demo/echo_server
 
 $(BUILD)/demo/echo_server: demo/echo_server/main.c $(STACK_SRCS) $(LIB_SRCS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ demo/echo_server/main.c $(LIB_SRCS)
+	$(CC) $(CFLAGS) -Idemo/common -o $@ demo/echo_server/main.c $(LIB_SRCS)
 
 # ── ARM size measurement ──────────────────────────────────────────────
 

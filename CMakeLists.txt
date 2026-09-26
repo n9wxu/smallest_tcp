@@ -134,6 +134,17 @@ if(SMALLEST_TCP_BUILD_DRIVERS)
         endif()
         add_library(smallest_tcp::driver_tap ALIAS smallest_tcp_driver_tap)
 
+        add_library(smallest_tcp_driver_rawsock STATIC
+            src/driver/rawsock.c
+        )
+        target_link_libraries(smallest_tcp_driver_rawsock PUBLIC smallest_tcp_core)
+        if(PROJECT_IS_TOP_LEVEL)
+            target_compile_options(smallest_tcp_driver_rawsock PRIVATE
+                -Wall -Wextra -Werror -pedantic
+            )
+        endif()
+        add_library(smallest_tcp::driver_rawsock ALIAS smallest_tcp_driver_rawsock)
+
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         add_library(smallest_tcp_driver_bpf STATIC
             src/driver/bpf.c

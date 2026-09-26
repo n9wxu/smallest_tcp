@@ -88,3 +88,9 @@ target_link_libraries(test_mdns PRIVATE smallest_tcp_mdns)
 
 add_unit_test(test_http)
 target_link_libraries(test_http PRIVATE smallest_tcp_http)
+
+# The raw-socket driver's checksum completion is portable; its socket
+# tests run on Linux, and the live veth tests only as root.
+add_unit_test(test_rawsock)
+target_sources(test_rawsock PRIVATE ${PROJECT_SOURCE_DIR}/src/driver/rawsock.c)
+target_link_libraries(test_rawsock PRIVATE smallest_tcp_core)
