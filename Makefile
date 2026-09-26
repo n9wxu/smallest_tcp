@@ -184,23 +184,29 @@ ARM_SIZE   := arm-none-eabi-size
 ARM_OBJDUMP:= arm-none-eabi-objdump
 ARM_CFLAGS := -std=c99 -Wall -Wextra -Werror -pedantic \
               -Os -mthumb -mcpu=cortex-m0 -ffreestanding -ffunction-sections -fdata-sections \
-              -DNET_DEBUG=0 -DNET_ASSERT_ENABLED=0 -DNET_MAX_MCAST_GROUPS=0 \
+              -DNET_DEBUG=0 -DNET_ASSERT_ENABLED=0 \
               -Iinclude
 ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=nosys.specs -nostartfiles
 
-# Two configurations, built into separate object dirs (multicast RX compiled
-# out — neither app joins a group, and the lwIP build has IGMP off):
-#   arm-size      UDP echo, -DNET_USE_TCP=0 (the lwIP UDP-only comparison)
-#   arm-size-tcp  UDP echo + TCP echo server (adds tcp.c + tcp_buf_saw.c)
+# Three configurations, built into separate object dirs:
+#   arm-size       UDP echo, -DNET_USE_TCP=0 (the lwIP UDP-only comparison)
+#   arm-size-tcp   UDP echo + TCP echo server (adds tcp.c + tcp_buf_saw.c)
+#   arm-size-mdns  UDP echo + mDNS/DNS-SD responder (adds mdns.c, dns_wire.c,
+#                  igmp.c; one multicast group)
+# The first two compile multicast RX out (NET_MAX_MCAST_GROUPS=0): neither
+# app joins a group, and the lwIP build has IGMP off.
+ARM_NOMCAST := -DNET_MAX_MCAST_GROUPS=0
 
 ARM_UDP_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
                 src/driver/stub.c bench/size_measure.c
 ARM_TCP_SRCS := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
+ARM_MDNS_SRCS := $(ARM_UDP_SRCS) src/mdns.c src/dns_wire.c src/igmp.c
 
 ARM_UDP_OBJS := $(patsubst %.c,$(BUILD)/arm/udp/%.o,$(ARM_UDP_SRCS))
 ARM_TCP_OBJS := $(patsubst %.c,$(BUILD)/arm/tcp/%.o,$(ARM_TCP_SRCS))
+ARM_MDNS_OBJS := $(patsubst %.c,$(BUILD)/arm/mdns/%.o,$(ARM_MDNS_SRCS))
 
-.PHONY: arm-size arm-size-tcp
+.PHONY: arm-size arm-size-tcp arm-size-mdns
 
 arm-size: $(BUILD)/arm/udp/size_measure.elf
 	@echo ""
@@ -222,21 +228,39 @@ arm-size-tcp: $(BUILD)/arm/tcp/size_measure.elf
 	@echo ""
 	@echo "Flash = .text + .data, RAM = .data + .bss"
 
+arm-size-mdns: $(BUILD)/arm/mdns/size_measure.elf
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo + mDNS/DNS-SD, -Os -mthumb) ==="
+	@$(ARM_SIZE) $<
+	@echo ""
+	@echo "=== Per-module sizes ==="
+	@$(ARM_SIZE) $(ARM_MDNS_OBJS)
+	@echo ""
+	@echo "Flash = .text + .data, RAM = .data + .bss"
+
 $(BUILD)/arm/udp/size_measure.elf: $(ARM_UDP_OBJS)
 	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 $(ARM_LDFLAGS) -o $@ $^
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DNET_USE_TCP=0 $(ARM_LDFLAGS) -o $@ $^
 
 $(BUILD)/arm/udp/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -c -o $@ $<
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DNET_USE_TCP=0 -c -o $@ $<
 
 $(BUILD)/arm/tcp/size_measure.elf: $(ARM_TCP_OBJS)
 	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_LDFLAGS) -o $@ $^
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) $(ARM_LDFLAGS) -o $@ $^
 
 $(BUILD)/arm/tcp/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) -c -o $@ $<
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -c -o $@ $<
+
+$(BUILD)/arm/mdns/size_measure.elf: $(ARM_MDNS_OBJS)
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -DBENCH_MDNS $(ARM_LDFLAGS) -o $@ $^
+
+$(BUILD)/arm/mdns/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -DBENCH_MDNS -c -o $@ $<
 
 # ── Clean ─────────────────────────────────────────────────────────────
 

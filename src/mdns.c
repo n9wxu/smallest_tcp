@@ -35,6 +35,12 @@ static uint32_t rnd(mdns_t *m) {
   return x;
 }
 
+/* Uniform value in [0, n) by scaling, not '%': Cortex-M0 has no divide
+ * instruction and a modulo would link libgcc's __udivsi3. */
+static uint32_t rnd_below(mdns_t *m, uint32_t n) {
+  return ((rnd(m) & 0xFFFFu) * n) >> 16;
+}
+
 /* PTR records are shared (many hosts advertise the same service type);
  * A, SRV and TXT records are unique to this host (RFC 6762 §2). */
 static int is_shared(const mdns_record_t *r) { return r->type == DNS_TYPE_PTR; }
@@ -570,7 +576,7 @@ void mdns_start(mdns_t *m) {
   igmp_join(m->net, MDNS_GROUP); /* REQ-MDNS-002 */
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
-  m->timer_ms = rnd(m) % (MDNS_PROBE_WAIT_MS + 1); /* REQ-MDNS-017 */
+  m->timer_ms = rnd_below(m, MDNS_PROBE_WAIT_MS + 1); /* REQ-MDNS-017 */
   m->resp_timer_ms = 0;
   m->resp_answers = 0;
   m->resp_meta = 0;
@@ -724,9 +730,9 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
   m->resp_answers |= answers;
   m->resp_meta |= meta;
   if (!m->resp_timer_ms)
-    m->resp_timer_ms = MDNS_RESP_DELAY_MIN_MS +
-                       rnd(m) % (MDNS_RESP_DELAY_MAX_MS -
-                                 MDNS_RESP_DELAY_MIN_MS + 1);
+    m->resp_timer_ms =
+        MDNS_RESP_DELAY_MIN_MS +
+        rnd_below(m, MDNS_RESP_DELAY_MAX_MS - MDNS_RESP_DELAY_MIN_MS + 1);
 }
 
 void mdns_stop(mdns_t *m) {

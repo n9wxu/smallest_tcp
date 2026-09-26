@@ -5,10 +5,11 @@
  * This file exercises all implemented stack layers so the linker keeps them.
  * No OS dependencies (no stdio, no malloc, no syscalls).
  *
- * Two configurations are measured:
+ * Three configurations are measured:
  *   make arm-size      — UDP echo (ETH + ARP + IPv4 + ICMP + UDP),
  *                        built with -DNET_USE_TCP=0 (lwIP comparison baseline)
  *   make arm-size-tcp  — UDP echo + TCP echo (adds tcp.c + tcp_buf_saw.c)
+ *   make arm-size-mdns — UDP echo + mDNS/DNS-SD responder (-DBENCH_MDNS)
  */
 
 #include "arp.h"
@@ -22,6 +23,10 @@
 #if NET_USE_TCP
 #include "tcp.h"
 #include "tcp_buf.h"
+#endif
+
+#ifdef BENCH_MDNS
+#include "mdns.h"
 #endif
 
 /* Application-owned memory (typical small MCU sizes) */
@@ -39,7 +44,40 @@ static void echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
   udp_send(n, src_ip, src_mac, 7, src_port, buf, len);
 }
 
+#ifdef BENCH_MDNS
+/* mDNS + DNS-SD: host name plus one advertised service */
+static const char *const txt[] = {"txtvers=1", NULL};
+static const mdns_record_t records[] = {
+    {.type = DNS_TYPE_A, .ttl = MDNS_TTL_HOST, .name = "dev.local", .rdata.a = 0},
+    {.type = DNS_TYPE_PTR,
+     .ttl = MDNS_TTL_OTHER,
+     .name = "_x._udp.local",
+     .rdata.ptr = "Dev._x._udp.local"},
+    {.type = DNS_TYPE_SRV,
+     .ttl = MDNS_TTL_HOST,
+     .name = "Dev._x._udp.local",
+     .rdata.srv = {0, 0, 7, "dev.local"}},
+    {.type = DNS_TYPE_TXT,
+     .ttl = MDNS_TTL_HOST,
+     .name = "Dev._x._udp.local",
+     .rdata.txt = txt},
+};
+static mdns_t mdns;
+
+static void mdns_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
+                         const uint8_t *src_mac, uint16_t payload_offset,
+                         uint16_t payload_len) {
+  uint8_t buf[256];
+  uint16_t len = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
+  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, len);
+  mdns_input(&mdns, src_ip, src_mac, src_port, buf, len);
+}
+
+static const udp_port_entry_t ports[] = {{7, echo_handler},
+                                         {MDNS_PORT, mdns_handler}};
+#else
 static const udp_port_entry_t ports[] = {{7, echo_handler}};
+#endif
 
 #if NET_USE_TCP
 /* TCP echo server — one connection, stop-and-wait buffers */
@@ -61,7 +99,13 @@ void app_main(void) {
            &stub_mac_ops, (void *)0);
 
   udp_ports.entries = ports;
-  udp_ports.count = 1;
+  udp_ports.count = sizeof(ports) / sizeof(ports[0]);
+
+#ifdef BENCH_MDNS
+  mdns_init(&mdns, &net, records, sizeof(records) / sizeof(records[0]),
+            (mdns_conflict_fn_t)0, (void *)0);
+  mdns_start(&mdns);
+#endif
 
 #if NET_USE_TCP
   tcp_saw_tx_init(&tcp_tx_ctx, tcp_tx_mem, sizeof(tcp_tx_mem));
@@ -97,6 +141,11 @@ void app_main(void) {
 
   /* Force ARP request to be linked */
   arp_request(&net, 0x0A000001);
+
+#ifdef BENCH_MDNS
+  mdns_tick(&mdns, 10);
+  mdns_stop(&mdns);
+#endif
 
   dummy = n;
 }
