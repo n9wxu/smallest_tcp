@@ -72,8 +72,12 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
 
   /* REQ-ETH-001, REQ-ETH-002, REQ-ETH-003: MAC filtering */
   if (!net_mac_equal(eth.dst_mac, net->mac) &&
-      !net_mac_is_broadcast(eth.dst_mac)) {
-    /* Not for us and not broadcast — discard silently */
+      !net_mac_is_broadcast(eth.dst_mac)
+#if NET_USE_IPV4 && NET_MAX_MCAST_GROUPS > 0
+      && !ipv4_mcast_mac_accepted(net, eth.dst_mac)
+#endif
+  ) {
+    /* Not for us, not broadcast, not a joined group — discard silently */
     net->mac_driver->discard(net->mac_ctx);
     return;
   }

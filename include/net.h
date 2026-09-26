@@ -86,6 +86,11 @@ typedef struct {
   uint32_t subnet_mask; /**< Host byte order */
   uint16_t arp_retry_ms;
   uint8_t arp_max_retries;
+#if NET_MAX_MCAST_GROUPS > 0
+  /** Joined IPv4 multicast groups, host byte order (0 = free slot).
+   *  Managed by ipv4_mcast_join() / ipv4_mcast_leave(). */
+  uint32_t mcast_groups[NET_MAX_MCAST_GROUPS];
+#endif
 } net_t;
 
 /* ── Factory methods ──────────────────────────────────────────────── */

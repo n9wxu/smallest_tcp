@@ -44,6 +44,11 @@
 #define NET_USE_HTTP 0
 #endif
 
+/* ── IPv4 multicast groups joined at once (0 disables multicast RX) ── */
+#ifndef NET_MAX_MCAST_GROUPS
+#define NET_MAX_MCAST_GROUPS 1
+#endif
+
 /* ── Architecture ─────────────────────────────────────────────────── */
 #define NET_8BIT_TARGET 0
 

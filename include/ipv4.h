@@ -97,8 +97,14 @@ void ipv4_input(net_t *net, const eth_frame_t *eth);
  * @param src_ip       Source IP in host byte order.
  * @param dst_ip       Destination IP in host byte order.
  */
-void ipv4_build(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
-                uint32_t src_ip, uint32_t dst_ip);
+void ipv4_build_ttl(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
+                    uint32_t src_ip, uint32_t dst_ip, uint8_t ttl);
+
+static inline void ipv4_build(uint8_t *buf, uint16_t payload_len,
+                              uint8_t protocol, uint32_t src_ip,
+                              uint32_t dst_ip) {
+  ipv4_build_ttl(buf, payload_len, protocol, src_ip, dst_ip, NET_DEFAULT_TTL);
+}
 
 /**
  * Send an IPv4 packet. Builds Ethernet + IPv4 headers in the tx buffer
@@ -134,5 +140,53 @@ static inline int ipv4_is_broadcast(const net_t *net, uint32_t ip) {
   uint32_t host_max = ~net->subnet_mask;
   return host_part == host_max;
 }
+
+/* ── Multicast (RFC 1112) ─────────────────────────────────────────── */
+
+/** True for class D addresses 224.0.0.0/4. */
+static inline int ipv4_is_multicast(uint32_t ip) { return (ip >> 28) == 0xE; }
+
+/**
+ * True if a received datagram's destination is multicast.  Multicast only
+ * gets past ipv4_input() for joined groups, so this folds to 0 (and the
+ * checks using it compile away) when NET_MAX_MCAST_GROUPS is 0.
+ */
+static inline int ipv4_rx_is_multicast(uint32_t dst_ip) {
+#if NET_MAX_MCAST_GROUPS > 0
+  return ipv4_is_multicast(dst_ip);
+#else
+  (void)dst_ip;
+  return 0;
+#endif
+}
+
+/** Ethernet MAC for a multicast group: 01:00:5E + low 23 bits of the group. */
+static inline void ipv4_mcast_mac(uint32_t group, uint8_t mac[6]) {
+  mac[0] = 0x01;
+  mac[1] = 0x00;
+  mac[2] = 0x5E;
+  mac[3] = (uint8_t)((group >> 16) & 0x7F);
+  mac[4] = (uint8_t)((group >> 8) & 0xFF);
+  mac[5] = (uint8_t)(group & 0xFF);
+}
+
+/**
+ * Start accepting frames and datagrams for a multicast group.
+ * Local only — no IGMP is sent (see igmp_join()).  A hardware MAC with a
+ * multicast filter must also be set to pass ipv4_mcast_mac(group).
+ * @return NET_OK (also if already joined), NET_ERR_INVALID_PARAM if
+ *         @p group is not multicast, NET_ERR_BUF_TOO_SMALL if all
+ *         NET_MAX_MCAST_GROUPS slots are in use.
+ */
+net_err_t ipv4_mcast_join(net_t *net, uint32_t group);
+
+/** Stop accepting a multicast group (no-op if not joined). */
+void ipv4_mcast_leave(net_t *net, uint32_t group);
+
+/** True if @p group has been joined. */
+int ipv4_mcast_is_member(const net_t *net, uint32_t group);
+
+/** True if @p mac is the Ethernet address of a joined group. */
+int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac);
 
 #endif /* IPV4_H */

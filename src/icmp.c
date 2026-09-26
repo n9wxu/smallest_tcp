@@ -24,6 +24,8 @@ static void icmp_echo_reply(net_t *net, const ipv4_hdr_t *ip,
     return;
   if (net_mac_is_broadcast(eth->dst_mac) && ip->dst_ip != net->ipv4_addr)
     return;
+  if (ipv4_rx_is_multicast(ip->dst_ip))
+    return;
 
   /* REQ-ICMPv4-008: if too large for TX buffer, discard */
   uint16_t total_frame = ETH_HDR_SIZE + IPV4_HDR_SIZE + icmp_len;

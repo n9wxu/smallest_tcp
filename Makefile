@@ -46,7 +46,8 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_tcp.c \
              tests/unit/test_tftp.c \
              tests/unit/test_dhcpv4.c \
-             tests/unit/test_dns_wire.c
+             tests/unit/test_dns_wire.c \
+             tests/unit/test_mcast.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -156,6 +157,11 @@ $(BUILD)/tests/test_dns_wire: tests/unit/test_dns_wire.c src/dns_wire.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_dns_wire.c src/dns_wire.c
 
+# Test for IPv4 multicast + IGMP
+$(BUILD)/tests/test_mcast: tests/unit/test_mcast.c src/igmp.c $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_mcast.c src/igmp.c $(STACK_SRCS)
+
 # ── Demo ──────────────────────────────────────────────────────────────
 
 demo: $(BUILD)/demo/echo_server
@@ -171,11 +177,12 @@ ARM_SIZE   := arm-none-eabi-size
 ARM_OBJDUMP:= arm-none-eabi-objdump
 ARM_CFLAGS := -std=c99 -Wall -Wextra -Werror -pedantic \
               -Os -mthumb -mcpu=cortex-m0 -ffreestanding -ffunction-sections -fdata-sections \
-              -DNET_DEBUG=0 -DNET_ASSERT_ENABLED=0 \
+              -DNET_DEBUG=0 -DNET_ASSERT_ENABLED=0 -DNET_MAX_MCAST_GROUPS=0 \
               -Iinclude
 ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=nosys.specs -nostartfiles
 
-# Two configurations, built into separate object dirs:
+# Two configurations, built into separate object dirs (multicast RX compiled
+# out — neither app joins a group, and the lwIP build has IGMP off):
 #   arm-size      UDP echo, -DNET_USE_TCP=0 (the lwIP UDP-only comparison)
 #   arm-size-tcp  UDP echo + TCP echo server (adds tcp.c + tcp_buf_saw.c)
 

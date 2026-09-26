@@ -95,6 +95,21 @@ net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                    uint16_t src_port, uint16_t dst_port, const uint8_t *data,
                    uint16_t data_len);
 
+/** Offset of the UDP payload in a frame built by udp_send_inplace(). */
+#define UDP_PAYLOAD_OFFSET (ETH_HDR_SIZE + IPV4_HDR_SIZE + UDP_HDR_SIZE)
+
+/**
+ * Send a UDP datagram whose payload the caller has already written into
+ * net->tx.buf at UDP_PAYLOAD_OFFSET (zero copy), with an explicit IP TTL.
+ *
+ * @param data_len   Payload length already in place.
+ * @param ttl        IP TTL (e.g. 255 for mDNS, RFC 6762 §11).
+ * @return NET_OK on success, or error code.
+ */
+net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
+                           uint16_t src_port, uint16_t dst_port,
+                           uint16_t data_len, uint8_t ttl);
+
 /**
  * Compute UDP checksum over pseudo-header + UDP header + data.
  *

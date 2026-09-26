@@ -84,8 +84,8 @@ net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
 
 static uint16_t ipv4_id_counter = 0;
 
-void ipv4_build(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
-                uint32_t src_ip, uint32_t dst_ip) {
+void ipv4_build_ttl(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
+                    uint32_t src_ip, uint32_t dst_ip, uint8_t ttl) {
   /* REQ-IPv4-030: Version=4, REQ-IPv4-031: IHL=5 */
   buf[IPV4_OFF_VER_IHL] = 0x45;
   /* REQ-IPv4-040: TOS=0 */
@@ -96,8 +96,8 @@ void ipv4_build(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
   net_write16be(buf + IPV4_OFF_ID, ipv4_id_counter++);
   /* REQ-IPv4-034: DF=1, MF=0, Fragment Offset=0 */
   net_write16be(buf + IPV4_OFF_FLAGS_FRAG, IPV4_FLAG_DF);
-  /* REQ-IPv4-035,045: TTL=64 */
-  buf[IPV4_OFF_TTL] = NET_DEFAULT_TTL;
+  /* REQ-IPv4-035,045: TTL=64 unless the caller needs another (mDNS: 255) */
+  buf[IPV4_OFF_TTL] = ttl;
   /* REQ-IPv4-036: Protocol */
   buf[IPV4_OFF_PROTO] = protocol;
   /* Checksum placeholder — compute after all fields set */
@@ -108,6 +108,79 @@ void ipv4_build(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
   /* REQ-IPv4-037: compute header checksum */
   uint16_t cksum = net_cksum(buf, IPV4_HDR_SIZE);
   net_write16be(buf + IPV4_OFF_CKSUM, cksum);
+}
+
+/* ── Multicast membership (RFC 1112) ──────────────────────────────── */
+
+net_err_t ipv4_mcast_join(net_t *net, uint32_t group) {
+  if (!ipv4_is_multicast(group))
+    return NET_ERR_INVALID_PARAM;
+#if NET_MAX_MCAST_GROUPS > 0
+  uint8_t i;
+  int free_slot = -1;
+  for (i = 0; i < NET_MAX_MCAST_GROUPS; i++) {
+    if (net->mcast_groups[i] == group)
+      return NET_OK;
+    if (net->mcast_groups[i] == 0 && free_slot < 0)
+      free_slot = i;
+  }
+  if (free_slot >= 0) {
+    net->mcast_groups[free_slot] = group;
+    return NET_OK;
+  }
+#else
+  (void)net;
+#endif
+  return NET_ERR_BUF_TOO_SMALL;
+}
+
+void ipv4_mcast_leave(net_t *net, uint32_t group) {
+#if NET_MAX_MCAST_GROUPS > 0
+  uint8_t i;
+  for (i = 0; i < NET_MAX_MCAST_GROUPS; i++) {
+    if (net->mcast_groups[i] == group)
+      net->mcast_groups[i] = 0;
+  }
+#else
+  (void)net;
+  (void)group;
+#endif
+}
+
+int ipv4_mcast_is_member(const net_t *net, uint32_t group) {
+#if NET_MAX_MCAST_GROUPS > 0
+  uint8_t i;
+  if (group == 0)
+    return 0;
+  for (i = 0; i < NET_MAX_MCAST_GROUPS; i++) {
+    if (net->mcast_groups[i] == group)
+      return 1;
+  }
+#else
+  (void)net;
+  (void)group;
+#endif
+  return 0;
+}
+
+int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac) {
+#if NET_MAX_MCAST_GROUPS > 0
+  uint8_t i;
+  uint8_t gmac[6];
+  if (mac[0] != 0x01 || mac[1] != 0x00 || mac[2] != 0x5E)
+    return 0;
+  for (i = 0; i < NET_MAX_MCAST_GROUPS; i++) {
+    if (net->mcast_groups[i] == 0)
+      continue;
+    ipv4_mcast_mac(net->mcast_groups[i], gmac);
+    if (net_mac_equal(mac, gmac))
+      return 1;
+  }
+#else
+  (void)net;
+  (void)mac;
+#endif
+  return 0;
 }
 
 /* ── Send ─────────────────────────────────────────────────────────── */
@@ -170,6 +243,10 @@ void ipv4_input(net_t *net, const eth_frame_t *eth) {
     for_us = 1; /* subnet bcast */
   if (ip.dst_ip == 0 && net->ipv4_addr == 0)
     for_us = 1; /* DHCP bootstrap */
+#if NET_MAX_MCAST_GROUPS > 0
+  if (ipv4_is_multicast(ip.dst_ip) && ipv4_mcast_is_member(net, ip.dst_ip))
+    for_us = 1; /* joined multicast group */
+#endif
 
   if (!for_us) {
     /* REQ-IPv4-011,043: not for us and we don't forward */
@@ -200,7 +277,9 @@ void ipv4_input(net_t *net, const eth_frame_t *eth) {
     /* REQ-IPv4-020,021: unrecognized protocol → ICMP Protocol Unreachable */
     NET_LOG("ipv4_input: unknown proto %u", ip.protocol);
 #if NET_USE_IPV4
-    if (!ipv4_is_broadcast(net, ip.dst_ip) && ip.dst_ip != 0xFFFFFFFFu) {
+    /* RFC 1122 §3.2.2: never an ICMP error for broadcast/multicast */
+    if (!ipv4_is_broadcast(net, ip.dst_ip) && ip.dst_ip != 0xFFFFFFFFu &&
+        !ipv4_rx_is_multicast(ip.dst_ip)) {
       icmp_send_dest_unreach(
           net, ICMP_CODE_PROTO_UNREACH, ip.header, ip.header_len,
           ip.payload_len >= 8 ? ip.payload : NULL, ip.src_ip, eth->src_mac);

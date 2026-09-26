@@ -106,7 +106,7 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 
   /* REQ-UDP-017,031: ICMP Port Unreachable — but not for broadcast/multicast */
   if (!ipv4_is_broadcast(net, ip->dst_ip) &&
-      !net_mac_is_broadcast(eth->dst_mac)) {
+      !net_mac_is_broadcast(eth->dst_mac) && !ipv4_rx_is_multicast(ip->dst_ip)) {
     NET_LOG("udp_input: no handler for port %u, sending ICMP", dst_port);
     icmp_send_dest_unreach(net, ICMP_CODE_PORT_UNREACH, ip->header,
                            ip->header_len, ip->payload, ip->src_ip,
@@ -120,10 +120,25 @@ net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                    uint16_t src_port, uint16_t dst_port, const uint8_t *data,
                    uint16_t data_len) {
   /* REQ-UDP-032,033: check size limits */
-  uint16_t udp_len = UDP_HDR_SIZE + data_len;
-  uint16_t total = ETH_HDR_SIZE + IPV4_HDR_SIZE + udp_len;
+  if ((uint32_t)UDP_PAYLOAD_OFFSET + data_len > net->tx.capacity)
+    return NET_ERR_BUF_TOO_SMALL;
+
+  /* Copy payload into place, then send it from there */
+  if (data && data_len > 0) {
+    memcpy(net->tx.buf + UDP_PAYLOAD_OFFSET, data, data_len);
+  }
+  return udp_send_inplace(net, dst_ip, dst_mac, src_port, dst_port, data_len,
+                          NET_DEFAULT_TTL);
+}
+
+net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
+                           uint16_t src_port, uint16_t dst_port,
+                           uint16_t data_len, uint8_t ttl) {
+  /* REQ-UDP-032,033: check size limits */
+  uint32_t total = (uint32_t)UDP_PAYLOAD_OFFSET + data_len;
   if (total > net->tx.capacity)
     return NET_ERR_BUF_TOO_SMALL;
+  uint16_t udp_len = (uint16_t)(UDP_HDR_SIZE + data_len);
 
   uint8_t *buf = net->tx.buf;
 
@@ -141,19 +156,14 @@ net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
   net_write16be(udp_hdr + UDP_OFF_LEN, udp_len);
   net_write16be(udp_hdr + UDP_OFF_CKSUM, 0x0000);
 
-  /* Copy payload */
-  if (data && data_len > 0) {
-    memcpy(udp_hdr + UDP_HDR_SIZE, data, data_len);
-  }
-
   /* REQ-UDP-009: compute UDP checksum with pseudo-header */
   uint16_t cksum = udp_checksum(net->ipv4_addr, dst_ip, udp_hdr, udp_len);
   net_write16be(udp_hdr + UDP_OFF_CKSUM, cksum);
 
   /* REQ-UDP-023: pass to IP layer */
-  ipv4_build(ip_hdr, udp_len, IPV4_PROTO_UDP, net->ipv4_addr, dst_ip);
+  ipv4_build_ttl(ip_hdr, udp_len, IPV4_PROTO_UDP, net->ipv4_addr, dst_ip, ttl);
 
   /* Send */
-  int r = net->mac_driver->send(net->mac_ctx, buf, total);
+  int r = net->mac_driver->send(net->mac_ctx, buf, (uint16_t)total);
   return (r >= 0) ? NET_OK : NET_ERR_NO_FRAME;
 }
