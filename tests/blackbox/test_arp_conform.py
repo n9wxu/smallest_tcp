@@ -16,6 +16,7 @@ import pytest
 from scapy.all import Ether, ARP
 
 from helpers import (
+    start_sniffer,
     build_arp, send_recv_arp, send_pkt, silence_any, RECV_TIMEOUT,
 )
 
@@ -66,11 +67,8 @@ def test_arp_003_who_has_wrong_ip_is_silent(ctx):
     foreign_ip = "10.0.0.99"   # not the SUT's IP
     req = build_arp(ctx, op="who-has", target_ip=foreign_ip)
 
-    from scapy.all import AsyncSniffer
     bpf = f"arp and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf, count=1, timeout=2)
-    sniffer.start()
-    time.sleep(0.02)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=1, timeout=2)
     send_pkt(ctx, req)
     sniffer.join(timeout=3)
     assert len(sniffer.results) == 0, (

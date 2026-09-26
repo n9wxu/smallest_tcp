@@ -22,11 +22,12 @@ import pytest
 from scapy.all import (
     Ether, IP, UDP, ARP,
     BOOTP, DHCP,
-    AsyncSniffer, sniff, sendp, srp1,
+    sniff, sendp, srp1,
     get_if_hwaddr,
 )
 
 from helpers import (
+    start_sniffer,
     send_pkt, send_recv_arp,
     build_dhcp_server, send_recv_dhcp, sniff_dhcp_from_sut,
     dhcp_msg_type, dhcp_get_opt,
@@ -230,10 +231,7 @@ def test_wrong_xid_offer_ignored(dhcp_ctx, dhcp_sut_fresh):
 
     # Arm sniffer BEFORE sending the bad OFFER
     bpf = f"udp port 67 and ether src {dhcp_ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=dhcp_ctx.iface, filter=bpf,
-                           count=1, timeout=2)
-    sniffer.start()
-    time.sleep(0.05)
+    sniffer = start_sniffer(dhcp_ctx.iface, filter=bpf, count=1, timeout=2)
 
     bad_offer = build_dhcp_server(
         dhcp_ctx,

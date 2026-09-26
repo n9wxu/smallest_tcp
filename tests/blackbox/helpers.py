@@ -6,6 +6,7 @@ They build raw Ethernet+IP+TCP frames using the phantom source IP so the
 local kernel's TCP stack never sees the replies.
 """
 
+import threading
 import time
 from scapy.all import (
     Ether, IP, TCP,
@@ -16,6 +17,30 @@ from scapy.all import (
 
 # ── Receive timeout (seconds) ──────────────────────────────────────────────────
 RECV_TIMEOUT = 3
+
+# ── Sniffer startup ────────────────────────────────────────────────────────────
+SNIFFER_START_TIMEOUT = 5
+
+
+def start_sniffer(iface, **kwargs):
+    """
+    Start an AsyncSniffer and return only once its capture socket is open.
+
+    Scapy calls started_callback after the AF_PACKET socket and its BPF
+    filter are in place, so any reply to a stimulus sent after this returns
+    is captured.  This replaces the old `sniffer.start(); time.sleep(0.02)`
+    pattern, which lost fast replies whenever the socket took longer than
+    the sleep to open (seen as test_arp_001 flakes on loaded CI runners).
+    """
+    ready = threading.Event()
+    sniffer = AsyncSniffer(iface=iface, started_callback=ready.set, **kwargs)
+    sniffer.start()
+    if not ready.wait(SNIFFER_START_TIMEOUT):
+        raise RuntimeError(
+            f"sniffer on {iface} did not start within {SNIFFER_START_TIMEOUT} s"
+            f" ({getattr(sniffer, 'exception', None)!r})")
+    return sniffer
+
 
 # ── Initial sequence number seed (incremented per call) ────────────────────────
 _isn_seed = 0x12345678
@@ -119,10 +144,7 @@ def silence(ctx, pkt, timeout=2):
     Also uses AsyncSniffer so we don't miss a fast reply.
     """
     bpf = f"tcp and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=1, timeout=timeout)
-    sniffer.start()
-    time.sleep(0.05)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=1, timeout=timeout)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return len(sniffer.results) == 0
@@ -318,10 +340,7 @@ def build_arp(ctx, op="who-has", target_ip=None):
 def send_recv_arp(ctx, pkt, timeout=RECV_TIMEOUT):
     """Send pkt and return ARP replies from the SUT."""
     bpf = f"arp and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=1, timeout=timeout)
-    sniffer.start()
-    time.sleep(0.05)   # 50 ms — same as TCP/ICMP/UDP helpers (was 20 ms)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=1, timeout=timeout)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return list(sniffer.results)
@@ -346,10 +365,7 @@ def build_icmp_echo(ctx, id=1, seq=1, data=b"ping", dst_ip=None, dst_mac=None):
 def send_recv_icmp(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
     """Send pkt and return ICMP replies from the SUT."""
     bpf = f"icmp and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=count, timeout=timeout)
-    sniffer.start()
-    time.sleep(0.02)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=count, timeout=timeout)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return list(sniffer.results)
@@ -376,10 +392,7 @@ def build_udp(ctx, sport, dport, payload=b"", bad_checksum=False,
 def send_recv_udp(ctx, pkt, timeout=RECV_TIMEOUT, count=1):
     """Send pkt and return UDP replies from the SUT."""
     bpf = f"udp and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=count, timeout=timeout)
-    sniffer.start()
-    time.sleep(0.02)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=count, timeout=timeout)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return list(sniffer.results)
@@ -499,10 +512,7 @@ def send_recv_dhcp(ctx, pkt, timeout=5, count=1):
     Uses AsyncSniffer to avoid the send-then-sniff race.
     """
     bpf = f"udp port 67 and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=count, timeout=timeout)
-    sniffer.start()
-    time.sleep(0.05)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=count, timeout=timeout)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return list(sniffer.results)
@@ -548,10 +558,7 @@ def silence_any(ctx, pkt, timeout=2):
     Returns True on silence (test passes).
     """
     bpf = f"ip and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf,
-                           count=1, timeout=timeout)
-    sniffer.start()
-    time.sleep(0.02)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=1, timeout=timeout)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return len(sniffer.results) == 0

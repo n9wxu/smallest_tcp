@@ -12,11 +12,11 @@ Run standalone:
 Each test traces to one or more REQ-UDP-NNN / REQ-ICMPv4-NNN requirements.
 """
 
-import time
 import pytest
 from scapy.all import Ether, IP, UDP, ICMP
 
 from helpers import (
+    start_sniffer,
     build_udp, send_recv_udp, send_recv_icmp,
     send_pkt, silence_any, RECV_TIMEOUT,
 )
@@ -129,11 +129,8 @@ def test_udp_005_bad_checksum_silently_dropped(ctx):
     pkt = build_udp(ctx, sport=_OUR_SPORT, dport=_UDP_ECHO_PORT,
                     payload=b"badcksum", bad_checksum=True)
     # Must receive neither a UDP echo nor an ICMP error
-    from scapy.all import AsyncSniffer
     bpf = f"(udp or icmp) and ether src {ctx.sut_mac}"
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf, count=1, timeout=2)
-    sniffer.start()
-    time.sleep(0.02)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=1, timeout=2)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=3)
     assert len(sniffer.results) == 0, (

@@ -17,6 +17,7 @@ import pytest
 from scapy.all import Ether, IP, ICMP
 
 from helpers import (
+    start_sniffer,
     build_icmp_echo, send_recv_icmp,
     send_pkt, silence_any, RECV_TIMEOUT,
 )
@@ -123,11 +124,7 @@ def test_icmp_005_bad_checksum_silently_dropped(ctx):
         b"badcksum"
     )
     bpf = f"icmp and ether src {ctx.sut_mac}"
-    from scapy.all import AsyncSniffer
-    import time
-    sniffer = AsyncSniffer(iface=ctx.iface, filter=bpf, count=1, timeout=2)
-    sniffer.start()
-    time.sleep(0.02)
+    sniffer = start_sniffer(ctx.iface, filter=bpf, count=1, timeout=2)
     send_pkt(ctx, pkt)
     sniffer.join(timeout=3)
     assert len(sniffer.results) == 0, (
