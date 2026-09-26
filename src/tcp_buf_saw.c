@@ -157,7 +157,11 @@ static uint16_t saw_rx_deliver(void *ctx, const uint8_t *data, uint16_t len) {
     memcpy(c->buf + c->write_pos, data, first);
     memcpy(c->buf, data + first, len - first);
   }
-  c->write_pos = (uint16_t)((c->write_pos + len) % c->capacity);
+  /* pos < capacity and len <= capacity, so one subtraction wraps it —
+   * no '%': Cortex-M0 has no divide instruction */
+  c->write_pos = (uint16_t)(c->write_pos + len);
+  if (c->write_pos >= c->capacity)
+    c->write_pos = (uint16_t)(c->write_pos - c->capacity);
   c->data_len += len;
   return len;
 }
@@ -185,7 +189,9 @@ static uint16_t saw_rx_read(void *ctx, uint8_t *dst, uint16_t maxlen) {
     memcpy(dst, c->buf + c->read_pos, first);
     memcpy(dst + first, c->buf, n - first);
   }
-  c->read_pos = (uint16_t)((c->read_pos + n) % c->capacity);
+  c->read_pos = (uint16_t)(c->read_pos + n);
+  if (c->read_pos >= c->capacity)
+    c->read_pos = (uint16_t)(c->read_pos - c->capacity);
   c->data_len -= n;
   return n;
 }

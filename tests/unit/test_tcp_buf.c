@@ -275,6 +275,32 @@ TEST(test_saw_rx_window_tracks_available) {
 
 /* ── Main ─────────────────────────────────────────────────────────── */
 
+/* Ring wrap: data straddling the end of the buffer comes back intact and
+ * the read/write positions wrap to the start (no '%' in the buffer code). */
+TEST(test_saw_rx_wraps_around_end) {
+  uint8_t in[BUF_SIZE], out[BUF_SIZE];
+  uint16_t i, first = (uint16_t)(BUF_SIZE - 3);
+  setup_rx();
+  for (i = 0; i < BUF_SIZE; i++)
+    in[i] = (uint8_t)(i * 7 + 1);
+  /* advance both positions to 3 bytes before the end */
+  ASSERT_EQ(tcp_saw_rx_ops.deliver(&rx_ctx, in, first), first);
+  ASSERT_EQ(tcp_saw_rx_ops.read(&rx_ctx, out, first), first);
+  /* 10 bytes: 3 at the end, 7 wrapped to the start */
+  ASSERT_EQ(tcp_saw_rx_ops.deliver(&rx_ctx, in, 10), 10);
+  ASSERT_EQ(rx_ctx.write_pos, 7);
+  ASSERT_EQ(tcp_saw_rx_ops.read(&rx_ctx, out, 10), 10);
+  ASSERT_MEM_EQ(out, in, 10);
+  ASSERT_EQ(rx_ctx.read_pos, 7);
+  /* land exactly on the end: position wraps to 0 */
+  ASSERT_EQ(tcp_saw_rx_ops.deliver(&rx_ctx, in, (uint16_t)(BUF_SIZE - 7)),
+            (uint16_t)(BUF_SIZE - 7));
+  ASSERT_EQ(rx_ctx.write_pos, 0);
+  ASSERT_EQ(tcp_saw_rx_ops.read(&rx_ctx, out, BUF_SIZE), (uint16_t)(BUF_SIZE - 7));
+  ASSERT_EQ(rx_ctx.read_pos, 0);
+  ASSERT_MEM_EQ(out, in, BUF_SIZE - 7);
+}
+
 int main(void) {
   fprintf(stderr, "=== test_tcp_buf ===\n");
   RUN_TEST(test_saw_tx_init_state);
@@ -296,6 +322,7 @@ int main(void) {
   RUN_TEST(test_saw_rx_read_empty_returns_zero);
   RUN_TEST(test_saw_rx_deliver_read_multiple_cycles);
   RUN_TEST(test_saw_rx_window_tracks_available);
+  RUN_TEST(test_saw_rx_wraps_around_end);
   TEST_REPORT();
   return test_failures;
 }
