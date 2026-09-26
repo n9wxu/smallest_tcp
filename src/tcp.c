@@ -985,8 +985,10 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
       conn->txbuf_ops->ack(conn->txbuf_ctx, newly_acked);
       conn->snd_una = seg_ack;
 
-      /* REQ-TCP-097: restart timer if new data ACKed */
-      if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0)
+      /* REQ-TCP-097: restart the timer while anything is unACKed — data
+       * or our FIN (RFC 6298 §5); stop it once everything is (-098) */
+      if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0 ||
+          SEQ_LT(conn->snd_una, conn->snd_nxt))
         rto_restart(conn);
       else
         rto_stop(conn); /* REQ-TCP-098 */
@@ -1176,9 +1178,16 @@ void tcp_tick(net_t *net, uint32_t elapsed_ms) {
       if (conn->rto_remaining_ms <= elapsed_ms) {
         conn->rto_remaining_ms = 0;
 
-        /* REQ-TCP-095: retransmit earliest unacknowledged segment */
-        if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0 ||
-            conn->state == TCP_SYN_SENT || conn->state == TCP_SYN_RECEIVED) {
+        /* REQ-TCP-095: retransmit earliest unacknowledged segment.  A FIN
+         * sent after all data was ACKed has nothing in the TX buffer but
+         * still needs resending until it is ACKed. */
+        int data_pending = conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0;
+        int fin_pending = (conn->state == TCP_FIN_WAIT_1 ||
+                           conn->state == TCP_CLOSING ||
+                           conn->state == TCP_LAST_ACK) &&
+                          SEQ_LT(conn->snd_una, conn->snd_nxt);
+        if (data_pending || fin_pending || conn->state == TCP_SYN_SENT ||
+            conn->state == TCP_SYN_RECEIVED) {
 
           conn->retransmit_count++;
 
@@ -1199,10 +1208,6 @@ void tcp_tick(net_t *net, uint32_t elapsed_ms) {
           NET_LOG("tcp: retransmit (count=%u, rto=%lums)",
                   conn->retransmit_count, (unsigned long)conn->rto_ms);
 
-          /* Mark buffer for retransmit and re-send */
-          if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0)
-            conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
-
           if (conn->state == TCP_SYN_SENT) {
             /* Retransmit SYN */
             uint16_t wnd =
@@ -1215,17 +1220,24 @@ void tcp_tick(net_t *net, uint32_t elapsed_ms) {
                 (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
             tcp_send_segment(net, conn, TCP_FLAG_SYN | TCP_FLAG_ACK, conn->iss,
                              conn->rcv_nxt, NULL, 0, 1, wnd);
-          } else if (conn->state == TCP_FIN_WAIT_1 ||
-                     conn->state == TCP_LAST_ACK) {
-            /* Retransmit FIN */
+          } else if (data_pending) {
+            /* Retransmit data from SND.UNA — the segment keeps its
+             * original sequence numbers.  If our FIN already followed
+             * it, SND.NXT goes back to cover the FIN afterwards (the FIN
+             * itself is resent once the data is ACKed). */
+            uint32_t sent_up_to = conn->snd_nxt;
+            conn->snd_nxt = conn->snd_una;
+            conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
+            tcp_do_flush(net, conn);
+            if (fin_pending)
+              conn->snd_nxt = sent_up_to;
+          } else {
+            /* Retransmit FIN (FIN_WAIT_1, CLOSING, LAST_ACK) */
             uint16_t wnd =
                 (uint16_t)(conn->rcv_wnd > 0xFFFFu ? 0xFFFFu : conn->rcv_wnd);
             tcp_send_segment(net, conn, TCP_FLAG_FIN | TCP_FLAG_ACK,
                              conn->snd_nxt - 1u, conn->rcv_nxt, NULL, 0, 0,
                              wnd);
-          } else {
-            /* Retransmit data */
-            tcp_do_flush(net, conn);
           }
 
           /* Restart timer with doubled RTO */

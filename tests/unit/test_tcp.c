@@ -452,6 +452,116 @@ TEST(test_tcp_write_requires_open_connection) {
   ASSERT_EQ(send_count, 0);
 }
 
+/* ── Retransmission of data and FIN (REQ-TCP-095) ── */
+
+#define PEER_SEQ 5001u /* peer's next sequence number after establish() */
+
+static uint16_t sent_tcp_payload_len(int n) {
+  uint8_t *ip = sent_frames[n] + ETH_HDR_SIZE;
+  uint8_t *tcp = ip + IPV4_HDR_SIZE;
+  return (uint16_t)(net_read16be(ip + IPV4_OFF_TOTLEN) - IPV4_HDR_SIZE -
+                    ((tcp[TCP_OFF_DOFF] >> 4) * 4u));
+}
+
+static void inject_from_peer(uint32_t seq, uint32_t ack, uint8_t flags) {
+  uint8_t frame[128];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 seq, ack, flags, 8192, NULL, 0, 0);
+  inject(frame, len);
+}
+
+/* A lost data segment is resent with its ORIGINAL sequence number */
+TEST(test_tcp_data_retransmitted_with_original_seq) {
+  setup();
+  establish();
+  ASSERT_EQ(tcp_send(&net, &conn, (const uint8_t *)"data", 4), 4);
+  uint32_t seq = sent_tcp_seq(0);
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_seq(0), seq);
+  ASSERT_EQ(sent_tcp_payload_len(0), 4);
+  ASSERT_MEM_EQ(sent_frames[0] + ETH_HDR_SIZE + IPV4_HDR_SIZE + TCP_HDR_SIZE,
+                "data", 4);
+  ASSERT_EQ(conn.snd_nxt, seq + 4u);
+  inject_from_peer(PEER_SEQ, seq + 4u, TCP_FLAG_ACK); /* now ACKed */
+  ASSERT_EQ(conn.snd_una, seq + 4u);
+  send_count = 0;
+  tcp_tick(&net, 60000u);
+  ASSERT_EQ(send_count, 0); /* nothing left to resend */
+}
+
+/* An unACKed FIN is resent even when no data is in flight */
+TEST(test_tcp_fin_retransmitted_in_fin_wait_1) {
+  setup();
+  establish();
+  tcp_close(&net, &conn);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1);
+  uint32_t fin_seq = sent_tcp_seq(0);
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(0), fin_seq);
+}
+
+/* Simultaneous close: FIN_WAIT_1 + peer FIN (ours not ACKed) → CLOSING;
+ * our FIN must still be resent, and its ACK completes the close. */
+TEST(test_tcp_fin_retransmitted_in_closing) {
+  setup();
+  establish();
+  tcp_close(&net, &conn);
+  uint32_t fin_seq = sent_tcp_seq(0);
+  inject_from_peer(PEER_SEQ, fin_seq, TCP_FLAG_FIN | TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_CLOSING);
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(0), fin_seq);
+  inject_from_peer(PEER_SEQ + 1u, fin_seq + 1u, TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_TIME_WAIT);
+}
+
+TEST(test_tcp_fin_retransmitted_in_last_ack) {
+  setup();
+  establish();
+  uint32_t our_nxt = conn.snd_nxt;
+  inject_from_peer(PEER_SEQ, our_nxt, TCP_FLAG_FIN | TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_CLOSE_WAIT);
+  tcp_close(&net, &conn);
+  ASSERT_EQ(conn.state, TCP_LAST_ACK);
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(0), our_nxt);
+}
+
+/* Data then FIN, neither ACKed: resend the data at its original seq and
+ * keep the FIN's place in sequence space; resend the FIN once the data
+ * is ACKed. */
+TEST(test_tcp_data_then_fin_retransmit_order) {
+  setup();
+  establish();
+  ASSERT_EQ(tcp_send(&net, &conn, (const uint8_t *)"last", 4), 4);
+  uint32_t seq = sent_tcp_seq(0);
+  tcp_close(&net, &conn);
+  ASSERT_EQ(conn.snd_nxt, seq + 5u); /* data + FIN */
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_seq(0), seq);
+  ASSERT_EQ(sent_tcp_payload_len(0), 4);
+  ASSERT_EQ(conn.snd_nxt, seq + 5u);
+  inject_from_peer(PEER_SEQ, seq + 4u, TCP_FLAG_ACK); /* data ACKed only */
+  send_count = 0;
+  tcp_tick(&net, 2u * NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(0), seq + 4u);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * Graceful close (active): FIN_WAIT_1 → FIN_WAIT_2 → TIME_WAIT
  * REQ-TCP-005, REQ-TCP-059, REQ-TCP-071
@@ -1105,6 +1215,11 @@ int main(void) {
   RUN_TEST(test_tcp_write_refused_while_in_flight);
   RUN_TEST(test_tcp_output_with_nothing_written);
   RUN_TEST(test_tcp_write_requires_open_connection);
+  RUN_TEST(test_tcp_data_retransmitted_with_original_seq);
+  RUN_TEST(test_tcp_fin_retransmitted_in_fin_wait_1);
+  RUN_TEST(test_tcp_fin_retransmitted_in_closing);
+  RUN_TEST(test_tcp_fin_retransmitted_in_last_ack);
+  RUN_TEST(test_tcp_data_then_fin_retransmit_order);
   RUN_TEST(test_tcp_active_close);
   RUN_TEST(test_tcp_passive_close);
   RUN_TEST(test_tcp_rst_in_established_aborts);
