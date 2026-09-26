@@ -14,6 +14,10 @@
 #include "ipv4.h"
 #endif
 
+#if NET_USE_IPV6
+#include "ipv6.h"
+#endif
+
 /* ── Parse ────────────────────────────────────────────────────────── */
 
 net_err_t eth_parse(uint8_t *frame, uint16_t frame_len, eth_frame_t *out) {
@@ -76,6 +80,9 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
 #if NET_USE_IPV4 && NET_MAX_MCAST_GROUPS > 0
       && !ipv4_mcast_mac_accepted(net, eth.dst_mac)
 #endif
+#if NET_USE_IPV6
+      && !ipv6_mac_accepted(net, eth.dst_mac)
+#endif
   ) {
     /* Not for us, not broadcast, not a joined group — discard silently */
     net->mac_driver->discard(net->mac_ctx);
@@ -97,8 +104,7 @@ void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
 #if NET_USE_IPV6
   case NET_ETHERTYPE_IPV6:
     /* REQ-ETH-007: dispatch 0x86DD to IPv6 */
-    NET_LOG("eth_input: IPv6 frame (%u bytes payload)", eth.payload_len);
-    /* TODO: ipv6_input(net, &eth) */
+    ipv6_input(net, &eth);
     break;
 #endif
   default:

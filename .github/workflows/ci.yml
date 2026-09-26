@@ -191,6 +191,69 @@ jobs:
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+  # ── IPv6 / ICMPv6 / NDP blackbox tests (Linux, once per MAC driver) ──
+  # The suite launches a fresh dual-stack tcp_echo_demo per test (the DAD
+  # probe at start-up is under test), so no SUT is started here.
+  blackbox-ipv6:
+    name: Blackbox — IPv6 + ICMPv6 + NDP (tcp_echo_demo, ${{ matrix.label }})
+    runs-on: ubuntu-latest
+    needs: cmake-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { driver: tap, label: TAP }
+          - { driver: raw, label: raw socket }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip iproute2 iputils-ping
+
+      - name: Install Python deps
+        run: |
+          sudo pip3 install --break-system-packages \
+            -r tests/blackbox/requirements.txt \
+            pytest-github-actions-annotate-failures
+
+      - name: Build tcp_echo_demo (dual stack)
+        run: |
+          cmake -S . -B build
+          cmake --build build --target tcp_echo_demo
+
+      - name: Set up the SUT link (${{ matrix.label }})
+        run: |
+          set -o pipefail
+          sudo tests/blackbox/sut_net.sh up ${{ matrix.driver }} | tee -a "$GITHUB_ENV"
+
+      - name: Run IPv6 conformance suite
+        run: |
+          set -o pipefail
+          sudo python3 -m pytest tests/blackbox/test_ipv6_conform.py \
+            --iface        "$TEST_IF"                  \
+            --sut-iface    "$SUT_IF"                   \
+            --ipv6-sut-bin ./build/demo/tcp_echo_demo  \
+            -p no:cacheprovider --tb=short -v -rs      \
+            2>&1 | tee /tmp/ipv6_blackbox.out
+
+      - name: Tear down the link
+        if: always()
+        run: |
+          sudo pkill -x tcp_echo_demo 2>/dev/null || true
+          sudo tests/blackbox/sut_net.sh down ${{ matrix.driver }}
+
+      - name: IPv6 results summary
+        if: always()
+        run: |
+          echo "## IPv6 Blackbox Output (${{ matrix.label }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 12000 /tmp/ipv6_blackbox.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   # ── Blackbox validation: run same tests against Linux kernel reference SUT ──
   # If a test FAILS here, the test itself is wrong (not our stack).
   # If a test PASSES here but FAILS in blackbox-linux, our SUT has a bug.
@@ -246,13 +309,14 @@ jobs:
         run: |
           # Skip sut_specific tests — they depend on our stack's timer values,
           # not on RFC correctness.  A failure here means the TEST is wrong.
-          # Also skip the DHCPv4, mDNS and HTTP suites — they need
-          # dhcp_echo_demo / mdns_demo / http_demo as SUT, not the kernel.
+          # Also skip the DHCPv4, mDNS, HTTP and IPv6 suites — they launch
+          # their own demo SUTs, not the kernel.
           sudo python3 -m pytest tests/blackbox/ \
             --ignore=tests/blackbox/test_tcp_fuzz.py \
             --ignore=tests/blackbox/test_dhcpv4_conform.py \
             --ignore=tests/blackbox/test_mdns_conform.py \
             --ignore=tests/blackbox/test_http_conform.py \
+            --ignore=tests/blackbox/test_ipv6_conform.py \
             --iface    veth-test \
             --sut-ip   10.0.0.2 \
             --our-ip   10.0.0.100 \

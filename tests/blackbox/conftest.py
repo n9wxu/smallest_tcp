@@ -82,6 +82,12 @@ def pytest_addoption(parser):
                           "per test (skipped when not given)")
     parser.addoption("--mdns-sut-mac", default="02:00:00:de:ad:01",
                      help="SUT MAC for mDNS tests (mdns_demo default MAC)")
+    # IPv6 blackbox options (test_ipv6_conform.py starts the SUT)
+    parser.addoption("--ipv6-sut-bin", default=None,
+                     help="Path to a dual-stack tcp_echo_demo; the IPv6 tests "
+                          "launch a fresh SUT per test (skipped when not given)")
+    parser.addoption("--ipv6-sut-mac", default="02:00:00:de:ad:01",
+                     help="SUT MAC for the IPv6 tests (link-local = EUI-64)")
     # HTTP server blackbox options (test_http_conform.py starts the SUT)
     parser.addoption("--http-sut-bin", default=None,
                      help="Path to http_demo; the HTTP tests launch it once for "

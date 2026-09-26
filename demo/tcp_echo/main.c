@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "demo_ipv6.h"
 #include "demo_mac.h"
 
 #include <signal.h>
@@ -179,6 +180,11 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+#if NET_USE_IPV6
+  /* ── IPv6: link-local address + Duplicate Address Detection ─── */
+  ipv6_start(&net);
+#endif
+
   /* ── UDP port table ─────────────────────────────────────────── */
   udp_ports.entries = udp_handlers;
   udp_ports.count = 1;
@@ -211,6 +217,10 @@ int main(int argc, char *argv[]) {
     uint32_t elapsed = now - last_tick;
     if (elapsed >= 10u) {
       tcp_tick(&net, elapsed);
+#if NET_USE_IPV6
+      ipv6_tick(&net, elapsed);
+      demo_ipv6_report(&net, "tcp_echo");
+#endif
       last_tick = now;
     }
 

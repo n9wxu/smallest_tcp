@@ -328,6 +328,9 @@ smallest_tcp/
 │   ├── ipv4.h                       ← ✅ IPv4 parse/build/send/input
 │   ├── icmp.h                       ← ✅ ICMPv4 echo reply, dest unreach
 │   ├── udp.h                        ← ✅ UDP parse/send, port dispatch
+│   ├── ipv6.h                       ← ✅ IPv6 parse/build, ext headers, addresses
+│   ├── icmpv6.h                     ← ✅ ICMPv6 echo, errors
+│   ├── ndp.h                        ← ✅ Neighbor Discovery responder, DAD
 │   └── driver/
 │       ├── tap.h                    ← Linux TAP driver
 │       ├── rawsock.h                ← Linux raw-socket (AF_PACKET) driver
@@ -340,6 +343,9 @@ smallest_tcp/
 │   ├── ipv4.c                       ← ✅ IPv4 parse/build, protocol dispatch
 │   ├── icmp.c                       ← ✅ ICMP echo reply, port unreach
 │   ├── udp.c                        ← ✅ UDP input/send, pseudo-header cksum
+│   ├── ipv6.c                       ← ✅ IPv6 input, source selection, start/tick
+│   ├── icmpv6.c                     ← ✅ ICMPv6 echo reply, Parameter Problem
+│   ├── ndp.c                        ← ✅ NS/NA, Duplicate Address Detection
 │   └── driver/
 │       ├── tap.c                    ← Linux TAP
 │       ├── rawsock.c                ← Linux raw socket (NIC or veth end)

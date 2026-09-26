@@ -10,6 +10,7 @@
 #   sudo ifconfig feth0 create && sudo ifconfig feth1 create
 #   sudo ifconfig feth0 peer feth1
 #   sudo ifconfig feth0 inet 10.0.0.1/24 up && sudo ifconfig feth1 up
+#   sudo ifconfig feth0 inet6 -ifdisabled   # optional: host ping6 interop
 #
 # BPF access: with Wireshark's ChmodBPF (you are in the access_bpf group) this
 # runs without sudo; otherwise run it with sudo.
@@ -82,6 +83,10 @@ done
 kill "$SUT_PID" 2>/dev/null
 wait "$SUT_PID" 2>/dev/null
 SUT_PID=""
+
+# ── IPv6 / ICMPv6 / NDP (launches a fresh dual-stack tcp_echo_demo per test) ──
+run_suite "test_ipv6_conform.py" "$HERE/test_ipv6_conform.py" \
+  --iface "$IFACE" --ipv6-sut-bin "$BUILD/demo/tcp_echo_demo"
 
 # ── DHCPv4 client against dhcp_echo_demo (the fixture restarts it) ────────────
 "$BUILD/demo/dhcp_echo_demo" >"$LOG_DIR/dhcp_echo_demo.log" 2>&1 &

@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; 311 unit tests + 95 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: Milestone 12 IPv6)
+**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Milestone 12 IPv6 stage 1 done; 366 unit tests + 108 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: IPv6 stage 2, UDP)
 
 ## Objective
 
@@ -230,7 +230,13 @@ typedef struct {
 - Demo: browse to `http://pyro-dead01.local/` (advertised over mDNS)
 - Design: [docs/design/http.md](docs/design/http.md)
 
-Later milestones (12 IPv6, 13 TLS 1.3, 14 DTLS 1.3) are tracked in the README roadmap
+### ⏳ Task 12: IPv6 (ipv6.c, icmpv6.c, ndp.c, …) *(IN PROGRESS)*
+- ✅ Stage 1: IPv6 header in/out + extension-header walk, EUI-64 link-local, ICMPv6 echo + Parameter Problem, NS/NA responder, DAD — `ping -6` by link-local
+- Stage 2: UDP over IPv6 · Stage 3: TCP over IPv6 · Stage 4: RS/RA + SLAAC · Stage 5: DHCPv6 · Stage 6: MLD, mDNS (AAAA) and HTTP over IPv6
+- Dual stack is a compile-time choice (`NET_USE_IPV6`, CMake `SMALLEST_TCP_IPV6`); IPv4-only builds are unchanged
+- Design: [docs/design/ipv6.md](docs/design/ipv6.md)
+
+Later milestones (13 TLS 1.3, 14 DTLS 1.3) are tracked in the README roadmap
 and their design docs.
 
 ## Language & Build
@@ -264,6 +270,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/dhcpv4.md](docs/design/dhcpv4.md)** — DHCPv4 client + server, option handler callback API
 - **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10, implemented)
 - **[docs/design/http.md](docs/design/http.md)** — HTTP/1.0 server (Task 11, implemented)
+- **[docs/design/ipv6.md](docs/design/ipv6.md)** — IPv6, ICMPv6, NDP, SLAAC (Task 12, in progress)
 - **[docs/design/tls.md](docs/design/tls.md)** / **[docs/design/dtls.md](docs/design/dtls.md)** — TLS 1.3 / DTLS 1.3
 
 ### RFC Requirements (~950 total, traced to RFC sections)

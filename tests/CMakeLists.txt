@@ -94,3 +94,8 @@ target_link_libraries(test_http PRIVATE smallest_tcp_http)
 add_unit_test(test_rawsock)
 target_sources(test_rawsock PRIVATE ${PROJECT_SOURCE_DIR}/src/driver/rawsock.c)
 target_link_libraries(test_rawsock PRIVATE smallest_tcp_core)
+
+if(SMALLEST_TCP_IPV6)
+    add_unit_test(test_ipv6)
+    target_link_libraries(test_ipv6 PRIVATE smallest_tcp_core)
+endif()

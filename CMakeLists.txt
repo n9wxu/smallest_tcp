@@ -11,6 +11,7 @@ project(smallest_tcp
 option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_BUILD_DRIVERS "Build platform MAC drivers" ${PROJECT_IS_TOP_LEVEL})
+option(SMALLEST_TCP_IPV6          "Dual stack: IPv6 + ICMPv6 + NDP in the core" ON)
 
 # ── Core library (always built) ───────────────────────────────────────
 #
@@ -42,6 +43,17 @@ if(PROJECT_IS_TOP_LEVEL)
     target_compile_options(smallest_tcp_core PRIVATE
         -Wall -Wextra -Werror -pedantic
     )
+endif()
+
+# IPv6 changes the layout of net_t, so the define is PUBLIC: everything
+# linked against the core is compiled the same way.
+if(SMALLEST_TCP_IPV6)
+    target_sources(smallest_tcp_core PRIVATE
+        src/ipv6.c
+        src/icmpv6.c
+        src/ndp.c
+    )
+    target_compile_definitions(smallest_tcp_core PUBLIC NET_USE_IPV6=1)
 endif()
 
 # Create a namespaced alias for FetchContent consumers

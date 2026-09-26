@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**17 test suites, 311 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
+**18 test suites, 366 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -41,6 +41,7 @@ verified at both the unit and integration levels:
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |
 | `test_http` | tests/unit/test_http.c | 45 | HTTP parser, formatter, server driven over the real TCP (REQ-HTTP-*) |
+| `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 
 ### Running Unit Tests
@@ -137,6 +138,7 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
 | `tests/blackbox/test_mdns_conform.py` | 19 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
 | `tests/blackbox/test_http_conform.py` | 21 HTTP tests; the host's own TCP stack is the client (SUT: `http_demo`) |
+| `tests/blackbox/test_ipv6_conform.py` | 13 IPv6 / ICMPv6 / NDP / DAD tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
 | `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/` |
 | `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
 | `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
@@ -293,6 +295,29 @@ Skipped when the option is not given.
 `tests/blackbox/mdns_interop.sh` then checks REQ-MDNS-040 / REQ-DNSSD-027 with
 Avahi (`avahi-resolve`, `avahi-browse`) in the `blackbox-mdns` CI job.
 
+### Blackbox IPv6 Conformance Coverage
+
+Run with `--ipv6-sut-bin ./build/demo/tcp_echo_demo` (dual-stack CMake build);
+each test starts a fresh SUT and, except the DAD tests, waits for it to log its
+link-local address as preferred.  The harness sends from a phantom link-local
+address, `fe80::100`.  Skipped when the option is not given.
+
+| Test | REQ | Checks |
+|---|---|---|
+| test_ipv6_001 | REQ-SLAAC-004..006 | DAD probe at start-up: NS from `::` to the solicited-node group, Hop Limit 255, no SLLA |
+| test_ipv6_002 | REQ-SLAAC-010 | Address preferred after RetransTimer with no conflict |
+| test_ipv6_003 | REQ-SLAAC-008 | NA for the tentative address → duplicate, never used |
+| test_ipv6_004 | REQ-NDP-016,018 | Another node's DAD probe for our address → NA to all-nodes, S=0 |
+| test_ipv6_005 | REQ-NDP-011..013,017,019 | NS → NA: S=1 O=1 R=0, TLLA = SUT MAC, to the SLLA |
+| test_ipv6_006 | REQ-NDP-001 | NS with Hop Limit 254 ignored |
+| test_ipv6_007 | REQ-ICMPv6-004..008 | Echo reply: id, seq, data, addresses |
+| test_ipv6_008 | REQ-ICMPv6-009 | Echo to ff02::1 answered from the unicast address |
+| test_ipv6_009 | REQ-ICMPv6-002 | Bad checksum → no reply |
+| test_ipv6_010 | REQ-IPv6-018,019 | Echo behind a Hop-by-Hop header |
+| test_ipv6_011 | REQ-IPv6-017, REQ-ICMPv6-026,027 | Unknown Next Header → Parameter Problem code 1, pointer 6 |
+| test_ipv6_012 | REQ-IPv6-022 | Fragments silently dropped (no reassembly) |
+| test_ipv6_013 | RFC 4861 interop | The host's `ping -6` resolves the SUT with NDP and gets replies (skipped without IPv6 on the harness interface) |
+
 ### Blackbox HTTP Conformance Coverage
 
 Run with `--http-sut-bin ./build/demo/http_demo`; the SUT is started once for the
@@ -345,6 +370,7 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
+| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD suite against dual-stack `tcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |

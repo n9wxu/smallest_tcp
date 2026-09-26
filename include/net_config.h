@@ -49,6 +49,19 @@
 #define NET_MAX_MCAST_GROUPS 1
 #endif
 
+/* ── IPv6 (NET_USE_IPV6) ──────────────────────────────────────────── */
+/* Address slots: [0] link-local, the rest global (SLAAC/DHCPv6/static). */
+#ifndef NET_IPV6_ADDRS
+#define NET_IPV6_ADDRS 2
+#endif
+/* Neighbor Solicitations per DAD run (RFC 4862 DupAddrDetectTransmits). */
+#ifndef NET_IPV6_DAD_TRANSMITS
+#define NET_IPV6_DAD_TRANSMITS 1
+#endif
+#ifndef NET_IPV6_DEFAULT_HOP_LIMIT
+#define NET_IPV6_DEFAULT_HOP_LIMIT 64
+#endif
+
 /* ── Architecture ─────────────────────────────────────────────────── */
 #define NET_8BIT_TARGET 0
 

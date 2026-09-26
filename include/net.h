@@ -40,6 +40,10 @@ typedef enum {
   (NET_ETH_HDR_SIZE + NET_IPV4_HDR_SIZE + NET_TCP_HDR_SIZE)
 #define NET_MIN_BUF_DHCP 576
 
+#define NET_IPV6_HDR_SIZE 40
+#define NET_TCP_MSS_IPV6(buf)                                                  \
+  ((buf) - NET_ETH_HDR_SIZE - NET_IPV6_HDR_SIZE - NET_TCP_HDR_SIZE)
+
 #define NET_TCP_MSS_IPV4(buf)                                                  \
   ((buf) - NET_ETH_HDR_SIZE - NET_IPV4_HDR_SIZE - NET_TCP_HDR_SIZE)
 #define NET_UDP_MAX_IPV4(buf)                                                  \
@@ -68,6 +72,28 @@ typedef struct {
   uint16_t frame_len; /**< Current frame length (0 = empty) */
 } net_buf_t;
 
+/* ── IPv6 address slot ────────────────────────────────────────────── */
+
+#if NET_USE_IPV6
+/* Address states (RFC 4862 §2).  Only PREFERRED and DEPRECATED addresses
+ * send and receive ordinary traffic. */
+#define NET_IP6_NONE 0       /**< Slot unused */
+#define NET_IP6_TENTATIVE 1  /**< Duplicate Address Detection running */
+#define NET_IP6_PREFERRED 2  /**< Unique; use freely */
+#define NET_IP6_DEPRECATED 3 /**< Valid, but not for new connections */
+#define NET_IP6_DUPLICATE 4  /**< DAD found another owner: never used */
+
+/**
+ * @brief One IPv6 address of the interface (network byte order).
+ */
+typedef struct {
+  uint8_t addr[16];
+  uint8_t state;     /**< NET_IP6_* */
+  uint8_t dad_left;  /**< DAD Neighbor Solicitations still to send */
+  uint16_t timer_ms; /**< Until the next DAD step */
+} net_ip6_addr_t;
+#endif
+
 /* ── Network context ──────────────────────────────────────────────── */
 
 /**
@@ -90,6 +116,12 @@ typedef struct {
   /** Joined IPv4 multicast groups, host byte order (0 = free slot).
    *  Managed by ipv4_mcast_join() / ipv4_mcast_leave(). */
   uint32_t mcast_groups[NET_MAX_MCAST_GROUPS];
+#endif
+#if NET_USE_IPV6
+  /** [0] link-local (formed by ipv6_start()), [1..] global. */
+  net_ip6_addr_t ip6[NET_IPV6_ADDRS];
+  uint8_t ip6_hop_limit; /**< For outgoing packets (Cur Hop Limit) */
+  uint32_t ip6_rng;      /**< xorshift32 state for protocol jitter */
 #endif
 } net_t;
 
