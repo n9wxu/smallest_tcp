@@ -6,6 +6,7 @@
  */
 
 #include "icmpv6.h"
+#include "mld.h"
 #include "ndp.h"
 #include "net_endian.h"
 #include <string.h>
@@ -127,6 +128,12 @@ void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   case ICMPV6_REDIRECT:
     /* REQ-ICMPv6-034..038 */
     ndp_input(net, ip, eth);
+    break;
+  case MLD_QUERY:
+  case MLD_V1_REPORT:
+  case MLD_V1_DONE:
+  case MLD_V2_REPORT:
+    mld_input(net, ip);
     break;
   case ICMPV6_DEST_UNREACH:
   case ICMPV6_PKT_TOO_BIG:

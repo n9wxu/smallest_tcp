@@ -9,6 +9,7 @@
 
 #include "ndp.h"
 #include "icmpv6.h"
+#include "mld.h"
 #include "net_endian.h"
 #include <string.h>
 
@@ -329,6 +330,10 @@ void ndp_tick(net_t *net, uint32_t elapsed_ms) {
       continue;
     }
     if (a->dad_left > 0) {
+      /* REQ-SLAAC-013: report the solicited-node group before probing
+       * (RFC 4862 §5.4.2), so a snooping switch delivers the answer */
+      if (a->dad_left == NET_IPV6_DAD_TRANSMITS)
+        mld_report_change(net, NULL);
       /* REQ-SLAAC-005..007 */
       ndp_send_ns(net, a->addr, 1);
       a->dad_left--;

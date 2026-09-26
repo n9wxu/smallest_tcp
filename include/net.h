@@ -133,6 +133,13 @@ typedef struct {
   uint8_t ip6_rs_left;        /**< Router Solicitations still to send */
   uint16_t ip6_rs_timer_ms;   /**< Until the next Router Solicitation */
   uint16_t ip6_sec_ms;        /**< ms toward the next lifetime second */
+#if NET_MAX_MCAST6_GROUPS > 0
+  /** Joined IPv6 groups (ipv6_mcast_join()); all-zero = free slot */
+  uint8_t mcast6_groups[NET_MAX_MCAST6_GROUPS][16];
+#endif
+  uint16_t mld_query_ms; /**< Until we answer an MLD query; 0 = none */
+  uint16_t mld_unsol_ms; /**< Until the unsolicited report is repeated */
+  uint16_t mld_v1_s;     /**< MLDv1 querier seen: seconds of v1 mode left */
 #endif
 } net_t;
 

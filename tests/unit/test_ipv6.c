@@ -34,6 +34,10 @@ static int stub_init(void *ctx) {
 }
 static int stub_send(void *ctx, const uint8_t *f, uint16_t l) {
   (void)ctx;
+  /* MLD reports (Hop-by-Hop + ICMPv6 131/132/143) belong to test_mld */
+  if (l > 62 && f[12] == 0x86 && f[13] == 0xDD && f[20] == 0 && f[54] == 58 &&
+      (f[62] == 143 || f[62] == 131 || f[62] == 132))
+    return (int)l;
   if (send_count < MAX_SENT) {
     memcpy(sent[send_count], f, l);
     sent_len[send_count] = l;

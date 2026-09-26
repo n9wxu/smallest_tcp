@@ -55,7 +55,8 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_udp6.c \
              tests/unit/test_tcp6.c \
              tests/unit/test_slaac.c \
-             tests/unit/test_dhcpv6.c
+             tests/unit/test_dhcpv6.c \
+             tests/unit/test_mld.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -183,7 +184,7 @@ $(BUILD)/tests/test_http: tests/unit/test_http.c src/http.c $(STACK_SRCS)
 
 # Test for IPv6 + ICMPv6 + NDP (dual-stack build: its own sources with
 # NET_USE_IPV6=1; the library above stays IPv4-only)
-IPV6_SRCS := src/ipv6.c src/icmpv6.c src/ndp.c
+IPV6_SRCS := src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c
 $(BUILD)/tests/test_ipv6: tests/unit/test_ipv6.c $(IPV6_SRCS) $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_ipv6.c \
@@ -212,6 +213,12 @@ $(BUILD)/tests/test_dhcpv6: tests/unit/test_dhcpv6.c src/dhcpv6_client.c $(IPV6_
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_dhcpv6.c \
 		src/dhcpv6_client.c $(IPV6_SRCS) $(STACK_SRCS)
+
+# Test for MLD and IPv6 multicast membership
+$(BUILD)/tests/test_mld: tests/unit/test_mld.c $(IPV6_SRCS) $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_mld.c \
+		$(IPV6_SRCS) $(STACK_SRCS)
 
 # Test for the raw-socket driver (live veth tests need root on Linux)
 $(BUILD)/tests/test_rawsock: tests/unit/test_rawsock.c src/driver/rawsock.c src/net_cksum.c

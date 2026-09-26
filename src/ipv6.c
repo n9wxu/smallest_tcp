@@ -8,6 +8,7 @@
 
 #include "ipv6.h"
 #include "icmpv6.h"
+#include "mld.h"
 #include "ndp.h"
 #include "net_endian.h"
 #include <string.h>
@@ -131,6 +132,9 @@ void ipv6_start(net_t *net) {
   net->ip6_ra_flags = 0;
   net->ip6_rs_left = 0;
   net->ip6_sec_ms = 0;
+  net->mld_query_ms = 0;
+  net->mld_unsol_ms = 0;
+  net->mld_v1_s = 0;
   if (net->ip6_rng == 0) {
     net->ip6_rng = ((uint32_t)net->mac[2] << 24 | (uint32_t)net->mac[3] << 16 |
                     (uint32_t)net->mac[4] << 8 | net->mac[5]) |
@@ -172,6 +176,9 @@ static void lifetimes_elapse(net_t *net, uint32_t secs) {
     net->ip6_router_life_s = net->ip6_router_life_s > secs
                                  ? (uint16_t)(net->ip6_router_life_s - secs)
                                  : 0;
+  if (net->mld_v1_s) /* Older Version Querier Present timeout */
+    net->mld_v1_s =
+        net->mld_v1_s > secs ? (uint16_t)(net->mld_v1_s - secs) : 0;
 }
 
 void ipv6_tick(net_t *net, uint32_t elapsed_ms) {
@@ -185,7 +192,59 @@ void ipv6_tick(net_t *net, uint32_t elapsed_ms) {
   net->ip6_sec_ms = (uint16_t)acc;
   if (secs)
     lifetimes_elapse(net, secs);
+  /* MLD before ND: a report ND sends now is repeated a full interval
+   * later, not in this same tick */
+  mld_tick(net, elapsed_ms);
   ndp_tick(net, elapsed_ms);
+}
+
+net_err_t ipv6_mcast_join(net_t *net, const uint8_t *group) {
+  if (!ipv6_is_multicast(group))
+    return NET_ERR_INVALID_PARAM;
+  if (ipv6_mcast_is_member(net, group))
+    return NET_OK;
+#if NET_MAX_MCAST6_GROUPS > 0
+  uint8_t i;
+  for (i = 0; i < NET_MAX_MCAST6_GROUPS; i++) {
+    if (ipv6_is_unspecified(net->mcast6_groups[i])) {
+      memcpy(net->mcast6_groups[i], group, 16);
+      mld_report_change(net, NULL);
+      return NET_OK;
+    }
+  }
+#endif
+  return NET_ERR_BUF_TOO_SMALL;
+}
+
+void ipv6_mcast_leave(net_t *net, const uint8_t *group) {
+#if NET_MAX_MCAST6_GROUPS > 0
+  uint8_t i;
+  for (i = 0; i < NET_MAX_MCAST6_GROUPS; i++) {
+    if (ipv6_addr_equal(net->mcast6_groups[i], group)) {
+      memset(net->mcast6_groups[i], 0, 16);
+      mld_report_change(net, group);
+    }
+  }
+#else
+  (void)net;
+  (void)group;
+#endif
+}
+
+int ipv6_mcast_is_member(const net_t *net, const uint8_t *group) {
+#if NET_MAX_MCAST6_GROUPS > 0
+  uint8_t i;
+  if (ipv6_is_unspecified(group))
+    return 0;
+  for (i = 0; i < NET_MAX_MCAST6_GROUPS; i++) {
+    if (ipv6_addr_equal(net->mcast6_groups[i], group))
+      return 1;
+  }
+#else
+  (void)net;
+  (void)group;
+#endif
+  return 0;
 }
 
 net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
@@ -289,6 +348,13 @@ int ipv6_mac_accepted(const net_t *net, const uint8_t *mac) {
         memcmp(mac + 3, net->ip6[i].addr + 13, 3) == 0)
       return 1;
   }
+#if NET_MAX_MCAST6_GROUPS > 0
+  for (i = 0; i < NET_MAX_MCAST6_GROUPS; i++) {
+    if (!ipv6_is_unspecified(net->mcast6_groups[i]) &&
+        memcmp(mac + 2, net->mcast6_groups[i] + 12, 4) == 0)
+      return 1;
+  }
+#endif
   return 0;
 }
 
@@ -298,7 +364,7 @@ static int for_us(const net_t *net, const uint8_t *dst) {
   uint8_t i, snm[16];
   if (!ipv6_is_multicast(dst))
     return ipv6_is_ours(net, dst);
-  if (ipv6_addr_equal(dst, all_nodes))
+  if (ipv6_addr_equal(dst, all_nodes) || ipv6_mcast_is_member(net, dst))
     return 1;
   for (i = 0; i < NET_IPV6_ADDRS; i++) {
     if (net->ip6[i].state == NET_IP6_NONE)

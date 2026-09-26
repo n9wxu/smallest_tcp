@@ -43,6 +43,10 @@ from scapy.layers.dhcp6 import (
     DHCP6OptIAAddress, DHCP6OptOptReq, DHCP6OptServerId, DUID_LL, DUID_LLT,
 )
 
+from scapy.layers.inet6 import (
+    ICMPv6MLDMultAddrRec, ICMPv6MLQuery2, ICMPv6MLReport2, RouterAlert,
+)
+
 from helpers import start_sniffer, sut_argv
 
 OUR_LL = "fe80::100"      # phantom: never assigned to the harness interface
@@ -653,3 +657,41 @@ def test_ipv6_027_dhcpv6_stateless(sut):
           iface=sut.iface, verbose=False)
     sut.wait_for("DHCPv6 configured", 3)
     assert f"DNS server {log_form(DNS6)}" in sut.output()
+
+
+# ── MLD (RFC 3810) ─────────────────────────────────────────────────────────────
+
+def mld_groups(p):
+    return {r.dst for r in p[ICMPv6MLReport2].records}
+
+
+def test_ipv6_028_mld_report_at_start(sut):
+    """REQ-SLAAC-013, RFC 3810: the solicited-node group is reported (Hop
+    Limit 1, Router Alert) before DAD probes on it."""
+    sn = start_sniffer(sut.iface, filter=f"ip6 and ether src {sut.sut_mac}",
+                       lfilter=lambda p: ICMPv6MLReport2 in p, count=1,
+                       timeout=4)
+    sut.start(wait_ready=False)
+    sn.join(timeout=5)
+    assert sn.results, "no MLDv2 report at start-up"
+    p = sn.results[0]
+    assert p[IPv6].dst == "ff02::16"
+    assert p[IPv6].hlim == 1
+    assert any(isinstance(o, RouterAlert) for o in p[IPv6ExtHdrHopByHop].options)
+    assert sut.snm in mld_groups(p)
+    assert "ff02::1" not in mld_groups(p)  # all-nodes is never reported
+
+
+def test_ipv6_029_mld_general_query_answered(sut):
+    """RFC 3810 §6.2: a general query from a router gets a report of our
+    groups within Maximum Response Delay."""
+    sut.start()
+    time.sleep(1.2)  # let the unsolicited reports go by
+    query = (sut.eth(ALL_NODES_MAC) /
+             IPv6(src=ROUTER_LL, dst=ALL_NODES, hlim=1) /
+             IPv6ExtHdrHopByHop(options=[RouterAlert(value=0)]) /
+             ICMPv6MLQuery2(mrd=1000))
+    rep = sut.exchange(query, lambda p: ICMPv6MLReport2 in p, timeout=2.5)
+    assert rep is not None, "no MLD report after a general query"
+    assert rep[IPv6].src == sut.sut_ll
+    assert sut.snm in mld_groups(rep)

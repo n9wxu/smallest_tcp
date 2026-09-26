@@ -61,6 +61,10 @@
 #ifndef NET_IPV6_DEFAULT_HOP_LIMIT
 #define NET_IPV6_DEFAULT_HOP_LIMIT 64
 #endif
+/* IPv6 multicast groups joined with ipv6_mcast_join() (mDNS: ff02::fb) */
+#ifndef NET_MAX_MCAST6_GROUPS
+#define NET_MAX_MCAST6_GROUPS 1
+#endif
 
 /* ── Architecture ─────────────────────────────────────────────────── */
 #define NET_8BIT_TARGET 0

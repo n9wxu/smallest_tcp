@@ -198,6 +198,21 @@ uint32_t ipv6_random(net_t *net);
 net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
                         uint32_t preferred_s);
 
+/**
+ * Listen to an IPv6 multicast group (e.g. ff02::fb for mDNS): frames and
+ * packets for it are accepted, and MLD reports it.
+ * @return NET_OK (also if already joined); NET_ERR_INVALID_PARAM if not
+ *         multicast; NET_ERR_BUF_TOO_SMALL if NET_MAX_MCAST6_GROUPS are in
+ *         use.
+ */
+net_err_t ipv6_mcast_join(net_t *net, const uint8_t *group);
+
+/** Stop listening to a group (MLD reports the leave). */
+void ipv6_mcast_leave(net_t *net, const uint8_t *group);
+
+/** True if @p group was joined with ipv6_mcast_join(). */
+int ipv6_mcast_is_member(const net_t *net, const uint8_t *group);
+
 /** Remove one of our global addresses (no-op if absent). */
 void ipv6_addr_remove(net_t *net, const uint8_t *addr);
 

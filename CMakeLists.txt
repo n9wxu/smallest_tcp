@@ -52,6 +52,7 @@ if(SMALLEST_TCP_IPV6)
         src/ipv6.c
         src/icmpv6.c
         src/ndp.c
+        src/mld.c
     )
     target_compile_definitions(smallest_tcp_core PUBLIC NET_USE_IPV6=1)
 endif()

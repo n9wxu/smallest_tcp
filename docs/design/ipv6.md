@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC) and 5 (DHCPv6) done
+**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC) 5 (DHCPv6) and 6a (MLD) done
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -206,13 +206,40 @@ Interop: `tests/blackbox/dhcpv6_interop.sh` lets dnsmasq (`--enable-ra`
 with a DHCPv6 range) configure the demo — lease, DNS option, host ping and
 TCP echo at the leased address — over both Linux drivers in CI.
 
-## 9. Timers and randomness
+## 9. MLD and multicast groups (stage 6a)
+
+`mld.c` makes the host visible to switches that snoop MLD — otherwise they
+may stop forwarding the solicited-node traffic that address resolution
+depends on, and later ff02::fb for mDNS.
+
+- **Groups**: the solicited-node group of every configured address
+  (deduplicated: a SLAAC address with our interface identifier shares the
+  link-local one's group) plus up to `NET_MAX_MCAST6_GROUPS` joined with
+  `ipv6_mcast_join()`.  All-nodes is never reported.  Joined groups pass the
+  Ethernet filter and the destination check.
+- **Reports**: MLDv2 (type 143) to ff02::16, Hop Limit 1, behind a
+  Hop-by-Hop header with a Router Alert, from the link-local address — or
+  from :: while it is still tentative (RFC 3810 §5.2.13).  A report goes
+  out before each address's first DAD probe and on every join (records
+  CHANGE_TO_EXCLUDE, no sources), and is repeated once after 1 s
+  (Robustness Variable 2).  A leave is one CHANGE_TO_INCLUDE record.
+- **Queries** (Hop Limit 1, link-local source): general or for one of our
+  groups → after a random delay up to the Maximum Response Delay, a report
+  of all groups (MODE_IS_EXCLUDE).  A group-specific query is answered with
+  every group — a simplification that costs a few bytes on the wire, not
+  16 bytes of RAM per pending group.
+- **MLDv1 compatibility** (RFC 3810 §8): a 24-byte query switches reporting
+  to MLDv1 (one Report per group, to the group; Done to ff02::2) for the
+  Older Version Querier Present Timeout, 260 s.  Linux bridges query with
+  MLDv1 by default.
+
+## 10. Timers and randomness
 
 `ipv6_tick(net, elapsed_ms)` drives DAD (and RS/lifetimes from stage 4),
 like `tcp_tick()`.  Delays are drawn from `ip6_rng`, an xorshift32 seeded
 from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 
-## 10. Dual-stack UDP and TCP (stages 2–3)
+## 11. Dual-stack UDP and TCP (stages 2–3)
 
 - **UDP**: IPv6 ports live in their own table, `udp6_ports`, whose
   handlers get the source as a 16-byte pointer.  `udp_port_entry_t` is
@@ -234,7 +261,7 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
   small buffer holds stalled the connection (segments that could not be
   built were never sent), which the larger IPv6 header makes likelier.
 
-## 11. Deviations and deferred items
+## 12. Deviations and deferred items
 
 | Item | Reason / plan |
 |---|---|
@@ -243,5 +270,5 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 | Redirect ignored (REQ-NDP-053) | no per-destination routes |
 | RA MTU, Reachable Time, Retrans Timer options ignored | Ethernet MTU assumed; fixed 1 s RetransTimer |
 | On-link = our /64s (L flag not tracked separately) | RAs set L and A together in practice |
-| MLD reports | stage 6 (solicited-node + ff02::fb); links without MLD snooping work without them |
+| MLD: group-specific queries answered with all groups; leaves sent once | RAM; see §9 |
 | ICMPv6 error rate limiting | not yet; at most one error per packet |
