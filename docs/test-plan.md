@@ -1,6 +1,6 @@
 # Test Plan — smallest_tcp
 
-*Revision: Milestone 9 (TFTP)*
+*Revision: Milestone 10 (mDNS + DNS-SD)*
 
 ---
 
@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**12 test suites, 146 tests total — all passing.**
+**15 test suites, 232 tests total — all passing.**
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -37,6 +37,9 @@ verified at both the unit and integration levels:
 | `test_tcp` | tests/unit/test_tcp.c | **26** | TCP (REQ-TCP-*) |
 | `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 16 | DHCPv4 client + server (REQ-DHCPv4-*) |
+| `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
+| `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
+| `test_mdns` | tests/unit/test_mdns.c | 44 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*) |
 
 ### Running Unit Tests
 
@@ -129,6 +132,9 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_udp_conform.py` | 7 conformance tests (REQ-UDP-001..008) |
 | `tests/blackbox/test_tcp_conform.py` | 20 conformance tests (REQ-TCP-002..153) |
 | `tests/blackbox/test_tcp_fuzz.py` | 5 fuzz tests (header fields, flags, options, truncation) |
+| `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
+| `tests/blackbox/test_mdns_conform.py` | 18 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
+| `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
 | `tests/blackbox/run_blackbox.sh` | Shell runner: starts SUT, runs all suites in order, reports summary |
 | `tests/blackbox/requirements.txt` | `pytest>=7.0`, `scapy>=2.5` |
 
@@ -248,6 +254,36 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 | test_udp_006 | REQ-UDP-007 | Zero UDP checksum (disabled) accepted and echoed |
 | test_udp_007 | REQ-UDP-008 | UDP Length < 8 → silent drop |
 
+### Blackbox mDNS + DNS-SD Conformance Coverage
+
+Run with `--mdns-sut-bin ./build/demo/mdns_demo`; each test starts a fresh SUT
+(IGMP join, probing, announcing and goodbye are start-up / shutdown behaviour).
+Skipped when the option is not given.
+
+| Test | REQ | Checks |
+|---|---|---|
+| test_mdns_001 | REQ-MDNS-009,014,026 | A query → SUT IP, TTL 120, cache-flush |
+| test_mdns_002 | REQ-DNSSD-001,007,016 | PTR answer + SRV/TXT/A additionals |
+| test_mdns_003 | REQ-DNSSD-002,008 | SRV port 80 → host, A additional |
+| test_mdns_004 | REQ-MDNS-004,031 | QR=1, AA=1 on every response |
+| test_mdns_005 | REQ-MDNS-005 | ID 0 on multicast responses |
+| test_mdns_006 | REQ-MDNS-001,006 | IP TTL 255, source port 5353 |
+| test_mdns_007 | REQ-MDNS-029 | Known-answer suppression (fresh vs stale) |
+| test_mdns_008 | REQ-MDNS-032,033, REQ-DNSSD-018 | SIGTERM → goodbye, all TTL 0 |
+| test_mdns_009 | REQ-DNSSD-014,015 | Service-type meta-query |
+| test_mdns_010 | REQ-MDNS-016..018 | 3 probes, 150–450 ms apart, ANY/QU, Authority records |
+| test_mdns_011 | REQ-MDNS-021..023 | 2 announcements 0.8–1.5 s apart after probing |
+| test_mdns_012 | REQ-MDNS-019,020 | Conflict while probing → rename, old name never announced |
+| test_mdns_013 | REQ-MDNS-002 | IGMPv2 report for 224.0.0.251 (TTL 1) |
+| test_mdns_014 | REQ-MDNS-041 | Legacy unicast: ID + question echoed, TTL ≤ 10 |
+| test_mdns_015 | REQ-MDNS-028 | QU → unicast reply |
+| test_mdns_016 | REQ-MDNS-030 | Foreign / unknown names ignored |
+| test_mdns_017 | REQ-DNSSD-003,011,013 | TXT key=value strings |
+| test_mdns_018 | REQ-MDNS-026 | ANY → SRV + TXT |
+
+`tests/blackbox/mdns_interop.sh` then checks REQ-MDNS-040 / REQ-DNSSD-027 with
+Avahi (`avahi-resolve`, `avahi-browse`) in the `blackbox-mdns` CI job.
+
 ### Fuzz Test Coverage
 
 | Test | REQ(s) | Description |
@@ -270,6 +306,9 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 | `cmake-macos` | ci.yml | macos-latest | ctest | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` (TAP) | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
+| `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP) | push/PR |
+| `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP), then Avahi interop | push/PR |
+| `arm-size` | ci.yml | ubuntu-latest | Cortex-M0 size benchmark: UDP, UDP+TCP, UDP+mDNS | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
 | `fuzz-tcp-tap` | fuzz.yml | ubuntu-latest | Scapy fuzz (TAP) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |

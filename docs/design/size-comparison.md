@@ -1,6 +1,6 @@
 # Code Size Comparison — smallest_tcp vs lwIP
 
-**Last updated:** 2026-09-25 (Milestones 1–9; UDP comparison re-measured, TCP configuration added)
+**Last updated:** 2026-09-26 (Milestones 1–10; UDP/TCP re-measured, mDNS + DNS-SD configuration added)
 
 ## Methodology
 
@@ -13,7 +13,7 @@ arm-none-eabi-gcc -std=c99 -Os -mthumb -mcpu=cortex-m0
 
 - **smallest_tcp:** Linked ELF with `-Wl,--gc-sections`, debug logging disabled (`-DNET_DEBUG=0`)
 - **lwIP:** 2.2.1 (`STABLE-2_2_1_RELEASE`), object files compiled with matching flags, minimal `lwipopts.h` (see below)
-- **Feature set:** ETH + ARP + IPv4 + ICMP + UDP (no TCP, no DHCP, no DNS); smallest_tcp built with `-DNET_USE_TCP=0`
+- **Feature set:** ETH + ARP + IPv4 + ICMP + UDP (no TCP, no DHCP, no DNS, no IGMP); smallest_tcp built with `-DNET_USE_TCP=0 -DNET_MAX_MCAST_GROUPS=0`
 - **Toolchain:** arm-none-eabi-gcc 13.2.1 (Arm GNU Toolchain 13.2.Rel1)
 
 ### lwIP Configuration
@@ -30,9 +30,9 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 | Metric | smallest_tcp | lwIP | Ratio |
 |--------|-------------|------|-------|
-| **Flash (code + rodata)** | **2,822 B** | 10,089 B | **3.6× smaller** |
+| **Flash (code + rodata)** | **2,902 B** | 10,089 B | **3.5× smaller** |
 | **RAM (static state)** | **672 B** | 2,619 B | **3.9× smaller** |
-| Stack-only code | **2,604 B** | 10,087 B | **3.9× smaller** |
+| Stack-only code | **2,708 B** | 10,087 B | **3.7× smaller** |
 | Stack-internal RAM | **10 B** | ~2,619 B | **262× smaller** |
 | Source modules | 7 | 16 | — |
 
@@ -42,7 +42,7 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 ## Per-Module Breakdown
 
-### smallest_tcp — 7 modules, 2,604 bytes code
+### smallest_tcp — 7 modules, 2,708 bytes code
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
@@ -50,10 +50,10 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 | `net_cksum.c` | 158 | 0 | 0 | Internet checksum (RFC 1071) |
 | `eth.c` | 234 | 0 | 0 | Ethernet II parse/build/dispatch |
 | `arp.c` | 480 | 0 | 0 | ARP request/reply, gateway MAC |
-| `ipv4.c` | 564 | 0 | 2 | IPv4 parse/build, protocol dispatch, Protocol Unreachable |
-| `icmp.c` | 382 | 0 | 0 | ICMP echo reply, dest unreachable |
-| `udp.c` | 552 | 0 | 8 | UDP parse/send, port dispatch |
-| **Total** | **2,604** | **0** | **10** | |
+| `ipv4.c` | 598 | 0 | 2 | IPv4 parse/build (per-packet TTL), protocol dispatch, Protocol Unreachable |
+| `icmp.c` | 390 | 0 | 0 | ICMP echo reply, dest unreachable |
+| `udp.c` | 614 | 0 | 8 | UDP parse/send (copying + in-place), port dispatch |
+| **Total** | **2,708** | **0** | **10** | |
 
 ### lwIP 2.2.1 — 16 modules, 10,087 bytes code
 
@@ -100,14 +100,14 @@ Comparing just the protocol-equivalent modules:
 | Function | smallest_tcp | lwIP | Ratio |
 |----------|-------------|------|-------|
 | ARP | 480 B | 1,644 B | 3.4× |
-| IPv4 | 564 B | 922 B | 1.6× |
-| ICMP | 382 B | 504 B | 1.3× |
-| UDP | 552 B | 1,280 B | 2.3× |
+| IPv4 | 598 B | 922 B | 1.5× |
+| ICMP | 390 B | 504 B | 1.3× |
+| UDP | 614 B | 1,280 B | 2.1× |
 | Checksum | 158 B | 532 B | 3.4× |
 | Ethernet | 234 B | 264 B | 1.1× |
-| **Subtotal** | **2,370 B** | **5,146 B** | **2.2×** |
+| **Subtotal** | **2,474 B** | **5,146 B** | **2.1×** |
 
-Even protocol-for-protocol, smallest_tcp is 2.2× smaller due to:
+Even protocol-for-protocol, smallest_tcp is 2.1× smaller due to:
 - No pbuf chain traversal (operates on flat buffers)
 - No ARP cache table (distributed to connection structs)
 - No general-purpose netif callbacks
@@ -121,28 +121,56 @@ alongside the UDP echo server.
 
 | Metric | UDP only | UDP + TCP | Delta |
 |--------|---------:|----------:|------:|
-| **Flash (code + rodata)** | 2,822 B | **7,114 B** | +4,292 B |
+| **Flash (code + rodata)** | 2,902 B | **7,202 B** | +4,300 B |
 | **RAM (static state)** | 672 B | **1,080 B** | +408 B |
-| Stack-only code | 2,604 B | 6,600 B | +3,996 B |
+| Stack-only code | 2,708 B | 6,712 B | +4,004 B |
 | Stack-internal RAM | 10 B | 22 B | +12 B |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `tcp.c` | 3,530 | 4 | 8 | Full state machine, retransmit, persist timer, MSS/window |
+| `tcp.c` | 3,538 | 4 | 8 | Full state machine, retransmit, persist timer, MSS/window |
 | `tcp_buf_saw.c` | 450 | 0 | 0 | Stop-and-wait TX/RX buffers |
-| `ipv4.c` | 580 | 0 | 2 | (+16 B for TCP dispatch) |
+| `ipv4.c` | 614 | 0 | 2 | (+16 B for TCP dispatch) |
 
 The extra RAM is application-owned: the 256 B of TCP buffers, the `tcp_conn_t`,
 and the buffer contexts. TCP itself adds 12 bytes of static state (connection
 table pointer + ISN counter).
 
+## Adding mDNS + DNS-SD
+
+`make arm-size-mdns` builds the UDP benchmark plus the mDNS responder advertising
+a host name and one DNS-SD service (A, PTR, SRV, TXT), with one multicast group
+(`NET_MAX_MCAST_GROUPS=1`).
+
+| Metric | UDP only | UDP + mDNS | Delta |
+|--------|---------:|-----------:|------:|
+| **Flash (code + rodata)** | 2,902 B | **8,712 B** | +5,810 B |
+| **RAM (static state)** | 672 B | **716 B** | +44 B |
+| Stack-only code | 2,708 B | 8,319 B | +5,611 B |
+| Stack-internal RAM | 10 B | 10 B | 0 |
+
+| Module | .text | .data | .bss | Function |
+|--------|------:|------:|-----:|----------|
+| `mdns.c` | 3,959 | 0 | 0 | Probe/announce/answer state machine, DNS-SD additionals, known-answer suppression, conflicts, goodbye |
+| `dns_wire.c` | 1,138 | 0 | 0 | RFC 1035 names with compression, bounds-checked readers |
+| `igmp.c` | 338 | 0 | 0 | IGMPv2 report / leave with Router Alert |
+| `ipv4.c` | 748 | 0 | 2 | (+150 B: multicast group table and acceptance) |
+| `eth.c`, `icmp.c`, `udp.c` | 1,264 | 0 | 8 | (+26 B: joined-group MAC filter, no ICMP errors for multicast) |
+
+The 44 B of extra RAM is the application-owned `mdns_t` (40 B) and the one-entry
+multicast table in `net_t` (4 B); the responder keeps no static state.  Responses
+are built directly in the TX buffer, so no second message buffer is needed.  The
+random probe/response delays scale a 16-bit random number instead of using `%`,
+which on Cortex-M0 (no divide instruction) would link libgcc's 266-byte
+`__udivsi3`.
+
 ## Target Fit Analysis
 
 | Target | Flash | RAM | smallest_tcp UDP | lwIP UDP |
 |--------|-------|-----|-----------------|----------|
-| **PIC16F1454** | 14 KB | 1 KB | ✅ 2.8 KB + buffers | ❌ 10 KB code alone |
+| **PIC16F1454** | 14 KB | 1 KB | ✅ 2.9 KB + buffers | ❌ 10 KB code alone |
 | **CH32X033** | 62 KB | 20 KB | ✅ Plenty of room | ✅ Fits |
-| **STM32F042** | 32 KB | 6 KB | ✅ 2.8 KB; 7.1 KB with TCP | ⚠️ Tight with app |
+| **STM32F042** | 32 KB | 6 KB | ✅ 2.9 KB; 7.2 KB with TCP; 8.7 KB with mDNS | ⚠️ Tight with app |
 | **CH32V203** | 256 KB | 10 KB | ✅ Plenty of room | ✅ Fits |
 
 ## How to Reproduce
@@ -151,6 +179,7 @@ table pointer + ISN counter).
 # Build smallest_tcp for ARM and show sizes
 make arm-size        # UDP only (lwIP comparison)
 make arm-size-tcp    # UDP + TCP
+make arm-size-mdns   # UDP + mDNS/DNS-SD responder
 
 # Build lwIP for comparison (clones lwIP 2.2.1 into build/lwip if missing)
 bash bench/build_lwip.sh
@@ -174,10 +203,16 @@ bash bench/build_lwip.sh
 | 2026-03-19 | ETH+ARP+IPv4+ICMP+UDP | 2,650 B (2,460 stack) | 10,103 B | 4.1× |
 | 2026-09-25 | ETH+ARP+IPv4+ICMP+UDP | 2,822 B (2,604 stack) | 10,087 B (2.2.1) | 3.9× |
 | 2026-09-25 | ETH+ARP+IPv4+ICMP+UDP+TCP | 7,114 B (6,600 stack) | — | — |
+| 2026-09-26 | ETH+ARP+IPv4+ICMP+UDP | 2,902 B (2,708 stack) | 10,087 B (2.2.1) | 3.7× |
+| 2026-09-26 | ETH+ARP+IPv4+ICMP+UDP+TCP | 7,202 B (6,712 stack) | — | — |
+| 2026-09-26 | ETH+ARP+IPv4+ICMP+UDP+mDNS/DNS-SD | 8,712 B (8,319 stack) | — | — |
 
 > The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
-> peek-based UDP dispatch, and IPv4 Protocol Unreachable. The ratio column compares
-> stack-only code.
+> peek-based UDP dispatch, IPv4 Protocol Unreachable, and (Milestone 10, +80 B)
+> splitting `udp_send()` into a copy plus `udp_send_inplace()` with a per-packet
+> TTL, which lets mDNS build responses in the TX buffer without a second buffer.
+> Multicast receive itself compiles away when `NET_MAX_MCAST_GROUPS` is 0.  The
+> ratio column compares stack-only code.
 
 ## Notes
 
@@ -187,5 +222,6 @@ bash bench/build_lwip.sh
 - Flash totals depend on the toolchain's newlib. The figures here use the Arm GNU Toolchain
   13.2.Rel1, whose `memcpy`/`memset`/`memcmp` total 62 B. Ubuntu's `libnewlib-arm-none-eabi`
   (used by the `arm-size` CI job) ships speed-optimized versions totalling 376 B, so CI reports
-  3,140 B (UDP) and 7,572 B (UDP + TCP). Stack-only code is identical on both toolchains.
+  3,220 B (UDP), 7,660 B (UDP + TCP) and 9,108 B (UDP + mDNS). Stack-only code is identical on
+  both toolchains.
 - lwIP has more features even in minimal config (e.g., ARP queueing infrastructure, pbuf chaining, multi-netif support). smallest_tcp intentionally omits these for size.

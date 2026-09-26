@@ -32,7 +32,7 @@ App links: eth.o + arp.o + ipv4.o + ipv6.o + icmpv4.o +     → Dual-stack full
 - IPv4 requires `arp.c` for address resolution.
 - IPv6 requires `ndp.c` + `icmpv6.c` for address resolution (NDP runs over ICMPv6).
 - `udp.c` and `tcp.c` work with either or both IP versions.
-- L7 protocols (`dhcpv4.c`, `dhcpv6.c`, `dns.c`, `tftp.c`, `http.c`) are independently optional.
+- L7 protocols (`dhcpv4_client.c`, `dhcpv4_server.c`, `dhcpv6.c`, `dns.c`, `tftp.c`, `mdns.c`, `http.c`) are independently optional.
 
 ## 3. Layer Architecture
 
@@ -42,7 +42,7 @@ App links: eth.o + arp.o + ipv4.o + ipv6.o + icmpv4.o +     → Dual-stack full
 │  Owns all buffers, connection state, config   │
 │  Uses factory methods to create structures    │
 ├──────────────────────────────────────────────┤
-│  L7: dhcpv4  dhcpv6  dns  tftp  http         │  ← optional, link what you need
+│  L7: dhcpv4  dhcpv6  dns  tftp  mdns  http   │  ← optional, link what you need
 ├──────────────────────────────────────────────┤
 │  L4: udp               tcp                    │  ← optional independently
 ├──────────┬───────────────────────┬───────────┤
@@ -376,12 +376,14 @@ See individual requirements documents for complete RFC citations.
 | RFC 792 | ICMPv4 | icmpv4.c |
 | RFC 826 | ARP | arp.c |
 | RFC 894 | IP over Ethernet | eth.c |
-| RFC 1035 | DNS | dns.c |
+| RFC 1035 | DNS | dns_wire.c, dns.c |
 | RFC 1071 | Checksum | net_cksum.c |
 | RFC 1122 | Host Requirements | all layers |
+| RFC 1112 | IP Multicast | ipv4.c |
 | RFC 1350 | TFTP | tftp.c |
 | RFC 1624 | Incremental Checksum | net_cksum.c |
 | RFC 2131/2132 | DHCPv4 | dhcpv4.c |
+| RFC 2236 | IGMPv2 | igmp.c |
 | RFC 2348 | TFTP Blocksize | tftp.c |
 | RFC 4291 | IPv6 Addressing | ipv6.c |
 | RFC 4443 | ICMPv6 | icmpv6.c |
@@ -390,6 +392,8 @@ See individual requirements documents for complete RFC citations.
 | RFC 5227 | ARP Conflict Detection | arp.c |
 | RFC 5681 | TCP Congestion Control | tcp.c |
 | RFC 6298 | TCP Retransmit Timer | tcp.c |
+| RFC 6762 | Multicast DNS | mdns.c |
+| RFC 6763 | DNS-Based Service Discovery | mdns.c |
 | RFC 6724 | IPv6 Address Selection | ipv6.c |
 | RFC 6864 | IPv4 ID Field | ipv4.c |
 | RFC 7323 | TCP Extensions | tcp.c |

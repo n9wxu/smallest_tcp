@@ -8,7 +8,7 @@
 
 ## ✨ What Is This?
 
-**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — TCP, UDP, DHCP, HTTP, TFTP — using **zero dynamic memory allocation** and fitting in as little as **2.8 KB of flash**.
+**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — TCP, UDP, DHCP, TFTP, mDNS + DNS-SD — using **zero dynamic memory allocation** and fitting in as little as **2.9 KB of flash**.
 
 Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding network connectivity to a $0.20 RISC-V MCU, or prototyping protocol logic on your laptop — this stack has you covered.
 
@@ -31,13 +31,13 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`), UDP echo server (ETH + ARP + IPv4 + I
 
 | Metric | smallest_tcp | lwIP (same features) | Ratio |
 |---|---|---|---|
-| **Flash** | **2,822 B** | 10,089 B | **3.6× smaller** |
+| **Flash** | **2,902 B** | 10,089 B | **3.5× smaller** |
 | **RAM** | **672 B** (600 = app buffers) | 2,619 B | **3.9× smaller** |
-| Stack-only code | **2,604 B** | 10,087 B | **3.9× smaller** |
+| Stack-only code | **2,708 B** | 10,087 B | **3.7× smaller** |
 | Stack-internal state | **10 B** | ~2,619 B | **262× smaller** |
 
 The stack itself uses only **10 bytes** of static state. All other memory is application-owned buffers that you size to your needs.
-Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
+Adding a TCP echo server brings the total to **7.2 KB flash / 1.1 KB RAM**; adding the mDNS + DNS-SD responder instead gives **8.7 KB flash / 0.7 KB RAM**.
 
 > 📐 See [docs/design/size-comparison.md](docs/design/size-comparison.md) for the full comparison methodology, per-module breakdowns, and analysis.
 
@@ -45,10 +45,10 @@ Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
 
 ## 📊 Current Status
 
-**146 unit tests passing** across 12 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
-**55 blackbox conformance tests passing** across 6 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8), plus 5 fuzz tests — all run on every push/PR via Scapy + TAP on Linux.
+**232 unit tests passing** across 15 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**73 blackbox conformance tests passing** across 7 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×18), plus 5 fuzz tests and an Avahi interop check — all run on every push/PR via Scapy + TAP on Linux.
 
-### ✅ Implemented (Milestones 1–9)
+### ✅ Implemented (Milestones 1–10)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -64,13 +64,16 @@ Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
 | TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 19 | Stop-and-wait TX buffer |
 | **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **16 unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
 | TFTP | `tftp.h` / `tftp.c` | 15 unit | RFC 1350 TFTP client — block-read, retransmit, error handling |
+| Multicast + IGMP | `ipv4.c` / `igmp.h` / `igmp.c` | 19 unit | Fixed-size group table, multicast RX, per-packet TTL, IGMPv2 join/leave (RFC 1112, 2236) |
+| DNS wire format | `dns_wire.h` / `dns_wire.c` | 23 unit | RFC 1035 names with compression, bounds-checked readers (shared with the future DNS resolver) |
+| **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | **44 unit + 18 blackbox + Avahi interop** | **RFC 6762 responder: probe, announce, answer (A/PTR/SRV/TXT + DNS-SD additionals), known-answer suppression, conflict rename, goodbye; RFC 6763 service advertising** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests, full blackbox suite, and ARM size benchmark on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
-| **Total** | **12 source + 3 drivers** | **146 unit + 55 blackbox + 5 fuzz** | |
+| **Total** | **15 source + 3 drivers** | **232 unit + 73 blackbox + 5 fuzz** | |
 
 > ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
 > are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
@@ -88,7 +91,7 @@ Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
 | **7 — TCP persist + integration** | ✅ Done | Zero-window persist timer, `net_poll()` API, ARP+TCP integration |
 | **8 — DHCP** | ✅ Done | DHCPv4 client (auto-configure IP) + minimal stateless server (USB peer assignment) + option handler callback API (TFTP, NTP, DNS, …) |
 | **9 — TFTP** | ✅ Done | Fetch files over the network — bootloader data path |
-| **10 — mDNS + DNS-SD** | Planned | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
+| **10 — mDNS + DNS-SD** | ✅ Done | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
 | **11 — HTTP** | Planned | HTTP/1.0 server — browse to your microcontroller! |
 | **12 — IPv6** | Planned | IPv6 + ICMPv6 + NDP + SLAAC + DHCPv6 |
 | **13 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
@@ -98,9 +101,9 @@ Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
 
 | Chip | Flash | RAM | Cost | smallest_tcp UDP | lwIP UDP |
 |---|---|---|---|---|---|
-| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ 2.8 KB + buffers | ❌ 10 KB code alone |
+| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ 2.9 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP too (7.1 KB) | ⚠️ Tight |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP too (7.2 KB) or mDNS (8.7 KB) | ⚠️ Tight |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 
@@ -113,7 +116,7 @@ Adding a TCP echo server brings the total to **7.1 KB flash / 1.1 KB RAM**.
 ```bash
 make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run all 146 unit tests (12 suites)
+make test     # Build and run all 232 unit tests (15 suites)
 make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
@@ -123,6 +126,7 @@ make clean    # Clean all build artifacts
 ```bash
 make arm-size             # Cortex-M0 sizes, UDP only (the lwIP comparison)
 make arm-size-tcp         # Cortex-M0 sizes, UDP + TCP
+make arm-size-mdns        # Cortex-M0 sizes, UDP + mDNS/DNS-SD responder
 bash bench/build_lwip.sh  # Build lwIP 2.2.1 for comparison (fetched on first run)
 ```
 
@@ -150,9 +154,9 @@ ctest --test-dir build --output-on-failure
 
 ### Running Blackbox Conformance Tests (Linux)
 
-Six conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4 — 55 tests total) run
-against the live `tcp_echo_demo` or `dhcp_echo_demo` over a Linux TAP interface.
-Requires `sudo` / `CAP_NET_RAW`.
+Seven conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4, mDNS — 73 tests
+total) run against the live `tcp_echo_demo`, `dhcp_echo_demo` or `mdns_demo` over a
+Linux TAP interface.  Requires `sudo` / `CAP_NET_RAW`.
 
 #### Option A — `run_blackbox.sh` (recommended, all suites)
 
@@ -201,6 +205,21 @@ sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST -o tap0 -j DROP
 sudo ip tuntap del dev tap0 mode tap
 ```
 
+#### Option C — mDNS + DNS-SD suite
+
+The mDNS tests start a fresh `mdns_demo` for every test (probing, announcing and
+goodbye happen at start-up and shutdown), so do not start a SUT yourself:
+
+```bash
+cmake --build build --target mdns_demo
+sudo python3 -m pytest tests/blackbox/test_mdns_conform.py \
+    --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \
+    --mdns-sut-bin ./build/demo/mdns_demo -v
+
+# Interop with Avahi (needs avahi-daemon on tap0: allow-interfaces=tap0)
+sudo tests/blackbox/mdns_interop.sh ./build/demo/mdns_demo
+```
+
 > ⚠️ If every test reports `ERROR: ARP timeout: no reply from 10.0.0.2`,
 > the SUT is not running.  The most common cause is a wrong binary path —
 > see [Test Plan §6 Troubleshooting](docs/test-plan.md#6-troubleshooting--known-pitfalls).
@@ -239,6 +258,7 @@ That's it! Your app gets the headers and library automatically. When included vi
 | `smallest_tcp::dhcpv4_client` | DHCPv4 client (optional) |
 | `smallest_tcp::dhcpv4_server` | Minimal stateless DHCPv4 server (optional) |
 | `smallest_tcp::tftp` | TFTP client (optional) |
+| `smallest_tcp::mdns` | mDNS + DNS-SD responder, DNS wire helpers, IGMPv2 (optional) |
 | `smallest_tcp::driver_tap` | Linux TAP MAC driver (optional, top-level only) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (optional, top-level only) |
 
@@ -261,7 +281,7 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 │  (bootloader, web server, etc.)     │
 │  Owns all buffers and conn state    │
 ├─────────────────────────────────────┤
-│  L7: dhcp.c  tftp.c  http.c        │  ← optional, link what you need
+│  L7: dhcp ✅ tftp ✅ mdns ✅ http   │  ← optional, link what you need
 ├─────────────────────────────────────┤
 │  L4: udp.c ✅       tcp.c ✅       │  ← optional independently
 ├─────────────────────────────────────┤
@@ -287,7 +307,7 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
 
 - **[Architecture](docs/architecture.md)** — System architecture, layer interaction, data flow
-- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (3.9× smaller)
+- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (3.7× smaller)
 - **Design Documents:**
   - [MAC HAL](docs/design/mac-hal.md) — Abstract hardware interface (vtable, peek+discard)
   - [Checksum](docs/design/checksum.md) — Incremental Internet checksum design
@@ -299,7 +319,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [Configuration](docs/design/configuration.md) — Compile-time vs. runtime taxonomy
   - [UDP](docs/design/udp.md) — Port dispatch table, zero-copy RX, checksum, ICMP port unreachable
   - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
-  - [mDNS + DNS-SD](docs/design/mdns.md) — Zero-config hostname + service discovery design, probing/announcing state machine, DNS-SD PTR/SRV/TXT composition *(Milestone 10)*
+  - [mDNS + DNS-SD](docs/design/mdns.md) — Zero-config hostname + service discovery design, probing/announcing state machine, DNS-SD PTR/SRV/TXT composition *(Milestone 10 — implemented)*
   - [TLS 1.3](docs/design/tls.md) — Pluggable crypto backend, PSK + cert modes, record + handshake SM *(Milestone 13)*
   - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 14)*
 - **[RFC Requirements](docs/requirements/)** — RFC-traced requirements across 20 protocol specifications:

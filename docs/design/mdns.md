@@ -2,8 +2,8 @@
 
 **Protocols:** RFC 6762 (mDNS) + RFC 6763 (DNS-SD)  
 **Milestone:** 10  
-**Status:** Planned  
-**Last updated:** 2026-03-23
+**Status:** Implemented (V1 responder)  
+**Last updated:** 2026-09-26
 
 ---
 
@@ -23,256 +23,242 @@ pyro_fw devices must be reachable on any local network without static IP configu
 | Goodbye packets on shutdown | ✅ | |
 | DNS-SD advertiser (PTR/SRV/TXT) | ✅ | |
 | Service-type meta-query (`_services._dns-sd._udp.local.`) | ✅ | |
+| Known-answer suppression, QU and legacy unicast responses | ✅ | |
+| Simultaneous-probe tiebreak (RFC 6762 §8.2) | | ✅ |
+| Multi-packet known-answer lists, NSEC negative answers | | ✅ |
 | mDNS querier (resolve `.local` names) | | ✅ |
 | DNS-SD browser (discover services by type) | | ✅ |
 | IPv6 / AAAA records | | ✅ |
 
 ---
 
-## 3. Wire Format
+## 3. Module Layout
 
-mDNS reuses the DNS wire format (RFC 1035 §4) byte-for-byte.  The only structural difference is the multicast transport.  The existing DNS stub-resolver parser (`dns.c`, planned for Milestone 11) will be split into:
+mDNS reuses the DNS wire format (RFC 1035 §4) byte-for-byte, so the wire code is a separate module the planned DNS stub resolver (`dns.c`) will share:
 
 ```
-dns_wire.h / dns_wire.c   — shared parse/build helpers (name encoding, RR read/write)
-dns.c                     — stub resolver (unicast, port 53)
-mdns.c                    — mDNS responder/querier (multicast, port 5353)
+dns_wire.h / dns_wire.c   — names (with compression), header/question/RR read + write
+igmp.h / igmp.c           — minimal IGMPv2 join/leave
+mdns.h / mdns.c           — responder state machine, answering, DNS-SD composition
 ```
 
-This avoids duplicating label encoding, name-compression, and RR parsing logic.
+All three build into the optional `smallest_tcp_mdns` library (`smallest_tcp::mdns`).  They rely on two core-stack features added for this milestone:
+
+- **Multicast receive:** `net_t` holds a fixed table of joined groups (`NET_MAX_MCAST_GROUPS`, default 1; 0 compiles multicast receive out).  `eth_input()` accepts the 01:00:5E MAC of a joined group and `ipv4_input()` the group address; unjoined groups and aliased MACs are dropped.  No ICMP errors or echo replies are ever sent for multicast destinations (RFC 1122 §3.2.2).
+- **Per-packet TTL + in-place send:** `udp_send_inplace()` sends a payload the caller already wrote at `UDP_PAYLOAD_OFFSET` in `net->tx.buf`, with an explicit IP TTL (255 for mDNS, RFC 6762 §11).  `udp_send()` copies into place and calls it.
 
 ---
 
 ## 4. Memory Model
 
-Consistent with the zero-allocation principle — the application owns all memory:
+The application owns the record table and an `mdns_t` (40 bytes on 32-bit targets); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`.
 
 ```c
-/* Application-provided hostname + record set */
+static const char *const txt[] = {"txtvers=1", "fw=1.2.3", "serial=DEAD01", NULL};
+
 static const mdns_record_t records[] = {
-    { MDNS_A,   "pyro-dead01.local.",   .rdata.a   = { .ip = IP4(10,0,0,2) }, .ttl = 120 },
-    { MDNS_PTR, "_pyro._tcp.local.",    .rdata.ptr = "Pyro Unit 1._pyro._tcp.local.", .ttl = 4500 },
-    { MDNS_SRV, "Pyro Unit 1._pyro._tcp.local.",
-                .rdata.srv = { .priority=0, .weight=0, .port=80, .target="pyro-dead01.local." }, .ttl=120 },
-    { MDNS_TXT, "Pyro Unit 1._pyro._tcp.local.",
-                .rdata.txt = (const char*[]){"txtvers=1","fw=1.2.3","serial=DEAD01",NULL}, .ttl=120 },
+    {.type = DNS_TYPE_A,   .ttl = MDNS_TTL_HOST,  .name = "pyro-dead01.local",
+     .rdata.a = 0},                                     /* 0 = net->ipv4_addr */
+    {.type = DNS_TYPE_PTR, .ttl = MDNS_TTL_OTHER, .name = "_pyro._tcp.local",
+     .rdata.ptr = "Pyro Unit 1._pyro._tcp.local"},
+    {.type = DNS_TYPE_SRV, .ttl = MDNS_TTL_HOST,  .name = "Pyro Unit 1._pyro._tcp.local",
+     .rdata.srv = {0, 0, 80, "pyro-dead01.local"}},
+    {.type = DNS_TYPE_TXT, .ttl = MDNS_TTL_HOST,  .name = "Pyro Unit 1._pyro._tcp.local",
+     .rdata.txt = txt},
 };
 
-static mdns_t mdns;   /* 10-20 bytes of state */
+static mdns_t mdns;
 
-void app_init(void) {
-    mdns_init(&mdns, &net, records, ARRAY_LEN(records), on_conflict);
-}
+mdns_init(&mdns, &net, records, 4, on_conflict, NULL);  /* validates the table */
+mdns_start(&mdns);                                       /* once the IP is known */
 ```
 
-### State Machine (per `mdns_t` instance)
+- PTR records are **shared** (many hosts advertise the same service type); A, SRV and TXT records are **unique** and are probed for.
+- An A record with `.rdata.a = 0` always answers with the current `net->ipv4_addr`, so a DHCP-assigned address needs no table update.
+- `mdns_init()` rejects invalid names (empty label, label > 63 bytes, name > 255 bytes), TXT strings > 255 bytes, unsupported types and more than `MDNS_MAX_RECORDS` (32) records.  Record sets are tracked as 32-bit masks.
+- Names are dotted strings; labels may contain spaces (`Pyro Unit 1`) but not dots.
+
+### State Machine
 
 ```
-INIT ──(link up)──► PROBING ──(3 probes, no conflict)──► ANNOUNCING ──► RUNNING
-                       │                                        │
-                 (conflict)                            (link down)
-                       ▼                                        ▼
-                  CONFLICT ──(app renames)──► PROBING       INIT
+STOPPED ──mdns_start()──► PROBING ──(3 probes, no conflict)──► ANNOUNCING ──(2nd announcement)──► RUNNING
+                            │                                     │                                  │
+                      (conflicting response)              (conflicting response)        (conflicting response)
+                            └──────────────────────────► CONFLICT ◄──────────────────────────────────┘
+                                                            │
+                                   on_conflict(): app renames, calls mdns_start() ──► PROBING
+
+any state ──mdns_stop()──► goodbye (if ANNOUNCING/RUNNING) + IGMP leave ──► STOPPED
 ```
 
-State is stored in `mdns_t` (a small struct); no heap allocation.
+The responder only answers in ANNOUNCING and RUNNING; it is silent while PROBING (it must not answer for names it has not yet claimed) and in CONFLICT.  Calling `mdns_start()` again re-probes and re-announces — use it after a link-up or an address change (REQ-MDNS-024).
 
 ---
 
-## 5. Probing Algorithm
-
-RFC 6762 §8.1:
+## 5. Probing (RFC 6762 §8.1)
 
 ```
-t = random(0, 250 ms)    ; initial random delay
-send probe 1 at t
-send probe 2 at t + 250 ms
-send probe 3 at t + 500 ms
-if no conflict after probe 3 → enter ANNOUNCING
+t0 = random 0–250 ms after mdns_start()
+probe 1 at t0, probe 2 at t0 + 250 ms, probe 3 at t0 + 500 ms
+no conflict by t0 + 750 ms → ANNOUNCING
 ```
 
-**Probe packet format:** DNS query (QR=0) with:
-- Question section: `<name> ANY QCLASS=IN` with QU (unicast-response) bit set
-- Authority section: the intended record(s), giving notice of our intent
+A probe is a query (QR=0, ID=0) with one `ANY` question per distinct unique name, the unicast-response (QU) bit set, and the unique records in the Authority section (no cache-flush bit).  If the TX buffer cannot hold every name, names are packed greedily into several probe packets.
 
-Any answer received for the same name during probing triggers conflict handling.
+**Conflict while probing:** any response carrying a record under one of our unique names — of any type — that is not identical to our own record.  Goodbye records (TTL 0) from other hosts are ignored.
 
 ---
 
-## 6. Announcement Algorithm
+## 6. Announcing (RFC 6762 §8.3)
 
-RFC 6762 §8.3:
-
-```
-send announcement 1 immediately
-send announcement 2 after 1 s
-(optional) repeat at 2 s, 4 s, 8 s for robustness
-```
-
-Announcements are gratuitous multicast responses (QR=1, AA=1) containing all of the device's records in the Answer section.
+Two gratuitous responses (QR=1, AA=1, ID=0), one on entering ANNOUNCING and one 1 s later, each carrying every record.  Unique records carry the cache-flush bit (top bit of the class, RFC 6762 §10.2); shared PTR records do not.  The IGMP Membership Report is repeated when announcing starts (RFC 2236 §3 recommends one repeat).
 
 ---
 
 ## 7. Responding to Queries
 
-```
-receive mDNS query on 224.0.0.251:5353
-    for each question:
-        if question.name matches one of our records:
-            schedule delayed response (400–500 ms random)
-    at response time:
-        build DNS response with all matching records
-        include Additional records (SRV→A, PTR→SRV+TXT)
-        send to 224.0.0.251:5353 (or unicast if QU bit and recently announced)
-```
+For each question (class IN or ANY) the responder collects matching records: same name (case-insensitive) and same type, or any type for `ANY`.  A PTR/ANY question for `_services._dns-sd._udp.local.` answers one PTR per distinct advertised service type (RFC 6763 §9).
 
-**Known-answer suppression:** If the query's Known-Answers section contains our record with TTL > half its original TTL, skip that record — the querier already has a fresh copy.
+| Case | Response |
+|---|---|
+| Only unique records (A/SRV/TXT) asked | Multicast, **immediately** (RFC 6762 §6) |
+| Shared records (PTR, meta-query) involved | Multicast after a random **20–120 ms**, aggregating further queries (RFC 6762 §6) |
+| Every matching question has the QU bit | Unicast to the querier, port 5353 (querier at 0.0.0.0 → multicast instead) |
+| Source port ≠ 5353 (legacy unicast, §6.7) | Unicast to the querier's port with its ID and question repeated, TTL capped at 10 s, no cache-flush bit (querier at 0.0.0.0 → ignored) |
+
+> The requirements doc originally said 400–500 ms for all multicast responses.  In RFC 6762 §6 that delay applies only to queries with the TC bit set; unique answers go out immediately and shared answers after 20–120 ms.
+
+**Additional records (RFC 6763 §12):** a PTR answer adds the instance's SRV and TXT; an SRV (answered or added) adds the A record of its target.  Additionals go in the last packet if they fit.
+
+**Known-answer suppression (RFC 6762 §7.1):** a record is not sent if the query's Answer section already holds it (same name, type and data) with TTL ≥ half our TTL.  Meta-query answers are suppressed the same way.
+
+**Size:** answers that do not fit are sent in further packets (REQ-MDNS-042); a single record too large for the TX buffer is dropped.
+
+**Conflict while running (RFC 6762 §9):** a response with a record of the same name *and type* as one of our unique records but different data.  Other types under our name are not conflicts once we own it.
+
+**Robustness:** every read is bounds-checked; malformed messages, pointer loops and absurd section counts are dropped without a reply.  Responses (QR=1) are never answered, and queries with a non-zero opcode are ignored.
 
 ---
 
-## 8. DNS Name Encoding
-
-DNS names use length-prefixed labels terminated by a zero-length label:
+## 8. DNS Name Encoding (`dns_wire`)
 
 ```
-"pyro-dead01.local." → \x0b pyro-dead01 \x05 local \x00
-                           11 bytes        5 bytes
+"pyro-dead01.local" → \x0b pyro-dead01 \x05 local \x00
 ```
 
-**Name compression** (RFC 1035 §4.1.4) replaces a suffix with a 2-byte pointer (top 2 bits = `11`, remaining 14 bits = offset from start of message).  This is critical for DNS-SD responses which repeat the same long names many times.
-
-The `dns_wire` helper will provide:
 ```c
-int dns_name_encode(uint8_t *buf, size_t buf_len, const char *name);
-int dns_name_encode_compressed(uint8_t *buf, size_t buf_len, size_t msg_start,
-                               const char *name, dns_compress_ctx_t *ctx);
-int dns_name_decode(const uint8_t *msg, size_t msg_len, size_t offset,
-                    char *out, size_t out_len, size_t *consumed);
+dns_writer_init(&w, buf, cap);
+dns_write_header(&w, id, flags, qd, an, ns, ar);
+dns_write_name(&w, "Pyro Unit 1._pyro._tcp.local");   /* compressed */
+dns_write_u16 / dns_write_u32 / dns_write_bytes
+dns_writer_mark / dns_writer_rollback                  /* back out a record that did not fit */
+
+dns_name_equals(msg, len, off, "pyro-dead01.local");   /* case-insensitive, follows pointers */
+dns_name_decode(msg, len, off, out, out_len);
+dns_name_skip / dns_read_question / dns_read_rr / dns_name_wire_len
 ```
+
+**Compression (RFC 1035 §4.1.4):** the writer remembers the offset of every label it writes (up to `DNS_COMPRESS_MAX`, default 16) and replaces the longest suffix that already appears in the message with a 2-byte pointer.  This covers owner names and the names inside PTR and SRV data, which RFC 6762 §18.14 requires mDNS implementations to decode.  In the demo's announcement the instance name is spelled out only once (unit-tested).
+
+**Reading:** compressed names are compared and decoded without copying them into a buffer, following at most 32 pointer hops.
 
 ---
 
 ## 9. DNS-SD Record Composition
 
-For a device advertising `Pyro Unit 1._pyro._tcp.local.` on port 80:
+For `Pyro Unit 1._pyro._tcp.local.` on port 80:
 
 ```
-; PTR — service enumeration
-_pyro._tcp.local.  4500 IN PTR  "Pyro Unit 1._pyro._tcp.local."
-
-; SRV — host + port
-"Pyro Unit 1._pyro._tcp.local."  120 IN SRV  0 0 80 pyro-dead01.local.
-
-; TXT — metadata
-"Pyro Unit 1._pyro._tcp.local."  120 IN TXT  "txtvers=1" "fw=1.2.3" "serial=DEAD01"
-
-; A — address (shared with hostname record)
-pyro-dead01.local.  120 IN A  10.0.0.2
+_pyro._tcp.local.                 4500 IN PTR  Pyro Unit 1._pyro._tcp.local.
+Pyro Unit 1._pyro._tcp.local.      120 IN SRV  0 0 80 pyro-dead01.local.
+Pyro Unit 1._pyro._tcp.local.      120 IN TXT  "txtvers=1" "fw=1.2.3" "serial=DEAD01"
+pyro-dead01.local.                 120 IN A    10.0.0.2
 ```
 
-When a PTR query arrives, the response includes:
-- **Answer:** PTR record
-- **Additional:** SRV + TXT for the instance
-- **Additional:** A record for the hostname named in the SRV
-
-This "one query, full picture" pattern (RFC 6763 §12.1) lets browsers resolve a service in a single round trip.
+A PTR query returns the PTR in Answer and SRV + TXT + A in Additional — one round trip gives a browser the full picture (RFC 6763 §12.1).  A TXT record with no metadata is sent as a single zero byte (RFC 6763 §6.1).
 
 ---
 
-## 10. Multicast UDP Integration
+## 10. Multicast and IGMP
 
-mDNS requires:
-
-1. **IGMP join** for 224.0.0.251 — the IP layer (or MAC driver) must send an IGMP Membership Report when mDNS initialises.  The TAP driver on Linux and BPF driver on macOS receive multicast frames addressed to 01:00:5E:00:00:FB (the Ethernet multicast for 224.0.0.251).
-
-2. **IP TTL = 255** on all outgoing mDNS packets (RFC 6762 §11.3).  This is enforced at the mDNS send path, not the generic UDP send path.
-
-3. **IP src = device IP** (even for probes, where the device may not yet have a stable IP from DHCP).  If DHCP hasn't completed, probes use 0.0.0.0 as source.
-
-### IGMP (Minimal)
-
-A minimal IGMPv2 "Join" packet (type 0x16) is sufficient for most switches and routers to forward 224.0.0.251 traffic.  A full IGMPv3 implementation is not required for V1.
+1. **Join:** `mdns_start()` calls `igmp_join(net, 224.0.0.251)` — adds the group to `net_t`'s table and sends an IGMPv2 Membership Report (IP TTL 1, Router Alert option, RFC 2236 §2).  The report is repeated once when announcing starts.
+2. **Leave:** `mdns_stop()` sends the goodbye first, then an IGMPv2 Leave Group to 224.0.0.2.
+3. **Queries are not answered.**  224.0.0.251 is in the link-local control block (224.0.0.0/24), which IGMP-snooping switches must flood regardless of membership (RFC 4541 §2.1.2), so V1 only signals joins and leaves.
+4. **Hardware MACs:** TAP and BPF deliver every frame.  A MAC with a multicast hash filter (e.g. ENC28J60) must be configured to pass 01:00:5E:00:00:FB.
+5. **IP TTL 255** on every mDNS packet, including unicast responses (RFC 6762 §11), via `udp_send_inplace()`.
+6. **Source address:** `net->ipv4_addr`.  Start the responder once the address is known (static, or on the DHCP BOUND event).
 
 ---
 
-## 11. Integration with net_poll()
-
-mDNS is driven by `net_poll()` / `net_tick()` like other protocol modules:
+## 11. Integration with the Main Loop
 
 ```c
-void mdns_tick(mdns_t *m, net_t *net, uint32_t now_ms);
-void mdns_input(mdns_t *m, net_t *net, const uint8_t *pkt, size_t len);
+/* UDP handler for port 5353 — peek the payload, then hand it over */
+static void mdns_udp(net_t *n, uint32_t src_ip, uint16_t src_port,
+                     const uint8_t *src_mac, uint16_t off, uint16_t len) {
+  static uint8_t buf[1500];
+  int got = n->mac_driver->peek(n->mac_ctx, off, buf, len < sizeof(buf) ? len : sizeof(buf));
+  if (got > 0)
+    mdns_input(&mdns, src_ip, src_mac, src_port, buf, (uint16_t)got);
+}
+
+/* main loop */
+mdns_tick(&mdns, elapsed_ms);   /* probes, announcements, delayed responses */
+
+/* shutdown */
+mdns_stop(&mdns);               /* goodbye + IGMP leave */
 ```
 
-`mdns_tick` handles:
-- Probe timer (250 ms intervals)
-- Announcement timer (1 s after last probe)
-- Response delay timer (400–500 ms from query)
-- Goodbye generation on state change
+`mdns_tick()` takes elapsed milliseconds, like `tcp_tick()` and `dhcpv4_client_tick()`.  The conflict callback may rename (change the strings the record table points at) and call `mdns_start()` directly.  `demo/mdns_demo/main.c` is a complete example.
 
-`mdns_input` is registered as the UDP handler for port 5353.
+Random delays use an xorshift32 generator seeded from the MAC and IP, scaled rather than reduced with `%` so Cortex-M0 builds do not link a software divide.
 
 ---
 
-## 12. Test Strategy
+## 12. Tests
 
-### Unit tests (`tests/unit/test_mdns.c`)
+### Unit tests
 
-- Probe packet format (QR=0, AA=0, question + authority)
-- Announcement packet format (QR=1, AA=1, all records in Answer)
-- Query matching (name + type)
-- Known-answer suppression logic
-- Goodbye packet (TTL=0)
-- DNS name encoding + compression round-trip
-- DNS-SD PTR/SRV/TXT record composition
-- Conflict state machine transitions
+| Suite | Tests | Covers |
+|---|---|---|
+| `tests/unit/test_dns_wire.c` | 23 | Encoding, compression (suffix, whole name, prefix), limits, rollback, decode, pointer loops, truncation, question/RR parsing |
+| `tests/unit/test_mcast.c` | 19 | Group table, multicast accept/drop (incl. aliased MACs), no ICMP errors / echo for multicast, `udp_send_inplace()` TTL, IGMP report/leave format |
+| `tests/unit/test_mdns.c` | 44 | Table validation, probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression, QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
 
-### Blackbox conformance tests (`tests/blackbox/test_mdns_conform.py`)
+### Blackbox (`tests/blackbox/test_mdns_conform.py`, 18 tests)
 
-Using Scapy to send mDNS queries and inspect responses on the TAP interface:
+Each test launches a fresh `mdns_demo` on tap0 so start-up and shutdown are observable:
 
-| Test | What it verifies |
+| Test | Verifies |
 |---|---|
-| `test_mdns_001_hostname_a_query` | `pyro-dead01.local. A` → A record with correct IP |
-| `test_mdns_002_ptr_query` | `_pyro._tcp.local. PTR` → PTR answer + SRV+TXT+A additional |
-| `test_mdns_003_srv_query` | SRV query for instance → SRV + A in response |
-| `test_mdns_004_aa_bit_set` | All responses have AA=1 |
-| `test_mdns_005_id_zero` | All multicast responses have ID=0 |
-| `test_mdns_006_ttl_255` | IP TTL = 255 on all outgoing mDNS packets |
-| `test_mdns_007_known_answer_suppression` | Response omits record present in query's Known-Answers |
-| `test_mdns_008_goodbye_ttl_zero` | After `mdns_stop()`, device sends TTL=0 Goodbye packets |
-| `test_mdns_009_meta_query` | `_services._dns-sd._udp.local.` → returns `_pyro._tcp.local.` |
+| 001 hostname A query | A record with the SUT's IP, TTL 120, cache-flush |
+| 002 PTR query | PTR answer + SRV, TXT, A in Additional |
+| 003 SRV query | Port 80 on the host, A in Additional |
+| 004 AA bit | QR=1, AA=1 on A/PTR/SRV/TXT responses |
+| 005 ID zero | Multicast responses have ID 0 whatever the query ID |
+| 006 IP TTL 255 | Responses sent with TTL 255 from port 5353 |
+| 007 known-answer suppression | Fresh known answer suppresses, stale one does not |
+| 008 goodbye | SIGTERM → every record with TTL 0 |
+| 009 meta-query | `_services._dns-sd._udp.local` → `_pyro._tcp.local` |
+| 010 probes | Three probes 150–450 ms apart, ANY/QU, records in Authority |
+| 011 announcements | Two announcements 0.8–1.5 s apart after probing |
+| 012 conflict | Rival A record during probing → renamed `pyro-dead01-2.local`, old name never announced |
+| 013 IGMP join | IGMPv2 report for 224.0.0.251, TTL 1 |
+| 014 legacy unicast | Reply to the querier's port with ID and question, TTL ≤ 10, no cache-flush |
+| 015 QU | Unicast reply to the querier |
+| 016 foreign names | No answer for `.example` or unknown `.local` names |
+| 017 TXT | `txtvers=1`, `fw=1.2.3`, `serial=DEAD01` |
+| 018 ANY | SRV + TXT for the instance |
 
-### Integration / interop
+### Interop (`tests/blackbox/mdns_interop.sh`)
 
-- `dns-sd -B _pyro._tcp local` (macOS) discovers the demo
-- `avahi-browse -r _pyro._tcp` (Linux) discovers the demo
-
----
-
-## 13. File Layout
-
-```
-include/
-  mdns.h              — public API (mdns_t, mdns_record_t, mdns_init, mdns_tick, mdns_stop)
-  dns_wire.h          — shared DNS wire-format helpers (name encode/decode, RR read/write)
-src/
-  mdns.c              — mDNS responder state machine, probing, announcing, responding
-  dns_wire.c          — DNS name encoding, label compression, RR serialise/parse
-  igmp.c              — minimal IGMPv2 join (new, single-purpose)
-demo/
-  mdns_demo/
-    main.c            — announce "pyro-dead01.local." + "_pyro._tcp" service, echo on port 80
-tests/
-  unit/test_mdns.c
-  blackbox/test_mdns_conform.py
-```
+Runs in CI after the Scapy suite, with `avahi-daemon` on tap0: `avahi-resolve` finds `pyro-dead01.local`, `avahi-browse` resolves the service (host, IP, port, TXT), the advertised TCP port answers, and the service is withdrawn when the SUT sends its goodbye.  Not yet verified: macOS discovery (`dns-sd -B _pyro._tcp local`) of the demo on a feth pair, which needs root to create the interfaces.
 
 ---
 
-## 14. Open Questions / Decisions Deferred to Implementation
+## 13. Decisions (were open questions)
 
-1. **IGMP retransmit:** RFC 2236 §3 requires sending the Join twice (initial + 1 repeat).  How many repeats for minimal robustness?
-2. **Probe conflict tiebreak:** RFC 6762 §8.2 defines a lexicographic tiebreak for simultaneous probes.  Required for production; can be deferred to V1.1.
-3. **Multiple interfaces:** V1 is single-interface (one `net_t`).  Multi-interface requires per-interface mDNS state.
-4. **Record update at runtime:** If the device's IP changes (DHCP rebind), should mDNS automatically re-probe and re-announce?  Yes — this should be driven by a `mdns_update_address()` call from the DHCP client callback.
+1. **IGMP retransmit:** the report is sent on join and repeated once when announcing starts (~0.75 s later).  Queries are not answered (§10).
+2. **Probe tiebreak (RFC 6762 §8.2):** deferred to V1.1.  Two hosts probing the same name at the same moment may both proceed; the first response each sees afterwards is detected as a conflict while running.
+3. **Multiple interfaces:** V1 is single-interface — one `mdns_t` per `net_t`.
+4. **Address change:** the A record can follow `net->ipv4_addr` (`.rdata.a = 0`); call `mdns_start()` after a DHCP renumbering to re-probe and re-announce.

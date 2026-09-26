@@ -4,7 +4,7 @@
 **Primary RFC:** RFC 6762 — Multicast DNS  
 **Supporting:** RFC 1035 §§3–4 (DNS wire format), RFC 6840 (DNSSEC clarifications N/A), RFC 4795 (LLMNR — not used)  
 **Scope:** V1 (IPv4 + responder), V2 (IPv6 + querier)  
-**Last updated:** 2026-03-23
+**Last updated:** 2026-09-26 (REQ-MDNS-027/029/041 corrected to match RFC 6762 during implementation)
 
 ## Overview
 
@@ -81,9 +81,9 @@ mDNS uses the DNS wire format (RFC 1035 §4) with the following constraints:
 |---|---|---|---|---|
 | REQ-MDNS-025 | MUST | Listen for mDNS queries on 224.0.0.251:5353 | RFC 6762 §6 | TEST-MDNS-025 |
 | REQ-MDNS-026 | MUST | Respond with all matching records from the application's record set | RFC 6762 §6 | TEST-MDNS-026 |
-| REQ-MDNS-027 | MUST | Delay multicast responses by 400–500 ms (random) to allow response aggregation | RFC 6762 §6 | TEST-MDNS-027 |
+| REQ-MDNS-027 | MUST | Send multicast answers for unique records immediately; delay answers containing shared records (e.g. PTR) by a random 20–120 ms to allow aggregation (400–500 ms applies only to queries with the TC bit set) | RFC 6762 §6 | TEST-MDNS-027 |
 | REQ-MDNS-028 | MUST | If query has QU (Unicast) bit set and responder recently sent the same record, MAY respond via unicast to the querier | RFC 6762 §5.4 | TEST-MDNS-028 |
-| REQ-MDNS-029 | MUST | Known-answer suppression: do NOT include answers whose TTL ≤ half the record TTL in a query's Known-Answers section | RFC 6762 §7.1 | TEST-MDNS-029 |
+| REQ-MDNS-029 | MUST | Known-answer suppression: do NOT send an answer that the query's Answer (known-answer) section already contains with a TTL of at least half the record's TTL | RFC 6762 §7.1 | TEST-MDNS-029 |
 | REQ-MDNS-030 | MUST | Answer only queries for the `.local.` domain; ignore other domains silently | RFC 6762 §3 | TEST-MDNS-030 |
 | REQ-MDNS-031 | MUST | Set the AA bit and TTL in all answers | RFC 6762 §18 | TEST-MDNS-031 |
 
@@ -115,7 +115,7 @@ mDNS uses the DNS wire format (RFC 1035 §4) with the following constraints:
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-MDNS-040 | MUST | Respond correctly to queries from macOS, Linux (Avahi), iOS, and Android mDNS implementations | RFC 6762 §6 | TEST-MDNS-040 |
-| REQ-MDNS-041 | MUST | Ignore mDNS messages from legacy unicast DNS resolvers (ID ≠ 0 on port 5353) rather than crashing | RFC 6762 §6.7 | TEST-MDNS-041 |
+| REQ-MDNS-041 | MUST | Answer legacy unicast queries (source port ≠ 5353) by unicast to the querier's port, repeating its ID and question, with TTL ≤ 10 s; never crash on unexpected IDs or malformed messages | RFC 6762 §6.7 | TEST-MDNS-041 |
 
 ### Buffer and Size
 

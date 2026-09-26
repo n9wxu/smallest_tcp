@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-25 (Tasks 1–9 complete; 146 unit tests + 55 blackbox + 5 fuzz passing; next: Task 10 mDNS + DNS-SD)
+**Last updated:** 2026-09-26 (Tasks 1–10 complete; 232 unit tests + 73 blackbox + 5 fuzz + Avahi interop passing; next: Task 11 HTTP server)
 
 ## Objective
 
@@ -209,7 +209,7 @@ typedef struct {
 - Block size adapts to app buffer
 - Demo: fetch file from TFTP server — proves bootloader data path
 
-### Task 10: mDNS + DNS-SD (mdns.c, dns_wire.c, igmp.c)
+### ✅ Task 10: mDNS + DNS-SD (mdns.c, dns_wire.c, igmp.c) *(DONE)*
 - RFC 6762 responder: probe → announce → respond, goodbye packets, conflict handling
 - RFC 6763 service advertisement: PTR/SRV/TXT (+A) from an application-provided record table
 - Minimal IGMPv2 join for 224.0.0.251
@@ -254,7 +254,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/configuration.md](docs/design/configuration.md)** — Configuration taxonomy (compile-time fixed vs. runtime tunable vs. runtime only)
 - **[docs/design/udp.md](docs/design/udp.md)** — UDP port dispatch, zero-copy RX, checksum, ICMP port unreachable
 - **[docs/design/dhcpv4.md](docs/design/dhcpv4.md)** — DHCPv4 client + server, option handler callback API
-- **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10)
+- **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10, implemented)
 - **[docs/design/tls.md](docs/design/tls.md)** / **[docs/design/dtls.md](docs/design/dtls.md)** — TLS 1.3 / DTLS 1.3
 
 ### RFC Requirements (~950 total, traced to RFC sections)
