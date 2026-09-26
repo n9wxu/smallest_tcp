@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP) and 4 (router discovery, SLAAC) done
+**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC) and 5 (DHCPv6) done
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -170,13 +170,49 @@ chosen as a source only when nothing preferred fits); valid → the slot is
 freed.  `NET_IP6_INFINITE` (0xFFFFFFFF) never expires.  `ipv6_addr_add()`
 is also the entry point for static addresses and DHCPv6 (stage 5).
 
-## 8. Timers and randomness
+## 8. DHCPv6 client (stage 5)
+
+`dhcpv6_client.c`, a separate library like the DHCPv4 client, with the same
+shape: an application-owned `dhcpv6_client_t`, `init` / `start` / `tick` /
+`input` (from the application's udp6 port-546 handler) / `release`, and an
+option-handler table for DNS servers and the like.  The application starts
+it when the Router Advertisement asks: M → stateful, O → stateless (the
+dual-stack `tcp_echo_demo` does exactly that).
+
+- **Identity**: DUID-LL (type 3, Ethernet, MAC) — no clock needed; IAID =
+  the low four MAC bytes.
+- **Stateless**: Information-Request → Reply; top-level options go to the
+  handlers; refreshed after the Information Refresh Time (default 24 h,
+  at least 10 min).
+- **Stateful**: Solicit (IA_NA) → first usable Advertise → Request (Server
+  ID, address) → Reply → `ipv6_addr_add()` (so DAD runs) → BOUND.  Renew at
+  T1 to the server, Rebind at T2 to any server, the lease expires at the
+  valid lifetime (address removed, Solicit again).  T1/T2 of 0 become
+  0.5 and 0.8125 of the preferred lifetime (shifts).  A Request that goes
+  unanswered 10 times (REQ_MAX_RC) sends the client back to Solicit.
+- **Validation**: transaction ID, our Client Identifier, a Server
+  Identifier, well-formed options, Status Code success (top level and in
+  the IA_NA), our IAID.
+- **Retransmission** (RFC 8415 §15): RT = IRT ± 10 %, then 2·RT ± 10 %,
+  capped at MRT ± 10 %; the first Solicit waits strictly more than IRT.
+  A tenth is (v · 205) >> 11 — no division on Cortex-M0 — and the random
+  span is kept within 32 bits even for an 86 400 s SOL_MAX_RT from the
+  server, which the client honours (and requests, as §21.24 requires).
+- **Deviations**: the first Advertise is taken (no collection window, no
+  preference); one Release, not up to five; no Confirm, Decline,
+  Reconfigure or Rapid Commit.
+
+Interop: `tests/blackbox/dhcpv6_interop.sh` lets dnsmasq (`--enable-ra`
+with a DHCPv6 range) configure the demo — lease, DNS option, host ping and
+TCP echo at the leased address — over both Linux drivers in CI.
+
+## 9. Timers and randomness
 
 `ipv6_tick(net, elapsed_ms)` drives DAD (and RS/lifetimes from stage 4),
 like `tcp_tick()`.  Delays are drawn from `ip6_rng`, an xorshift32 seeded
 from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 
-## 9. Dual-stack UDP and TCP (stages 2–3)
+## 10. Dual-stack UDP and TCP (stages 2–3)
 
 - **UDP**: IPv6 ports live in their own table, `udp6_ports`, whose
   handlers get the source as a 16-byte pointer.  `udp_port_entry_t` is
@@ -198,7 +234,7 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
   small buffer holds stalled the connection (segments that could not be
   built were never sent), which the larger IPv6 header makes likelier.
 
-## 10. Deviations and deferred items
+## 11. Deviations and deferred items
 
 | Item | Reason / plan |
 |---|---|

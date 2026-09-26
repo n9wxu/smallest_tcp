@@ -32,6 +32,9 @@ add_demo_with_driver(frame_dump)
 
 add_executable(tcp_echo_demo tcp_echo/main.c)
 add_demo_with_driver(tcp_echo_demo)
+if(SMALLEST_TCP_IPV6)
+    target_link_libraries(tcp_echo_demo PRIVATE smallest_tcp_dhcpv6_client)
+endif()
 
 # ── tftp_client (TFTP GET demo) ───────────────────────────────────────
 

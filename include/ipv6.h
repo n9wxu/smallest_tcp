@@ -198,6 +198,9 @@ uint32_t ipv6_random(net_t *net);
 net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
                         uint32_t preferred_s);
 
+/** Remove one of our global addresses (no-op if absent). */
+void ipv6_addr_remove(net_t *net, const uint8_t *addr);
+
 /** MAC of the default router, or NULL if none (RA router lifetime). */
 const uint8_t *ipv6_router_mac(const net_t *net);
 

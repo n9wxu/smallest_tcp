@@ -131,6 +131,22 @@ if(PROJECT_IS_TOP_LEVEL)
 endif()
 add_library(smallest_tcp::dhcpv4_server ALIAS smallest_tcp_dhcpv4_server)
 
+# ── DHCPv6 client (optional, dual stack only) ────────────────────────
+
+if(SMALLEST_TCP_IPV6)
+    add_library(smallest_tcp_dhcpv6_client STATIC
+        src/dhcpv6_client.c
+    )
+    target_link_libraries(smallest_tcp_dhcpv6_client PUBLIC smallest_tcp_core)
+    target_compile_features(smallest_tcp_dhcpv6_client PUBLIC c_std_99)
+    if(PROJECT_IS_TOP_LEVEL)
+        target_compile_options(smallest_tcp_dhcpv6_client PRIVATE
+            -Wall -Wextra -Werror -pedantic
+        )
+    endif()
+    add_library(smallest_tcp::dhcpv6_client ALIAS smallest_tcp_dhcpv6_client)
+endif()
+
 # ── Platform MAC drivers (optional) ──────────────────────────────────
 
 if(SMALLEST_TCP_BUILD_DRIVERS)

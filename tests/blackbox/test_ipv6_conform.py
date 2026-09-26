@@ -37,6 +37,12 @@ from scapy.all import (
     in6_chksum,
 )
 
+from scapy.layers.dhcp6 import (
+    DHCP6_Advertise, DHCP6_InfoRequest, DHCP6_Reply, DHCP6_Request,
+    DHCP6_Solicit, DHCP6OptClientId, DHCP6OptDNSServers, DHCP6OptIA_NA,
+    DHCP6OptIAAddress, DHCP6OptOptReq, DHCP6OptServerId, DUID_LL, DUID_LLT,
+)
+
 from helpers import start_sniffer, sut_argv
 
 OUR_LL = "fe80::100"      # phantom: never assigned to the harness interface
@@ -564,3 +570,86 @@ def test_ipv6_025_host_reaches_global_address(sut):
     finally:
         subprocess.run(["ip", "-6", "addr", "del", f"{ours}/64", "dev",
                         sut.iface])
+
+
+# ── DHCPv6 (RFC 8415), started by the RA's M / O flags ─────────────────────────
+
+DHCP6_SERVER_LL = "fe80::5"
+DHCP6_ADDR = "2001:db8:3::77"
+DNS6 = "2001:db8::53"
+
+
+def send_ra_flags(sut, managed, other):
+    sendp(sut.eth(ALL_NODES_MAC) /
+          IPv6(src=ROUTER_LL, dst=ALL_NODES, hlim=255) /
+          ICMPv6ND_RA(M=managed, O=other, routerlifetime=1800) /
+          ICMPv6NDOptSrcLLAddr(lladdr=sut.our_mac),
+          iface=sut.iface, verbose=False)
+
+
+def dhcp6_to_sut(sut, msg):
+    return (sut.eth() / IPv6(src=DHCP6_SERVER_LL, dst=sut.sut_ll) /
+            UDP(sport=547, dport=546) / msg)
+
+
+def test_ipv6_026_dhcpv6_stateful(sut):
+    """REQ-DHCPv6-011..032: Solicit → Advertise → Request → Reply, then the
+    leased address (after DAD) answers."""
+    sut.start()
+    sn = start_sniffer(sut.iface, filter=f"ip6 and ether src {sut.sut_mac}",
+                       lfilter=lambda p: DHCP6_Solicit in p, count=1,
+                       timeout=4)
+    send_ra_flags(sut, managed=1, other=0)
+    sn.join(timeout=5)
+    assert sn.results, "no Solicit after an RA with M=1"
+    sol = sn.results[0]
+    assert sol[IPv6].dst == "ff02::1:2"
+    assert sol[IPv6].src == sut.sut_ll
+    assert (sol[UDP].sport, sol[UDP].dport) == (546, 547)
+    duid = sol[DHCP6OptClientId].duid
+    assert bytes(duid) == bytes(DUID_LL(lladdr=sut.sut_mac))
+    iaid = sol[DHCP6OptIA_NA].iaid
+
+    server = DHCP6OptServerId(duid=DUID_LLT(lladdr=sut.our_mac, timeval=1))
+    ia = DHCP6OptIA_NA(iaid=iaid, T1=1800, T2=2880, ianaopts=[
+        DHCP6OptIAAddress(addr=DHCP6_ADDR, preflft=3600, validlft=7200)])
+    adv = dhcp6_to_sut(sut, DHCP6_Advertise(trid=sol[DHCP6_Solicit].trid) /
+                       DHCP6OptClientId(duid=duid) / server / ia)
+    req = sut.exchange(adv, lambda p: DHCP6_Request in p)
+    assert req is not None, "no Request after the Advertise"
+    assert bytes(req[DHCP6OptServerId].duid) == bytes(server.duid)
+    assert req[DHCP6OptIAAddress].addr == DHCP6_ADDR
+
+    sendp(dhcp6_to_sut(sut, DHCP6_Reply(trid=req[DHCP6_Request].trid) /
+                       DHCP6OptClientId(duid=duid) / server / ia),
+          iface=sut.iface, verbose=False)
+    sut.wait_for("DHCPv6 bound", 3)
+    sut.wait_for(f"{log_form(DHCP6_ADDR)} preferred", 4)
+    rep = sut.exchange(sut.eth() / IPv6(src=OFF_LINK, dst=DHCP6_ADDR) /
+                       ICMPv6EchoRequest(id=26, seq=1, data=b"leased"),
+                       is_echo_reply)
+    assert rep is not None, "no reply at the leased address"
+    assert rep[IPv6].src == DHCP6_ADDR
+
+
+def test_ipv6_027_dhcpv6_stateless(sut):
+    """REQ-DHCPv6-001..008: Information-Request after an RA with O=1; the
+    DNS servers of the Reply reach the application."""
+    sut.start()
+    sn = start_sniffer(sut.iface, filter=f"ip6 and ether src {sut.sut_mac}",
+                       lfilter=lambda p: DHCP6_InfoRequest in p, count=1,
+                       timeout=4)
+    send_ra_flags(sut, managed=0, other=1)
+    sn.join(timeout=5)
+    assert sn.results, "no Information-Request after an RA with O=1"
+    inf = sn.results[0]
+    assert DHCP6OptIA_NA not in inf
+    assert 23 in inf[DHCP6OptOptReq].reqopts  # DNS Recursive Name Server
+    sendp(dhcp6_to_sut(sut, DHCP6_Reply(trid=inf[DHCP6_InfoRequest].trid) /
+                       DHCP6OptClientId(duid=inf[DHCP6OptClientId].duid) /
+                       DHCP6OptServerId(duid=DUID_LLT(lladdr=sut.our_mac,
+                                                      timeval=1)) /
+                       DHCP6OptDNSServers(dnsservers=[DNS6])),
+          iface=sut.iface, verbose=False)
+    sut.wait_for("DHCPv6 configured", 3)
+    assert f"DNS server {log_form(DNS6)}" in sut.output()

@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**21 test suites, 424 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
+**22 test suites, 444 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -45,6 +45,7 @@ verified at both the unit and integration levels:
 | `test_udp6` | tests/unit/test_udp6.c | 14 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` (REQ-IPv6-044,045, REQ-ICMPv6-016) |
 | `test_tcp6` | tests/unit/test_tcp6.c | 18 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
 | `test_slaac` | tests/unit/test_slaac.c | 26 | Router Solicitation (format, 3 × 4 s, stops at an RA), Router Advertisement (router + MAC, hop limit, M/O, lifetime 0/expiry, validation), SLAAC (A flag, /64, DAD, link-local prefix, duplicate), lifetimes (deprecate, remove, infinite, 2-hour rule, preferred again), `ipv6_addr_add`, on-link test, reply from the global address (REQ-NDP-034..048, REQ-SLAAC-014..031) |
+| `test_dhcpv6` | tests/unit/test_dhcpv6.c | 20 | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-*) |
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 
 ### Running Unit Tests
@@ -141,7 +142,8 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
 | `tests/blackbox/test_mdns_conform.py` | 19 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
 | `tests/blackbox/test_http_conform.py` | 21 HTTP tests; the host's own TCP stack is the client (SUT: `http_demo`) |
-| `tests/blackbox/test_ipv6_conform.py` | 25 IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
+| `tests/blackbox/test_ipv6_conform.py` | 27 IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
+| `tests/blackbox/dhcpv6_interop.sh` | dnsmasq as router + DHCPv6 server: RA with M → lease, DNS option, host ping + TCP echo at the leased address |
 | `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/` |
 | `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
 | `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
@@ -332,6 +334,8 @@ address, `fe80::100`.  Skipped when the option is not given.
 | test_ipv6_023 | REQ-SLAAC-014..018 | RA with an autonomous /64 → DAD → global address answers (echo from an off-link peer) |
 | test_ipv6_024 | REQ-NDP-042 | RA Cur Hop Limit used on replies |
 | test_ipv6_025 | interop | The host (prefix on its interface) pings the SLAAC address and connects to it (Linux) |
+| test_ipv6_026 | REQ-DHCPv6-011..032 | RA with M → Solicit (DUID-LL, IA_NA) → Advertise → Request (Server ID, address) → Reply → DAD → the leased address answers |
+| test_ipv6_027 | REQ-DHCPv6-001..008 | RA with O → Information-Request (no IA_NA, ORO has 23) → Reply → DNS server reaches the application |
 
 ### Blackbox HTTP Conformance Coverage
 
@@ -385,7 +389,7 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
-| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC suite against dual-stack `tcp_echo_demo` (TAP, raw socket) | push/PR |
+| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 suite against dual-stack `tcp_echo_demo`, then DHCPv6 interop with dnsmasq (TAP, raw socket) | push/PR |
 | `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |

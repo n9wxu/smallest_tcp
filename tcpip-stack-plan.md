@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Milestone 12 IPv6 stages 1–4 done; 424 unit tests + 120 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: IPv6 stage 5, DHCPv6)
+**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Milestone 12 IPv6 stages 1–5 done; 444 unit tests + 122 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: IPv6 stage 6, MLD + mDNS/HTTP over IPv6)
 
 ## Objective
 
@@ -235,7 +235,8 @@ typedef struct {
 - ✅ Stage 2: UDP over IPv6 (`udp6_ports`, `udp6_send`)
 - ✅ Stage 3: TCP over IPv6 (dual-stack listeners, `tcp6_connect`)
 - ✅ Stage 4: router discovery + SLAAC (default router, global address, lifetimes, `ipv6_addr_add`)
-- Stage 5: DHCPv6 · Stage 6: MLD, mDNS (AAAA) and HTTP over IPv6
+- ✅ Stage 5: DHCPv6 client, stateless and stateful (`dhcpv6_client.c`), interop with dnsmasq
+- Stage 6: MLD, mDNS (AAAA) and HTTP over IPv6
 - Dual stack is a compile-time choice (`NET_USE_IPV6`, CMake `SMALLEST_TCP_IPV6`); IPv4-only builds are unchanged
 - Design: [docs/design/ipv6.md](docs/design/ipv6.md)
 

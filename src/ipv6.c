@@ -208,6 +208,12 @@ net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
   return NET_ERR_BUF_TOO_SMALL;
 }
 
+void ipv6_addr_remove(net_t *net, const uint8_t *addr) {
+  int slot = ipv6_addr_slot(net, addr);
+  if (slot > 0) /* never the link-local address */
+    memset(&net->ip6[slot], 0, sizeof(net->ip6[slot]));
+}
+
 const uint8_t *ipv6_router_mac(const net_t *net) {
   return net->ip6_router_life_s ? net->ip6_router_mac : NULL;
 }

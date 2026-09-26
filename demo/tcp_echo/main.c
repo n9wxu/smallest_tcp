@@ -29,6 +29,10 @@
 #include "demo_ipv6.h"
 #include "demo_mac.h"
 
+#if NET_USE_IPV6
+#include "dhcpv6_client.h"
+#endif
+
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
@@ -92,8 +96,53 @@ static void udp6_echo_handler(net_t *n, const uint8_t *src_ip,
   udp6_send(n, src_ip, src_mac, ECHO_PORT, src_port, buf, n_read);
 }
 
+/* ── DHCPv6, started when a Router Advertisement asks for it ───── */
+
+static dhcpv6_client_t dhcp6;
+static int dhcp6_started;
+
+static void dhcp6_handler(net_t *n, const uint8_t *src_ip, uint16_t src_port,
+                          const uint8_t *src_mac, uint16_t payload_offset,
+                          uint16_t payload_len) {
+  uint8_t buf[512];
+  uint16_t n_read = (payload_len < (uint16_t)sizeof(buf))
+                        ? payload_len
+                        : (uint16_t)sizeof(buf);
+  (void)src_port;
+  (void)src_mac;
+  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, n_read);
+  dhcpv6_client_input(n, &dhcp6, src_ip, buf, n_read);
+}
+
+static void on_dns6(uint16_t option, const uint8_t *data, uint16_t len,
+                    void *ctx) {
+  uint16_t i;
+  (void)option;
+  (void)ctx;
+  for (i = 0; i + 16 <= len; i += 16) {
+    printf("[tcp_echo] DHCPv6 DNS server ");
+    demo_ipv6_print_addr(data + i);
+    printf("\n");
+  }
+  fflush(stdout);
+}
+
+static const dhcpv6_opt_entry_t dhcp6_opt_entries[] = {
+    {DHCPV6_OPT_DNS_SERVERS, on_dns6, NULL},
+};
+static const dhcpv6_opt_table_t dhcp6_opts = {dhcp6_opt_entries, 1};
+
+static void on_dhcp6_event(uint8_t event, void *ctx) {
+  static const char *const names[] = {"", "configured", "bound", "renewed",
+                                      "expired"};
+  (void)ctx;
+  printf("[tcp_echo] DHCPv6 %s\n", event <= 4 ? names[event] : "?");
+  fflush(stdout);
+}
+
 static const udp6_port_entry_t udp6_handlers[] = {
     {ECHO_PORT, udp6_echo_handler},
+    {DHCPV6_CLIENT_PORT, dhcp6_handler},
 };
 #endif
 
@@ -207,7 +256,8 @@ int main(int argc, char *argv[]) {
   udp_ports.count = 1;
 #if NET_USE_IPV6
   udp6_ports.entries = udp6_handlers;
-  udp6_ports.count = 1;
+  udp6_ports.count = 2;
+  dhcpv6_client_init(&dhcp6, on_dhcp6_event, NULL, &dhcp6_opts);
 #endif
 
   /* ── TCP connection table ───────────────────────────────────── */
@@ -240,7 +290,16 @@ int main(int argc, char *argv[]) {
       tcp_tick(&net, elapsed);
 #if NET_USE_IPV6
       ipv6_tick(&net, elapsed);
+      dhcpv6_client_tick(&net, &dhcp6, elapsed);
       demo_ipv6_report(&net, "tcp_echo");
+      /* RFC 4861 §4.2: an RA with M asks for DHCPv6 addresses, with O
+       * for other configuration (DNS) only */
+      if (!dhcp6_started && net.ip6_ra_flags) {
+        dhcp6_started = 1;
+        dhcpv6_client_start(&net, &dhcp6,
+                            (net.ip6_ra_flags & 0x80) ? DHCPV6_MODE_STATEFUL
+                                                      : DHCPV6_MODE_STATELESS);
+      }
 #endif
       last_tick = now;
     }
@@ -270,6 +329,9 @@ int main(int argc, char *argv[]) {
   printf("[tcp_echo] shutting down\n");
   if (echo_conn.state == TCP_ESTABLISHED || echo_conn.state == TCP_CLOSE_WAIT)
     tcp_abort(&net, &echo_conn);
+#if NET_USE_IPV6
+  dhcpv6_client_release(&net, &dhcp6);
+#endif
 
   drv->close(&nic.ctx);
   return 0;

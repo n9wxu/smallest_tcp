@@ -195,7 +195,7 @@ jobs:
   # The suite launches a fresh dual-stack tcp_echo_demo per test (the DAD
   # probe at start-up is under test), so no SUT is started here.
   blackbox-ipv6:
-    name: Blackbox — IPv6 + ICMPv6 + NDP (tcp_echo_demo, ${{ matrix.label }})
+    name: Blackbox — IPv6, SLAAC, DHCPv6 (tcp_echo_demo, ${{ matrix.label }}) + dnsmasq interop
     runs-on: ubuntu-latest
     needs: cmake-linux
     strategy:
@@ -211,7 +211,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            python3-pip iproute2 iputils-ping
+            python3-pip iproute2 iputils-ping dnsmasq-base
 
       - name: Install Python deps
         run: |
@@ -238,6 +238,14 @@ jobs:
             --ipv6-sut-bin ./build/demo/tcp_echo_demo  \
             -p no:cacheprovider --tb=short -v -rs      \
             2>&1 | tee /tmp/ipv6_blackbox.out
+
+      # A real router + DHCPv6 server: dnsmasq's RA (M flag) makes the demo
+      # lease an address over DHCPv6; the host pings it and connects to it.
+      - name: DHCPv6 interop (dnsmasq)
+        run: |
+          set -o pipefail
+          sudo tests/blackbox/dhcpv6_interop.sh ./build/demo/tcp_echo_demo \
+            "$SUT_IF" "$TEST_IF" 2>&1 | tee -a /tmp/ipv6_blackbox.out
 
       - name: Tear down the link
         if: always()
