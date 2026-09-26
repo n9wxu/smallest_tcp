@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stage 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD)
+**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD) and 2 (UDP) done
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -148,9 +148,11 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 
 ## 8. Dual-stack UDP and TCP (stages 2–3)
 
-- **UDP**: `udp_port_entry_t` gains `handler6` (IPv6 source as a 16-byte
-  pointer) under `NET_USE_IPV6`, so existing tables `{port, handler}` still
-  compile and IPv4-only builds are unchanged.  `udp6_send()` /
+- **UDP**: IPv6 ports live in their own table, `udp6_ports`, whose
+  handlers get the source as a 16-byte pointer.  `udp_port_entry_t` is
+  untouched — a third field would make every positional `{port, handler}`
+  initializer warn under `-Wextra` — and a port missing from `udp6_ports`
+  is closed over IPv6 (ICMPv6 Port Unreachable).  `udp6_send()` /
   `udp6_send_inplace()` mirror the IPv4 calls (`UDP6_PAYLOAD_OFFSET` = 62).
 - **TCP**: `tcp_conn_t` gains the IP version, the peer's IPv6 address and
   which of our addresses the peer used, so replies keep the same source.

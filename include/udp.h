@@ -14,6 +14,10 @@
 #include "net.h"
 #include <stdint.h>
 
+#if NET_USE_IPV6
+#include "ipv6.h"
+#endif
+
 /* ── UDP header offsets ───────────────────────────────────────────── */
 
 #define UDP_OFF_SPORT 0
@@ -121,5 +125,63 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
  */
 uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const uint8_t *udp_hdr,
                       uint16_t udp_len);
+
+#if NET_USE_IPV6
+/* ── UDP over IPv6 ────────────────────────────────────────────────── */
+
+/**
+ * @brief As udp_handler_t, for a datagram that arrived over IPv6.
+ *
+ * @param src_ip  Sender's address (16 bytes, network order, in the frame —
+ *                valid during the call).
+ */
+typedef void (*udp6_handler_t)(net_t *net, const uint8_t *src_ip,
+                               uint16_t src_port, const uint8_t *src_mac,
+                               uint16_t payload_offset, uint16_t payload_len);
+
+/** @brief Port-to-handler binding for IPv6. */
+typedef struct {
+  uint16_t port;          /**< Local port number (host byte order) */
+  udp6_handler_t handler; /**< Callback function */
+} udp6_port_entry_t;
+
+/**
+ * @brief IPv6 port table, separate from udp_ports so IPv4 tables stay as
+ * they are.  A port absent here is closed over IPv6.
+ */
+typedef struct {
+  const udp6_port_entry_t *entries;
+  uint8_t count;
+} udp6_port_table_t;
+
+extern udp6_port_table_t udp6_ports;
+
+/**
+ * Process a received UDP datagram (after IPv6 dispatch).  The checksum is
+ * mandatory over IPv6: a zero checksum is dropped (RFC 8200 §8.1).
+ */
+void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
+
+/** Offset of the UDP payload in a frame built by udp6_send_inplace(). */
+#define UDP6_PAYLOAD_OFFSET (ETH_HDR_SIZE + IPV6_HDR_SIZE + UDP_HDR_SIZE)
+
+/**
+ * Send a UDP datagram over IPv6, from the source ipv6_src_for() picks.
+ * @return NET_OK; NET_ERR_INVALID_PARAM if we have no usable source
+ *         address for @p dst_ip; NET_ERR_BUF_TOO_SMALL.
+ */
+net_err_t udp6_send(net_t *net, const uint8_t *dst_ip, const uint8_t *dst_mac,
+                    uint16_t src_port, uint16_t dst_port, const uint8_t *data,
+                    uint16_t data_len);
+
+/**
+ * As udp6_send(), for a payload already written at UDP6_PAYLOAD_OFFSET in
+ * net->tx.buf, with an explicit Hop Limit (e.g. 255 for mDNS).
+ */
+net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
+                            const uint8_t *dst_mac, uint16_t src_port,
+                            uint16_t dst_port, uint16_t data_len,
+                            uint8_t hop_limit);
+#endif
 
 #endif /* UDP_H */

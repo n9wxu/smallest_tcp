@@ -80,6 +80,23 @@ static const udp_port_entry_t udp_handlers[] = {
     {ECHO_PORT, udp_echo_handler},
 };
 
+#if NET_USE_IPV6
+static void udp6_echo_handler(net_t *n, const uint8_t *src_ip,
+                              uint16_t src_port, const uint8_t *src_mac,
+                              uint16_t payload_offset, uint16_t payload_len) {
+  uint8_t buf[512];
+  uint16_t n_read = (payload_len < (uint16_t)sizeof(buf))
+                        ? payload_len
+                        : (uint16_t)sizeof(buf);
+  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, n_read);
+  udp6_send(n, src_ip, src_mac, ECHO_PORT, src_port, buf, n_read);
+}
+
+static const udp6_port_entry_t udp6_handlers[] = {
+    {ECHO_PORT, udp6_echo_handler},
+};
+#endif
+
 /* ── TCP event callback (called from tcp_input / tcp_tick) ──────── */
 
 static void on_event(tcp_conn_t *conn, uint8_t events) {
@@ -188,6 +205,10 @@ int main(int argc, char *argv[]) {
   /* ── UDP port table ─────────────────────────────────────────── */
   udp_ports.entries = udp_handlers;
   udp_ports.count = 1;
+#if NET_USE_IPV6
+  udp6_ports.entries = udp6_handlers;
+  udp6_ports.count = 1;
+#endif
 
   /* ── TCP connection table ───────────────────────────────────── */
   conn_table[0] = &echo_conn;

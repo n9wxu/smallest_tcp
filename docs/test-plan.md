@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**18 test suites, 366 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
+**19 test suites, 380 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -42,6 +42,7 @@ verified at both the unit and integration levels:
 | `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |
 | `test_http` | tests/unit/test_http.c | 45 | HTTP parser, formatter, server driven over the real TCP (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
+| `test_udp6` | tests/unit/test_udp6.c | 14 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` (REQ-IPv6-044,045, REQ-ICMPv6-016) |
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 
 ### Running Unit Tests
@@ -138,7 +139,7 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
 | `tests/blackbox/test_mdns_conform.py` | 19 mDNS / DNS-SD tests (SUT: `mdns_demo`, launched fresh per test) |
 | `tests/blackbox/test_http_conform.py` | 21 HTTP tests; the host's own TCP stack is the client (SUT: `http_demo`) |
-| `tests/blackbox/test_ipv6_conform.py` | 13 IPv6 / ICMPv6 / NDP / DAD tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
+| `tests/blackbox/test_ipv6_conform.py` | 17 IPv6 / ICMPv6 / NDP / DAD / UDP tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
 | `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/` |
 | `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
 | `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve + browse the demo, goodbye withdraws the service |
@@ -317,6 +318,10 @@ address, `fe80::100`.  Skipped when the option is not given.
 | test_ipv6_011 | REQ-IPv6-017, REQ-ICMPv6-026,027 | Unknown Next Header → Parameter Problem code 1, pointer 6 |
 | test_ipv6_012 | REQ-IPv6-022 | Fragments silently dropped (no reassembly) |
 | test_ipv6_013 | RFC 4861 interop | The host's `ping -6` resolves the SUT with NDP and gets replies (skipped without IPv6 on the harness interface) |
+| test_ipv6_014 | RFC 768 / 8200 §8.1 | UDP echo over IPv6, valid reply checksum |
+| test_ipv6_015 | REQ-IPv6-045 | UDP with a zero checksum dropped |
+| test_ipv6_016 | REQ-ICMPv6-016 | Closed port → Destination Unreachable code 4 quoting the datagram |
+| test_ipv6_017 | interop | The host's UDP socket gets its echo over IPv6 (offloaded checksums on the raw link) |
 
 ### Blackbox HTTP Conformance Coverage
 
@@ -370,7 +375,7 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
-| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD suite against dual-stack `tcp_echo_demo` (TAP, raw socket) | push/PR |
+| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP suite against dual-stack `tcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |

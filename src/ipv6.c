@@ -12,6 +12,10 @@
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_UDP
+#include "udp.h"
+#endif
+
 static const uint8_t all_nodes[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                       0,    0,    0, 0, 0, 0, 0, 1};
 
@@ -238,6 +242,11 @@ void ipv6_input(net_t *net, const eth_frame_t *eth) {
   case IPV6_NH_ICMPV6: /* REQ-IPv6-014 */
     icmpv6_input(net, &ip, eth);
     break;
+#if NET_USE_UDP
+  case IPV6_NH_UDP: /* REQ-IPv6-016 */
+    udp6_input(net, &ip, eth);
+    break;
+#endif
   default:
     /* REQ-IPv6-017: unrecognized Next Header → Parameter Problem code 1,
      * pointing at the field that named it */

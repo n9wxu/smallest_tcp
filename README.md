@@ -45,8 +45,8 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 
 ## 📊 Current Status
 
-**366 unit tests passing** across 18 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
-**108 blackbox conformance tests passing** across 9 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×19, HTTP ×21, IPv6/ICMPv6/NDP ×13), plus 5 fuzz tests and interop checks with Avahi and macOS (discover the device, browse to `http://pyro-dead01.local/`) — all run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
+**380 unit tests passing** across 19 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**112 blackbox conformance tests passing** across 9 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×19, HTTP ×21, IPv6 ×17), plus 5 fuzz tests and interop checks with Avahi and macOS (discover the device, browse to `http://pyro-dead01.local/`) — all run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
 
 ### ✅ Implemented (Milestones 1–11)
 
@@ -68,7 +68,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | DNS wire format | `dns_wire.h` / `dns_wire.c` | 23 unit | RFC 1035 names with compression, bounds-checked readers (shared with the future DNS resolver) |
 | **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | **49 unit + 19 blackbox + interop** | **RFC 6762 responder: probe, announce, answer (A/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression, conflict rename, goodbye; RFC 6763 service advertising** |
 | **HTTP server** | **`http.h` / `http.c`** | **45 unit + 21 blackbox + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts** |
-| **IPv6** (Milestone 12, stage 1) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` | **55 unit + 13 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + Parameter Problem, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
+| **IPv6** (Milestone 12, stages 1–2) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `udp.c` | **69 unit + 17 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP over IPv6 (`udp6_ports`, mandatory checksum, Port Unreachable); dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
@@ -76,7 +76,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests, full blackbox suite over TAP and raw socket, and ARM size benchmark on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
-| **Total** | **19 source + 4 drivers** | **366 unit + 108 blackbox + 5 fuzz** | |
+| **Total** | **19 source + 4 drivers** | **380 unit + 112 blackbox + 5 fuzz** | |
 
 > ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
 > are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
@@ -96,7 +96,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | **9 — TFTP** | ✅ Done | Fetch files over the network — bootloader data path |
 | **10 — mDNS + DNS-SD** | ✅ Done | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
 | **11 — HTTP** | ✅ Done | HTTP/1.0 server — browse to your microcontroller at `http://pyro-dead01.local/` |
-| **12 — IPv6** | In progress | ✅ stage 1: IPv6 + ICMPv6 + NDP responder + DAD (ping6 by link-local); next: UDP, TCP, SLAAC, DHCPv6, mDNS/HTTP over IPv6 |
+| **12 — IPv6** | In progress | ✅ stage 1: IPv6 + ICMPv6 + NDP responder + DAD (ping6 by link-local); ✅ stage 2: UDP; next: TCP, SLAAC, DHCPv6, mDNS/HTTP over IPv6 |
 | **13 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
 | **14 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
@@ -119,7 +119,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 ```bash
 make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run all 366 unit tests (18 suites; the raw-socket driver's live tests need root)
+make test     # Build and run all 380 unit tests (19 suites; the raw-socket driver's live tests need root)
 make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
@@ -159,7 +159,7 @@ ctest --test-dir build --output-on-failure
 ### Running Blackbox Conformance Tests (Linux)
 
 Nine conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4, mDNS, HTTP, IPv6 —
-108 tests total) run against the live `tcp_echo_demo`, `dhcp_echo_demo`, `mdns_demo` or
+112 tests total) run against the live `tcp_echo_demo`, `dhcp_echo_demo`, `mdns_demo` or
 `http_demo` over a Linux TAP interface, or over a veth pair with the raw-socket
 driver ([Option E](#option-e--any-suite-over-the-raw-socket-driver-no-tun)).
 Requires `sudo` / `CAP_NET_RAW`.
@@ -281,7 +281,7 @@ ping -6 fe80::ff:fede:ad01%tap0
 ### Running Blackbox Conformance Tests (macOS)
 
 The same suites run on macOS over a `feth` pair: the tests use `feth0`, the demos
-open `feth1` through BPF.  All 108 tests plus the `dns-sd` and browse-by-name interop checks pass (the IPv6 suite's host-ping check needs `sudo ifconfig feth0 inet6 -ifdisabled`).
+open `feth1` through BPF.  All 112 tests plus the `dns-sd` and browse-by-name interop checks pass (the IPv6 suite's host ping and UDP checks need `sudo ifconfig feth0 inet6 -ifdisabled`).
 
 ```bash
 # Once per boot (root): create the pair.  10.0.0.100, the tests' source

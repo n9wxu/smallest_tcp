@@ -13,6 +13,10 @@
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_IPV6
+#include "icmpv6.h"
+#endif
+
 /* ── Default empty port table ─────────────────────────────────────── */
 
 udp_port_table_t udp_ports = {(void *)0, 0};
@@ -167,3 +171,86 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
   int r = net->mac_driver->send(net->mac_ctx, buf, (uint16_t)total);
   return (r >= 0) ? NET_OK : NET_ERR_NO_FRAME;
 }
+
+#if NET_USE_IPV6
+/* ── UDP over IPv6 ────────────────────────────────────────────────── */
+
+udp6_port_table_t udp6_ports = {(void *)0, 0};
+
+void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
+  const uint8_t *udp = ip->payload;
+  uint16_t avail = ip->payload_len;
+
+  if (avail < UDP_HDR_SIZE)
+    return;
+  uint16_t udp_len = net_read16be(udp + UDP_OFF_LEN);
+  if (udp_len < UDP_HDR_SIZE || udp_len > avail)
+    return;
+  /* REQ-IPv6-045: mandatory checksum — zero is not "none" over IPv6 */
+  if (net_read16be(udp + UDP_OFF_CKSUM) == 0 ||
+      ipv6_cksum(ip->src, ip->dst, IPV6_NH_UDP, udp, udp_len) != 0) {
+    NET_LOG("udp6_input: bad checksum");
+    return;
+  }
+
+  uint16_t src_port = net_read16be(udp + UDP_OFF_SPORT);
+  uint16_t dst_port = net_read16be(udp + UDP_OFF_DPORT);
+  uint16_t payload_offset =
+      (uint16_t)(ETH_HDR_SIZE + ip->header_len + UDP_HDR_SIZE);
+  uint8_t i;
+  for (i = 0; i < udp6_ports.count; i++) {
+    if (udp6_ports.entries[i].port == dst_port) {
+      udp6_ports.entries[i].handler(net, ip->src, src_port, eth->src_mac,
+                                    payload_offset,
+                                    (uint16_t)(udp_len - UDP_HDR_SIZE));
+      return;
+    }
+  }
+
+  /* REQ-ICMPv6-016: Port Unreachable (icmpv6_send_error() refuses it for
+   * multicast, as RFC 4443 §2.4(e) requires) */
+  icmpv6_send_error(net, ICMPV6_DEST_UNREACH, ICMPV6_CODE_PORT_UNREACH, 0, ip,
+                    eth);
+}
+
+net_err_t udp6_send(net_t *net, const uint8_t *dst_ip, const uint8_t *dst_mac,
+                    uint16_t src_port, uint16_t dst_port, const uint8_t *data,
+                    uint16_t data_len) {
+  if ((uint32_t)UDP6_PAYLOAD_OFFSET + data_len > net->tx.capacity)
+    return NET_ERR_BUF_TOO_SMALL;
+  if (data && data_len > 0)
+    memcpy(net->tx.buf + UDP6_PAYLOAD_OFFSET, data, data_len);
+  return udp6_send_inplace(net, dst_ip, dst_mac, src_port, dst_port, data_len,
+                           net->ip6_hop_limit);
+}
+
+net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
+                            const uint8_t *dst_mac, uint16_t src_port,
+                            uint16_t dst_port, uint16_t data_len,
+                            uint8_t hop_limit) {
+  uint32_t total = (uint32_t)UDP6_PAYLOAD_OFFSET + data_len;
+  if (total > net->tx.capacity)
+    return NET_ERR_BUF_TOO_SMALL;
+  const uint8_t *src = ipv6_src_for(net, dst_ip);
+  if (!src)
+    return NET_ERR_INVALID_PARAM;
+
+  uint16_t udp_len = (uint16_t)(UDP_HDR_SIZE + data_len);
+  uint8_t *buf = net->tx.buf;
+  uint8_t *udp = buf + ETH_HDR_SIZE + IPV6_HDR_SIZE;
+
+  net_write16be(udp + UDP_OFF_SPORT, src_port);
+  net_write16be(udp + UDP_OFF_DPORT, dst_port);
+  net_write16be(udp + UDP_OFF_LEN, udp_len);
+  net_write16be(udp + UDP_OFF_CKSUM, 0);
+  uint16_t cksum = ipv6_cksum(src, dst_ip, IPV6_NH_UDP, udp, udp_len);
+  /* REQ-UDP-009: a computed 0 goes out as 0xFFFF (0 would mean "none") */
+  net_write16be(udp + UDP_OFF_CKSUM, cksum ? cksum : 0xFFFF);
+
+  eth_build(buf, net->tx.capacity, dst_mac, net->mac, NET_ETHERTYPE_IPV6);
+  ipv6_build(buf + ETH_HDR_SIZE, udp_len, IPV6_NH_UDP, src, dst_ip, hop_limit);
+
+  int r = net->mac_driver->send(net->mac_ctx, buf, (uint16_t)total);
+  return (r >= 0) ? NET_OK : NET_ERR_NO_FRAME;
+}
+#endif

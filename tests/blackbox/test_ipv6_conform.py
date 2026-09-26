@@ -30,9 +30,10 @@ import time
 import pytest
 from scapy.all import (
     Ether, IPv6, Raw, conf, get_if_hwaddr, sendp,
-    ICMPv6EchoReply, ICMPv6EchoRequest, ICMPv6ND_NA, ICMPv6ND_NS,
-    ICMPv6NDOptDstLLAddr, ICMPv6NDOptSrcLLAddr, ICMPv6ParamProblem,
-    IPv6ExtHdrFragment, IPv6ExtHdrHopByHop,
+    ICMPv6DestUnreach, ICMPv6EchoReply, ICMPv6EchoRequest, ICMPv6ND_NA,
+    ICMPv6ND_NS, ICMPv6NDOptDstLLAddr, ICMPv6NDOptSrcLLAddr,
+    ICMPv6ParamProblem, IPv6ExtHdrFragment, IPv6ExtHdrHopByHop, UDP,
+    in6_chksum,
 )
 
 from helpers import start_sniffer, sut_argv
@@ -323,3 +324,61 @@ def test_ipv6_013_kernel_ping(sut):
            else ["ping", "-6", "-c", "2", "-W", "2", target])
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ── UDP over IPv6 (RFC 768, RFC 8200 §8.1) ─────────────────────────────────────
+
+def is_udp_echo(p):
+    return UDP in p and p[UDP].sport == 7
+
+
+def test_ipv6_014_udp_echo(sut):
+    """UDP echo on port 7 over IPv6; the reply's checksum is valid."""
+    sut.start()
+    req = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+           UDP(sport=40007, dport=7) / Raw(b"udp over ipv6"))
+    rep = sut.exchange(req, is_udp_echo)
+    assert rep is not None, "no UDP echo"
+    assert rep[IPv6].src == sut.sut_ll
+    assert rep[IPv6].dst == OUR_LL
+    assert rep[UDP].dport == 40007
+    assert bytes(rep[UDP].payload) == b"udp over ipv6"
+    assert rep[UDP].chksum != 0
+    assert in6_chksum(17, rep[IPv6], bytes(rep[UDP])) == 0
+
+
+def test_ipv6_015_udp_zero_checksum_dropped(sut):
+    """REQ-IPv6-045: a zero UDP checksum is invalid over IPv6."""
+    sut.start()
+    req = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+           UDP(sport=40008, dport=7, chksum=0) / Raw(b"no checksum"))
+    assert sut.exchange(req, is_udp_echo, timeout=1.5) is None
+
+
+def test_ipv6_016_udp_closed_port_unreachable(sut):
+    """REQ-ICMPv6-016: Destination Unreachable, code 4, quoting the datagram."""
+    sut.start()
+    req = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+           UDP(sport=40009, dport=4444) / Raw(b"closed"))
+    err = sut.exchange(req, lambda p: ICMPv6DestUnreach in p)
+    assert err is not None, "no Destination Unreachable"
+    assert err[ICMPv6DestUnreach].code == 4
+    assert err[IPv6].dst == OUR_LL
+    assert b"closed" in bytes(err[ICMPv6DestUnreach].payload)
+
+
+def test_ipv6_017_kernel_udp_echo(sut):
+    """The host's own UDP socket talks to the SUT over IPv6."""
+    if not host_has_link_local(sut.iface):
+        pytest.skip(f"no IPv6 on {sut.iface}")
+    sut.start()
+    scope = socket.if_nametoindex(sut.iface)
+    s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    try:
+        s.sendto(b"kernel udp6", (sut.sut_ll, 7, 0, scope))
+        data, addr = s.recvfrom(64)
+    finally:
+        s.close()
+    assert data == b"kernel udp6"
+    assert addr[0].split("%")[0] == sut.sut_ll

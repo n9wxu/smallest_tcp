@@ -51,7 +51,8 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_mdns.c \
              tests/unit/test_http.c \
              tests/unit/test_rawsock.c \
-             tests/unit/test_ipv6.c
+             tests/unit/test_ipv6.c \
+             tests/unit/test_udp6.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -183,6 +184,12 @@ IPV6_SRCS := src/ipv6.c src/icmpv6.c src/ndp.c
 $(BUILD)/tests/test_ipv6: tests/unit/test_ipv6.c $(IPV6_SRCS) $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_ipv6.c \
+		$(IPV6_SRCS) $(STACK_SRCS)
+
+# Test for UDP over IPv6
+$(BUILD)/tests/test_udp6: tests/unit/test_udp6.c $(IPV6_SRCS) $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_udp6.c \
 		$(IPV6_SRCS) $(STACK_SRCS)
 
 # Test for the raw-socket driver (live veth tests need root on Linux)
