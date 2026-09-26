@@ -1,0 +1,319 @@
+/**
+ * @file dns_wire.c
+ * @brief DNS wire-format helpers (RFC 1035 §3-4).
+ *
+ * Implements REQ-MDNS-003 (wire format), REQ-MDNS-043 (name compression)
+ * and REQ-DNSSD-031 (label / name length limits).
+ */
+
+#include "dns_wire.h"
+#include "net_endian.h"
+#include <string.h>
+
+/* Compression-pointer hops allowed while reading one name.  A legitimate
+ * name has at most 127 labels; this bound stops pointer loops early. */
+#define DNS_MAX_HOPS 32
+
+static uint8_t lower(uint8_t c) {
+  return (c >= 'A' && c <= 'Z') ? (uint8_t)(c + ('a' - 'A')) : c;
+}
+
+/* ── Dotted-name iteration ────────────────────────────────────────── */
+
+/* "." is the root name; treat it like "". */
+static const char *dotted_begin(const char *name) {
+  return (name[0] == '.' && name[1] == '\0') ? name + 1 : name;
+}
+
+/**
+ * Return the next label of a dotted name: its length (>0), 0 at the end of
+ * the name, or -1 if the label is empty or longer than 63 bytes.
+ */
+static int dotted_next(const char **pp, const char **label) {
+  const char *s = *pp;
+  const char *e = s;
+  if (*s == '\0')
+    return 0;
+  while (*e != '\0' && *e != '.')
+    e++;
+  if (e == s || e - s > DNS_MAX_LABEL)
+    return -1;
+  *label = s;
+  *pp = (*e == '.') ? e + 1 : e; /* a trailing dot ends the name */
+  return (int)(e - s);
+}
+
+/* Wire length of a dotted name, or -2 if it is invalid. */
+static int dotted_wire_len(const char *name) {
+  const char *p = dotted_begin(name);
+  const char *label;
+  int n, total = 1; /* root terminator */
+  while ((n = dotted_next(&p, &label)) > 0) {
+    total += 1 + n;
+    if (total > DNS_MAX_NAME)
+      return -2;
+  }
+  return (n < 0) ? -2 : total;
+}
+
+/* ── Wire-name iteration (follows compression pointers) ───────────── */
+
+typedef struct {
+  const uint8_t *msg;
+  uint16_t len;
+  uint16_t off;
+  uint16_t total; /* uncompressed wire length so far */
+  uint8_t hops;
+} wire_iter_t;
+
+/**
+ * Return the next label of a wire name: its length (>0) with *label set,
+ * 0 at the terminating root label, or -1 if the name is malformed.
+ */
+static int wire_next(wire_iter_t *it, const uint8_t **label) {
+  for (;;) {
+    if (it->off >= it->len)
+      return -1;
+    uint8_t b = it->msg[it->off];
+    if ((b & 0xC0) == 0xC0) {
+      if ((uint32_t)it->off + 1 >= it->len)
+        return -1;
+      uint16_t target = (uint16_t)(((b & 0x3F) << 8) | it->msg[it->off + 1]);
+      if (target >= it->len || ++it->hops > DNS_MAX_HOPS)
+        return -1;
+      it->off = target;
+      continue;
+    }
+    if (b & 0xC0)
+      return -1; /* 01/10 label types are not supported */
+    if (b == 0)
+      return 0;
+    if ((uint32_t)it->off + 1 + b > it->len)
+      return -1;
+    it->total = (uint16_t)(it->total + 1 + b);
+    if (it->total + 1 > DNS_MAX_NAME)
+      return -1;
+    *label = it->msg + it->off + 1;
+    it->off = (uint16_t)(it->off + 1 + b);
+    return b;
+  }
+}
+
+static void wire_begin(wire_iter_t *it, const uint8_t *msg, uint16_t len,
+                       uint16_t off) {
+  it->msg = msg;
+  it->len = len;
+  it->off = off;
+  it->total = 0;
+  it->hops = 0;
+}
+
+/* ── Writer ───────────────────────────────────────────────────────── */
+
+void dns_writer_init(dns_writer_t *w, uint8_t *buf, uint16_t cap) {
+  w->buf = buf;
+  w->cap = cap;
+  w->len = 0;
+  w->overflow = 0;
+  w->n_offsets = 0;
+}
+
+int dns_write_bytes(dns_writer_t *w, const uint8_t *data, uint16_t n) {
+  if ((uint32_t)w->len + n > w->cap) {
+    w->overflow = 1;
+    return -1;
+  }
+  if (n > 0)
+    memcpy(w->buf + w->len, data, n);
+  w->len = (uint16_t)(w->len + n);
+  return 0;
+}
+
+int dns_write_u16(dns_writer_t *w, uint16_t v) {
+  uint8_t b[2];
+  net_write16be(b, v);
+  return dns_write_bytes(w, b, 2);
+}
+
+int dns_write_u32(dns_writer_t *w, uint32_t v) {
+  uint8_t b[4];
+  net_write32be(b, v);
+  return dns_write_bytes(w, b, 4);
+}
+
+dns_writer_mark_t dns_writer_mark(const dns_writer_t *w) {
+  dns_writer_mark_t m;
+  m.len = w->len;
+  m.n_offsets = w->n_offsets;
+  return m;
+}
+
+void dns_writer_rollback(dns_writer_t *w, dns_writer_mark_t mark) {
+  w->len = mark.len;
+  w->n_offsets = mark.n_offsets;
+}
+
+/* Find an earlier label sequence equal to the dotted suffix @p s. */
+static int find_compress_target(const dns_writer_t *w, const char *s) {
+  uint8_t i;
+  for (i = 0; i < w->n_offsets; i++) {
+    if (dns_name_equals(w->buf, w->len, w->offsets[i], s))
+      return w->offsets[i];
+  }
+  return -1;
+}
+
+int dns_write_name(dns_writer_t *w, const char *name) {
+  if (dotted_wire_len(name) < 0)
+    return -2;
+
+  dns_writer_mark_t start = dns_writer_mark(w);
+  const char *p = dotted_begin(name);
+  const char *label;
+  int n;
+
+  for (;;) {
+    /* REQ-MDNS-043: replace the longest already-written suffix */
+    if (*p != '\0') {
+      int target = find_compress_target(w, p);
+      if (target >= 0) {
+        if (dns_write_u16(w, (uint16_t)(0xC000 | target)) < 0)
+          goto overflow;
+        return 0;
+      }
+    }
+    n = dotted_next(&p, &label);
+    if (n == 0)
+      break;
+    uint16_t pos = w->len;
+    uint8_t lenbyte = (uint8_t)n;
+    if (dns_write_bytes(w, &lenbyte, 1) < 0 ||
+        dns_write_bytes(w, (const uint8_t *)label, (uint16_t)n) < 0)
+      goto overflow;
+    if (pos <= 0x3FFF && w->n_offsets < DNS_COMPRESS_MAX)
+      w->offsets[w->n_offsets++] = pos;
+  }
+  {
+    uint8_t root = 0;
+    if (dns_write_bytes(w, &root, 1) < 0)
+      goto overflow;
+  }
+  return 0;
+
+overflow:
+  dns_writer_rollback(w, start);
+  w->overflow = 1;
+  return -1;
+}
+
+int dns_write_header(dns_writer_t *w, uint16_t id, uint16_t flags,
+                     uint16_t qdcount, uint16_t ancount, uint16_t nscount,
+                     uint16_t arcount) {
+  uint8_t h[DNS_HDR_SIZE];
+  net_write16be(h + DNS_OFF_ID, id);
+  net_write16be(h + DNS_OFF_FLAGS, flags);
+  dns_set_counts(h, qdcount, ancount, nscount, arcount);
+  return dns_write_bytes(w, h, DNS_HDR_SIZE);
+}
+
+void dns_set_counts(uint8_t *msg, uint16_t qdcount, uint16_t ancount,
+                    uint16_t nscount, uint16_t arcount) {
+  net_write16be(msg + DNS_OFF_QDCOUNT, qdcount);
+  net_write16be(msg + DNS_OFF_ANCOUNT, ancount);
+  net_write16be(msg + DNS_OFF_NSCOUNT, nscount);
+  net_write16be(msg + DNS_OFF_ARCOUNT, arcount);
+}
+
+/* ── Reader ───────────────────────────────────────────────────────── */
+
+int dns_name_skip(const uint8_t *msg, uint16_t len, uint16_t off) {
+  uint16_t start = off;
+  for (;;) {
+    if (off >= len)
+      return -1;
+    uint8_t b = msg[off];
+    if ((b & 0xC0) == 0xC0)
+      return ((uint32_t)off + 1 < len) ? off + 2 : -1;
+    if (b & 0xC0)
+      return -1;
+    if (b == 0)
+      return off + 1;
+    if ((uint32_t)off + 1 + b > len)
+      return -1;
+    off = (uint16_t)(off + 1 + b);
+    if (off - start > DNS_MAX_NAME)
+      return -1;
+  }
+}
+
+int dns_name_equals(const uint8_t *msg, uint16_t len, uint16_t off,
+                    const char *name) {
+  wire_iter_t it;
+  const char *p = dotted_begin(name);
+  wire_begin(&it, msg, len, off);
+  for (;;) {
+    const uint8_t *wl;
+    const char *dl;
+    int wn = wire_next(&it, &wl);
+    int dn = dotted_next(&p, &dl);
+    if (wn < 0 || dn < 0 || wn != dn)
+      return 0;
+    if (wn == 0)
+      return 1;
+    int i;
+    for (i = 0; i < wn; i++) {
+      if (lower(wl[i]) != lower((uint8_t)dl[i]))
+        return 0;
+    }
+  }
+}
+
+int dns_name_decode(const uint8_t *msg, uint16_t len, uint16_t off, char *out,
+                    uint16_t out_len) {
+  wire_iter_t it;
+  const uint8_t *label;
+  uint16_t pos = 0;
+  int n;
+  if (out_len == 0)
+    return -1;
+  wire_begin(&it, msg, len, off);
+  while ((n = wire_next(&it, &label)) > 0) {
+    uint16_t need = (uint16_t)((pos ? 1 : 0) + n);
+    if ((uint32_t)pos + need + 1 > out_len)
+      return -1;
+    if (pos)
+      out[pos++] = '.';
+    memcpy(out + pos, label, (size_t)n);
+    pos = (uint16_t)(pos + n);
+  }
+  if (n < 0)
+    return -1;
+  out[pos] = '\0';
+  return pos;
+}
+
+int dns_read_question(const uint8_t *msg, uint16_t len, uint16_t off,
+                      dns_question_t *q) {
+  int p = dns_name_skip(msg, len, off);
+  if (p < 0 || (uint32_t)p + 4 > len)
+    return -1;
+  q->name_off = off;
+  q->type = net_read16be(msg + p);
+  q->class_ = net_read16be(msg + p + 2);
+  return p + 4;
+}
+
+int dns_read_rr(const uint8_t *msg, uint16_t len, uint16_t off, dns_rr_t *rr) {
+  int p = dns_name_skip(msg, len, off);
+  if (p < 0 || (uint32_t)p + 10 > len)
+    return -1;
+  rr->name_off = off;
+  rr->type = net_read16be(msg + p);
+  rr->class_ = net_read16be(msg + p + 2);
+  rr->ttl = net_read32be(msg + p + 4);
+  rr->rdlen = net_read16be(msg + p + 8);
+  rr->rdata_off = (uint16_t)(p + 10);
+  if ((uint32_t)rr->rdata_off + rr->rdlen > len)
+    return -1;
+  return rr->rdata_off + rr->rdlen;
+}

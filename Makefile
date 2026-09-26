@@ -45,7 +45,8 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_tcp_buf.c \
              tests/unit/test_tcp.c \
              tests/unit/test_tftp.c \
-             tests/unit/test_dhcpv4.c
+             tests/unit/test_dhcpv4.c \
+             tests/unit/test_dns_wire.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -149,6 +150,11 @@ $(BUILD)/tests/test_dhcpv4: tests/unit/test_dhcpv4.c src/dhcpv4_client.c src/dhc
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_dhcpv4.c \
 		src/dhcpv4_client.c src/dhcpv4_server.c $(STACK_SRCS)
+
+# Test for DNS wire format helpers
+$(BUILD)/tests/test_dns_wire: tests/unit/test_dns_wire.c src/dns_wire.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_dns_wire.c src/dns_wire.c
 
 # ── Demo ──────────────────────────────────────────────────────────────
 

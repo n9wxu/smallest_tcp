@@ -76,3 +76,6 @@ target_link_libraries(test_dhcpv4 PRIVATE
     smallest_tcp_dhcpv4_client
     smallest_tcp_dhcpv4_server
 )
+
+add_unit_test(test_dns_wire)
+target_link_libraries(test_dns_wire PRIVATE smallest_tcp_mdns)
