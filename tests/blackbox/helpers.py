@@ -562,3 +562,9 @@ def silence_any(ctx, pkt, timeout=2):
     send_pkt(ctx, pkt)
     sniffer.join(timeout=timeout + 1)
     return len(sniffer.results) == 0
+
+
+def sut_argv(binary, sut_iface=None):
+    """Command line for a demo SUT: argv[1] names its interface and driver
+    (tap0, raw:veth-sut, feth1 ...); None keeps the demo's default."""
+    return [binary] + ([sut_iface] if sut_iface else [])

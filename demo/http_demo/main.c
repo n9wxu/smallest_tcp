@@ -13,6 +13,8 @@
  *         sudo ip addr add 10.0.0.100/24 dev tap0 && sudo ip link set tap0 up
  *         sudo ./build/demo/http_demo
  *         curl http://10.0.0.2/   (or http://pyro-dead01.local/ with nss-mdns)
+ *         raw socket on an existing interface (NIC or veth end):
+ *           sudo ./build/demo/http_demo raw:veth-sut
  * macOS:  (feth pair, see README) ./build/demo/http_demo feth1
  *         curl http://pyro-dead01.local/
  *
@@ -36,11 +38,7 @@
 #include <string.h>
 #include <time.h>
 
-#if defined(__linux__)
-#include "driver/tap.h"
-#elif defined(__APPLE__)
-#include "driver/bpf.h"
-#endif
+#include "demo_mac.h"
 
 #define HTTP_PORT 80u
 #define N_SLOTS 2
@@ -190,23 +188,16 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
 
-#if defined(__linux__)
-  tap_ctx_t mac_ctx;
-  const net_mac_t *drv = &tap_mac_ops;
-  (void)argc;
-  (void)argv;
-  tap_ctx_init(&mac_ctx, "tap0");
-#elif defined(__APPLE__)
-  bpf_ctx_t mac_ctx;
-  const net_mac_t *drv = &bpf_mac_ops;
-  bpf_ctx_init(&mac_ctx, (argc > 1) ? argv[1] : "feth1");
-#else
-#error "Unsupported platform"
-#endif
+  /* ── Platform MAC driver: argv[1] names the interface ───────── */
+  demo_mac_t nic;
+  if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0) {
+    return 1;
+  }
+  const net_mac_t *drv = nic.ops;
 
   net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
-           NULL, drv, &mac_ctx);
-  if (drv->init(&mac_ctx) != 0) {
+           NULL, drv, &nic.ctx);
+  if (drv->init(&nic.ctx) != 0) {
     fprintf(stderr, "[http] failed to open MAC driver\n");
     return 1;
   }
@@ -263,6 +254,6 @@ int main(int argc, char *argv[]) {
   printf("[http] shutting down\n");
   fflush(stdout);
   mdns_stop(&mdns);
-  drv->close(&mac_ctx);
+  drv->close(&nic.ctx);
   return 0;
 }

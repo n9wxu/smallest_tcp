@@ -3,7 +3,7 @@ test_http_conform.py — HTTP server conformance (RFC 9110 / RFC 9112).
 
 SUT: demo/http_demo, started once for this module.  The client is the test
 host's own TCP stack (Python http.client and raw sockets) talking to the SUT
-over the TAP (Linux) or feth (macOS) link, so this also exercises our TCP
+over the TAP or veth (Linux) or feth (macOS) link, so this also exercises our TCP
 against a production peer.  http_demo serves:
 
     GET  /            HTML status page
@@ -19,6 +19,9 @@ Usage (Linux, tap0 up with 10.0.0.100/24):
     sudo python3 -m pytest tests/blackbox/test_http_conform.py \\
         --iface tap0 --sut-ip 10.0.0.2 --http-sut-bin ./build/demo/http_demo -v
 
+Raw-socket driver instead of TAP: set the link up with sut_net.sh up raw,
+then --iface veth-test --sut-iface raw:veth-sut.
+
 Skipped when --http-sut-bin is not given.
 """
 
@@ -33,6 +36,8 @@ import time
 
 import pytest
 
+from helpers import sut_argv
+
 PORT = 80
 REQ_BUF = 1024            # http_demo's request buffer per slot
 REQUEST_TIMEOUT_S = 10.0  # HTTP_REQUEST_TIMEOUT_MS
@@ -41,7 +46,8 @@ REQUEST_TIMEOUT_S = 10.0  # HTTP_REQUEST_TIMEOUT_MS
 # ── SUT management ─────────────────────────────────────────────────────────────
 
 class HttpSut:
-    def __init__(self, binary, host):
+    def __init__(self, binary, host, sut_iface=None):
+        self.argv = sut_argv(binary, sut_iface)
         self.binary = binary
         self.host = host
         self.proc = None
@@ -49,7 +55,7 @@ class HttpSut:
 
     def start(self, timeout=8.0):
         fd, self.log_path = tempfile.mkstemp(prefix="http_sut_", suffix=".log")
-        self.proc = subprocess.Popen([self.binary], stdout=fd,
+        self.proc = subprocess.Popen(self.argv, stdout=fd,
                                      stderr=subprocess.STDOUT)
         os.close(fd)
         deadline = time.monotonic() + timeout
@@ -82,7 +88,8 @@ def sut(request):
     binary = request.config.getoption("--http-sut-bin")
     if not binary:
         pytest.skip("--http-sut-bin not given")
-    s = HttpSut(binary, request.config.getoption("--sut-ip"))
+    s = HttpSut(binary, request.config.getoption("--sut-ip"),
+                request.config.getoption("--sut-iface"))
     s.start()
     yield s
     s.stop()

@@ -2,7 +2,7 @@
  * @file demo/dhcp_echo/main.c
  * @brief DHCP client + TCP/UDP echo — SUT for DHCP blackbox tests.
  *
- * Starts a DHCP client on tap0.  Once BOUND, echoes on TCP port 7 and
+ * Starts a DHCP client on tap0 (or the interface in argv[1]).  Once BOUND, echoes on TCP port 7 and
  * UDP port 7 — same services as tcp_echo_demo but with a
  * dynamically-acquired IP address.
  *
@@ -10,6 +10,7 @@
  *   sudo ip tuntap add dev tap0 mode tap user $(whoami)
  *   sudo ip link set tap0 up
  *   sudo ./build/demo/dhcp_echo_demo
+ * Raw socket on an existing interface: sudo ./build/demo/dhcp_echo_demo raw:eth1
  */
 
 #include "dhcpv4_client.h"
@@ -25,13 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__linux__)
-#include "driver/tap.h"
-#elif defined(__APPLE__)
-#include "driver/bpf.h"
-#else
-#error "This demo requires Linux (TAP) or macOS (BPF)"
-#endif
+#include "demo_mac.h"
 
 /* ── Configuration ───────────────────────────────────────────────── */
 #define ECHO_PORT 7u
@@ -177,27 +172,20 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
 
-#if defined(__linux__)
-  tap_ctx_t mac_ctx;
-  const net_mac_t *drv = &tap_mac_ops;
-  (void)argc;
-  (void)argv;
-  tap_ctx_init(&mac_ctx, "tap0");
-#elif defined(__APPLE__)
-  bpf_ctx_t mac_ctx;
-  const net_mac_t *drv = &bpf_mac_ops;
-  const char *ifname = (argc > 1) ? argv[1] : "feth1";
-  bpf_ctx_init(&mac_ctx, ifname);
-#endif
+  /* ── Platform MAC driver: argv[1] names the interface ───────── */
+  demo_mac_t nic;
+  if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0) {
+    return 1;
+  }
+  const net_mac_t *drv = nic.ops;
 
   net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
-           NULL, drv, &mac_ctx);
+           NULL, drv, &nic.ctx);
 
-  if (drv->init(&mac_ctx) != 0) {
+  if (drv->init(&nic.ctx) != 0) {
     fprintf(stderr, "[dhcp_echo] Failed to open MAC driver\n");
     return 1;
   }
-  printf("[TAP] Opened tap0\n");
   fflush(stdout);
 
   /* TCP connection table */
@@ -256,6 +244,6 @@ int main(int argc, char *argv[]) {
   if (g_bound)
     dhcpv4_client_release(&net, &dhcp);
 
-  drv->close(&mac_ctx);
+  drv->close(&nic.ctx);
   return 0;
 }

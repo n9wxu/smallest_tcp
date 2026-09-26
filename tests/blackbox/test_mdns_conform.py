@@ -16,6 +16,9 @@ Usage (Linux, tap0 up with 10.0.0.100/24):
         --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \\
         --mdns-sut-bin ./build/demo/mdns_demo -v
 
+Raw-socket driver instead of TAP: set the link up with sut_net.sh up raw,
+then --iface veth-test --sut-iface raw:veth-sut.
+
 Skipped when --mdns-sut-bin is not given.
 """
 
@@ -29,7 +32,7 @@ import pytest
 from scapy.all import Ether, IP, UDP, conf, get_if_hwaddr, sendp
 from scapy.layers.dns import DNS, DNSQR, DNSRR
 
-from helpers import start_sniffer
+from helpers import start_sniffer, sut_argv
 
 MDNS_GROUP = "224.0.0.251"
 MDNS_MAC = "01:00:5e:00:00:fb"
@@ -48,7 +51,9 @@ T_A, T_PTR, T_TXT, T_SRV, T_ANY = 1, 12, 16, 33, 255
 class MdnsSut:
     """A fresh mdns_demo process plus the addresses the tests need."""
 
-    def __init__(self, binary, iface, sut_ip, sut_mac, our_ip, our_mac):
+    def __init__(self, binary, iface, sut_ip, sut_mac, our_ip, our_mac,
+                 sut_iface=None):
+        self.argv = sut_argv(binary, sut_iface)
         self.binary = binary
         self.iface = iface
         self.sut_ip = sut_ip
@@ -60,7 +65,7 @@ class MdnsSut:
 
     def start(self, wait_running=True, timeout=6.0):
         fd, self.log_path = tempfile.mkstemp(prefix="mdns_sut_", suffix=".log")
-        self.proc = subprocess.Popen([self.binary], stdout=fd,
+        self.proc = subprocess.Popen(self.argv, stdout=fd,
                                      stderr=subprocess.STDOUT)
         os.close(fd)
         if wait_running:
@@ -104,7 +109,8 @@ def sut(request):
                 request.config.getoption("--sut-ip"),
                 request.config.getoption("--mdns-sut-mac"),
                 request.config.getoption("--our-ip"),
-                get_if_hwaddr(iface))
+                get_if_hwaddr(iface),
+                request.config.getoption("--sut-iface"))
     yield s
     s.stop()
     if s.log_path:

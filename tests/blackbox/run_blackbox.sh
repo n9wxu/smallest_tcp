@@ -9,7 +9,10 @@
 #
 # Options:
 #   --sut-bin PATH     Path to SUT binary (default: ./build/demo/tcp_echo_demo)
-#   --iface   IFACE    TAP interface name (default: tap0)
+#   --iface   IFACE    Harness-side interface (default: tap0)
+#   --sut-iface SPEC   Interface argument for the SUT (default: IFACE);
+#                      raw:veth-sut selects the raw-socket driver
+#                      (see sut_net.sh)
 #   --sut-ip  IP       SUT IPv4 address   (default: 10.0.0.2)
 #   --our-ip  IP       Phantom source IP  (default: 10.0.0.100)
 #   --sut-port PORT    TCP echo port      (default: 7)
@@ -26,6 +29,7 @@ set -euo pipefail
 # ── Defaults ──────────────────────────────────────────────────────────────────
 SUT_BIN="${SUT_BIN:-./build/demo/tcp_echo_demo}"
 IFACE="${IFACE:-tap0}"
+SUT_IFACE="${SUT_IFACE:-}"
 SUT_IP="${SUT_IP:-10.0.0.2}"
 OUR_IP="${OUR_IP:-10.0.0.100}"
 SUT_PORT="${SUT_PORT:-7}"
@@ -45,6 +49,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --sut-bin)        SUT_BIN="$2";        shift 2 ;;
     --iface)          IFACE="$2";          shift 2 ;;
+    --sut-iface)      SUT_IFACE="$2";      shift 2 ;;
     --sut-ip)         SUT_IP="$2";         shift 2 ;;
     --our-ip)         OUR_IP="$2";         shift 2 ;;
     --sut-port)       SUT_PORT="$2";       shift 2 ;;
@@ -59,6 +64,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+SUT_IFACE="${SUT_IFACE:-$IFACE}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT_PID=""
 
@@ -97,7 +103,7 @@ if [[ $NO_START_SUT -eq 0 ]]; then
     echo "ERROR: SUT binary not found or not executable: $SUT_BIN" >&2
     exit 1
   fi
-  "$SUT_BIN" "$IFACE" "$SUT_IP" >/tmp/sut_blackbox.log 2>&1 &
+  "$SUT_BIN" "$SUT_IFACE" >/tmp/sut_blackbox.log 2>&1 &
   SUT_PID=$!
   echo "SUT pid: $SUT_PID"
   sleep 2   # let the SUT initialize and open the TAP fd
@@ -116,6 +122,7 @@ fi
 # ── Common pytest arguments ───────────────────────────────────────────────────
 PYTEST_ARGS=(
   --iface    "$IFACE"
+  --sut-iface "$SUT_IFACE"
   --sut-ip   "$SUT_IP"
   --our-ip   "$OUR_IP"
   --sut-port "$SUT_PORT"
@@ -175,7 +182,7 @@ if [[ $RUN_DHCP -eq 1 ]]; then
       SUT_PID=""
     fi
 
-    "$DHCP_SUT_BIN" "$IFACE" >/tmp/dhcp_sut.log 2>&1 &
+    "$DHCP_SUT_BIN" "$SUT_IFACE" >/tmp/dhcp_sut.log 2>&1 &
     DHCP_SUT_PID=$!
     echo "DHCP SUT pid: $DHCP_SUT_PID"
     sleep 1   # let the SUT open the TAP fd and send its first DISCOVER
@@ -190,6 +197,7 @@ if [[ $RUN_DHCP -eq 1 ]]; then
 
       DHCP_ARGS=(
         --iface           "$IFACE"
+        --sut-iface       "$SUT_IFACE"
         --our-ip          "$OUR_IP"
         --dhcp-sut-mac    "$DHCP_SUT_MAC"
         --dhcp-server-ip  "$DHCP_SERVER_IP"

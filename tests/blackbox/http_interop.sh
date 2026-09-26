@@ -2,14 +2,16 @@
 # http_interop.sh — browse to the demo by name on Linux: Avahi discovers
 # "_http._tcp", nss-mdns resolves pyro-dead01.local, curl fetches pages.
 #
-# Requires root, avahi-daemon running on the TAP interface, avahi-utils,
+# Requires root, avahi-daemon running on the test interface, avahi-utils,
 # libnss-mdns (hosts: ... mdns4_minimal ... in /etc/nsswitch.conf) and curl.
 #
 #   sudo tests/blackbox/http_interop.sh ./build/demo/http_demo
+#   sudo tests/blackbox/http_interop.sh ./build/demo/http_demo raw:veth-sut   # raw socket
 
 set -u
 
 SUT_BIN=${1:-./build/demo/http_demo}
+SUT_IF=${2:-} # e.g. raw:veth-sut; empty: the demo's default (tap0)
 SUT_IP=${SUT_IP:-10.0.0.2}
 HOST=pyro-dead01.local
 SUT_LOG=$(mktemp)
@@ -27,7 +29,7 @@ check() {
   fi
 }
 
-"$SUT_BIN" >"$SUT_LOG" 2>&1 &
+"$SUT_BIN" ${SUT_IF:+"$SUT_IF"} >"$SUT_LOG" 2>&1 &
 SUT_PID=$!
 trap 'kill "$SUT_PID" 2>/dev/null' EXIT
 for _ in $(seq 1 50); do

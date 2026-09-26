@@ -32,7 +32,7 @@
  *   sudo ip tuntap add dev tap0 mode tap
  *   sudo ip addr add 10.0.0.1/24 dev tap0
  *   sudo ip link set tap0 up
- *   sudo ./build/demo/echo_server
+ *   sudo ./build/demo/echo_server          (or: echo_server raw:<if_name>)
  *   # Then: ping 10.0.0.2 / echo "Hello" | nc -u -w1 10.0.0.2 7
  */
 
@@ -45,11 +45,7 @@
 #include <string.h>
 #include <time.h>
 
-#ifdef __linux__
-#include "driver/tap.h"
-#elif defined(__APPLE__)
-#include "driver/bpf.h"
-#endif
+#include "demo_mac.h"
 
 /* ── UDP Echo Handler (port 7) ────────────────────────────────────── */
 
@@ -89,7 +85,7 @@ static void sigint_handler(int sig) {
 
 /* ── Main ─────────────────────────────────────────────────────────── */
 
-int main(void) {
+int main(int argc, char *argv[]) {
   /* Application-owned buffers */
   static uint8_t rx_buf[1514];
   static uint8_t tx_buf[1514];
@@ -97,22 +93,16 @@ int main(void) {
 
   static const uint8_t mac[] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
 
-  /* Platform-specific driver setup */
-#ifdef __linux__
-  static tap_ctx_t drv_ctx;
-  tap_ctx_init(&drv_ctx, "tap0");
-  const net_mac_t *drv_ops = &tap_mac_ops;
-#elif defined(__APPLE__)
-  static bpf_ctx_t drv_ctx;
-  bpf_ctx_init(&drv_ctx, "feth1");
-  const net_mac_t *drv_ops = &bpf_mac_ops;
-#else
-#error "Unsupported platform"
-#endif
+  /* ── Platform MAC driver: argv[1] names the interface ───────── */
+  static demo_mac_t nic;
+  if (demo_mac_select(&nic, argc > 1 ? argv[1] : NULL) != 0) {
+    return 1;
+  }
+  const net_mac_t *drv_ops = nic.ops;
 
   /* Initialize network context */
   net_err_t err = net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf),
-                           mac, drv_ops, &drv_ctx);
+                           mac, drv_ops, &nic.ctx);
   if (err != NET_OK) {
     fprintf(stderr, "net_init failed: %d\n", err);
     return 1;
@@ -123,7 +113,7 @@ int main(void) {
   udp_ports.count = 1;
 
   /* Initialize MAC driver */
-  if (drv_ops->init(&drv_ctx) < 0) {
+  if (drv_ops->init(&nic.ctx) < 0) {
     fprintf(stderr, "MAC driver init failed\n");
     return 1;
   }
@@ -159,6 +149,6 @@ int main(void) {
   }
 
   printf("\nShutting down...\n");
-  drv_ops->close(&drv_ctx);
+  drv_ops->close(&nic.ctx);
   return 0;
 }

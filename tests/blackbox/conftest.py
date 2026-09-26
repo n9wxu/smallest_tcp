@@ -31,6 +31,7 @@ import signal
 import subprocess
 import time
 import pytest
+from helpers import sut_argv
 from scapy.all import (
     Ether, IP, TCP, ARP,
     srp1, sendp, sniff,
@@ -57,6 +58,10 @@ def pytest_addoption(parser):
                      help="Phantom source IP (must NOT be assigned to --iface)")
     parser.addoption("--sut-port", default=7, type=int,
                      help="TCP port the SUT echo service listens on (default 7)")
+    parser.addoption("--sut-iface", default=None,
+                     help="Interface argument for SUT binaries the tests launch "
+                          "(e.g. raw:veth-sut for the raw-socket driver); "
+                          "default: the demo's own (tap0 / feth1)")
     parser.addoption("--fuzz-count", default=200, type=int,
                      help="Number of fuzz iterations per test (default 200)")
     # DHCP client blackbox options
@@ -213,10 +218,9 @@ def dhcp_ctx(request):
 _dhcp_sut_proc = None
 
 
-def _dhcp_sut_fresh(sut_bin):
-    """Spawn a new dhcp_echo_demo, storing it in _dhcp_sut_proc."""
+def _dhcp_sut_stop():
+    """Stop the tracked dhcp_echo_demo, if any."""
     global _dhcp_sut_proc
-    # Kill existing tracked process (if any) before starting a fresh one.
     if _dhcp_sut_proc is not None:
         try:
             _dhcp_sut_proc.terminate()
@@ -224,8 +228,20 @@ def _dhcp_sut_fresh(sut_bin):
         except Exception:
             pass
         _dhcp_sut_proc = None
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # Don't leave the last DHCP SUT holding the interface (a TAP device takes
+    # one process only) for whatever runs next.
+    _dhcp_sut_stop()
+
+
+def _dhcp_sut_fresh(sut_bin, sut_iface=None):
+    """Spawn a new dhcp_echo_demo, storing it in _dhcp_sut_proc."""
+    global _dhcp_sut_proc
+    _dhcp_sut_stop()  # kill the previous one before starting a fresh one
     _dhcp_sut_proc = subprocess.Popen(
-        [sut_bin],
+        sut_argv(sut_bin, sut_iface),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -263,7 +279,7 @@ def dhcp_sut_fresh(request):
         # pytest is running as root, because the file was originally created
         # by the runner user (non-root) in the CI "Start DHCP SUT" step.
         # Using a module-level variable avoids all file-permission issues.
-        _dhcp_sut_fresh(sut_bin)
+        _dhcp_sut_fresh(sut_bin, request.config.getoption("--sut-iface"))
         # Allow the SUT to open the TAP device and broadcast its first DISCOVER
         time.sleep(1.0)
 

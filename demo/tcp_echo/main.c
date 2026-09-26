@@ -7,13 +7,11 @@
  *   2. Echoes every received byte back to the sender.
  *   3. When the peer closes the connection, we close ours.
  *
- * Suitable for testing with: nc <tap_ip> 7
+ * Suitable for testing with: nc 10.0.0.2 7
  *
- * Usage (Linux TAP):
- *   sudo ./tcp_echo_demo
- *
- * Usage (macOS BPF):
- *   sudo ./tcp_echo_demo <if_name>
+ * Usage (Linux TAP):         sudo ./tcp_echo_demo [tap0]
+ * Usage (Linux raw socket):  sudo ./tcp_echo_demo raw:<if_name>
+ * Usage (macOS BPF):         sudo ./tcp_echo_demo [feth1]
  *
  * The program polls the network driver in a tight loop and calls
  * tcp_tick() every ~10ms for timer management.
@@ -28,11 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(__linux__)
-#include "driver/tap.h"
-#elif defined(__APPLE__)
-#include "driver/bpf.h"
-#endif
+#include "demo_mac.h"
 
 #include <signal.h>
 #include <time.h>
@@ -168,31 +162,19 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
 
-  /* ── MAC driver init ────────────────────────────────────────── */
-#if defined(__linux__)
-  tap_ctx_t mac_ctx;
-  const net_mac_t *drv = &tap_mac_ops;
-  (void)argc;
-  (void)argv;
-  tap_ctx_init(&mac_ctx, "tap0");
-#elif defined(__APPLE__)
-  bpf_ctx_t mac_ctx;
-  const net_mac_t *drv = &bpf_mac_ops;
-  const char *ifname = (argc > 1) ? argv[1] : "feth1";
-  bpf_ctx_init(&mac_ctx, ifname);
-#else
-  (void)argc;
-  (void)argv;
-  fprintf(stderr, "Platform not supported\n");
-  return 1;
-#endif
+  /* ── Platform MAC driver: argv[1] names the interface ───────── */
+  demo_mac_t nic;
+  if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0) {
+    return 1;
+  }
+  const net_mac_t *drv = nic.ops;
 
   /* ── Network context init ───────────────────────────────────── */
   net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
-           NULL, drv, &mac_ctx);
+           NULL, drv, &nic.ctx);
 
-  /* ── Open the MAC driver (TAP fd / BPF fd) ──────────────────── */
-  if (drv->init(&mac_ctx) != 0) {
+  /* ── Open the MAC driver (TAP / raw socket / BPF) ────────────── */
+  if (drv->init(&nic.ctx) != 0) {
     fprintf(stderr, "[tcp_echo] Failed to open MAC driver\n");
     return 1;
   }
@@ -258,6 +240,6 @@ int main(int argc, char *argv[]) {
   if (echo_conn.state == TCP_ESTABLISHED || echo_conn.state == TCP_CLOSE_WAIT)
     tcp_abort(&net, &echo_conn);
 
-  drv->close(&mac_ctx);
+  drv->close(&nic.ctx);
   return 0;
 }

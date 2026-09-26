@@ -1,6 +1,6 @@
 /**
  * @file demo/tftp_client/main.c
- * @brief TFTP client demo — fetches a file from a TFTP server via TAP/BPF.
+ * @brief TFTP client demo — fetches a file from a TFTP server.
  *
  * Demonstrates Task 9: the TFTP client module (REQ-TFTP-001..038).
  *
@@ -12,7 +12,7 @@
  *                                      [server_mac] [filename] [output]
  *
  * Defaults:
- *   iface      = tap0
+ *   iface      = tap0 on Linux (raw:<if> for a raw socket), feth1 on macOS
  *   our_ip     = 10.0.0.2
  *   server_ip  = 10.0.0.1
  *   server_mac = ff:ff:ff:ff:ff:ff  (broadcast — works on a local LAN)
@@ -39,13 +39,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__linux__)
-#include "driver/tap.h"
-#elif defined(__APPLE__)
-#include "driver/bpf.h"
-#else
-#error "This demo requires Linux (TAP) or macOS (BPF)"
-#endif
+#include "demo_mac.h"
 
 /* ── Configuration ───────────────────────────────────────────────── */
 #define TFTP_CLIENT_PORT 6900u
@@ -154,7 +148,7 @@ int main(int argc, char *argv[]) {
   signal(SIGTERM, sig_handler);
 
   /* CLI arg defaults */
-  const char *ifname = "tap0";
+  const char *ifname = NULL; /* platform default */
   const char *our_ip_s = "10.0.0.2";
   const char *srv_ip_s = "10.0.0.1";
   const char *srv_mac_s = "ff:ff:ff:ff:ff:ff";
@@ -190,26 +184,22 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  /* ── Platform MAC driver ──────────────────────────────────────── */
-#if defined(__linux__)
-  tap_ctx_t mac_ctx;
-  const net_mac_t *drv = &tap_mac_ops;
-  tap_ctx_init(&mac_ctx, ifname);
-#elif defined(__APPLE__)
-  bpf_ctx_t mac_ctx;
-  const net_mac_t *drv = &bpf_mac_ops;
-  bpf_ctx_init(&mac_ctx, ifname);
-#endif
-
-  net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
-           NULL, drv, &mac_ctx);
-  net.ipv4_addr = our_ip;
-
-  if (drv->init(&mac_ctx) != 0) {
-    fprintf(stderr, "[tftp_client] Failed to open MAC driver on %s\n", ifname);
+  /* ── Platform MAC driver: argv[1] names the interface ───────── */
+  demo_mac_t nic;
+  if (demo_mac_select(&nic, ifname) != 0) {
     return 1;
   }
-  fprintf(stderr, "[TAP] Opened %s (our IP %s)\n", ifname, our_ip_s);
+  const net_mac_t *drv = nic.ops;
+
+  net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
+           NULL, drv, &nic.ctx);
+  net.ipv4_addr = our_ip;
+
+  if (drv->init(&nic.ctx) != 0) {
+    fprintf(stderr, "[tftp_client] Failed to open MAC driver\n");
+    return 1;
+  }
+  fprintf(stderr, "[tftp] our IP %s\n", our_ip_s);
 
   /* ── Register UDP port handler ───────────────────────────────── */
   udp_ports.entries = udp_handlers;
@@ -222,7 +212,7 @@ int main(int argc, char *argv[]) {
                                   1 /* negotiate blksize */);
   if (err != NET_OK) {
     fprintf(stderr, "[TFTP] Failed to send RRQ: %d\n", (int)err);
-    drv->close(&mac_ctx);
+    drv->close(&nic.ctx);
     return 1;
   }
   fprintf(stderr, "[TFTP] RRQ sent: \"%s\" from %s port %u\n", filename,
@@ -243,7 +233,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  drv->close(&mac_ctx);
+  drv->close(&nic.ctx);
   if (outfile)
     fclose(outfile);
 

@@ -6,14 +6,16 @@
 # _pyro._tcp service (host, IP, port, TXT), the advertised TCP port answers,
 # and the service disappears when the SUT sends its goodbye on SIGTERM.
 #
-# Requires root, avahi-daemon running on the TAP interface (allow-interfaces),
+# Requires root, avahi-daemon running on the test interface (allow-interfaces),
 # avahi-utils and netcat-openbsd.
 #
 #   sudo tests/blackbox/mdns_interop.sh ./build/demo/mdns_demo
+#   sudo tests/blackbox/mdns_interop.sh ./build/demo/mdns_demo raw:veth-sut   # raw socket
 
 set -u
 
 SUT_BIN=${1:-./build/demo/mdns_demo}
+SUT_IF=${2:-} # e.g. raw:veth-sut; empty: the demo's default (tap0)
 SUT_IP=${SUT_IP:-10.0.0.2}
 HOST=pyro-dead01.local
 SUT_LOG=$(mktemp)
@@ -31,7 +33,7 @@ check() {
   fi
 }
 
-"$SUT_BIN" >"$SUT_LOG" 2>&1 &
+"$SUT_BIN" ${SUT_IF:+"$SUT_IF"} >"$SUT_LOG" 2>&1 &
 SUT_PID=$!
 trap 'kill "$SUT_PID" 2>/dev/null' EXIT
 

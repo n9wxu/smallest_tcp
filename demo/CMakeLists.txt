@@ -2,16 +2,20 @@
 
 # ── Helper: add a demo that needs a platform MAC driver ──────────────
 #
+# Linux demos get both the TAP and raw-socket drivers; the interface
+# argument picks one at run time (demo/common/demo_mac.h).
 # On Linux and Darwin, the platform driver carries PUBLIC smallest_tcp_core,
 # so core is pulled in transitively — no explicit core link needed here.
 # On other platforms (e.g., bare-metal), link core directly; the demo
-# will fail to compile anyway due to the #error guard in main.c.
+# builds but exits at start-up ("Platform not supported").
 
 function(add_demo_with_driver name)
     target_compile_options(${name} PRIVATE -Wall -Wextra -Werror -pedantic)
     target_compile_features(${name} PRIVATE c_std_99)
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/common)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_libraries(${name} PRIVATE smallest_tcp_driver_tap)
+        target_link_libraries(${name} PRIVATE
+            smallest_tcp_driver_tap smallest_tcp_driver_rawsock)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         target_link_libraries(${name} PRIVATE smallest_tcp_driver_bpf)
     else()
