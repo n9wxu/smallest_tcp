@@ -71,6 +71,12 @@ def pytest_addoption(parser):
                           "so each test begins with the SUT in the INIT/SELECTING state")
     parser.addoption("--dhcp-sut-pid-file", default="/tmp/dhcp_sut.pid",
                      help="PID file written by the CI workflow for the DHCP SUT process")
+    # mDNS responder blackbox options (test_mdns_conform.py starts the SUT)
+    parser.addoption("--mdns-sut-bin", default=None,
+                     help="Path to mdns_demo; the mDNS tests launch a fresh SUT "
+                          "per test (skipped when not given)")
+    parser.addoption("--mdns-sut-mac", default="02:00:00:de:ad:01",
+                     help="SUT MAC for mDNS tests (mdns_demo default MAC)")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────

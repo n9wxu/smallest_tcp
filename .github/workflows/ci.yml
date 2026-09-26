@@ -232,11 +232,12 @@ jobs:
         run: |
           # Skip sut_specific tests — they depend on our stack's timer values,
           # not on RFC correctness.  A failure here means the TEST is wrong.
-          # Also skip test_dhcpv4_conform.py — it needs dhcp_echo_demo as SUT,
-          # not the Linux kernel.
+          # Also skip test_dhcpv4_conform.py and test_mdns_conform.py — they
+          # need dhcp_echo_demo / mdns_demo as SUT, not the Linux kernel.
           sudo python3 -m pytest tests/blackbox/ \
             --ignore=tests/blackbox/test_tcp_fuzz.py \
             --ignore=tests/blackbox/test_dhcpv4_conform.py \
+            --ignore=tests/blackbox/test_mdns_conform.py \
             --iface    veth-test \
             --sut-ip   10.0.0.2 \
             --our-ip   10.0.0.100 \
@@ -329,6 +330,77 @@ jobs:
           echo "## DHCP Blackbox Output" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           tail -c 12000 /tmp/dhcp_blackbox.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ── mDNS + DNS-SD blackbox tests (TAP, Linux only) ─────────────────
+  blackbox-mdns:
+    name: Blackbox — mDNS + DNS-SD (mdns_demo, TAP) + Avahi interop
+    runs-on: ubuntu-latest
+    needs: cmake-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            python3-pip iproute2 netcat-openbsd
+
+      - name: Install Python deps
+        run: |
+          sudo pip3 install --break-system-packages \
+            -r tests/blackbox/requirements.txt \
+            pytest-github-actions-annotate-failures
+
+      - name: Build mdns_demo
+        run: |
+          cmake -S . -B build
+          cmake --build build --target mdns_demo
+
+      - name: Set up TAP interface
+        run: |
+          sudo ip tuntap add dev tap0 mode tap user $(whoami)
+          sudo ip link set tap0 up
+          sudo ip addr add 10.0.0.100/24 dev tap0
+
+      # The tests start a fresh SUT per test (probing/announcing/goodbye are
+      # start-up and shutdown behaviour), so no SUT is started here.
+      - name: Run mDNS conformance suite
+        run: |
+          set -o pipefail
+          sudo python3 -m pytest tests/blackbox/test_mdns_conform.py \
+            --iface        tap0                   \
+            --sut-ip       10.0.0.2               \
+            --our-ip       10.0.0.100             \
+            --mdns-sut-bin ./build/demo/mdns_demo \
+            -p no:cacheprovider --tb=short -v     \
+            2>&1 | tee /tmp/mdns_blackbox.out
+
+      # After the Scapy suite so Avahi's own traffic on tap0 cannot interfere.
+      - name: Avahi interop (resolve + browse the demo)
+        run: |
+          set -o pipefail
+          sudo apt-get install -y --no-install-recommends avahi-daemon avahi-utils
+          sudo sed -i 's/^#\?allow-interfaces=.*/allow-interfaces=tap0/; s/^use-ipv6=.*/use-ipv6=no/' \
+            /etc/avahi/avahi-daemon.conf
+          sudo systemctl restart avahi-daemon
+          sleep 2
+          sudo tests/blackbox/mdns_interop.sh ./build/demo/mdns_demo \
+            2>&1 | tee -a /tmp/mdns_blackbox.out
+
+      - name: Teardown TAP
+        if: always()
+        run: |
+          sudo pkill -x mdns_demo 2>/dev/null || true
+          sudo ip tuntap del dev tap0 mode tap 2>/dev/null || true
+
+      - name: mDNS results summary
+        if: always()
+        run: |
+          echo "## mDNS Blackbox Output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 12000 /tmp/mdns_blackbox.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 

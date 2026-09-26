@@ -40,3 +40,9 @@ target_link_libraries(tftp_client_demo PRIVATE smallest_tcp_tftp)
 add_executable(dhcp_echo_demo dhcp_echo/main.c)
 add_demo_with_driver(dhcp_echo_demo)
 target_link_libraries(dhcp_echo_demo PRIVATE smallest_tcp_dhcpv4_client)
+
+# ── mdns_demo (mDNS + DNS-SD advertiser — blackbox SUT) ──────────────
+
+add_executable(mdns_demo mdns_demo/main.c)
+add_demo_with_driver(mdns_demo)
+target_link_libraries(mdns_demo PRIVATE smallest_tcp_mdns)
