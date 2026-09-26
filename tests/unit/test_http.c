@@ -702,6 +702,53 @@ TEST(test_server_request_with_half_close) {
   ASSERT_EQ(conns[0].tcp.state, TCP_LISTEN); /* LAST_ACK → CLOSED → LISTEN */
 }
 
+/* Both sides close at once (curl closes as soon as it has the body):
+ * TCP lands in CLOSING; the slot must not wait there for a retransmit. */
+TEST(test_server_simultaneous_close_recycles) {
+  server_setup();
+  client_connect(&cl, 40601, 1460);
+  client_send(&cl, "GET / HTTP/1.0\r\n\r\n", 0);
+  client_scan(&cl);                          /* the response */
+  inject_tcp(&cl, TCP_FLAG_ACK, NULL, 0, 0); /* ACK the data only */
+  http_server_poll(&srv);                    /* server sends its FIN */
+  ASSERT_EQ(conns[0].tcp.state, TCP_FIN_WAIT_1);
+  inject_tcp(&cl, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0, 0); /* crosses it */
+  ASSERT_EQ(conns[0].tcp.state, TCP_CLOSING);
+  http_server_poll(&srv);
+  ASSERT_EQ(conns[0].tcp.state, TCP_LISTEN);
+}
+
+/* Window the server last advertised to this client */
+static uint16_t last_window_to(const client_t *c) {
+  uint16_t wnd = 0;
+  int i;
+  for (i = 0; i < n_frames && i < MAX_FRAMES; i++) {
+    const uint8_t *tcp = frames[i] + ETH_HDR_SIZE + IPV4_HDR_SIZE;
+    if (frames[i][ETH_HDR_SIZE + IPV4_OFF_PROTO] == IPV4_PROTO_TCP &&
+        net_read16be(tcp + TCP_OFF_DPORT) == c->port)
+      wnd = net_read16be(tcp + TCP_OFF_WINDOW);
+  }
+  return wnd;
+}
+
+/* After answering an oversized request the server keeps reading and
+ * discarding (lingering close, RFC 9112 §9.6) and re-opens its window,
+ * so the client can finish sending and close instead of stalling on a
+ * zero window until the slot times out. */
+TEST(test_server_drains_after_error_response) {
+  char big[600];
+  server_setup();
+  memset(big, 'a', sizeof(big));
+  memcpy(big, "GET /", 5);
+  big[sizeof(big) - 1] = '\0'; /* 599 bytes: fills the 600-byte RX buffer */
+  client_connect(&cl, 40701, 1460);
+  client_send(&cl, big, 0);
+  client_pump(&cl);
+  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 414 ", 13) == 0);
+  ASSERT_EQ(conns[0].rx_ctx.data_len, 0); /* rest of the request discarded */
+  ASSERT_EQ(last_window_to(&cl), sizeof(rx_mem[0]));
+}
+
 TEST(test_server_idle_client_times_out) {
   server_setup();
   client_connect(&cl, 40401, 1460);
@@ -782,6 +829,8 @@ int main(void) {
   RUN_TEST(test_server_slot_recycled_after_close);
   RUN_TEST(test_server_two_concurrent_connections);
   RUN_TEST(test_server_request_with_half_close);
+  RUN_TEST(test_server_simultaneous_close_recycles);
+  RUN_TEST(test_server_drains_after_error_response);
   RUN_TEST(test_server_idle_client_times_out);
   RUN_TEST(test_server_rst_mid_request_recycles);
   RUN_TEST(test_server_init_validates);

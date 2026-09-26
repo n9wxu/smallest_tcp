@@ -46,3 +46,9 @@ target_link_libraries(dhcp_echo_demo PRIVATE smallest_tcp_dhcpv4_client)
 add_executable(mdns_demo mdns_demo/main.c)
 add_demo_with_driver(mdns_demo)
 target_link_libraries(mdns_demo PRIVATE smallest_tcp_mdns)
+
+# ── http_demo (HTTP server + mDNS advertising — blackbox SUT) ────────
+
+add_executable(http_demo http_demo/main.c)
+add_demo_with_driver(http_demo)
+target_link_libraries(http_demo PRIVATE smallest_tcp_http smallest_tcp_mdns)

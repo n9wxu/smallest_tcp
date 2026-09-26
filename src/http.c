@@ -494,12 +494,23 @@ static void dispatch(http_server_t *s, http_conn_t *c) {
           0);
 }
 
+/* Discard whatever the client still sends once the request has been
+ * answered (lingering close, RFC 9112 §9.6): the client can finish
+ * transmitting and close instead of stalling on a zero window. */
+static void drain(http_server_t *s, http_conn_t *c) {
+  uint8_t sink[64];
+  while (tcp_recv(&c->tcp, sink, sizeof(sink)) > 0)
+    ;
+  tcp_window_update(s->net, &c->tcp);
+}
+
 static void do_recv(http_server_t *s, http_conn_t *c) {
   uint16_t n;
   while (c->req_len < c->req_size &&
          (n = tcp_recv(&c->tcp, (uint8_t *)c->req + c->req_len,
                        (uint16_t)(c->req_size - c->req_len))) > 0)
     c->req_len = (uint16_t)(c->req_len + n);
+  tcp_window_update(s->net, &c->tcp);
 
   if (c->hdr_len == 0) {
     uint16_t end = http_header_end(c->req, c->req_len);
@@ -537,6 +548,8 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
 static void do_send(http_server_t *s, http_conn_t *c) {
   uint32_t total =
       (uint32_t)c->resp_hdr_len + (c->head_only ? 0u : c->body_len);
+
+  drain(s, c); /* the request is complete; anything more is discarded */
 
   if (c->sent < c->resp_hdr_len) {
     char hdr[HTTP_HDR_MAX];
@@ -599,8 +612,13 @@ void http_server_poll(http_server_t *s) {
       do_send(s, c);
       break;
     case S_CLOSING:
-      if (st == TCP_TIME_WAIT || st == TCP_CLOSED)
-        slot_listen(s, c); /* recycle now instead of waiting 2xMSL */
+      /* Both sides have closed (TIME_WAIT, or CLOSING after a simultaneous
+       * close) or the close is complete: the response was delivered and
+       * ACKed, so recycle now instead of waiting 2xMSL / a FIN resend. */
+      if (st == TCP_TIME_WAIT || st == TCP_CLOSING || st == TCP_CLOSED)
+        slot_listen(s, c);
+      else
+        drain(s, c);
       break;
     default:
       slot_listen(s, c);

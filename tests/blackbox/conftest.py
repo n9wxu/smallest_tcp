@@ -77,6 +77,10 @@ def pytest_addoption(parser):
                           "per test (skipped when not given)")
     parser.addoption("--mdns-sut-mac", default="02:00:00:de:ad:01",
                      help="SUT MAC for mDNS tests (mdns_demo default MAC)")
+    # HTTP server blackbox options (test_http_conform.py starts the SUT)
+    parser.addoption("--http-sut-bin", default=None,
+                     help="Path to http_demo; the HTTP tests launch it once for "
+                          "the module (skipped when not given)")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────

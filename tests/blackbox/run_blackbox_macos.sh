@@ -65,7 +65,7 @@ for i in feth0 feth1; do
 done
 ifconfig feth0 | grep -q "peer: feth1" || die "feth0 is not peered with feth1"
 ifconfig feth0 | grep -q "inet 10.0.0.1 " || die "feth0 needs inet 10.0.0.1/24"
-for d in tcp_echo_demo dhcp_echo_demo mdns_demo; do
+for d in tcp_echo_demo dhcp_echo_demo mdns_demo http_demo; do
   [[ -x "$BUILD/demo/$d" ]] || die "$BUILD/demo/$d not built (cmake --build $BUILD)"
 done
 "$PYTHON" -c "import scapy, pytest" 2>/dev/null ||
@@ -108,6 +108,17 @@ if "$HERE/mdns_interop_macos.sh" "$BUILD/demo/mdns_demo"; then
   PASSED+=("mdns_interop_macos.sh")
 else
   FAILED+=("mdns_interop_macos.sh")
+fi
+
+# ── HTTP server (launches http_demo), then browse-by-name interop ─────────────
+run_suite "test_http_conform.py" "$HERE/test_http_conform.py" \
+  --iface "$IFACE" --sut-ip "$SUT_IP" --http-sut-bin "$BUILD/demo/http_demo"
+echo ""
+echo "── http_interop_macos.sh"
+if "$HERE/http_interop_macos.sh" "$BUILD/demo/http_demo"; then
+  PASSED+=("http_interop_macos.sh")
+else
+  FAILED+=("http_interop_macos.sh")
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
