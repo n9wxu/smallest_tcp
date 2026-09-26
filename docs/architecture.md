@@ -10,7 +10,7 @@
 | **Application-sized buffers** | Protocol parameters (MSS, TCP window, etc.) adapt to the buffers the application provides. |
 | **Zero-copy where possible** | Headers are parsed and built in-place in application buffers. |
 | **Strict composability** | Each protocol is a separate compilation unit. Unused protocols are not linked. IPv4 and IPv6 are independently selectable. |
-| **Abstract MAC interface** | The stack is transport-agnostic. A vtable-style HAL adapts to TAP, feth+BPF, ENC28J60, CDC-ECM, etc. |
+| **Abstract MAC interface** | The stack is transport-agnostic. A vtable-style HAL adapts to TAP, Linux raw sockets, feth+BPF, ENC28J60, CDC-ECM, etc. |
 | **RFC-driven** | Every protocol behavior is traced to an RFC requirement. All requirements are tested. |
 | **Catch errors early** | Prefer compile-time checks (`#define`, `_Static_assert`), then link-time (unused protocols not linked), then run-time (factory method validation). Hardware capabilities are compile-time `#define`s, not runtime queries. |
 | **Portable C99** | No compiler extensions. Manual serialization (no packed structs). Builds with XC8, GCC, Clang. |
@@ -57,10 +57,10 @@ App links: eth.o + arp.o + ipv4.o + ipv6.o + icmpv4.o +     → Dual-stack full
 │  L2: eth                                      │
 ├──────────────────────────────────────────────┤
 │  MAC driver interface (net_mac.h)             │
-├────────┬────────┬────────┬───────────────────┤
-│ tap.c  │ bpf.c  │enc28j60│ cdc_ecm.c        │
-│(Linux) │(macOS) │ (SPI)  │ (USB)            │
-└────────┴────────┴────────┴───────────────────┘
+├───────┬───────────┬───────┬────────┬─────────┤
+│ tap.c │ rawsock.c │ bpf.c │enc28j60│cdc_ecm.c│
+│(Linux)│  (Linux)  │(macOS)│ (SPI)  │  (USB)  │
+└───────┴───────────┴───────┴────────┴─────────┘
 ```
 
 ## 4. Memory Model
@@ -330,6 +330,7 @@ smallest_tcp/
 │   ├── udp.h                        ← ✅ UDP parse/send, port dispatch
 │   └── driver/
 │       ├── tap.h                    ← Linux TAP driver
+│       ├── rawsock.h                ← Linux raw-socket (AF_PACKET) driver
 │       └── bpf.h                    ← macOS BPF driver
 ├── src/
 │   ├── net.c                        ← ✅ net_init, MAC helpers
@@ -341,6 +342,7 @@ smallest_tcp/
 │   ├── udp.c                        ← ✅ UDP input/send, pseudo-header cksum
 │   └── driver/
 │       ├── tap.c                    ← Linux TAP
+│       ├── rawsock.c                ← Linux raw socket (NIC or veth end)
 │       └── bpf.c                    ← macOS BPF
 ├── tests/
 │   ├── CMakeLists.txt               ← CTest definitions

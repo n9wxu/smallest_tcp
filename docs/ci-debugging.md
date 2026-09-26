@@ -324,6 +324,28 @@ protocols.
 
 ---
 
+### 3.10 Raw-socket leg only: host-kernel traffic dropped, Scapy traffic fine
+
+**Symptom:** in the `raw socket` leg, `ping`/`arping` and the Scapy suites
+pass, but `nc`, the HTTP suite or the interop scripts time out — everything
+where the *host kernel* sends TCP or UDP to the SUT.
+
+**Cause:** checksum offload.  On a veth pair the kernel leaves the TCP/UDP
+checksum partial for the "NIC" to finish; nothing ever does, so the stack
+drops the segment.  Scapy computes full checksums, so its tests are
+unaffected.  `src/driver/rawsock.c` reads each frame with a
+`virtio_net_hdr` (`PACKET_VNET_HDR`) and finishes the checksum when the
+kernel flags it (`VIRTIO_NET_HDR_F_NEEDS_CSUM`).
+`test_rawsock`'s `test_live_kernel_{udp,tcp}_checksum_valid` catch a
+regression here without any blackbox run.
+
+**Also:** a TAP device serves one process only; a raw socket does not.  A
+leftover SUT (e.g. the last `dhcp_echo_demo`) makes the next TAP suite fail
+to open `tap0` but goes unnoticed on the raw link.  `conftest.py` stops the
+DHCP SUT at session end for this reason.
+
+---
+
 ## 4. Reading CI Failures Without a Browser
 
 ```bash

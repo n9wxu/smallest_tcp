@@ -45,8 +45,8 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 
 ## 📊 Current Status
 
-**296 unit tests passing** across 16 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
-**95 blackbox conformance tests passing** across 8 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×19, HTTP ×21), plus 5 fuzz tests and interop checks with Avahi and macOS (discover the device, browse to `http://pyro-dead01.local/`) — all run on every push/PR on Linux (TAP), and locally on macOS (feth).
+**311 unit tests passing** across 17 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**95 blackbox conformance tests passing** across 8 protocols (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×19, HTTP ×21), plus 5 fuzz tests and interop checks with Avahi and macOS (discover the device, browse to `http://pyro-dead01.local/`) — all run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
 
 ### ✅ Implemented (Milestones 1–11)
 
@@ -69,12 +69,13 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | **49 unit + 19 blackbox + interop** | **RFC 6762 responder: probe, announce, answer (A/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression, conflict rename, goodbye; RFC 6763 service advertising** |
 | **HTTP server** | **`http.h` / `http.c`** | **45 unit + 21 blackbox + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
+| MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | CMake | `CMakeLists.txt` | — | Library + tests + FetchContent integration |
-| CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests, full blackbox suite, and ARM size benchmark on every push |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS build; unit tests, full blackbox suite over TAP and raw socket, and ARM size benchmark on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
-| **Total** | **16 source + 3 drivers** | **296 unit + 95 blackbox + 5 fuzz** | |
+| **Total** | **16 source + 4 drivers** | **311 unit + 95 blackbox + 5 fuzz** | |
 
 > ✅ **TCP persist timer implemented:** REQ-TCP-085/086/087 (zero-window persist timer)
 > are fully implemented and covered by 3 unit tests and 1 blackbox conformance test.
@@ -117,7 +118,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 ```bash
 make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run all 296 unit tests (16 suites)
+make test     # Build and run all 311 unit tests (17 suites; the raw-socket driver's live tests need root)
 make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
@@ -158,7 +159,9 @@ ctest --test-dir build --output-on-failure
 
 Eight conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4, mDNS, HTTP — 95
 tests total) run against the live `tcp_echo_demo`, `dhcp_echo_demo`, `mdns_demo` or
-`http_demo` over a Linux TAP interface.  Requires `sudo` / `CAP_NET_RAW`.
+`http_demo` over a Linux TAP interface, or over a veth pair with the raw-socket
+driver ([Option E](#option-e--any-suite-over-the-raw-socket-driver-no-tun)).
+Requires `sudo` / `CAP_NET_RAW`.
 
 #### Option A — `run_blackbox.sh` (recommended, all suites)
 
@@ -236,6 +239,27 @@ sudo python3 -m pytest tests/blackbox/test_http_conform.py \
 sudo tests/blackbox/http_interop.sh ./build/demo/http_demo
 ```
 
+#### Option E — any suite over the raw-socket driver (no TUN)
+
+Every demo takes its interface as the first argument: `tap0` (the default) or
+`raw:<ifname>` for the raw-socket (`AF_PACKET`) driver, which needs no
+`/dev/net/tun`.  For the tests a veth pair stands in for the wire;
+`tests/blackbox/sut_net.sh` builds it (or the TAP link) and prints the names
+to use — the harness end and the demo's argument:
+
+```bash
+eval "$(sudo tests/blackbox/sut_net.sh up raw --rst-drop)"  # TEST_IF=veth-test SUT_IF=raw:veth-sut
+sudo tests/blackbox/run_blackbox.sh --sut-bin ./build/demo/tcp_echo_demo \
+    --iface "$TEST_IF" --sut-iface "$SUT_IF"
+sudo tests/blackbox/sut_net.sh down raw
+```
+
+The suites that launch their own SUT (DHCPv4, mDNS, HTTP) take
+`--sut-iface "$SUT_IF"`; the interop scripts take it as a second argument.  Leave
+out `--rst-drop` for the HTTP suite, as in Option D.  On a real network:
+`sudo ./build/demo/http_demo raw:eth0` — the driver keeps the interface in
+promiscuous mode while it runs, since the stack uses its own MAC address.
+
 > ⚠️ If every test reports `ERROR: ARP timeout: no reply from 10.0.0.2`,
 > the SUT is not running.  The most common cause is a wrong binary path —
 > see [Test Plan §6 Troubleshooting](docs/test-plan.md#6-troubleshooting--known-pitfalls).
@@ -301,6 +325,7 @@ That's it! Your app gets the headers and library automatically. When included vi
 | `smallest_tcp::mdns` | mDNS + DNS-SD responder, DNS wire helpers, IGMPv2 (optional) |
 | `smallest_tcp::http` | HTTP/1.0 server (optional) |
 | `smallest_tcp::driver_tap` | Linux TAP MAC driver (optional, top-level only) |
+| `smallest_tcp::driver_rawsock` | Linux raw-socket (`AF_PACKET`) MAC driver (optional, top-level only) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (optional, top-level only) |
 
 ### Manual Integration
@@ -333,10 +358,11 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 │  L2: eth.c ✅                       │
 ├─────────────────────────────────────┤
 │  MAC driver interface (net_mac.h)   │  ← abstract vtable
-├──────────┬──────────┬───────────────┤
-│ tap.c ✅ │ bpf.c ✅ │ your_driver.c │
-│ (Linux)  │ (macOS)  │ (your HW)     │
-└──────────┴──────────┴───────────────┘
+├──────────────┬──────────┬───────────┤
+│ tap.c ✅     │ bpf.c ✅ │ your      │
+│ rawsock.c ✅ │ (macOS)  │ driver.c  │
+│ (Linux)      │          │ (your HW) │
+└──────────────┴──────────┴───────────┘
 ```
 
 **Your application owns everything:** buffers, connection state, configuration. The stack provides the protocol logic and operates on your memory.

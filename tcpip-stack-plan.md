@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–11 complete; 296 unit tests + 95 blackbox + 5 fuzz + interop checks passing; next: Milestone 12 IPv6)
+**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; 311 unit tests + 95 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: Milestone 12 IPv6)
 
 ## Objective
 
@@ -147,6 +147,12 @@ typedef struct {
 - Open `/dev/bpfN`, bind to `feth1` with `BIOCSETIF`, enable `BIOCIMMEDIATE`
 - `read()`/`write()` raw Ethernet frames (reads prefixed with `bpf_hdr`)
 - Host assigns IP to `feth0`
+
+**Linux raw socket** (`rawsock.c`, `AF_PACKET`) — no `/dev/net/tun` needed:
+- Bind to an existing interface — a real NIC, or one end of a veth pair whose other end the host uses
+- Promiscuous while open (the stack has its own MAC); frames the host sends out are ignored
+- Finishes checksums the local kernel left to offload (`PACKET_VNET_HDR`)
+- Demos pick it with `raw:<ifname>`; CI runs every Linux blackbox suite over both TAP and the raw socket
 
 ## Implementation Tasks
 

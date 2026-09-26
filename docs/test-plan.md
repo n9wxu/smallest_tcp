@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**16 test suites, 296 tests total — all passing.**
+**17 test suites, 311 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -41,6 +41,7 @@ verified at both the unit and integration levels:
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |
 | `test_http` | tests/unit/test_http.c | 45 | HTTP parser, formatter, server driven over the real TCP (REQ-HTTP-*) |
+| `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 
 ### Running Unit Tests
 
@@ -142,6 +143,7 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/run_blackbox_macos.sh` | macOS runner over a `feth` pair: every suite + `dns-sd` interop |
 | `tests/blackbox/mdns_interop_macos.sh` | mDNSResponder interop: `dns-sd -B/-L/-G`, TCP echo, goodbye removal |
 | `tests/blackbox/run_blackbox.sh` | Shell runner: starts SUT, runs all suites in order, reports summary |
+| `tests/blackbox/sut_net.sh` | Builds/removes the harness↔SUT link for one Linux driver: `tap` (tap0) or `raw` (veth-test ↔ veth-sut); prints `TEST_IF` / `SUT_IF` |
 | `tests/blackbox/requirements.txt` | `pytest>=7.0`, `scapy>=2.5` |
 
 ### Running Blackbox Tests (Local)
@@ -340,15 +342,24 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | `make-macos` | ci.yml | macos-latest | make test | push/PR |
 | `cmake-linux` | ci.yml | ubuntu-latest | ctest | push/PR |
 | `cmake-macos` | ci.yml | macos-latest | ctest | push/PR |
-| `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` (TAP) | push/PR |
+| `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
+| `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
-| `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP) | push/PR |
-| `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP), then Avahi interop | push/PR |
-| `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
+| `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP, raw socket) | push/PR |
+| `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
+| `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
 | `arm-size` | ci.yml | ubuntu-latest | Cortex-M0 size benchmark: UDP, UDP+TCP, UDP+mDNS, UDP+HTTP | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
-| `fuzz-tcp-tap` | fuzz.yml | ubuntu-latest | Scapy fuzz (TAP) | Nightly 02:00 UTC |
+| `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |
+
+The four Linux blackbox jobs and the nightly fuzz run as a two-leg matrix,
+one leg per MAC driver.  `tests/blackbox/sut_net.sh up tap|raw` builds the
+link and exports `TEST_IF` (tap0 / veth-test, for Scapy and the host) and
+`SUT_IF` (tap0 / `raw:veth-sut`, the demos' interface argument).  A failure in
+one leg only points at that driver or at link-specific behaviour: with the raw
+socket, segments from the host kernel arrive with offloaded (partial)
+checksums that the driver must finish.
 
 ### Two-Job Interpretation
 

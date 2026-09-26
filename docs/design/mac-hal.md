@@ -4,7 +4,7 @@
 
 ## Overview
 
-The MAC HAL abstracts the physical network interface, allowing the stack to operate on TAP (Linux), feth+BPF (macOS), ENC28J60 (SPI), CDC-ECM (USB), or any other Ethernet-capable device. The interface uses a vtable (function pointer struct) pattern for C99 compatibility.
+The MAC HAL abstracts the physical network interface, allowing the stack to operate on TAP or a raw socket (Linux), feth+BPF (macOS), ENC28J60 (SPI), CDC-ECM (USB), or any other Ethernet-capable device. The interface uses a vtable (function pointer struct) pattern for C99 compatibility.
 
 ## Interface
 
@@ -112,9 +112,29 @@ diagram.
 | Driver | Platform | peek behavior | discard behavior |
 |---|---|---|---|
 | `tap.c` | Linux | memcpy from rx buffer | no-op |
+| `rawsock.c` | Linux (`AF_PACKET` on a NIC or veth end) | memcpy from rx buffer | no-op |
 | `bpf.c` | macOS | memcpy from rx buffer | advance BPF read pointer |
 | `enc28j60.c` | SPI MCU | SPI read at offset | SPI advance RX pointer |
 | `cdc_ecm.c` | USB | memcpy from USB buffer | discard USB buffer |
+
+### Raw-socket driver notes (`rawsock.c`)
+
+An `AF_PACKET` socket sees what the host sees, which differs from a NIC in
+three ways the driver hides from the stack:
+
+- **Its own MAC.**  The stack answers to its configured MAC, not the
+  interface's, so the driver joins `PACKET_MR_PROMISC` for as long as the socket
+  is open (the kernel releases it on close).
+- **Outgoing frames.**  Frames this host transmits on the interface are
+  delivered to packet sockets too (`PACKET_OUTGOING`); a NIC would never
+  receive them.  The driver skips them (and sets `PACKET_IGNORE_OUTGOING` where
+  the kernel has it).
+- **Checksum offload.**  Frames sent by the local kernel — the peer of a veth
+  pair — carry a partial TCP/UDP checksum meant for hardware.  With
+  `PACKET_VNET_HDR` each frame arrives behind a `virtio_net_hdr` that flags this
+  and gives the checksum's position; `rawsock_csum_complete()` finishes it.
+  Super-frames from GRO/GSO (larger than 1514 bytes) are dropped whole and
+  counted in `rx_dropped`, never truncated.
 
 ## Scatter-Gather TX Extension (Future Enhancement)
 
@@ -145,6 +165,7 @@ MAC — no copy.  `net->tx.buf` shrinks from `42 + payload_len` to just 42 bytes
 
 **Driver implementations:**
 - `tap.c`: use `writev(fd, ...)` — Linux supports scatter-gather on TAP file descriptors
+- `rawsock.c`: already sends with `sendmsg()` and an iovec (virtio header + frame); add the payload as a third entry
 - `bpf.c`: BPF `write()` is single-buffer; driver falls back to a small internal combine buffer
 - ENC28J60 (SPI): write header bytes via SPI, then payload bytes via SPI — naturally sequential, no staging buffer needed
 - DMA MACs (STM32 EMAC, etc.): scatter-gather DMA descriptors natively support multi-region sends
