@@ -82,3 +82,6 @@ target_link_libraries(test_dns_wire PRIVATE smallest_tcp_mdns)
 
 add_unit_test(test_mcast)
 target_link_libraries(test_mcast PRIVATE smallest_tcp_mdns)
+
+add_unit_test(test_mdns)
+target_link_libraries(test_mdns PRIVATE smallest_tcp_mdns)

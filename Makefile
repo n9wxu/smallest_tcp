@@ -47,7 +47,8 @@ TEST_SRCS := tests/unit/test_endian.c \
              tests/unit/test_tftp.c \
              tests/unit/test_dhcpv4.c \
              tests/unit/test_dns_wire.c \
-             tests/unit/test_mcast.c
+             tests/unit/test_mcast.c \
+             tests/unit/test_mdns.c
 
 TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
 
@@ -161,6 +162,12 @@ $(BUILD)/tests/test_dns_wire: tests/unit/test_dns_wire.c src/dns_wire.c
 $(BUILD)/tests/test_mcast: tests/unit/test_mcast.c src/igmp.c $(STACK_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_mcast.c src/igmp.c $(STACK_SRCS)
+
+# Test for the mDNS responder
+MDNS_SRCS := src/mdns.c src/dns_wire.c src/igmp.c
+$(BUILD)/tests/test_mdns: tests/unit/test_mdns.c $(MDNS_SRCS) $(STACK_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_mdns.c $(MDNS_SRCS) $(STACK_SRCS)
 
 # ── Demo ──────────────────────────────────────────────────────────────
 

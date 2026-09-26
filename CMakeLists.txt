@@ -80,6 +80,7 @@ add_library(smallest_tcp::tftp ALIAS smallest_tcp_tftp)
 add_library(smallest_tcp_mdns STATIC
     src/dns_wire.c
     src/igmp.c
+    src/mdns.c
 )
 target_link_libraries(smallest_tcp_mdns PUBLIC smallest_tcp_core)
 target_compile_features(smallest_tcp_mdns PUBLIC c_std_99)

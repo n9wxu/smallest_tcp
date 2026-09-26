@@ -94,6 +94,13 @@ TEST(test_name_too_long) {
   ASSERT_EQ(w.len, 0);
 }
 
+TEST(test_name_wire_len) {
+  ASSERT_EQ(dns_name_wire_len("pyro-dead01.local"), 19);
+  ASSERT_EQ(dns_name_wire_len("pyro-dead01.local."), 19);
+  ASSERT_EQ(dns_name_wire_len("."), 1);
+  ASSERT_EQ(dns_name_wire_len("a..local"), -2);
+}
+
 TEST(test_name_empty_label_rejected) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "a..local"), -2);
@@ -304,6 +311,7 @@ int main(void) {
   RUN_TEST(test_name_label_with_spaces);
   RUN_TEST(test_name_label_too_long);
   RUN_TEST(test_name_too_long);
+  RUN_TEST(test_name_wire_len);
   RUN_TEST(test_name_empty_label_rejected);
   RUN_TEST(test_compress_shared_suffix);
   RUN_TEST(test_compress_whole_name);

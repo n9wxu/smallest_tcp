@@ -43,8 +43,7 @@ static int dotted_next(const char **pp, const char **label) {
   return (int)(e - s);
 }
 
-/* Wire length of a dotted name, or -2 if it is invalid. */
-static int dotted_wire_len(const char *name) {
+int dns_name_wire_len(const char *name) {
   const char *p = dotted_begin(name);
   const char *label;
   int n, total = 1; /* root terminator */
@@ -164,7 +163,7 @@ static int find_compress_target(const dns_writer_t *w, const char *s) {
 }
 
 int dns_write_name(dns_writer_t *w, const char *name) {
-  if (dotted_wire_len(name) < 0)
+  if (dns_name_wire_len(name) < 0)
     return -2;
 
   dns_writer_mark_t start = dns_writer_mark(w);

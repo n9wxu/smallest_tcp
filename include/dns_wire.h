@@ -92,6 +92,12 @@ int dns_write_u32(dns_writer_t *w, uint32_t v);
  */
 int dns_write_name(dns_writer_t *w, const char *name);
 
+/**
+ * Validate a dotted name.
+ * @return Its wire length (1..255), or -2 if it is invalid.
+ */
+int dns_name_wire_len(const char *name);
+
 /** Write the 12-byte header (message must be empty). */
 int dns_write_header(dns_writer_t *w, uint16_t id, uint16_t flags,
                      uint16_t qdcount, uint16_t ancount, uint16_t nscount,
