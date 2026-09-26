@@ -642,8 +642,93 @@ TEST(test_unknown_names_ignored) {
   query("other.local", DNS_TYPE_A);
   query("pyro-dead01.example", DNS_TYPE_A);
   query("pyro-dead01", DNS_TYPE_A);
-  query(HOST, DNS_TYPE_AAAA); /* no AAAA record */
   mdns_tick(&m, 200);
+  ASSERT_EQ(n_frames, 0);
+}
+
+/* ══ Negative responses (RFC 6762 §6.1, restricted NSEC form) ═════════ */
+
+#define DNS_TYPE_NSEC 47
+
+/* Our name, a type we don't have → NSEC listing the types we do have.
+ * Without it a dual-stack lookup of HOST waits ~5 s for an AAAA answer. */
+TEST(test_nsec_for_missing_type) {
+  static const uint8_t bitmap[] = {0x00, 0x01, 0x40}; /* block 0: A */
+  uint16_t len;
+  dns_rr_t rr;
+  setup();
+  to_running();
+  query(HOST, DNS_TYPE_AAAA);
+  ASSERT_EQ(n_frames, 1); /* unique name: immediate */
+  ASSERT_TRUE(multicast_envelope_ok(0));
+  const uint8_t *msg = dns_msg(0, &len);
+  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 1);
+  ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_NSEC, &rr));
+  ASSERT_EQ(rr.class_, DNS_CLASS_IN | DNS_CLASS_TOPBIT);
+  ASSERT_EQ(rr.ttl, (uint32_t)MDNS_TTL_HOST);
+  ASSERT_TRUE(dns_name_equals(msg, len, rr.rdata_off, HOST)); /* next = own */
+  int after = dns_name_skip(msg, len, rr.rdata_off);
+  ASSERT_TRUE(after > 0);
+  ASSERT_EQ(rr.rdata_off + rr.rdlen - after, (int)sizeof(bitmap));
+  ASSERT_MEM_EQ(msg + after, bitmap, sizeof(bitmap));
+}
+
+TEST(test_nsec_bitmap_for_instance) {
+  /* TXT (16) → byte 2 bit 0x80; SRV (33) → byte 4 bit 0x40 */
+  static const uint8_t bitmap[] = {0x00, 0x05, 0x00, 0x00, 0x80, 0x00, 0x40};
+  uint16_t len;
+  dns_rr_t rr;
+  setup();
+  to_running();
+  query(INST, DNS_TYPE_A);
+  ASSERT_EQ(n_frames, 1);
+  const uint8_t *msg = dns_msg(0, &len);
+  ASSERT_TRUE(find_rr(msg, len, 0, INST, DNS_TYPE_NSEC, &rr));
+  int after = dns_name_skip(msg, len, rr.rdata_off);
+  ASSERT_EQ(rr.rdata_off + rr.rdlen - after, (int)sizeof(bitmap));
+  ASSERT_MEM_EQ(msg + after, bitmap, sizeof(bitmap));
+}
+
+/* A + AAAA in one query: the A record and the NSEC travel together */
+TEST(test_nsec_with_positive_answer_in_same_query) {
+  uint16_t len;
+  dns_rr_t rr;
+  setup();
+  to_running();
+  q_begin(0, 0);
+  q_question(HOST, DNS_TYPE_A, 0);
+  q_question(HOST, DNS_TYPE_AAAA, 0);
+  feed();
+  ASSERT_EQ(n_frames, 1);
+  const uint8_t *msg = dns_msg(0, &len);
+  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 2);
+  ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_A, &rr));
+  ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_NSEC, &rr));
+}
+
+/* No NSEC for names we don't own, shared names, or ANY queries */
+TEST(test_no_nsec_where_not_owned) {
+  setup();
+  to_running();
+  query("other.local", DNS_TYPE_AAAA);
+  query(SVC, DNS_TYPE_A); /* shared PTR name, not ours alone */
+  mdns_tick(&m, 200);
+  ASSERT_EQ(n_frames, 0);
+  query(HOST, DNS_TYPE_ANY);
+  ASSERT_EQ(n_frames, 1);
+  uint16_t len;
+  dns_rr_t rr;
+  const uint8_t *msg = dns_msg(0, &len);
+  ASSERT_FALSE(find_rr(msg, len, 0, HOST, DNS_TYPE_NSEC, &rr));
+}
+
+/* Not while probing: the name isn't ours yet */
+TEST(test_no_nsec_while_probing) {
+  setup();
+  mdns_start(&m);
+  mdns_tick(&m, MDNS_PROBE_WAIT_MS);
+  n_frames = 0;
+  query(HOST, DNS_TYPE_AAAA);
   ASSERT_EQ(n_frames, 0);
 }
 
@@ -1099,6 +1184,11 @@ int main(void) {
   RUN_TEST(test_query_name_case_insensitive);
   RUN_TEST(test_a_record_tracks_address_change);
   RUN_TEST(test_unknown_names_ignored);
+  RUN_TEST(test_nsec_for_missing_type);
+  RUN_TEST(test_nsec_bitmap_for_instance);
+  RUN_TEST(test_nsec_with_positive_answer_in_same_query);
+  RUN_TEST(test_no_nsec_where_not_owned);
+  RUN_TEST(test_no_nsec_while_probing);
   RUN_TEST(test_ptr_query_delayed_with_additionals);
   RUN_TEST(test_srv_query_with_a_additional);
   RUN_TEST(test_txt_rdata_format);

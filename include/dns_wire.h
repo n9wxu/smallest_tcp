@@ -43,6 +43,7 @@
 #define DNS_TYPE_TXT 16
 #define DNS_TYPE_AAAA 28
 #define DNS_TYPE_SRV 33
+#define DNS_TYPE_NSEC 47
 #define DNS_TYPE_ANY 255
 
 #define DNS_CLASS_IN 1

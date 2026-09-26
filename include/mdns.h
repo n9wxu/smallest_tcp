@@ -35,9 +35,13 @@
  * PTR records are shared (DNS-SD service enumeration); A, SRV and TXT records
  * are unique and are probed for before use.
  *
+ * Queries for a type one of our unique names does not have are answered
+ * with an NSEC record (RFC 6762 §6.1, restricted form) — without it a
+ * dual-stack lookup of the host name waits seconds for an AAAA answer.
+ *
  * V1 scope: IPv4 responder only.  Not implemented: querier/browser, AAAA,
- * the simultaneous-probe tiebreak (RFC 6762 §8.2), multi-packet known-answer
- * lists and NSEC negative responses.
+ * the simultaneous-probe tiebreak (RFC 6762 §8.2) and multi-packet
+ * known-answer lists.
  */
 
 #ifndef MDNS_H
@@ -123,6 +127,7 @@ struct mdns_s {
   uint32_t resp_timer_ms; /**< Countdown to delayed multicast response */
   uint32_t resp_answers;  /**< Records owed in the delayed response */
   uint32_t resp_meta;     /**< Service types owed to a meta-query */
+  uint32_t resp_nsec;     /**< Names owed a negative (NSEC) answer */
   uint32_t rng;           /**< xorshift32 state for RFC 6762 jitter */
   uint8_t count;
   uint8_t state; /**< MDNS_STATE_* */

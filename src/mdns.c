@@ -242,6 +242,40 @@ fail:
   return -1;
 }
 
+/* NSEC for the unique name of record @p r, restricted form (RFC 6762
+ * §6.1): Next Domain Name = the name itself (a 2-byte pointer once
+ * compressed), one bitmap block (0) listing the types the name has. */
+static int write_nsec(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
+                      uint32_t ttl, uint16_t class_) {
+  uint8_t bitmap[8]; /* types 0..63 — all we can hold */
+  uint8_t used = 0, j;
+  dns_writer_mark_t mark = dns_writer_mark(w);
+  memset(bitmap, 0, sizeof(bitmap));
+  for (j = 0; j < m->count; j++) {
+    const mdns_record_t *o = &m->records[j];
+    if (is_shared(o) || o->type >= 64 || !names_equal(o->name, r->name))
+      continue;
+    bitmap[o->type >> 3] |= (uint8_t)(0x80u >> (o->type & 7));
+    if ((uint8_t)((o->type >> 3) + 1) > used)
+      used = (uint8_t)((o->type >> 3) + 1);
+  }
+  if (dns_write_name(w, r->name) < 0 || dns_write_u16(w, DNS_TYPE_NSEC) < 0 ||
+      dns_write_u16(w, class_) < 0 || dns_write_u32(w, ttl) < 0)
+    goto fail;
+  uint16_t rdlen_pos = w->len;
+  uint8_t block[2];
+  block[0] = 0;    /* window block 0 */
+  block[1] = used; /* bitmap length */
+  if (dns_write_u16(w, 0) < 0 || dns_write_name(w, r->name) < 0 ||
+      dns_write_bytes(w, block, 2) < 0 || dns_write_bytes(w, bitmap, used) < 0)
+    goto fail;
+  net_write16be(w->buf + rdlen_pos, (uint16_t)(w->len - rdlen_pos - 2));
+  return 0;
+fail:
+  dns_writer_rollback(w, mark);
+  return -1;
+}
+
 /* ── Responses (announcements, answers, goodbyes) ─────────────────── */
 
 static uint32_t rr_ttl(const resp_opts_t *o, uint32_t ttl) {
@@ -272,9 +306,15 @@ static void resp_begin(mdns_t *m, pkt_t *p, const resp_opts_t *o) {
 /* Add an answer; when the packet is full, send it and start another
  * (REQ-MDNS-042, REQ-DNSSD-030).  A record too big for any packet is
  * dropped. */
+static int write_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
+                        const mdns_record_t *r, int nsec) {
+  return nsec ? write_nsec(m, &p->w, r, rr_ttl(o, r->ttl), rr_class(o, r))
+              : write_rr(m, &p->w, r, rr_ttl(o, r->ttl), rr_class(o, r));
+}
+
 static void add_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
-                       const mdns_record_t *r) {
-  if (write_rr(m, &p->w, r, rr_ttl(o, r->ttl), rr_class(o, r)) == 0) {
+                       const mdns_record_t *r, int nsec) {
+  if (write_answer(m, p, o, r, nsec) == 0) {
     p->an++;
     return;
   }
@@ -282,19 +322,26 @@ static void add_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
     return;
   pkt_send(m, p, o->dest);
   resp_begin(m, p, o);
-  if (write_rr(m, &p->w, r, rr_ttl(o, r->ttl), rr_class(o, r)) == 0)
+  if (write_answer(m, p, o, r, nsec) == 0)
     p->an++;
 }
 
 static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
-                          uint32_t additionals, const resp_opts_t *o) {
+                          uint32_t nsec, uint32_t additionals,
+                          const resp_opts_t *o) {
   pkt_t p;
   uint8_t i, j;
   resp_begin(m, &p, o);
 
   for (i = 0; i < m->count; i++) {
     if (answers & BIT(i))
-      add_answer(m, &p, o, &m->records[i]);
+      add_answer(m, &p, o, &m->records[i], 0);
+  }
+
+  /* RFC 6762 §6.1: negative answers for types our names don't have */
+  for (i = 0; i < m->count; i++) {
+    if (nsec & BIT(i))
+      add_answer(m, &p, o, &m->records[i], 1);
   }
 
   /* REQ-DNSSD-014, 015: one PTR per distinct service type */
@@ -313,7 +360,7 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
     svc.ttl = MDNS_TTL_OTHER;
     svc.name = MDNS_META_QUERY;
     svc.rdata.ptr = m->records[i].name;
-    add_answer(m, &p, o, &svc);
+    add_answer(m, &p, o, &svc, 0);
   }
 
   /* REQ-DNSSD-007, 008: additionals are best effort in the last packet */
@@ -362,7 +409,7 @@ static void announce(mdns_t *m, int goodbye) {
   memset(&o, 0, sizeof(o));
   o.dest = &mcast_dest;
   o.goodbye = (uint8_t)goodbye;
-  send_response(m, all_mask(m), 0, 0, &o);
+  send_response(m, all_mask(m), 0, 0, 0, &o);
 }
 
 /* ── Probing (RFC 6762 §8.1) ──────────────────────────────────────── */
@@ -430,6 +477,7 @@ static void enter_conflict(mdns_t *m, uint8_t index) {
   m->resp_timer_ms = 0;
   m->resp_answers = 0;
   m->resp_meta = 0;
+  m->resp_nsec = 0;
   if (m->on_conflict) /* REQ-MDNS-019, 020: may rename and mdns_start() */
     m->on_conflict(m, index, m->ctx);
 }
@@ -460,12 +508,14 @@ static void flush_delayed(mdns_t *m) {
   resp_opts_t o;
   uint32_t answers = m->resp_answers;
   uint32_t meta = m->resp_meta;
+  uint32_t nsec = m->resp_nsec;
   m->resp_timer_ms = 0;
   m->resp_answers = 0;
   m->resp_meta = 0;
+  m->resp_nsec = 0;
   memset(&o, 0, sizeof(o));
   o.dest = &mcast_dest;
-  send_response(m, answers, meta, additionals_for(m, answers), &o);
+  send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
 }
 
 /* ── Conflict detection (RFC 6762 §8.1, §9) ───────────────────────── */
@@ -580,6 +630,7 @@ void mdns_start(mdns_t *m) {
   m->resp_timer_ms = 0;
   m->resp_answers = 0;
   m->resp_meta = 0;
+  m->resp_nsec = 0;
 }
 
 void mdns_tick(mdns_t *m, uint32_t elapsed_ms) {
@@ -603,7 +654,7 @@ void mdns_tick(mdns_t *m, uint32_t elapsed_ms) {
 
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
                 uint16_t src_port, const uint8_t *msg, uint16_t len) {
-  uint32_t answers = 0, meta = 0;
+  uint32_t answers = 0, meta = 0, nsec = 0;
   const char *qname = NULL;
   uint16_t qtype = 0, qd, an, k;
   int all_qu = 1, off = DNS_HDR_SIZE;
@@ -627,7 +678,7 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
   qd = net_read16be(msg + DNS_OFF_QDCOUNT);
   an = net_read16be(msg + DNS_OFF_ANCOUNT);
   for (k = 0; k < qd; k++) {
-    uint32_t hit = 0, mhit = 0;
+    uint32_t hit = 0, mhit = 0, nhit = 0;
     off = dns_read_question(msg, len, (uint16_t)off, &q);
     if (off < 0)
       return; /* REQ-MDNS-041: malformed → ignore */
@@ -647,24 +698,35 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
           mhit |= BIT(i);
       }
     }
-    if (!(hit | mhit))
+    if (!(hit | mhit) && q.type != DNS_TYPE_ANY) {
+      /* One of our unique names, a type it doesn't have (RFC 6762 §6.1) */
+      for (i = 0; i < m->count; i++) {
+        const mdns_record_t *r = &m->records[i];
+        if (!is_shared(r) && dns_name_equals(msg, len, q.name_off, r->name)) {
+          nhit = BIT(name_rep(m, i));
+          break;
+        }
+      }
+    }
+    if (!(hit | mhit | nhit))
       continue;
     answers |= hit;
     meta |= mhit;
+    nsec |= nhit;
     if (!(q.class_ & DNS_CLASS_TOPBIT))
       all_qu = 0;
     if (!qname) {
       qtype = q.type;
       qname = MDNS_META_QUERY;
       for (i = 0; i < m->count; i++) {
-        if (hit & BIT(i)) {
+        if ((hit | nhit) & BIT(i)) {
           qname = m->records[i].name;
           break;
         }
       }
     }
   }
-  if (!(answers | meta))
+  if (!(answers | meta | nsec))
     return;
 
   /* ── Known-answer suppression (REQ-MDNS-029, RFC 6762 §7.1) ── */
@@ -689,7 +751,7 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
       }
     }
   }
-  if (!(answers | meta))
+  if (!(answers | meta | nsec))
     return;
 
   resp_opts_t o;
@@ -710,25 +772,26 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
     o.legacy = 1;
     o.qname = qname;
     o.qtype = qtype;
-    send_response(m, answers, meta, additionals_for(m, answers), &o);
+    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
     return;
   }
   if (all_qu && src_ip != 0) {
     /* REQ-MDNS-028: every question asked for a unicast response (a querier
      * still at 0.0.0.0 gets the multicast answer instead) */
     o.dest = &d;
-    send_response(m, answers, meta, additionals_for(m, answers), &o);
+    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
     return;
   }
   if (!meta && !(answers & shared_mask(m))) {
     /* Unique records only: answer immediately (RFC 6762 §6) */
     o.dest = &mcast_dest;
-    send_response(m, answers, meta, additionals_for(m, answers), &o);
+    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
     return;
   }
   /* Shared records: aggregate and delay 20-120 ms (RFC 6762 §6) */
   m->resp_answers |= answers;
   m->resp_meta |= meta;
+  m->resp_nsec |= nsec;
   if (!m->resp_timer_ms)
     m->resp_timer_ms =
         MDNS_RESP_DELAY_MIN_MS +
@@ -747,4 +810,5 @@ void mdns_stop(mdns_t *m) {
   m->resp_timer_ms = 0;
   m->resp_answers = 0;
   m->resp_meta = 0;
+  m->resp_nsec = 0;
 }

@@ -418,3 +418,15 @@ def test_mdns_018_any_query(sut):
     assert resp
     dns = resp[0][DNS]
     assert find(dns.an, INST, T_SRV) and find(dns.an, INST, T_TXT)
+
+
+def test_mdns_019_nsec_for_missing_type(sut):
+    """RFC 6762 §6.1: AAAA for our host name (we only have A) → NSEC
+    asserting which types exist, so dual-stack lookups don't wait for a
+    timeout (curl http://pyro-dead01.local/ took 5 s without it)."""
+    sut.start()
+    resp = ask(sut, HOST, "AAAA")
+    assert resp, "no negative response to AAAA query"
+    nsec = find(resp[0][DNS].an, HOST, 47)
+    assert nsec, f"no NSEC answer: {resp[0][DNS].summary()}"
+    assert nsec[0].ttl == 120 and nsec[0].cacheflush == 1
