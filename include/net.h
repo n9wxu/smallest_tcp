@@ -83,14 +83,18 @@ typedef struct {
 #define NET_IP6_DEPRECATED 3 /**< Valid, but not for new connections */
 #define NET_IP6_DUPLICATE 4  /**< DAD found another owner: never used */
 
+#define NET_IP6_INFINITE 0xFFFFFFFFu /**< Lifetime that never runs out */
+
 /**
  * @brief One IPv6 address of the interface (network byte order).
  */
 typedef struct {
   uint8_t addr[16];
-  uint8_t state;     /**< NET_IP6_* */
-  uint8_t dad_left;  /**< DAD Neighbor Solicitations still to send */
-  uint16_t timer_ms; /**< Until the next DAD step */
+  uint8_t state;        /**< NET_IP6_* */
+  uint8_t dad_left;     /**< DAD Neighbor Solicitations still to send */
+  uint16_t timer_ms;    /**< Until the next DAD step */
+  uint32_t valid_s;     /**< Valid lifetime left (NET_IP6_INFINITE) */
+  uint32_t preferred_s; /**< Preferred lifetime left (NET_IP6_INFINITE) */
 } net_ip6_addr_t;
 #endif
 
@@ -122,6 +126,13 @@ typedef struct {
   net_ip6_addr_t ip6[NET_IPV6_ADDRS];
   uint8_t ip6_hop_limit; /**< For outgoing packets (Cur Hop Limit) */
   uint32_t ip6_rng;      /**< xorshift32 state for protocol jitter */
+  uint8_t ip6_router[16];     /**< Default router (link-local address) */
+  uint8_t ip6_router_mac[6];  /**< Its MAC */
+  uint16_t ip6_router_life_s; /**< Router lifetime left; 0 = no router */
+  uint8_t ip6_ra_flags;       /**< M (0x80) / O (0x40) of the last RA */
+  uint8_t ip6_rs_left;        /**< Router Solicitations still to send */
+  uint16_t ip6_rs_timer_ms;   /**< Until the next Router Solicitation */
+  uint16_t ip6_sec_ms;        /**< ms toward the next lifetime second */
 #endif
 } net_t;
 

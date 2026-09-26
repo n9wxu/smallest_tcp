@@ -127,6 +127,10 @@ uint32_t ipv6_random(net_t *net) {
 void ipv6_start(net_t *net) {
   memset(net->ip6, 0, sizeof(net->ip6));
   net->ip6_hop_limit = NET_IPV6_DEFAULT_HOP_LIMIT;
+  net->ip6_router_life_s = 0;
+  net->ip6_ra_flags = 0;
+  net->ip6_rs_left = 0;
+  net->ip6_sec_ms = 0;
   if (net->ip6_rng == 0) {
     net->ip6_rng = ((uint32_t)net->mac[2] << 24 | (uint32_t)net->mac[3] << 16 |
                     (uint32_t)net->mac[4] << 8 | net->mac[5]) |
@@ -134,6 +138,8 @@ void ipv6_start(net_t *net) {
   }
   /* REQ-IPv6-035,036, REQ-SLAAC-001..003 */
   ipv6_link_local_from_mac(net->mac, net->ip6[0].addr);
+  net->ip6[0].valid_s = NET_IP6_INFINITE;
+  net->ip6[0].preferred_s = NET_IP6_INFINITE;
   /* RFC 4862 §5.4.2: first message after start-up waits a random
    * 0..MAX_RTR_SOLICITATION_DELAY (scaled, no division) */
   uint32_t delay =
@@ -142,7 +148,81 @@ void ipv6_start(net_t *net) {
   ndp_dad_start(net, 0, (uint16_t)delay);
 }
 
-void ipv6_tick(net_t *net, uint32_t elapsed_ms) { ndp_tick(net, elapsed_ms); }
+/** Count @p secs whole seconds off the address and router lifetimes
+ *  (RFC 4862 §5.5.4). */
+static void lifetimes_elapse(net_t *net, uint32_t secs) {
+  uint8_t i;
+  for (i = 1; i < NET_IPV6_ADDRS; i++) {
+    net_ip6_addr_t *a = &net->ip6[i];
+    if (a->state == NET_IP6_NONE)
+      continue;
+    if (a->preferred_s != NET_IP6_INFINITE) {
+      a->preferred_s = a->preferred_s > secs ? a->preferred_s - secs : 0;
+      /* REQ-SLAAC-023: still usable, but not for new connections */
+      if (a->preferred_s == 0 && a->state == NET_IP6_PREFERRED)
+        a->state = NET_IP6_DEPRECATED;
+    }
+    if (a->valid_s != NET_IP6_INFINITE) {
+      a->valid_s = a->valid_s > secs ? a->valid_s - secs : 0;
+      if (a->valid_s == 0) /* REQ-SLAAC-022 */
+        memset(a, 0, sizeof(*a));
+    }
+  }
+  if (net->ip6_router_life_s) /* REQ-NDP-043 */
+    net->ip6_router_life_s = net->ip6_router_life_s > secs
+                                 ? (uint16_t)(net->ip6_router_life_s - secs)
+                                 : 0;
+}
+
+void ipv6_tick(net_t *net, uint32_t elapsed_ms) {
+  /* Whole seconds for the lifetimes (a loop, not a division: Cortex-M0) */
+  uint32_t acc = net->ip6_sec_ms + elapsed_ms;
+  uint32_t secs = 0;
+  while (acc >= 1000u) {
+    acc -= 1000u;
+    secs++;
+  }
+  net->ip6_sec_ms = (uint16_t)acc;
+  if (secs)
+    lifetimes_elapse(net, secs);
+  ndp_tick(net, elapsed_ms);
+}
+
+net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
+                        uint32_t preferred_s) {
+  uint8_t i;
+  if (ipv6_is_multicast(addr) || ipv6_is_unspecified(addr))
+    return NET_ERR_INVALID_PARAM;
+  if (ipv6_addr_slot(net, addr) >= 0)
+    return NET_OK;
+  for (i = 1; i < NET_IPV6_ADDRS; i++) {
+    net_ip6_addr_t *a = &net->ip6[i];
+    if (a->state != NET_IP6_NONE)
+      continue;
+    memcpy(a->addr, addr, 16);
+    a->valid_s = valid_s;
+    a->preferred_s = preferred_s;
+    ndp_dad_start(net, i, 0); /* REQ-SLAAC-018 */
+    return NET_OK;
+  }
+  return NET_ERR_BUF_TOO_SMALL;
+}
+
+const uint8_t *ipv6_router_mac(const net_t *net) {
+  return net->ip6_router_life_s ? net->ip6_router_mac : NULL;
+}
+
+int ipv6_on_link(const net_t *net, const uint8_t *dst) {
+  uint8_t i;
+  if (ipv6_is_link_local(dst))
+    return 1;
+  for (i = 1; i < NET_IPV6_ADDRS; i++) {
+    if (net->ip6[i].state != NET_IP6_NONE &&
+        memcmp(net->ip6[i].addr, dst, 8) == 0)
+      return 1;
+  }
+  return 0;
+}
 
 uint8_t ipv6_addr_state(const net_t *net, uint8_t slot) {
   return slot < NET_IPV6_ADDRS ? net->ip6[slot].state : NET_IP6_NONE;

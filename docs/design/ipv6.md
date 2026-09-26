@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP) and 3 (TCP) done
+**Status:** in progress — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP) and 4 (router discovery, SLAAC) done
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -135,18 +135,48 @@ ipv6_start ─► TENTATIVE ── random 0..1 s ──► NS(src ::, dst solici
    NA for the address, or an NS from :: for it, while TENTATIVE ─► DUPLICATE
 ```
 
-A DUPLICATE address is never used.  For the EUI-64 link-local address that
+A DUPLICATE address is never used — a SLAAC one is not retried either.  For the EUI-64 link-local address that
 means IPv6 is off on the interface (RFC 4862 §5.4.5); the application can
 see it with `ipv6_addr_state()`.  NS for a tentative address from a unicast
 source is ignored.
 
-## 7. Timers and randomness
+## 7. Router discovery and SLAAC (stage 4)
+
+**Router Solicitation.**  Once the link-local address is preferred, after a
+random 0–1 s, up to three RS go to all-routers (ff02::2) 4 s apart, from the
+link-local address with our MAC as SLLA.  The first RA stops them.
+
+**Router Advertisement** (validated: link-local source, Hop Limit 255, code
+0, options): a non-zero Cur Hop Limit replaces ours; M/O are kept in
+`net->ip6_ra_flags` for DHCPv6; a non-zero Router Lifetime makes the sender
+the default router — address, MAC (SLLA option, else the frame source) and
+remaining lifetime in `net_t`; lifetime 0 from that router removes it.
+`ipv6_router_mac()` is the next hop for off-link destinations;
+`ipv6_on_link()` says which are on-link (link-local, or the /64 of one of
+our global addresses).  There is still no neighbour cache: replies go to the
+MAC the request came from, which for off-link peers is the router's.
+
+**SLAAC** (RFC 4862 §5.5.3), per Prefix Information option with A = 1: a
+/64 that is not link-local, preferred ≤ valid → prefix + the interface
+identifier of the link-local address → `ipv6_addr_add()` → DAD without
+the start-up delay.  A known prefix updates the lifetimes with the
+two-hour rule: a valid lifetime above two hours or above the remaining one
+is taken; otherwise the remaining lifetime drops to two hours if it was
+longer, and stays as it is if not.
+
+**Lifetimes** count down in whole seconds in `ipv6_tick()` (a subtraction
+loop — no division on Cortex-M0).  Preferred → DEPRECATED (still accepted,
+chosen as a source only when nothing preferred fits); valid → the slot is
+freed.  `NET_IP6_INFINITE` (0xFFFFFFFF) never expires.  `ipv6_addr_add()`
+is also the entry point for static addresses and DHCPv6 (stage 5).
+
+## 8. Timers and randomness
 
 `ipv6_tick(net, elapsed_ms)` drives DAD (and RS/lifetimes from stage 4),
 like `tcp_tick()`.  Delays are drawn from `ip6_rng`, an xorshift32 seeded
 from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 
-## 8. Dual-stack UDP and TCP (stages 2–3)
+## 9. Dual-stack UDP and TCP (stages 2–3)
 
 - **UDP**: IPv6 ports live in their own table, `udp6_ports`, whose
   handlers get the source as a 16-byte pointer.  `udp_port_entry_t` is
@@ -168,12 +198,14 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
   small buffer holds stalled the connection (segments that could not be
   built were never sent), which the larger IPv6 header makes likelier.
 
-## 9. Deviations and deferred items
+## 10. Deviations and deferred items
 
 | Item | Reason / plan |
 |---|---|
 | No fragment reassembly (RFC 8200 §4.5) | RAM; fragments are dropped |
 | No neighbour cache / NUD | distributed-cache model, as ARP |
 | Redirect ignored (REQ-NDP-053) | no per-destination routes |
+| RA MTU, Reachable Time, Retrans Timer options ignored | Ethernet MTU assumed; fixed 1 s RetransTimer |
+| On-link = our /64s (L flag not tracked separately) | RAs set L and A together in practice |
 | MLD reports | stage 6 (solicited-node + ff02::fb); links without MLD snooping work without them |
 | ICMPv6 error rate limiting | not yet; at most one error per packet |

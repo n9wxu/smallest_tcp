@@ -187,4 +187,25 @@ int ipv6_mac_accepted(const net_t *net, const uint8_t *mac);
 /** Next pseudo-random 32-bit value (xorshift32 on net->ip6_rng). */
 uint32_t ipv6_random(net_t *net);
 
+/**
+ * Add a global address (static configuration, SLAAC, DHCPv6) and start
+ * Duplicate Address Detection on it.  Lifetimes in seconds
+ * (NET_IP6_INFINITE: never expires).
+ * @return NET_OK (also if already configured); NET_ERR_INVALID_PARAM for
+ *         a multicast or unspecified address; NET_ERR_BUF_TOO_SMALL when
+ *         all NET_IPV6_ADDRS slots are taken.
+ */
+net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
+                        uint32_t preferred_s);
+
+/** MAC of the default router, or NULL if none (RA router lifetime). */
+const uint8_t *ipv6_router_mac(const net_t *net);
+
+/**
+ * True if @p dst is on the link: link-local, or in the /64 of one of our
+ * global addresses (RA prefixes are on-link and autonomous together in
+ * practice).  Off-link destinations go through ipv6_router_mac().
+ */
+int ipv6_on_link(const net_t *net, const uint8_t *dst);
+
 #endif /* IPV6_H */

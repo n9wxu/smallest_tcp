@@ -418,7 +418,9 @@ TEST(test_dad_success_after_retrans_timer) {
   ASSERT_EQ(ipv6_addr_state(&net, 0), NET_IP6_PREFERRED);
   ASSERT_EQ(send_count, 1); /* one probe (DupAddrDetectTransmits = 1) */
   ipv6_tick(&net, 5000);
-  ASSERT_EQ(send_count, 1);
+  /* Router Solicitations follow; no further DAD probe */
+  for (int i = 1; i < send_count && i < MAX_SENT; i++)
+    ASSERT_NE(sent[i][54], ICMPV6_NS);
 }
 
 TEST(test_dad_conflict_on_na) {

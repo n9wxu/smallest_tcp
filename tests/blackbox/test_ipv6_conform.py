@@ -31,7 +31,8 @@ import pytest
 from scapy.all import (
     Ether, IPv6, Raw, conf, get_if_hwaddr, sendp,
     ICMPv6DestUnreach, ICMPv6EchoReply, ICMPv6EchoRequest, ICMPv6ND_NA,
-    ICMPv6ND_NS, ICMPv6NDOptDstLLAddr, ICMPv6NDOptSrcLLAddr,
+    ICMPv6ND_NS, ICMPv6ND_RA, ICMPv6ND_RS, ICMPv6NDOptDstLLAddr,
+    ICMPv6NDOptPrefixInfo, ICMPv6NDOptSrcLLAddr, ICMPv6TimeExceeded,
     ICMPv6ParamProblem, IPv6ExtHdrFragment, IPv6ExtHdrHopByHop, TCP, UDP,
     in6_chksum,
 )
@@ -301,7 +302,9 @@ def test_ipv6_012_fragments_dropped(sut):
     pkt = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
            IPv6ExtHdrFragment(m=0, offset=0, id=99) /
            ICMPv6EchoRequest(id=4, seq=4, data=b"frag"))
-    assert sut.exchange(pkt, lambda p: True, timeout=1.5) is None
+    answer = (lambda p: ICMPv6EchoReply in p or ICMPv6ParamProblem in p or
+              ICMPv6TimeExceeded in p or ICMPv6DestUnreach in p)
+    assert sut.exchange(pkt, answer, timeout=1.5) is None
 
 
 # ── Interop with the host's own IPv6 stack ─────────────────────────────────────
@@ -457,3 +460,107 @@ def test_ipv6_021_kernel_tcp_echo(sut):
                 break
             data += chunk
     assert data == b"kernel tcp6"
+
+
+# ── Router discovery and SLAAC (RFC 4861 §6.3, RFC 4862 §5.5) ──────────────────
+
+ROUTER_LL = "fe80::1"
+PREFIX = "2001:db8:1::"
+OFF_LINK = "2001:db8:2::100"     # a phantom global peer beyond the router
+
+
+def global_addr(sut):
+    """PREFIX + the SUT's interface identifier."""
+    iid = socket.inet_pton(socket.AF_INET6, sut.sut_ll)[8:]
+    return socket.inet_ntop(socket.AF_INET6,
+                            socket.inet_pton(socket.AF_INET6, PREFIX)[:8] + iid)
+
+
+def log_form(addr):
+    """How the demo logs an address: eight uncompressed hex groups."""
+    raw = socket.inet_pton(socket.AF_INET6, addr)
+    return ":".join(f"{raw[i] << 8 | raw[i + 1]:x}" for i in range(0, 16, 2))
+
+
+def send_ra(sut, hop_limit=64, valid=86400, preferred=14400):
+    """Advertise ourselves as the router, with an autonomous /64."""
+    sendp(sut.eth(ALL_NODES_MAC) /
+          IPv6(src=ROUTER_LL, dst=ALL_NODES, hlim=255) /
+          ICMPv6ND_RA(chlim=hop_limit, routerlifetime=1800) /
+          ICMPv6NDOptSrcLLAddr(lladdr=sut.our_mac) /
+          ICMPv6NDOptPrefixInfo(prefixlen=64, L=1, A=1, validlifetime=valid,
+                                preferredlifetime=preferred, prefix=PREFIX),
+          iface=sut.iface, verbose=False)
+
+
+def test_ipv6_022_router_solicitation(sut):
+    """REQ-NDP-034..037: RS to all-routers from the link-local address."""
+    sn = start_sniffer(sut.iface, filter=f"ip6 and ether src {sut.sut_mac}",
+                       lfilter=lambda p: ICMPv6ND_RS in p, count=1, timeout=6)
+    sut.start(wait_ready=False)
+    sn.join(timeout=7)
+    assert sn.results, "no Router Solicitation"
+    p = sn.results[0]
+    assert p[Ether].dst == "33:33:00:00:00:02"
+    assert p[IPv6].src == sut.sut_ll
+    assert p[IPv6].dst == "ff02::2"
+    assert p[IPv6].hlim == 255
+    assert p[ICMPv6NDOptSrcLLAddr].lladdr == sut.sut_mac
+
+
+def test_ipv6_023_slaac_global_address(sut):
+    """REQ-SLAAC-014..018: an autonomous /64 gives a global address (after
+    DAD), which answers from itself, back through the router."""
+    sut.start()
+    target = global_addr(sut)
+    sn = start_sniffer(sut.iface, filter=f"ip6 and ether src {sut.sut_mac}",
+                       lfilter=lambda p: ICMPv6ND_NS in p and
+                       p[ICMPv6ND_NS].tgt == target, count=1, timeout=4)
+    send_ra(sut)
+    sn.join(timeout=5)
+    assert sn.results, "no DAD probe for the SLAAC address"
+    assert sn.results[0][IPv6].src == UNSPEC
+    sut.wait_for(f"{log_form(target)} preferred", 4)
+    req = (sut.eth() / IPv6(src=OFF_LINK, dst=target) /
+           ICMPv6EchoRequest(id=23, seq=1, data=b"global"))
+    rep = sut.exchange(req, is_echo_reply)
+    assert rep is not None, "no reply at the global address"
+    assert rep[IPv6].src == target
+    assert rep[IPv6].dst == OFF_LINK
+    assert rep[Ether].dst == sut.our_mac
+
+
+def test_ipv6_024_ra_cur_hop_limit(sut):
+    """REQ-NDP-042: the RA's Cur Hop Limit is used for what we send."""
+    sut.start()
+    send_ra(sut, hop_limit=42)
+    time.sleep(0.3)
+    req = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
+           ICMPv6EchoRequest(id=24, seq=1, data=b"hlim"))
+    rep = sut.exchange(req, is_echo_reply)
+    assert rep is not None
+    assert rep[IPv6].hlim == 42
+
+
+def test_ipv6_025_host_reaches_global_address(sut):
+    """With the prefix on its interface, the host resolves the SUT's global
+    address with NDP, pings it and connects to it."""
+    if sys.platform == "darwin" or not host_has_link_local(sut.iface):
+        pytest.skip(f"needs Linux with IPv6 on {sut.iface}")
+    sut.start()
+    target = global_addr(sut)
+    ours = PREFIX + "100"
+    subprocess.run(["ip", "-6", "addr", "add", f"{ours}/64", "dev", sut.iface,
+                    "nodad"], check=True)
+    try:
+        send_ra(sut)
+        sut.wait_for(f"{log_form(target)} preferred", 4)
+        r = subprocess.run(["ping", "-6", "-c", "2", "-W", "2", target],
+                           capture_output=True, text=True, timeout=15)
+        assert r.returncode == 0, r.stdout + r.stderr
+        with socket.create_connection((target, 7), timeout=5) as c:
+            c.sendall(b"global tcp6")
+            assert c.recv(64) == b"global tcp6"
+    finally:
+        subprocess.run(["ip", "-6", "addr", "del", f"{ours}/64", "dev",
+                        sut.iface])
