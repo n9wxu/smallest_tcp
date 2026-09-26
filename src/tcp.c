@@ -602,6 +602,29 @@ uint16_t tcp_recv(tcp_conn_t *conn, uint8_t *buf, uint16_t maxlen) {
   return conn->rxbuf_ops->read(conn->rxbuf_ctx, buf, maxlen);
 }
 
+void tcp_window_update(net_t *net, tcp_conn_t *conn) {
+  if (!net || !conn)
+    return;
+  if (conn->state != TCP_ESTABLISHED && conn->state != TCP_FIN_WAIT_1 &&
+      conn->state != TCP_FIN_WAIT_2)
+    return; /* the peer can no longer send */
+
+  uint32_t avail = conn->rxbuf_ops->available(conn->rxbuf_ctx);
+  if (avail <= conn->rcv_wnd)
+    return;
+
+  /* Receiver SWS avoidance: only a worthwhile increase is advertised */
+  uint32_t buffer = avail + conn->rxbuf_ops->readable(conn->rxbuf_ctx);
+  uint32_t threshold = buffer / 2u;
+  if (conn->our_mss && conn->our_mss < threshold)
+    threshold = conn->our_mss;
+  if (avail - conn->rcv_wnd < threshold)
+    return;
+
+  conn->rcv_wnd = avail;
+  tcp_send_ack(net, conn);
+}
+
 net_err_t tcp_close(net_t *net, tcp_conn_t *conn) {
   if (!net || !conn)
     return NET_ERR_INVALID_PARAM;

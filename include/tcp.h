@@ -333,6 +333,17 @@ void tcp_output(net_t *net, tcp_conn_t *conn);
  */
 uint16_t tcp_recv(tcp_conn_t *conn, uint8_t *buf, uint16_t maxlen);
 
+/**
+ * Advertise receive-buffer space freed by tcp_recv().
+ *
+ * tcp_recv() cannot transmit, so a peer that saw a zero (or small) window
+ * would otherwise stall until its next persist probe.  Call this after
+ * reading: it sends a pure ACK with the new window once the window has
+ * grown by at least min(buffer / 2, MSS) (RFC 9293 §3.8.6.2.2, receiver
+ * silly-window avoidance).  Does nothing in states that cannot receive.
+ */
+void tcp_window_update(net_t *net, tcp_conn_t *conn);
+
 /* ── Stack entry points ──────────────────────────────────────────── */
 
 /**

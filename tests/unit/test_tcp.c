@@ -562,6 +562,61 @@ TEST(test_tcp_data_then_fin_retransmit_order) {
   ASSERT_EQ(sent_tcp_seq(0), seq + 4u);
 }
 
+/* ── Receive-window updates after the application reads (RFC 9293
+ *    §3.8.6.2.2: receiver silly-window avoidance) ── */
+
+/* Peer fills our 1024-byte receive buffer: we advertise window 0. */
+static void fill_rx_window(void) {
+  static uint8_t data[RX_BUF_CAP];
+  uint8_t frame[1514];
+  memset(data, 'd', sizeof(data));
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 PEER_SEQ, conn.snd_nxt,
+                                 TCP_FLAG_ACK | TCP_FLAG_PSH, 8192, data,
+                                 sizeof(data), 0);
+  inject(frame, len);
+}
+
+TEST(test_tcp_window_update_after_read) {
+  uint8_t buf[RX_BUF_CAP];
+  setup();
+  establish();
+  fill_rx_window();
+  ASSERT_EQ(sent_tcp_window(send_count - 1), 0); /* ACK closed the window */
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), RX_BUF_CAP);
+  send_count = 0;
+  tcp_window_update(&net, &conn);
+  ASSERT_EQ(send_count, 1); /* pure ACK re-opening the window */
+  ASSERT_EQ(sent_tcp_flags(0), TCP_FLAG_ACK);
+  ASSERT_EQ(sent_tcp_window(0), RX_BUF_CAP);
+  ASSERT_EQ(sent_tcp_ack(0), PEER_SEQ + RX_BUF_CAP);
+  tcp_window_update(&net, &conn); /* already advertised */
+  ASSERT_EQ(send_count, 1);
+}
+
+/* Reading a little must not advertise a small window (silly window) */
+TEST(test_tcp_window_update_waits_for_worthwhile_growth) {
+  uint8_t buf[100];
+  setup();
+  establish();
+  fill_rx_window();
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 100);
+  send_count = 0;
+  tcp_window_update(&net, &conn); /* +100 < min(1024/2, MSS) */
+  ASSERT_EQ(send_count, 0);
+}
+
+TEST(test_tcp_window_update_noop_without_read) {
+  setup();
+  establish();
+  send_count = 0;
+  tcp_window_update(&net, &conn);
+  ASSERT_EQ(send_count, 0);
+  tcp_listen(&conn, LOCAL_PORT);
+  tcp_window_update(&net, &conn);
+  ASSERT_EQ(send_count, 0);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * Graceful close (active): FIN_WAIT_1 → FIN_WAIT_2 → TIME_WAIT
  * REQ-TCP-005, REQ-TCP-059, REQ-TCP-071
@@ -1220,6 +1275,9 @@ int main(void) {
   RUN_TEST(test_tcp_fin_retransmitted_in_closing);
   RUN_TEST(test_tcp_fin_retransmitted_in_last_ack);
   RUN_TEST(test_tcp_data_then_fin_retransmit_order);
+  RUN_TEST(test_tcp_window_update_after_read);
+  RUN_TEST(test_tcp_window_update_waits_for_worthwhile_growth);
+  RUN_TEST(test_tcp_window_update_noop_without_read);
   RUN_TEST(test_tcp_active_close);
   RUN_TEST(test_tcp_passive_close);
   RUN_TEST(test_tcp_rst_in_established_aborts);
