@@ -323,8 +323,9 @@ starts with a unit test that fails on the current code.
       notify the user); adding one changes the API — `DHCPV4_EVT_TIMEOUT`
 - [x] An ACK without a lease time leaves the client bound for good, like an
       infinite lease — dropped, as is a lease of 0 s
-- [ ] Server: always sets the broadcast flag and leaves `giaddr` 0, where
-      RFC 2131 Table 3 copies the client's values
+- [x] Server: always sets the broadcast flag and leaves `giaddr` 0, where
+      RFC 2131 Table 3 copies the client's values — copied, and replies
+      routed as §4.1 says (relay agent, `ciaddr`, broadcast, `yiaddr`)
 - [x] REQ-DHCPv4-050, 051 and 078 require the init functions to check for a
       576-byte buffer and return an error; they return `void` and check
       nothing — fix the code or the requirements — both: the init functions

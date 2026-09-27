@@ -204,8 +204,8 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-073 | MUST | Validate op=1 (BOOTREQUEST) and magic cookie before processing any message | RFC 2131 §3 | TEST-DHCPv4-073 |
 | REQ-DHCPv4-074 | MUST | Set op=2 (BOOTREPLY) in all server replies | RFC 2131 §2 | TEST-DHCPv4-074 |
 | REQ-DHCPv4-075 | MUST | Echo the client's xid unchanged in all replies | RFC 2131 §4.1 | TEST-DHCPv4-075 |
-| REQ-DHCPv4-076 | MUST | If client's broadcast flag (flags bit 0) is set or ciaddr=0, broadcast reply to 255.255.255.255 / FF:FF:FF:FF:FF:FF | RFC 2131 §4.1 | TEST-DHCPv4-076 |
-| REQ-DHCPv4-077 | MUST | If ciaddr is set and broadcast flag is clear, unicast reply to ciaddr | RFC 2131 §4.1 | TEST-DHCPv4-077 |
+| REQ-DHCPv4-076 | MUST | Copy the request's flags and giaddr into the reply (a NAK through a relay also sets the broadcast flag); send it to giaddr on port 67 if set, else broadcast a NAK, else to ciaddr if set, else broadcast if the broadcast flag is set | RFC 2131 §4.1, §4.3.2, Table 3 | TEST-DHCPv4-076 |
+| REQ-DHCPv4-077 | MUST | Otherwise unicast the reply to yiaddr at chaddr | RFC 2131 §4.1 | TEST-DHCPv4-077 |
 
 #### Server Buffer Requirements
 

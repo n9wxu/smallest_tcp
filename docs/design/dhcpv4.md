@@ -422,24 +422,36 @@ most one reply out, then the event (`DHCPV4_SRV_EVT_OFFER`, `_ACK` or
 A message is considered if it has at least 244 bytes, `op` = BOOTREQUEST
 and the magic cookie.
 
-| Incoming | Condition | Response | Sent to |
-|---|---|---|---|
-| DISCOVER | always | OFFER | broadcast |
-| REQUEST | requested address (option 50, else `ciaddr`) = `offered_ip` | ACK | client (below) |
-| REQUEST | otherwise | NAK | broadcast |
-| INFORM | always | ACK without a lease | client (below) |
-| RELEASE, anything else | — | none (no lease table) | — |
+| Incoming | Condition | Response |
+|---|---|---|
+| DISCOVER | always | OFFER |
+| REQUEST | requested address (option 50, else `ciaddr`) = `offered_ip` | ACK |
+| REQUEST | otherwise | NAK |
+| INFORM | always | ACK without a lease |
+| RELEASE, anything else | — | none (no lease table) |
 
-"Broadcast" is 255.255.255.255 at the broadcast MAC.  "Client" is the
-same, unless the request had `ciaddr` set and the broadcast flag clear:
-then the reply is unicast to `ciaddr` at the request's source MAC
-(RFC 2131 §4.1).  The Server Identifier in a REQUEST is not checked —
-with one peer there is no other server to have chosen.
+The Server Identifier in a REQUEST is not checked — with one peer there
+is no other server to have chosen.
 
-Every reply (`send_reply()`) echoes `xid` and `chaddr`, sets the
-broadcast flag and carries the message type (53) and the Server
-Identifier (54, `server_ip`).  The rest follows RFC 2131 Table 3 and
-§4.3.5:
+**Where a reply goes** (`reply_destination()`, RFC 2131 §4.1), in order:
+
+| The request | The reply goes to |
+|---|---|
+| came through a relay agent (`giaddr` set) | `giaddr` at the frame's source MAC (the relay agent), UDP port **67** |
+| — and the reply is a NAK | 255.255.255.255 at the broadcast MAC |
+| has `ciaddr` set | `ciaddr` at the frame's source MAC |
+| has the broadcast flag | 255.255.255.255 at the broadcast MAC |
+| none of these | the address it is given (`yiaddr`) at `chaddr` |
+
+The server used to broadcast every reply but those to a client with an
+address and no broadcast flag, and to leave out the relay agent.
+
+Every reply (`send_reply()`) echoes `xid` and `chaddr`, copies the
+request's `flags` and `giaddr` — a NAK through a relay also sets the
+broadcast flag, so the relay broadcasts it to a client that may have no
+usable address (§4.3.2) — and carries the message type (53) and the
+Server Identifier (54, `server_ip`).  The rest follows RFC 2131 Table 3
+and §4.3.5:
 
 | | OFFER | ACK to a REQUEST | ACK to an INFORM | NAK |
 |---|---|---|---|---|
@@ -507,7 +519,6 @@ the halving is a shift: no multiplication and no division.
 | No ARP probe of the offered address, no DECLINE | Size |
 | Option Overload (52), `sname`/`file` options | Not parsed |
 | `secs` field always 0 | — |
-| Server: replies always set the broadcast flag and leave `giaddr` 0, where RFC 2131 Table 3 copies the client's `flags` and `giaddr` | No relay agent on a point-to-point link; the flag only allows a broadcast reply |
 | Server: no lease table, same address for every MAC | By design (§4.1) |
 
 ---

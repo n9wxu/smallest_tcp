@@ -22,6 +22,7 @@
 #define DHCP_OFF_CIADDR 12
 #define DHCP_OFF_YIADDR 16
 #define DHCP_OFF_SIADDR 20
+#define DHCP_OFF_GIADDR 24
 #define DHCP_OFF_CHADDR 28
 #define DHCP_OFF_MAGIC 236
 #define DHCP_OFF_OPTIONS 240
@@ -1277,6 +1278,83 @@ TEST(test_dhcp_server_renewal_ack_echoes_ciaddr) {
             server_cfg.lease_time_s);
 }
 
+/* RFC 2131 Table 3: a reply copies the request's flags and giaddr; §4.1
+   says where it goes — a relay agent (giaddr) on the server port, else a
+   NAK is broadcast, else ciaddr, else the broadcast address if the client
+   asked, else yiaddr at chaddr.  §4.3.2: a NAK through a relay asks it to
+   broadcast. */
+static const uint8_t relay_mac[6] = {0x02, 0x52, 0x45, 0x4C, 0x41, 0x59};
+static const uint8_t bcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+#define RELAY_IP NET_IPV4(10, 0, 0, 254)
+
+static uint16_t sent_udp_dport(void) {
+  return net_read16be(sent_frame + 14 + 20 + 2);
+}
+static uint16_t sent_flags(void) {
+  return net_read16be(sent_dhcp() + DHCP_OFF_FLAGS);
+}
+
+/* A request of @p type from chaddr (the sender's MAC unless relayed) */
+static void server_gets(uint8_t type, uint16_t flags, uint32_t ciaddr,
+                        uint32_t giaddr, uint32_t req_ip) {
+  static const uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x0A};
+  uint8_t msg[DHCP_MIN_LEN + 32];
+  uint16_t mlen =
+      make_client_msg(msg, type, 0x5EED0100u, chaddr, req_ip, 0);
+  net_write16be(msg + DHCP_OFF_FLAGS, flags);
+  net_write32be(msg + DHCP_OFF_CIADDR, ciaddr);
+  net_write32be(msg + DHCP_OFF_GIADDR, giaddr);
+  send_count = 0;
+  dhcpv4_server_input(&net, &srv, giaddr ? giaddr : ciaddr,
+                      giaddr ? relay_mac : chaddr, msg, mlen);
+}
+
+TEST(test_dhcp_server_reply_routing) {
+  static const uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x0A};
+  setup();
+  dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
+
+  /* no broadcast flag: to the new address at the client's MAC */
+  server_gets(DHCP_MSG_DISCOVER, 0, 0, 0, 0);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_flags(), 0u);
+  ASSERT_EQ(net_read32be(sent_dhcp() + DHCP_OFF_GIADDR), 0u);
+  ASSERT_EQ(sent_ip_dst(), server_cfg.offered_ip);
+  ASSERT_MEM_EQ(sent_frame, chaddr, 6);
+  ASSERT_EQ(sent_udp_dport(), 68u);
+
+  /* the broadcast flag: broadcast, and the flag copied */
+  server_gets(DHCP_MSG_DISCOVER, 0x8000u, 0, 0, 0);
+  ASSERT_EQ(sent_flags(), 0x8000u);
+  ASSERT_EQ(sent_ip_dst(), BROADCAST_IP);
+  ASSERT_MEM_EQ(sent_frame, bcast_mac, 6);
+
+  /* ciaddr: to it, whatever the flag */
+  server_gets(DHCP_MSG_REQUEST, 0x8000u, server_cfg.offered_ip, 0, 0);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_ACK);
+  ASSERT_EQ(sent_ip_dst(), server_cfg.offered_ip);
+  ASSERT_MEM_EQ(sent_frame, chaddr, 6);
+
+  /* a NAK: broadcast, even to a client with an address */
+  server_gets(DHCP_MSG_REQUEST, 0, NET_IPV4(192, 168, 1, 100), 0, 0);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_NAK);
+  ASSERT_EQ(sent_ip_dst(), BROADCAST_IP);
+  ASSERT_MEM_EQ(sent_frame, bcast_mac, 6);
+
+  /* through a relay: to it, on the server port, giaddr copied */
+  server_gets(DHCP_MSG_DISCOVER, 0, 0, RELAY_IP, 0);
+  ASSERT_EQ(net_read32be(sent_dhcp() + DHCP_OFF_GIADDR), RELAY_IP);
+  ASSERT_EQ(sent_ip_dst(), RELAY_IP);
+  ASSERT_MEM_EQ(sent_frame, relay_mac, 6);
+  ASSERT_EQ(sent_udp_dport(), 67u);
+  ASSERT_EQ(sent_flags(), 0u);
+  server_gets(DHCP_MSG_REQUEST, 0, 0, RELAY_IP, NET_IPV4(192, 168, 1, 100));
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_NAK);
+  ASSERT_EQ(sent_ip_dst(), RELAY_IP);
+  ASSERT_EQ(sent_udp_dport(), 67u);
+  ASSERT_EQ(sent_flags(), 0x8000u);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1316,6 +1394,7 @@ int main(void) {
   RUN_TEST(test_dhcp_server_nak_is_bare);
   RUN_TEST(test_dhcp_server_inform_ack_has_no_lease);
   RUN_TEST(test_dhcp_server_renewal_ack_echoes_ciaddr);
+  RUN_TEST(test_dhcp_server_reply_routing);
   TEST_REPORT();
   return test_failures;
 }
