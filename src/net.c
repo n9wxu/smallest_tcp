@@ -23,12 +23,22 @@
 #define NET_MIN_FRAME ETH_HDR_SIZE
 #endif
 
+/* Replies are built in tx while the request is still read from rx, so the
+ * two must not share a byte.  Addresses are compared as integers: '<' is
+ * defined only between pointers into the same object. */
+static int buffers_overlap(const uint8_t *a, uint16_t a_size, const uint8_t *b,
+                           uint16_t b_size) {
+  uintptr_t pa = (uintptr_t)a, pb = (uintptr_t)b;
+  return pa < pb + b_size && pb < pa + a_size;
+}
+
 net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
                    uint8_t *tx_buf, uint16_t tx_size, const uint8_t mac[6],
                    const net_mac_t *driver, void *driver_ctx) {
   static const uint8_t default_mac[6] = NET_DEFAULT_MAC;
 
-  if (!net || !rx_buf || !tx_buf || !driver)
+  if (!net || !rx_buf || !tx_buf || !driver ||
+      buffers_overlap(rx_buf, rx_size, tx_buf, tx_size))
     return NET_ERR_INVALID_PARAM;
   if (rx_size < NET_MIN_FRAME || tx_size < NET_MIN_FRAME)
     return NET_ERR_BUF_TOO_SMALL;

@@ -91,8 +91,8 @@ Consequences and invariants:
   to read is discarded unprocessed.
 - **`rx.buf` and `tx.buf` must not overlap.**  Replies are built in
   `net->tx.buf` while the request is still being read from `net->rx.buf`
-  (an echo reply copies one into the other).  `net_init()` does not check
-  this.
+  (an echo reply copies one into the other).  `net_init()` refuses buffers
+  that share a byte with `NET_ERR_INVALID_PARAM`; they may touch.
 
 `eth_input(net, frame, len)` is public, and the unit tests call it directly
 with frames in memory.  A platform whose MAC delivers frames into RAM by DMA

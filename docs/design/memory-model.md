@@ -60,7 +60,10 @@ application must be built with the same settings
 two application buffers.  Every received frame is copied into `rx.buf`
 ([mac-hal.md §3](mac-hal.md#3-the-receive-lifecycle-net_poll)); every frame
 sent is built in `tx.buf`.  The two must not overlap: replies are built in
-`tx.buf` while the request is still being read from `rx.buf`.
+`tx.buf` while the request is still being read from `rx.buf`.  `net_init()`
+refuses buffers that share a byte (`NET_ERR_INVALID_PARAM`); it compares
+their addresses as `uintptr_t`, since `<` between pointers into different
+objects is undefined in C.
 
 **Receive buffer.**  Must hold the largest frame the device should accept.
 A longer frame is truncated and then rejected by IPv4/IPv6, so the buffer
@@ -134,7 +137,7 @@ For whole-build flash and RAM figures, see
 
 | Function | Validates | Sets |
 |---|---|---|
-| `net_init()` | Non-NULL `net`, buffers and driver; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with MAC bytes 2..5 (`net_random_seed()`).  Does **not** call `driver->init()`. |
+| `net_init()` | Non-NULL `net`, buffers and driver; buffers that do not overlap; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with MAC bytes 2..5 (`net_random_seed()`).  Does **not** call `driver->init()`. |
 | `tcp_conn_init()` | Non-NULL connection and buffer tables/contexts | CLOSED, initial RTO, default MSS |
 | `tcp_saw_tx_init()`, `tcp_saw_rx_init()` | — | Buffer and capacity |
 | `http_conn_init()` | Buffers present; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |

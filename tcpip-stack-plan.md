@@ -288,7 +288,7 @@ starts with a unit test that fails on the current code.
 
 **Core** ([docs/design/mac-hal.md](docs/design/mac-hal.md),
 [docs/design/configuration.md](docs/design/configuration.md))
-- [ ] `net_init()` does not check that `rx.buf` and `tx.buf` do not overlap
+- [x] `net_init()` does not check that `rx.buf` and `tx.buf` do not overlap
       (replies are built in tx while rx is still read)
 - [ ] `NET_USE_IPV4=0` only gates the Ethernet dispatch and is untested
 

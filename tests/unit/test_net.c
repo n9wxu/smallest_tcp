@@ -126,6 +126,30 @@ TEST(test_net_init_refuses_buffers_too_small_for_tcp) {
             NET_OK);
 }
 
+/* Replies are built in tx while the request is still read from rx: the
+ * two may touch but not share a byte */
+TEST(test_net_init_refuses_overlapping_buffers) {
+  static uint8_t mem[3 * TCP_MIN_FRAME];
+  net_t net;
+  int dummy = 0;
+
+  ASSERT_EQ(net_init(&net, mem, TCP_MIN_FRAME, mem, TCP_MIN_FRAME, NULL,
+                     &stub_mac, &dummy),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(net_init(&net, mem, 2 * TCP_MIN_FRAME, mem + TCP_MIN_FRAME,
+                     TCP_MIN_FRAME, NULL, &stub_mac, &dummy),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(net_init(&net, mem + TCP_MIN_FRAME, TCP_MIN_FRAME, mem,
+                     TCP_MIN_FRAME + 1, NULL, &stub_mac, &dummy),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(net_init(&net, mem + TCP_MIN_FRAME, TCP_MIN_FRAME, mem,
+                     TCP_MIN_FRAME, NULL, &stub_mac, &dummy),
+            NET_OK);
+  ASSERT_EQ(net_init(&net, mem, TCP_MIN_FRAME, mem + TCP_MIN_FRAME,
+                     2 * TCP_MIN_FRAME, NULL, &stub_mac, &dummy),
+            NET_OK);
+}
+
 TEST(test_net_init_null_params) {
   uint8_t rx[200], tx[200];
   net_t net;
@@ -233,6 +257,7 @@ int main(void) {
   RUN_TEST(test_net_init_defaults_applied);
   RUN_TEST(test_net_init_buf_too_small);
   RUN_TEST(test_net_init_refuses_buffers_too_small_for_tcp);
+  RUN_TEST(test_net_init_refuses_overlapping_buffers);
   RUN_TEST(test_net_init_null_params);
   RUN_TEST(test_mac_equal);
   RUN_TEST(test_mac_is_broadcast);
