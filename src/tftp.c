@@ -262,8 +262,9 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
                        const uint8_t *src_mac, uint16_t src_port,
                        const uint8_t *data, uint16_t len) {
   uint16_t opcode;
+  /* Port 0 asks for no reply (RFC 768): no TID, and 0 means "none yet" */
   if ((c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) ||
-      len < 2)
+      len < 2 || src_port == 0)
     return;
   opcode = net_read16be(data);
   if (truncated(opcode, len))

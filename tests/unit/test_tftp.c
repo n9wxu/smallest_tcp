@@ -473,6 +473,28 @@ TEST(test_tftp_truncated_error_dropped) {
   ASSERT_EQ(done_ok, 1);
 }
 
+/* RFC 768: a source port of 0 means no reply is wanted, so a datagram
+   from port 0 cannot be the server's answer — nor draw an ERROR 5.  It is
+   dropped, and the server's real transfer ID is still to come. */
+TEST(test_tftp_datagram_from_port_0_dropped) {
+  uint8_t full[512], pkt[600];
+  uint16_t plen;
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+  send_count = 0;
+  memset(full, 0x33, sizeof(full));
+  plen = make_data(pkt, 1, full, 512);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, 0, pkt, plen);
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(data_calls, 0);
+  ASSERT_EQ(client.state, TFTP_STATE_REQUESTING);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  ASSERT_EQ(data_calls, 1);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(get_udp_dport(0), (uint16_t)SERVER_TID);
+}
+
 /* REQ-TFTP-018 — wrong TID → ERROR(5) sent, transfer continues */
 TEST(test_tftp_wrong_tid_sends_error5) {
   setup();
@@ -933,6 +955,7 @@ int main(void) {
   RUN_TEST(test_tftp_error_packet_aborts);
   RUN_TEST(test_tftp_error_unterminated_message);
   RUN_TEST(test_tftp_truncated_error_dropped);
+  RUN_TEST(test_tftp_datagram_from_port_0_dropped);
   RUN_TEST(test_tftp_wrong_tid_sends_error5);
   RUN_TEST(test_tftp_stray_host_gets_error5);
   RUN_TEST(test_tftp_stray_error_not_answered);

@@ -240,6 +240,11 @@ unknown until it answers from a new port:
   (REQ-TFTP-015).
 - The first DATA, OACK or ERROR from the server's IP fixes
   `server_tid` (REQ-TFTP-006).
+- A datagram from port 0 is dropped outright.  Port 0 says no reply is
+  wanted (RFC 768), so it cannot be a transfer ID — and `server_tid` uses 0
+  for "none yet": a server answering from port 0 used to be taken for one
+  that had not answered, its ACKs going to port 69 and any later port
+  becoming its TID.  It gets no ERROR 5 either, having asked for no reply.
 - Any other datagram — another IP, another port, or, before the server
   has answered, an opcode that cannot be its answer — is a stray
   (`from_server_tid()` is false).  `reject_stray()` sends ERROR 5
@@ -328,12 +333,13 @@ as well: the client answers each duplicate block.
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (27 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (28 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts with
 its message and an unterminated message is reported as `""`, a
 truncated ERROR is dropped, ERROR 5
-to a stray port or host and none for a stray ERROR, OACK sets the block
+to a stray port or host and none for a stray ERROR, a datagram from
+port 0 dropped, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
 an OACK blksize above the one requested, below 8 or not requested at
 all, or not a number ("512abc"), and an option never requested, draw

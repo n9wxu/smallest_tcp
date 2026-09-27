@@ -342,8 +342,8 @@ starts with a unit test that fails on the current code.
       rather than refused (RFC 2347)
 - [x] The retransmission timer restarts on any datagram from the server's
       TID, including ones that are ignored
-- [ ] The server TID uses 0 for "unknown", so a server answering from port 0
-      is mishandled
+- [x] The server TID uses 0 for "unknown", so a server answering from port 0
+      is mishandled — a datagram from port 0 is dropped
 - [ ] The 119-character cap on ERROR text in `put_error()` never applies —
       every text is a short constant — and can go
 
