@@ -97,7 +97,10 @@ jobs:
 
   # ── Hardware DUT fuzz (self-hosted, conditional) ───────────────────
   # Runs only when a self-hosted runner with the `hw-dut` label is
-  # registered. The job is skipped gracefully otherwise.
+  # registered. The job is skipped gracefully otherwise.  It needs a board
+  # port that provides the tcp_echo_demo firmware target (start-up code,
+  # linker script, MAC driver); cmake/arm-none-eabi.cmake builds the
+  # libraries for it.
   fuzz-tcp-hw:
     name: Fuzz — TCP on Hardware DUT
     runs-on: [self-hosted, hw-dut]

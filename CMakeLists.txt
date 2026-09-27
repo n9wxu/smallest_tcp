@@ -8,13 +8,19 @@ project(smallest_tcp
 
 # ── Options ───────────────────────────────────────────────────────────
 
-option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${PROJECT_IS_TOP_LEVEL})
-option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${PROJECT_IS_TOP_LEVEL})
+# The tests and demos are hosted programs: off when cross-compiling
+if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CROSSCOMPILING)
+    set(SMALLEST_TCP_HOSTED ON)
+else()
+    set(SMALLEST_TCP_HOSTED OFF)
+endif()
+option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${SMALLEST_TCP_HOSTED})
+option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_BUILD_DRIVERS "Build platform MAC drivers" ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_IPV6          "Dual stack: IPv6 + ICMPv6 + NDP in the core" ON)
 option(SMALLEST_TCP_UDP           "UDP in the core, and the applications over it" ON)
 option(SMALLEST_TCP_TCP           "TCP in the core, and the applications over it" ON)
-option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${PROJECT_IS_TOP_LEVEL})
+option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds)" OFF)
 set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
     "Application configuration header, included first by net_config.h")
