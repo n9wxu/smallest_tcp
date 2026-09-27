@@ -74,15 +74,20 @@ typedef void (*dhcpv4_client_event_fn_t)(uint8_t event, void *ctx);
  * @brief DHCPv4 client state.  Zero-initialise before calling _init().
  */
 typedef struct {
-  uint8_t state;       /**< DHCPV4_CLI_* */
-  uint32_t xid;        /**< Current transaction ID (random) */
-  uint32_t offered_ip; /**< IP offered by server (yiaddr) */
-  uint32_t server_ip;  /**< Server Identifier option (54) */
-  uint32_t lease_time; /**< IP Address Lease Time, seconds */
-  uint32_t t1;         /**< Renewal time, seconds */
-  uint32_t t2;         /**< Rebinding time, seconds */
-  uint32_t timer_ms;   /**< Countdown to next action, ms */
-  uint8_t retries;     /**< Retransmit counter */
+  uint8_t state;           /**< DHCPV4_CLI_* */
+  uint8_t retries;         /**< Retransmissions of the DISCOVER or REQUEST */
+  uint16_t sec_ms;         /**< ms toward the next second of since_s */
+  uint32_t xid;            /**< Current transaction ID (random) */
+  uint32_t offered_ip;     /**< IP offered by server (yiaddr) */
+  uint32_t server_ip;      /**< Server Identifier option (54) */
+  uint32_t lease_time;     /**< Lease time, seconds; 0xFFFFFFFF = infinite */
+  uint32_t t1;             /**< Renewal time, seconds into the lease */
+  uint32_t t2;             /**< Rebinding time, seconds into the lease */
+  uint32_t since_s;        /**< Seconds since the lease was granted */
+  uint32_t next_request_s; /**< since_s of the next REQUEST: T1, then the
+                                RENEWING and REBINDING retransmissions */
+  uint32_t timer_ms;       /**< Until the next DISCOVER or REQUEST
+                                retransmission (SELECTING, REQUESTING) */
 
   const dhcpv4_opt_table_t *opt_table; /**< Application option handlers */
   dhcpv4_client_event_fn_t on_event;   /**< State change callback */

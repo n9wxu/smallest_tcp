@@ -59,8 +59,8 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 | REQ-DHCPv4-002 | MUST | INIT → SELECTING: broadcast DHCPDISCOVER | RFC 2131 §4.4.1 | TEST-DHCPv4-002 |
 | REQ-DHCPv4-003 | MUST | SELECTING → REQUESTING: after receiving DHCPOFFER, broadcast DHCPREQUEST | RFC 2131 §4.4.1 | TEST-DHCPv4-003 |
 | REQ-DHCPv4-004 | MUST | REQUESTING → BOUND: after receiving DHCPACK, configure IP address | RFC 2131 §4.4.1 | TEST-DHCPv4-004 |
-| REQ-DHCPv4-005 | MUST | BOUND → RENEWING: at T1 (50% of lease), unicast DHCPREQUEST to server | RFC 2131 §4.4.5 | TEST-DHCPv4-005 |
-| REQ-DHCPv4-006 | MUST | RENEWING → REBINDING: at T2 (87.5% of lease), broadcast DHCPREQUEST | RFC 2131 §4.4.5 | TEST-DHCPv4-006 |
+| REQ-DHCPv4-005 | MUST | BOUND → RENEWING: at T1 (50% of lease), unicast DHCPREQUEST to server; unanswered, retransmit it after half the time left until T2, at least 60 s later | RFC 2131 §4.4.5 | TEST-DHCPv4-005 |
+| REQ-DHCPv4-006 | MUST | RENEWING → REBINDING: at T2 (87.5% of lease), broadcast DHCPREQUEST; unanswered, retransmit it after half the time left until the lease expires, at least 60 s later | RFC 2131 §4.4.5 | TEST-DHCPv4-006 |
 | REQ-DHCPv4-007 | MUST | If lease expires, transition to INIT and deconfigure IP | RFC 2131 §4.4.5 | TEST-DHCPv4-007 |
 
 ### DHCPDISCOVER (RFC 2131 §4.4.1)
@@ -141,7 +141,7 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 |---|---|---|---|---|
 | REQ-DHCPv4-045 | MUST | Retransmit DHCPDISCOVER and DHCPREQUEST with exponential backoff (initial 4s, max 64s); after four unanswered DHCPREQUEST retransmissions, restart discovery | RFC 2131 §4.1, §4.4.1 | TEST-DHCPv4-045 |
 | REQ-DHCPv4-046 | SHOULD | Add random jitter (±1 second) to retransmission timer | RFC 2131 §4.1 | TEST-DHCPv4-046 |
-| REQ-DHCPv4-047 | MUST | Track lease timer, T1 timer, T2 timer | RFC 2131 §4.4.5 | TEST-DHCPv4-047 |
+| REQ-DHCPv4-047 | MUST | Track lease timer, T1 timer, T2 timer, for any 32-bit lease time; an infinite lease (0xFFFFFFFF) is never renewed and never expires | RFC 2131 §3.3, §4.4.5 | TEST-DHCPv4-047 |
 
 ### Gateway ARP Resolution
 

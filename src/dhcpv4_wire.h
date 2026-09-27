@@ -57,6 +57,8 @@
 #define DHCP_OPT_T2 59
 #define DHCP_OPT_END 255
 
+#define DHCP_LEASE_INFINITE 0xFFFFFFFFu /* RFC 2131 §3.3 */
+
 /**
  * The next option after @p *pos in the options of @p msg: its code, with
  * @p *data and @p *len set; DHCP_OPT_END at the end or on a truncated

@@ -13,6 +13,8 @@
 #define RETRANSMIT_JITTER_MS 1000u
 /* RFC 2131 §3.1, §4.4.1: then discovery starts again */
 #define REQUEST_RETRANSMITS 4u
+/* RFC 2131 §4.4.5: the least wait between renewing or rebinding REQUESTs */
+#define EXTEND_WAIT_MIN_S 60u
 
 #define PARAM_REQUEST_MAX 35
 
@@ -45,11 +47,14 @@ static uint16_t put_param_request_list(uint8_t *msg, uint16_t pos,
   return (uint16_t)(pos + 2 + n);
 }
 
+static int holds_lease(const dhcpv4_client_t *c) {
+  return c->state == DHCPV4_CLI_BOUND || c->state == DHCPV4_CLI_RENEWING ||
+         c->state == DHCPV4_CLI_REBINDING;
+}
+
 /* Our address as a DHCP message source: none until the server ACKs it */
 static uint32_t client_address(const net_t *net, const dhcpv4_client_t *c) {
-  int have_lease =
-      c->state == DHCPV4_CLI_RENEWING || c->state == DHCPV4_CLI_REBINDING;
-  return have_lease ? net->ipv4_addr : 0u;
+  return holds_lease(c) ? net->ipv4_addr : 0u;
 }
 
 /* REQ-DHCPv4-002, 008..017 */
@@ -141,6 +146,9 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
     c->t1 = c->lease_time / 2u;
   if (c->t2 == 0) /* REQ-DHCPv4-036: 0.875 × lease */
     c->t2 = c->lease_time - c->lease_time / 8u;
+  c->since_s = 0u;
+  c->sec_ms = 0u;
+  c->next_request_s = c->t1;
 }
 
 static void clear_address(net_t *net) {
@@ -180,20 +188,48 @@ static void retransmit(net_t *net, dhcpv4_client_t *c) {
   transmit(net, c);
 }
 
-static void enter_state(net_t *net, dhcpv4_client_t *c, uint8_t state,
-                        uint32_t timer_ms) {
-  c->state = state;
-  c->retries = 0;
-  c->timer_ms = timer_ms;
-  if (state == DHCPV4_CLI_RENEWING || state == DHCPV4_CLI_REBINDING)
-    send_request(net, c);
+/* REQ-DHCPv4-007, 037, 038 */
+static void lose_address(net_t *net, dhcpv4_client_t *c, uint8_t evt) {
+  fire_event(c, evt);
+  clear_address(net);
+  start_selecting(net, c);
 }
 
-/* Half the time left until @p until_s, from @p since_s (RFC 2131 §4.4.5),
- * at least a second */
-static uint32_t half_remaining_ms(uint32_t since_s, uint32_t until_s) {
-  uint32_t ms = (until_s > since_s ? until_s - since_s : 1u) / 2u * 1000u;
-  return ms ? ms : 1000u;
+/* An infinite lease (RFC 2131 §3.3), or one of unknown length */
+static int lease_is_endless(const dhcpv4_client_t *c) {
+  return c->lease_time == DHCP_LEASE_INFINITE || c->lease_time == 0u;
+}
+
+/* The state the lease's age calls for (RFC 2131 §4.4.5) */
+static uint8_t lease_phase(const dhcpv4_client_t *c) {
+  if (c->since_s >= c->t2)
+    return DHCPV4_CLI_REBINDING;
+  return c->since_s >= c->t1 ? DHCPV4_CLI_RENEWING : DHCPV4_CLI_BOUND;
+}
+
+/* REQ-DHCPv4-026, 027: again after half the time left, at least 60 s later
+ * (RFC 2131 §4.4.5) */
+static void request_extension(net_t *net, dhcpv4_client_t *c) {
+  uint32_t deadline_s = c->state == DHCPV4_CLI_RENEWING ? c->t2 : c->lease_time;
+  uint32_t left_s = deadline_s - c->since_s;
+  uint32_t wait_s =
+      left_s / 2u > EXTEND_WAIT_MIN_S ? left_s / 2u : EXTEND_WAIT_MIN_S;
+  send_request(net, c);
+  c->next_request_s = wait_s < left_s ? c->since_s + wait_s : deadline_s;
+}
+
+static void lease_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
+  uint8_t phase;
+  c->since_s += net_whole_seconds(&c->sec_ms, ms);
+  if (c->since_s >= c->lease_time) {
+    lose_address(net, c, DHCPV4_EVT_EXPIRED);
+    return;
+  }
+  phase = lease_phase(c);
+  if (phase != c->state || c->since_s >= c->next_request_s) {
+    c->state = phase;
+    request_extension(net, c);
+  }
 }
 
 void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_client_event_fn_t on_event,
@@ -210,29 +246,11 @@ void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {
 
 /* REQ-DHCPv4-005..007, 045..047 */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
-  if (c->state == DHCPV4_CLI_INIT || c->timer_ms == 0 ||
-      !net_countdown(&c->timer_ms, ms))
-    return;
-
-  switch (c->state) {
-  case DHCPV4_CLI_SELECTING: /* the xid stays for the retransmissions */
-  case DHCPV4_CLI_REQUESTING:
-    retransmit(net, c);
-    break;
-  case DHCPV4_CLI_BOUND: /* T1 */
-    enter_state(net, c, DHCPV4_CLI_RENEWING, half_remaining_ms(c->t1, c->t2));
-    break;
-  case DHCPV4_CLI_RENEWING: /* T2 */
-    enter_state(net, c, DHCPV4_CLI_REBINDING,
-                half_remaining_ms(c->t2, c->lease_time));
-    break;
-  case DHCPV4_CLI_REBINDING: /* the lease ran out */
-    fire_event(c, DHCPV4_EVT_EXPIRED);
-    clear_address(net);
-    start_selecting(net, c);
-    break;
-  default:
-    break;
+  if (c->state == DHCPV4_CLI_SELECTING || c->state == DHCPV4_CLI_REQUESTING) {
+    if (net_countdown(&c->timer_ms, ms))
+      retransmit(net, c);
+  } else if (holds_lease(c) && !lease_is_endless(c)) {
+    lease_tick(net, c, ms);
   }
 }
 
@@ -262,16 +280,13 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
     if (awaiting_ack(c)) {
       int renewal = c->state != DHCPV4_CLI_REQUESTING;
       take_lease(net, c, data, len);
-      enter_state(net, c, DHCPV4_CLI_BOUND, c->t1 * 1000u);
+      c->state = DHCPV4_CLI_BOUND;
       fire_event(c, renewal ? DHCPV4_EVT_RENEWED : DHCPV4_EVT_BOUND);
     }
     break;
   case DHCP_MSG_NAK:
-    if (awaiting_ack(c)) {
-      fire_event(c, DHCPV4_EVT_NAK);
-      clear_address(net);
-      start_selecting(net, c);
-    }
+    if (awaiting_ack(c))
+      lose_address(net, c, DHCPV4_EVT_NAK);
     break;
   default:
     break;
@@ -282,8 +297,7 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
 void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
   uint8_t *msg;
   uint16_t pos = DHCP_OFF_OPTIONS;
-  if (c->state != DHCPV4_CLI_BOUND && c->state != DHCPV4_CLI_RENEWING &&
-      c->state != DHCPV4_CLI_REBINDING)
+  if (!holds_lease(c))
     return;
   msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
   if (msg) {
@@ -295,5 +309,4 @@ void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
   }
   clear_address(net);
   c->state = DHCPV4_CLI_INIT;
-  c->timer_ms = 0u;
 }

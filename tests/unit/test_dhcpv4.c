@@ -571,6 +571,153 @@ TEST(test_dhcp_client_requesting_gives_up) {
   ASSERT_NE(cli.xid, xid);
 }
 
+/* ── Helpers: the lease clock ─────────────────────────────────────── */
+
+#define SERVER_IP NET_IPV4(10, 0, 0, 1)
+#define BROADCAST_IP 0xFFFFFFFFu
+
+static uint32_t clock_s; /* seconds since bind_lease() */
+
+/* Start, take the OFFER and bind with the ACK's lease, T1 and T2 (0 =
+   absent); the clock starts at 0 and the frames sent so far are forgotten */
+static void bind_lease(uint32_t lease, uint32_t t1, uint32_t t2) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  dhcpv4_client_init(&cli, on_event, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, lease, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, msg, mlen);
+  mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, lease, t1, t2, NET_IPV4(255, 255, 255, 0),
+                         SERVER_IP);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, msg, mlen);
+  send_count = 0;
+  clock_s = 0;
+}
+
+static void tick_seconds(uint32_t step_s) {
+  dhcpv4_client_tick(&net, &cli, step_s * 1000u);
+  clock_s += step_s;
+}
+
+/* Tick step_s at a time until the client sends (for at most limit_s); the
+   clock then */
+static uint32_t clock_at_next_send(uint32_t step_s, uint32_t limit_s) {
+  int before = send_count;
+  uint32_t end = clock_s + limit_s;
+  while (send_count == before && clock_s < end)
+    tick_seconds(step_s);
+  return clock_s;
+}
+
+/* Tick step_s at a time until the client is in state (for at most
+   limit_s); the clock then */
+static uint32_t clock_at_state(uint8_t state, uint32_t step_s,
+                               uint32_t limit_s) {
+  uint32_t end = clock_s + limit_s;
+  while (cli.state != state && clock_s < end)
+    tick_seconds(step_s);
+  return clock_s;
+}
+
+/* 1 if got == want; says what it got if not */
+static int is_u32(uint32_t got, uint32_t want) {
+  if (got == want)
+    return 1;
+  fprintf(stderr, "    got %lu, expected %lu\n", (unsigned long)got,
+          (unsigned long)want);
+  return 0;
+}
+
+static uint32_t sent_ip_dst(void) { return net_read32be(sent_frame + 14 + 16); }
+
+/* 1 if the next frame, a second at a time, is sent at at_s, in state, to
+   dst_ip; says what it was if not */
+static int next_sent_is(uint32_t at_s, uint8_t state, uint32_t dst_ip) {
+  uint32_t t = clock_at_next_send(1u, 4000u);
+  if (t == at_s && cli.state == state && sent_ip_dst() == dst_ip)
+    return 1;
+  fprintf(stderr,
+          "    sent at %lu s in state %u to %08lx, expected %lu s in state %u "
+          "to %08lx\n",
+          (unsigned long)t, cli.state, (unsigned long)sent_ip_dst(),
+          (unsigned long)at_s, state, (unsigned long)dst_ip);
+  return 0;
+}
+
+/* REQ-DHCPv4-005..007, 026, 027: through a whole 3600 s lease (T1 1800 s,
+   T2 3150 s) — REQUESTs to the server, then broadcast, each after half the
+   time left until T2 or expiry but at least 60 s later; at expiry the
+   address goes and a DISCOVER follows (RFC 2131 §4.4.5) */
+TEST(test_dhcp_client_renew_rebind_timing) {
+  setup();
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(2475, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(2812, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(2981, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(3065, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(3125, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(3150, DHCPV4_CLI_REBINDING, BROADCAST_IP));
+  ASSERT_TRUE(next_sent_is(3375, DHCPV4_CLI_REBINDING, BROADCAST_IP));
+  ASSERT_TRUE(next_sent_is(3487, DHCPV4_CLI_REBINDING, BROADCAST_IP));
+  ASSERT_TRUE(next_sent_is(3547, DHCPV4_CLI_REBINDING, BROADCAST_IP));
+  ASSERT_EQ(event_count, 1); /* BOUND */
+  ASSERT_TRUE(next_sent_is(3600, DHCPV4_CLI_SELECTING, BROADCAST_IP));
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_DISCOVER);
+  ASSERT_EQ(send_count, 11);
+  ASSERT_EQ(last_event, DHCPV4_EVT_EXPIRED);
+  ASSERT_EQ(net.ipv4_addr, 0u);
+}
+
+/* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again */
+TEST(test_dhcp_client_renewal_restarts_lease) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  setup();
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u));
+  tick_seconds(100);
+  mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, msg, mlen);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
+  ASSERT_EQ(last_event, DHCPV4_EVT_RENEWED);
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1900u + 1800u));
+  ASSERT_EQ(cli.state, DHCPV4_CLI_RENEWING);
+}
+
+/* RFC 2131 §3.3: an infinite lease is never renewed and never expires,
+   whatever T1 and T2 say */
+TEST(test_dhcp_client_infinite_lease) {
+  setup();
+  bind_lease(0xFFFFFFFFu, 0, 0);
+  ASSERT_TRUE(is_u32(clock_at_next_send(3600u, 400u * 86400u), 400u * 86400u));
+  ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
+  ASSERT_EQ(net.ipv4_addr, NET_IPV4(10, 0, 0, 50));
+
+  bind_lease(0xFFFFFFFFu, 1800, 3150);
+  ASSERT_TRUE(is_u32(clock_at_next_send(60u, 86400u), 86400u));
+  ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
+}
+
+/* REQ-DHCPv4-047: a lease, T1, T2 and the waits between them far past
+   2^32 ms (49.7 days) — 30,000,000 s, T1 5,000,000 s, T2 15,000,000 s */
+TEST(test_dhcp_client_long_lease) {
+  setup();
+  bind_lease(30000000u, 5000000u, 15000000u);
+  ASSERT_TRUE(is_u32(clock_at_next_send(1000u, 40000000u), 5000000u));
+  ASSERT_EQ(cli.state, DHCPV4_CLI_RENEWING);
+  ASSERT_TRUE(is_u32(clock_at_next_send(1000u, 40000000u), 10000000u));
+  ASSERT_TRUE(is_u32(clock_at_state(DHCPV4_CLI_REBINDING, 1000u, 40000000u),
+                     15000000u));
+  ASSERT_TRUE(is_u32(clock_at_next_send(1000u, 40000000u), 22500000u));
+  ASSERT_TRUE(is_u32(clock_at_state(DHCPV4_CLI_SELECTING, 1000u, 40000000u),
+                     30000000u));
+  ASSERT_EQ(last_event, DHCPV4_EVT_EXPIRED);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * SERVER TESTS
  * ══════════════════════════════════════════════════════════════════ */
@@ -753,6 +900,10 @@ int main(void) {
   RUN_TEST(test_dhcp_client_discover_backoff);
   RUN_TEST(test_dhcp_client_backoff_randomised);
   RUN_TEST(test_dhcp_client_requesting_gives_up);
+  RUN_TEST(test_dhcp_client_renew_rebind_timing);
+  RUN_TEST(test_dhcp_client_renewal_restarts_lease);
+  RUN_TEST(test_dhcp_client_infinite_lease);
+  RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_offer_on_discover);
   RUN_TEST(test_dhcp_server_ack_on_correct_request);
   RUN_TEST(test_dhcp_server_nak_on_wrong_request);

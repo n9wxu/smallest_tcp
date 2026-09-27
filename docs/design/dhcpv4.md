@@ -94,15 +94,13 @@ server from its configured address.  The old code temporarily overwrote
 | INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()` | — | none | `dhcpv4_client_start()` → SELECTING |
 | SELECTING | start, NAK, lease expiry, REQUESTING's give-up (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER → REQUESTING |
 | REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING |
-| BOUND | ACK | — | T1 | timer → RENEWING |
-| RENEWING | T1 | one REQUEST to the server's IP | (T2 − T1) / 2 | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; timer → REBINDING |
-| REBINDING | RENEWING's timer | one REQUEST, broadcast | (lease − T2) / 2 | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; timer → `DHCPV4_EVT_EXPIRED`, SELECTING |
+| BOUND | ACK | — | lease clock | T1 → RENEWING |
+| RENEWING | T1 | REQUEST to the server's IP; again after half the time left until T2, at least 60 s later | lease clock | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; T2 → REBINDING |
+| REBINDING | T2 | REQUEST, broadcast; again after half the time left until the lease ends, at least 60 s later | lease clock | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; lease end → `DHCPV4_EVT_EXPIRED`, SELECTING |
 
-`enter_state()` sets the state, resets the retry count, arms the timer
-and sends the state's REQUEST; `half_remaining_ms()` computes the
-RENEWING and REBINDING timers (at least 1 s).  A NAK or an expired lease
-clears `net->ipv4_addr`, `subnet_mask` and `gateway_ipv4`
-(`clear_address()`) and restarts discovery with a new transaction ID.
+A NAK or an expired lease clears `net->ipv4_addr`, `subnet_mask` and
+`gateway_ipv4` and restarts discovery with a new transaction ID
+(`lose_address()`).
 
 **Retransmission** in SELECTING and REQUESTING (`begin_exchange()`,
 `transmit()`): the first wait is 4 s, then 8, 16, 32 and 64 s, then every
@@ -114,28 +112,55 @@ REQUESTING gives up after four retransmissions — RFC 2131 §3.1's example,
 discovery starts again with a new transaction ID (`retransmit()`,
 RFC 2131 §4.4.1).  No event fires; the client had no address yet.
 
-**Timing of RENEWING and REBINDING.**  `half_remaining_ms()` is the
-RFC 2131 §4.4.5 retransmission wait, but when it ends the client moves on
-instead of retransmitting: RENEWING lasts half of T2 − T1, REBINDING half
-of lease − T2, and then the lease is treated as expired.  With the
-default T1 and T2 the client starts rebinding at 0.6875 of the lease and
-drops the address at 0.75 of it, having sent one REQUEST in each state.
-This is conservative (the address is never used past its lease) but it
-gives up a quarter of the lease early; see §7.
+**Renewing and rebinding** (RFC 2131 §4.4.5) run on the lease clock
+(§6): `since_s`, the seconds since the ACK.  `lease_phase()` names the
+state the lease's age calls for — BOUND before T1, RENEWING before T2,
+REBINDING after — and `lease_tick()` enters it, sending its first
+REQUEST, or else sends the next REQUEST once `since_s` reaches
+`next_request_s`.  `request_extension()` sends each REQUEST and sets the
+next one half the time left until the state's deadline — T2 in RENEWING,
+the end of the lease in REBINDING — but at least 60 s later; when the
+deadline comes first, it brings its own REQUEST (REBINDING's first) or
+none (expiry).  When `since_s` reaches `lease_time` the lease has
+expired.  A 3600 s lease with the default T1 and T2 (1800 s, 3150 s):
+
+| Seconds after the ACK | State | Sends | Time left | Next REQUEST |
+|---|---|---|---|---|
+| 1800 | RENEWING | REQUEST to the server | 1350 s to T2 | 2475 (+675) |
+| 2475 | RENEWING | REQUEST to the server | 675 s | 2812 (+337) |
+| 2812 | RENEWING | REQUEST to the server | 338 s | 2981 (+169) |
+| 2981 | RENEWING | REQUEST to the server | 169 s | 3065 (+84) |
+| 3065 | RENEWING | REQUEST to the server | 85 s | 3125 (+60, not 42) |
+| 3125 | RENEWING | REQUEST to the server | 25 s | T2 (+60 would pass it) |
+| 3150 | REBINDING | REQUEST, broadcast | 450 s to the end | 3375 (+225) |
+| 3375 | REBINDING | REQUEST, broadcast | 225 s | 3487 (+112) |
+| 3487 | REBINDING | REQUEST, broadcast | 113 s | 3547 (+60, not 56) |
+| 3547 | REBINDING | REQUEST, broadcast | 53 s | none (+60 would pass the end) |
+| 3600 | SELECTING | DISCOVER, broadcast (`DHCPV4_EVT_EXPIRED`) | — | back-off |
+
+**Infinite leases.**  A lease time of 0xFFFFFFFF is infinite (RFC 2131
+§3.3) — `dhcpv4_server` sends it when its `lease_time_s` is 0.  Such a
+lease is never renewed and never expires: the lease clock does not run,
+whatever T1 and T2 say (`lease_is_endless()`).
 
 ### 3.2 Client State Structure
 
 ```c
 typedef struct {
-  uint8_t state;       /* DHCPV4_CLI_* */
-  uint32_t xid;        /* transaction ID, from net_random() */
-  uint32_t offered_ip; /* yiaddr of the OFFER */
-  uint32_t server_ip;  /* Server Identifier (54) */
-  uint32_t lease_time; /* seconds */
-  uint32_t t1;         /* seconds: option 58, or 0.5 × lease */
-  uint32_t t2;         /* seconds: option 59, or 0.875 × lease */
-  uint32_t timer_ms;   /* countdown to the next action; 0 = none */
-  uint8_t retries;
+  uint8_t state;           /* DHCPV4_CLI_* */
+  uint8_t retries;         /* retransmissions of the DISCOVER or REQUEST */
+  uint16_t sec_ms;         /* ms toward the next second of since_s */
+  uint32_t xid;            /* transaction ID, from net_random() */
+  uint32_t offered_ip;     /* yiaddr of the OFFER */
+  uint32_t server_ip;      /* Server Identifier (54) */
+  uint32_t lease_time;     /* seconds; 0xFFFFFFFF = infinite */
+  uint32_t t1;             /* option 58, or 0.5 × lease (seconds) */
+  uint32_t t2;             /* option 59, or 0.875 × lease (seconds) */
+  uint32_t since_s;        /* the lease clock: seconds since the ACK */
+  uint32_t next_request_s; /* since_s of the next REQUEST: T1, then the
+                              RENEWING and REBINDING retransmissions */
+  uint32_t timer_ms;       /* SELECTING, REQUESTING: until the next
+                              retransmission */
 
   const dhcpv4_opt_table_t *opt_table;
   dhcpv4_client_event_fn_t on_event;
@@ -189,8 +214,8 @@ address is not checked.  By message type (`dhcp_message_type()`):
   `offered_ip`, option 54 `server_ip` — and the client enters
   REQUESTING.
 - **ACK**, in REQUESTING, RENEWING or REBINDING: `take_lease()` applies
-  the lease, the client enters BOUND with the T1 timer, and the event
-  fires (BOUND after REQUESTING, RENEWED otherwise).
+  the lease and restarts the lease clock, the client enters BOUND, and
+  the event fires (BOUND after REQUESTING, RENEWED otherwise).
 - **NAK**, in the same states: `DHCPV4_EVT_NAK`, address cleared,
   discovery restarts.
 
@@ -200,7 +225,8 @@ first router); 51, 58, 59, 54 → the client's lease time, T1, T2 and
 server; each of these only when present with at least 4 bytes.  Every
 option, built-in or not, is then offered to the option handlers
 (`run_option_handlers()`).  T1 and T2 default to 0.5 and 0.875 of the
-lease (RFC 2131 §4.4.5).
+lease (RFC 2131 §4.4.5).  The lease clock starts again at 0, with the
+first REQUEST due at T1.
 
 ### 3.6 Option Handlers and the Parameter Request List
 
@@ -266,7 +292,7 @@ included option 150.
 |---|---|---|
 | `DHCPV4_EVT_BOUND` | ACK in REQUESTING | Address, mask and gateway set (mask and gateway keep their previous values if the ACK lacks options 1 and 3); handlers already called |
 | `DHCPV4_EVT_RENEWED` | ACK in RENEWING or REBINDING | As BOUND, with the new lease |
-| `DHCPV4_EVT_EXPIRED` | REBINDING's timer | Still the old address — it is cleared right after the callback, and a DISCOVER follows |
+| `DHCPV4_EVT_EXPIRED` | The lease clock reaches `lease_time` | Still the old address — it is cleared right after the callback, and a DISCOVER follows |
 | `DHCPV4_EVT_NAK` | NAK in REQUESTING, RENEWING or REBINDING | As EXPIRED |
 
 On EXPIRED and NAK the application tears down its TCP connections: the
@@ -366,8 +392,20 @@ broadcast flag, `siaddr` = `server_ip`, and carries options 53, 54
 ## 6. Timers
 
 The client needs `dhcpv4_client_tick(net, c, elapsed_ms)` from the same
-main loop that calls `net_tick()`; the server has no timers.  Timers are
-32-bit milliseconds counted down with `net_countdown()`.
+main loop that calls `net_tick()`; the server has no timers.  The client
+has two clocks, each used in its own states:
+
+| Clock | Fields | States | Counts | Compared with |
+|---|---|---|---|---|
+| Retransmission | `timer_ms` | SELECTING, REQUESTING | Milliseconds down to 0 (`net_countdown()`); at 0 the DISCOVER or REQUEST is sent again | — |
+| Lease | `since_s`, `sec_ms` | BOUND, RENEWING, REBINDING, unless the lease is infinite or of unknown length (§7) | Whole seconds up from the ACK, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
+
+The lease clock counts seconds because leases are long.  32-bit
+milliseconds wrap after 49.7 days (4,294,967 s), and a lease time may be
+up to 136 years; when the client armed its T1 as `t1 × 1000` ms, a longer
+T1 wrapped and the renewal came early — an infinite lease's after 49.7
+days.  In seconds every lease time, T1, T2 and wait fits in 32 bits, and
+the halving is a shift: no multiplication and no division.
 
 ---
 
@@ -377,11 +415,10 @@ main loop that calls `net_tick()`; the server has no timers.  Timers are
 |---|---|
 | RENEWING/REBINDING REQUEST carries the Server Identifier | RFC 2131 §4.3.2 says it MUST NOT; known deviation, not fixed |
 | Unicast renewals are sent to the broadcast MAC | The client never learns the server's MAC.  Works with a server on the link; a router will normally not forward it, so behind a relay agent only the REBINDING broadcast can succeed |
-| RENEWING and REBINDING last half their RFC duration, one REQUEST each; the lease is abandoned at T1 + (T2 − T1)/2 + (lease − T2)/2 | §3.1 |
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
-| Timers are seconds × 1000 in 32 bits: a T1 above 4,294,967 s (49.7 days) — an infinite lease gives T1 = 2³¹ − 1 s — wraps, as do half-intervals that large | The renewal then fires early |
-| An ACK without a lease time (and none remembered) leaves the client BOUND with no timer | Servers must send option 51 in an ACK |
+| An ACK without a lease time (and none remembered) leaves the client BOUND for good, as an infinite lease does | Servers must send option 51 in an ACK |
+| The lease is timed from the ACK, not from the REQUEST it answers (RFC 2131 §4.4.5) | It ends later by the round-trip time |
 | Option Overload (52), `sname`/`file` options | Not parsed |
 | `secs` field always 0 | — |
 | Server: NAK and the ACK to INFORM carry lease time and configuration options (RFC 2131 Table 3 says they must not) | Known; not fixed |
@@ -402,5 +439,5 @@ place from `net->rx.buf`.
 
 | Suite | Tests | Covers |
 |---|---|---|
-| `tests/unit/test_dhcpv4.c` | 19 | Client: init, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2, NAK, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization, REQUESTING giving up.  Server: OFFER, ACK, NAK, RELEASE, bad `op`, bad magic |
+| `tests/unit/test_dhcpv4.c` | 23 | Client: init, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2, NAK, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization, REQUESTING giving up, RENEWING and REBINDING through a whole lease, a renewal restarting the lease, infinite and 30,000,000 s leases.  Server: OFFER, ACK, NAK, RELEASE, bad `op`, bad magic |
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 | `dhcp_echo_demo` against a Scapy server: DISCOVER, OFFER → REQUEST, ACK binds, NAK → DISCOVER, wrong-xid OFFER ignored, `ciaddr` 0, retransmission, Server ID in REQUEST |

@@ -56,7 +56,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 
 ## 📊 Current Status
 
-**683 unit tests passing** across 28 test suites on macOS — 694 on Linux, where the raw-socket driver's suite adds 3 socket tests and, as root, 8 live tests — compiled with `-Wall -Wextra -Werror -pedantic`.  
+**687 unit tests passing** across 28 test suites on macOS — 698 on Linux, where the raw-socket driver's suite adds 3 socket tests and, as root, 8 live tests — compiled with `-Wall -Wextra -Werror -pedantic`.  
 **182 blackbox conformance tests** across 12 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×21, HTTP ×22, IPv6 ×29, TLS server ×29, TLS client ×17, HTTPS ×9), plus 5 fuzz tests and interop checks with Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`), dnsmasq (DHCPv6), and OpenSSL, Python ssl and curl (TLS 1.3) — run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
 
 ### ✅ Implemented (Milestones 1–13)
@@ -73,7 +73,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | UDP | `udp.h` / `udp.c` | 7 unit + **7 blackbox** | Parse/send, port table dispatch, pseudo-header checksum, ICMP Port Unreachable |
 | **TCP** | **`tcp.h` / `tcp.c`** | **46 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit (data + FIN), MSS, window updates, persist timer, in-order delivery, close; application-owned connection table** |
 | TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 20 | Stop-and-wait TX + RX buffers |
-| **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **19 unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
+| **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **23 unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
 | TFTP | `tftp.h` / `tftp.c` | 15 unit | RFC 1350 TFTP client — block-read, blksize option, retransmit, error handling |
 | Multicast + IGMP | `ipv4.c` / `igmp.h` / `igmp.c` | 19 unit | Fixed-size group table, multicast RX, per-packet TTL, IGMPv2 join/leave (RFC 1112, 2236) |
 | DNS wire format | `dns_wire.h` / `dns_wire.c` | 23 unit | RFC 1035 names with compression, bounds-checked readers |
