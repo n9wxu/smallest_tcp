@@ -277,7 +277,9 @@ address is not checked.  By message type (`dhcp_message_type()`):
   of a request it was not asked cost the client its lease.
 
 **`take_lease()`** walks the ACK's options once: `yiaddr` →
-`net->ipv4_addr`; 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (the
+`net->ipv4_addr`; 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (a
+different gateway also clears `gateway_mac_valid`: its MAC is resolved
+anew, [arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open)) (the
 first router); 51, 58, 59, 54 → the client's lease time, T1, T2 and
 server; each of these only when present with at least 4 bytes.  Every
 option, built-in or not, is then offered to the option handlers

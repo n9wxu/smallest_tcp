@@ -24,7 +24,8 @@ traffic is replies — which need no resolution at all (§2).
 | Traffic | Destination MAC |
 |---|---|
 | **Replies** — ARP replies, ICMP echo replies and errors, UDP replies built from a handler's `src_mac`, TCP segments on a passively opened connection, NDP Neighbor Advertisements | The source MAC of the frame being answered.  On a single link that is the sender itself or the router that forwarded the packet, so the reply takes the right first hop without a lookup. |
-| **Broadcast and multicast** — the DHCPv4 client (every message, even a renewal addressed to the server's IP, is framed to `ff:ff:ff:ff:ff:ff`), DHCPv4 server replies that must be broadcast, mDNS, IGMP, MLD, NDP solicitations, DHCPv6 | Computed: broadcast, `ipv4_mcast_mac()` (01:00:5e + 23 bits), `ipv6_mcast_mac()` (33:33 + 32 bits) |
+| **The DHCPv4 client's renewals and RELEASE** | The source MAC of the server's last ACK — the server, or the relay agent on the way to it ([dhcpv4.md §3.4](dhcpv4.md#34-messages-sent)) |
+| **Broadcast and multicast** — the DHCPv4 client's other messages, DHCPv4 server replies that must be broadcast, mDNS, IGMP, MLD, NDP solicitations, DHCPv6 | Computed: broadcast, `ipv4_mcast_mac()` (01:00:5e + 23 bits), `ipv6_mcast_mac()` (33:33 + 32 bits) |
 | **New conversations** — `udp_send()`, `tcp_connect()`, `tftp_client_get()` | Supplied by the application (§3) |
 
 ## 3. Resolving a MAC for an active open
@@ -58,6 +59,15 @@ This changes where all off-link traffic goes while it is in effect; a device
 that also needs its real gateway must restore `gateway_ipv4` and resolve it
 again afterwards.  A device that only talks through its gateway resolves the
 gateway once and leaves it.
+
+**A gateway from DHCP.**  The DHCPv4 client sets `gateway_ipv4` from the
+lease's router option, and clears it with the address.  Whenever that
+changes the gateway it also clears `gateway_mac_valid` (REQ-DHCPv4-048):
+the MAC held was the old gateway's.  The application resolves the new one
+as above — `arp_request(&net, net.gateway_ipv4)` after `DHCPV4_EVT_BOUND`
+or `DHCPV4_EVT_RENEWED` while `gateway_mac_valid` is 0 — and the
+gateway's reply fills in `gateway_mac` (REQ-DHCPv4-049).  A renewal that
+keeps the gateway keeps its MAC.
 
 The stack keeps no timers for ARP: **retries and time-outs are the
 application's** (the demo retries every 500 ms).  The former

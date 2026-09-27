@@ -6,6 +6,7 @@
  * Uses the same stub MAC driver pattern as test_udp.c.
  */
 
+#include "arp.h"
 #include "dhcpv4_client.h"
 #include "dhcpv4_server.h"
 #include "eth.h"
@@ -964,6 +965,69 @@ TEST(test_dhcp_client_t1_t2_fuzzed) {
   ASSERT_TRUE(is_u32(clock_at_next_send(3600u, 400u * 86400u), 400u * 86400u));
 }
 
+/* REQ-DHCPv4-048: the gateway's MAC belongs to the gateway — a lease that
+   changes the gateway, or its loss, makes the one net_t holds stale.  The
+   stack does not resolve the new one itself; the application asks */
+#define GATEWAY_2 NET_IPV4(10, 0, 0, 2)
+static const uint8_t gateway_mac[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
+
+static void renew_with_router(uint32_t router) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid,
+                                  NET_IPV4(10, 0, 0, 50), SERVER_IP, 3600, 0,
+                                  0, NET_IPV4(255, 255, 255, 0), router);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+}
+
+TEST(test_dhcp_client_new_gateway_needs_its_mac) {
+  setup();
+  bind_lease(3600, 0, 0); /* router SERVER_IP */
+  memcpy(net.gateway_mac, gateway_mac, 6);
+  net.gateway_mac_valid = 1; /* resolved by the application */
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  renew_with_router(SERVER_IP);
+  ASSERT_EQ(net.gateway_mac_valid, 1);
+  ASSERT_TRUE(next_sent_is(1800 + cli.t1, DHCPV4_CLI_RENEWING, SERVER_IP));
+  renew_with_router(GATEWAY_2);
+  ASSERT_EQ(net.gateway_ipv4, GATEWAY_2);
+  ASSERT_EQ(net.gateway_mac_valid, 0);
+
+  bind_lease(3600, 0, 0);
+  net.gateway_mac_valid = 1;
+  dhcpv4_client_release(&net, &cli);
+  ASSERT_EQ(net.gateway_ipv4, 0u);
+  ASSERT_EQ(net.gateway_mac_valid, 0);
+}
+
+/* REQ-DHCPv4-049: the application ARPs for the gateway the lease named, and
+   its reply fills in the gateway's MAC */
+TEST(test_dhcp_client_gateway_mac_from_arp) {
+  uint8_t frame[14 + ARP_PKT_SIZE];
+  uint8_t *arp = frame + 14;
+  setup();
+  bind_lease(3600, 0, 0);
+  net.gateway_mac_valid = 0;
+  ASSERT_EQ(arp_request(&net, net.gateway_ipv4), NET_OK);
+  ASSERT_EQ(net_read16be(sent_frame + 12), 0x0806);
+  ASSERT_EQ(net_read32be(sent_frame + 14 + ARP_OFF_TPA), SERVER_IP);
+
+  memcpy(frame, net.mac, 6);
+  memcpy(frame + 6, gateway_mac, 6);
+  net_write16be(frame + 12, 0x0806);
+  net_write16be(arp + ARP_OFF_HTYPE, ARP_HTYPE_ETHERNET);
+  net_write16be(arp + ARP_OFF_PTYPE, ARP_PTYPE_IPV4);
+  arp[ARP_OFF_HLEN] = ARP_HLEN_ETH;
+  arp[ARP_OFF_PLEN] = ARP_PLEN_IPV4;
+  net_write16be(arp + ARP_OFF_OPER, ARP_OPER_REPLY);
+  memcpy(arp + ARP_OFF_SHA, gateway_mac, 6);
+  net_write32be(arp + ARP_OFF_SPA, SERVER_IP);
+  memcpy(arp + ARP_OFF_THA, net.mac, 6);
+  net_write32be(arp + ARP_OFF_TPA, net.ipv4_addr);
+  eth_input(&net, frame, sizeof(frame));
+  ASSERT_EQ(net.gateway_mac_valid, 1);
+  ASSERT_MEM_EQ(net.gateway_mac, gateway_mac, 6);
+}
+
 /* RFC 2131 §3.3: an infinite lease is never renewed and never expires,
    whatever T1 and T2 say */
 TEST(test_dhcp_client_infinite_lease) {
@@ -1383,6 +1447,8 @@ int main(void) {
   RUN_TEST(test_dhcp_client_lease_timed_from_the_request);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_t1_t2_fuzzed);
+  RUN_TEST(test_dhcp_client_new_gateway_needs_its_mac);
+  RUN_TEST(test_dhcp_client_gateway_mac_from_arp);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);
   RUN_TEST(test_dhcp_server_offer_on_discover);

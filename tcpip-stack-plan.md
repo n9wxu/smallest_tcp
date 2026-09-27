@@ -331,7 +331,8 @@ starts with a unit test that fails on the current code.
       nothing — fix the code or the requirements — both: the init functions
       take the `net_t` and check TX 342 / RX 590 (client) or 342 (server);
       the requirements name those sizes
-- [ ] REQ-DHCPv4-048/049 (ARP for the gateway's MAC) are unverified
+- [x] REQ-DHCPv4-048/049 (ARP for the gateway's MAC) are unverified — tested;
+      a lease that changes the gateway now invalidates its MAC
 
 **TFTP** ([docs/design/tftp.md](docs/design/tftp.md) §9)
 - [ ] `parse_decimal()` accepts trailing junk: "512abc" reads as 512

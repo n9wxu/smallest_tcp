@@ -130,6 +130,14 @@ static void fuzz_renewal_times(net_t *net, dhcpv4_client_t *c) {
   c->t2 -= share_of(c->t2, f);
 }
 
+/* REQ-DHCPv4-048: the gateway's MAC is its own — a new gateway's the
+ * application resolves (docs/design/arp-resolution.md) */
+static void set_gateway(net_t *net, uint32_t gateway) {
+  if (gateway != net->gateway_ipv4)
+    net->gateway_mac_valid = 0;
+  net->gateway_ipv4 = gateway;
+}
+
 /* REQ-DHCPv4-028..036: the lease's parameters, applied to net_t.  It runs
  * from the state's first REQUEST, not from the ACK (RFC 2131 §4.4.5). */
 static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
@@ -148,7 +156,7 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
         net->subnet_mask = value;
         break;
       case DHCP_OPT_ROUTER:
-        net->gateway_ipv4 = value;
+        set_gateway(net, value);
         break;
       case DHCP_OPT_LEASE_TIME:
         c->lease_time = value;
@@ -180,7 +188,7 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
 static void clear_address(net_t *net) {
   net->ipv4_addr = 0u;
   net->subnet_mask = 0u;
-  net->gateway_ipv4 = 0u;
+  set_gateway(net, 0u);
 }
 
 /* The state's DISCOVER or REQUEST, and the wait for an answer */

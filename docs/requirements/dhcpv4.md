@@ -149,8 +149,8 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-048 | MUST | After configuring IP and gateway, resolve gateway MAC via ARP | Architecture | TEST-DHCPv4-048 |
-| REQ-DHCPv4-049 | MUST | Store gateway MAC in net_t for off-subnet routing | Architecture | TEST-DHCPv4-049 |
+| REQ-DHCPv4-048 | MUST | A lease that changes the gateway, and the loss of the address, invalidate the gateway MAC in `net_t` (`gateway_mac_valid` = 0); the application resolves the new one with `arp_request()` — the stack never resolves on its own ([arp-resolution.md](../design/arp-resolution.md)) | Architecture | TEST-DHCPv4-048 |
+| REQ-DHCPv4-049 | MUST | The gateway's ARP reply stores its MAC in `net_t` for off-subnet traffic | Architecture | TEST-DHCPv4-049 |
 
 ### Buffer Requirements
 
@@ -219,7 +219,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 - **DHCP uses UDP.** DHCP messages are UDP datagrams on ports 67 (server) and 68 (client).
 - **XID randomization:** The transaction ID should be random to prevent DHCP spoofing.
 - **Lease renewal is mandatory** to maintain the IP address assignment. The stack must track timers and renew proactively.
-- **Gateway MAC resolution:** After DHCP assigns an IP and gateway, the stack must ARP for the gateway MAC before any off-subnet communication is possible.
+- **Gateway MAC resolution:** After DHCP assigns an IP and gateway, the application ARPs for the gateway MAC (`arp_request()`) before any off-subnet communication; the stack only records the reply.
 - **Option 61 (Client Identifier):** Not required but MAY be included for uniqueness beyond MAC address.
 - **Client and server are mutually exclusive on a single interface.** A device either gets an IP from a DHCP server (client) or provides one (server); link only the file you need.
 - **Option handler raw bytes:** The `data` pointer in a handler callback points into the DHCP receive buffer. Handlers MUST NOT retain this pointer past the return of `dhcpv4_client_input()`; copy any data they need into their own storage.
