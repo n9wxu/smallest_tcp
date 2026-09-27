@@ -140,11 +140,13 @@ static const char *error_message(const uint8_t *data, uint16_t len) {
   return msg ? msg : "";
 }
 
+/* An option's value: all digits, else 0 — "512abc" is not 512.  Digits
+ * past 65464 stop the reading (no overflow) and give 0 too. */
 static uint32_t parse_decimal(const char *s) {
   uint32_t v = 0;
   while (*s >= '0' && *s <= '9' && v <= TFTP_MAX_BLKSIZE)
     v = v * 10u + (uint32_t)(*s++ - '0');
-  return v;
+  return *s == '\0' ? v : 0u;
 }
 
 /* RFC 2348 §2: the server may lower the size requested (0 if none was),

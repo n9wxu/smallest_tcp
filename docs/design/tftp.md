@@ -180,8 +180,11 @@ unterminated string).  An option named `blksize` — compared in full and
 case-insensitively with `net_equal_nocase()`; the old parser looked only
 at the first two letters — sets the block size if
 `acceptable_blksize()`: at least 8, and no more than the size requested.
-`parse_decimal()` stops accumulating past 65464, so a long digit string
-cannot overflow.  Other options are ignored.  The client then enters
+`parse_decimal()` takes a value only if it is all digits: anything else
+— "512abc", an empty string, a leading space — reads as 0 and is refused;
+it used to read the digits in front and ignore the rest, so "512abc" was
+512.  Digits past 65464 stop the reading, so a long string cannot
+overflow, and read as 0 too.  Other options are ignored.  The client then enters
 RECEIVING and sends ACK 0.
 
 Any other `blksize` — larger, below 8, empty or not a number (which
@@ -311,14 +314,14 @@ as well: the client answers each duplicate block.
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (23 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (24 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts with
 its message and an unterminated message is reported as `""`, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
 an OACK blksize above the one requested, below 8 or not requested at
-all draws ERROR 8 and ends the transfer, an OACK without blksize means
+all, or not a number ("512abc"), draws ERROR 8 and ends the transfer, an OACK without blksize means
 512-byte blocks, fallback when the server ignores the option, blksize
 option in the RRQ, RRQ and ACK retransmission, give-up after the maximum
 retries, timer restart on DATA.

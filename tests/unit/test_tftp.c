@@ -229,6 +229,33 @@ static uint16_t make_oack_blksize(uint8_t *buf, uint16_t blksize) {
   return pos;
 }
 
+/* An OACK of @p n strings: option names and values, alternately */
+static uint16_t make_oack(uint8_t *buf, const char *const *strs, int n) {
+  uint16_t pos = 2;
+  int i;
+  net_write16be(buf, TFTP_OP_OACK);
+  for (i = 0; i < n; i++) {
+    size_t len = strlen(strs[i]) + 1;
+    memcpy(buf + pos, strs[i], len);
+    pos = (uint16_t)(pos + len);
+  }
+  return pos;
+}
+
+/* 1 if the client refused the OACK: ERROR 8 to the server, the transfer
+   ended; says what happened if not */
+static int oack_refused(void) {
+  uint16_t elen;
+  const uint8_t *e = send_count == 1 ? get_tftp_payload(0, &elen) : NULL;
+  if (e && net_read16be(e) == TFTP_OP_ERROR &&
+      net_read16be(e + 2) == TFTP_ERR_OPTION_NEGOTIATION && done_called == 1 &&
+      !done_ok && client.state == TFTP_STATE_ERROR)
+    return 1;
+  fprintf(stderr, "    %d sent, done %d (ok %d), state %u\n", send_count,
+          done_called, done_ok, client.state);
+  return 0;
+}
+
 /* ════════════════════════════════════════════════════════════════════
  * Tests
  * ════════════════════════════════════════════════════════════════════ */
@@ -627,6 +654,25 @@ TEST(test_tftp_oack_tiny_blksize_refused) {
   ASSERT_EQ(client.state, TFTP_STATE_ERROR);
 }
 
+/* REQ-TFTP-028 — a blksize that is not all digits is refused, like any
+   other bad value: "512abc" is not 512 */
+TEST(test_tftp_oack_blksize_not_a_number_refused) {
+  static const char *const values[] = {"512abc", "", " 512", "5 12"};
+  uint8_t oack[64];
+  int i;
+  for (i = 0; i < 4; i++) {
+    const char *strs[2];
+    strs[0] = "blksize";
+    strs[1] = values[i];
+    setup();
+    tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 1);
+    send_count = 0;
+    tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                      make_oack(oack, strs, 2));
+    ASSERT_TRUE(oack_refused());
+  }
+}
+
 /* REQ-TFTP-028 — an OACK without blksize declines it: 512-byte blocks */
 TEST(test_tftp_oack_without_blksize_means_512) {
   setup();
@@ -828,6 +874,7 @@ int main(void) {
   RUN_TEST(test_tftp_oack_tiny_blksize_refused);
   RUN_TEST(test_tftp_oack_without_blksize_means_512);
   RUN_TEST(test_tftp_oack_unrequested_blksize_refused);
+  RUN_TEST(test_tftp_oack_blksize_not_a_number_refused);
   RUN_TEST(test_tftp_fallback_no_oack);
   RUN_TEST(test_tftp_rrq_contains_blksize_option);
   RUN_TEST(test_tftp_tick_retransmits_rrq);

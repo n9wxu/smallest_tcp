@@ -335,7 +335,7 @@ starts with a unit test that fails on the current code.
       a lease that changes the gateway now invalidates its MAC
 
 **TFTP** ([docs/design/tftp.md](docs/design/tftp.md) §9)
-- [ ] `parse_decimal()` accepts trailing junk: "512abc" reads as 512
+- [x] `parse_decimal()` accepts trailing junk: "512abc" reads as 512
 - [ ] A truncated ERROR (2–3 bytes) still ends the transfer, with code 0;
       the coding rules' "reject, don't repair" says drop it
 - [ ] Options in an OACK we never requested, other than blksize, are ignored
