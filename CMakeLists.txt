@@ -22,6 +22,7 @@ option(SMALLEST_TCP_IPV6          "IPv6 + ICMPv6 + NDP + MLD in the core (with I
 option(SMALLEST_TCP_UDP           "UDP in the core, and the applications over it" ON)
 option(SMALLEST_TCP_TCP           "TCP in the core, and the applications over it" ON)
 option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${SMALLEST_TCP_HOSTED})
+option(SMALLEST_TCP_DTLS          "DTLS 1.3 (RFC 9147) as well as TLS, sharing its handshake" ON)
 option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds)" OFF)
 set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
     "Application configuration header, included first by net_config.h")
@@ -113,19 +114,25 @@ if(SMALLEST_TCP_UDP)
     endif()
 endif()
 
-# ── TLS 1.3 ───────────────────────────────────────────────────────────
+# ── TLS 1.3 and DTLS 1.3 ──────────────────────────────────────────────
 #
 # The protocol has no dependencies: the application supplies a crypto
-# backend (tls_crypto_t).
+# backend (tls_crypto_t).  Without DTLS the handshake leaves out DTLS's
+# formats and cookie (TLS_USE_DTLS 0).
 
-smallest_tcp_library(tls SOURCES
+set(SMALLEST_TCP_TLS_SOURCES
     src/tls_common.c
     src/tls.c
     src/tls_keys.c
     src/tls_server.c
     src/tls_client.c
-    src/dtls.c
 )
+if(SMALLEST_TCP_DTLS)
+    list(APPEND SMALLEST_TCP_TLS_SOURCES src/dtls.c)
+endif()
+smallest_tcp_library(tls SOURCES ${SMALLEST_TCP_TLS_SOURCES})
+target_compile_definitions(smallest_tcp_tls PUBLIC
+    TLS_USE_DTLS=$<BOOL:${SMALLEST_TCP_DTLS}>)
 
 # ── Applications over TCP ─────────────────────────────────────────────
 

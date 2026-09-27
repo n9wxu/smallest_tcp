@@ -16,6 +16,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/** DTLS 1.3 (dtls.h) shares the handshake; 0 builds it for TLS alone,
+ *  without DTLS's hello formats and cookie (and dtls.c does not build).
+ *  CMake: SMALLEST_TCP_DTLS. */
+#ifndef TLS_USE_DTLS
+#define TLS_USE_DTLS 1
+#endif
+
 /* HandshakeType (RFC 8446 §4) */
 #define TLS_HS_CLIENT_HELLO 1
 #define TLS_HS_SERVER_HELLO 2
@@ -101,6 +108,11 @@ typedef struct {
   uint16_t psk_id_len;
   uint8_t psk_modes;      /**< TLS_PSK_KE and/or TLS_PSK_DHE_KE (0: DHE) */
   uint8_t psk_resumption; /**< 1: from a ticket ("res binder") */
+
+  /** DTLS server: 1 skips the cookie exchange (RFC 9147 §5.1 allows it only
+   *  where amplification is no concern).  0: every handshake starts with a
+   *  HelloRetryRequest whose cookie the client must return. */
+  uint8_t dtls_no_cookie;
 } tls_config_t;
 
 /**

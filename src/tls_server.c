@@ -18,6 +18,8 @@
 #define SUPPORTED_VERSIONS_EXT (EXT_HDR + 2)
 #define SELECTED_GROUP_EXT (EXT_HDR + 2)
 #define SELECTED_IDENTITY_EXT (EXT_HDR + 2)
+#define DTLS_COOKIE_LEN 16 /* random, kept in t->sid (DTLS echoes no id) */
+#define COOKIE_EXT (EXT_HDR + 2 + DTLS_COOKIE_LEN)
 #define KEY_SHARE_EXT(pub_len) (EXT_HDR + 4 + (pub_len))
 
 /** What a ClientHello offers */
@@ -31,6 +33,7 @@ typedef struct {
   const uint8_t *share;
   size_t share_len;
   uint16_t retry_group; /* a group we could ask a share of */
+  rd_t cookie;          /* DTLS: the one our HelloRetryRequest sent */
   rd_t identities, binders;
   size_t binders_at; /* the binders are outside their own hash */
 } client_hello_t;
@@ -63,8 +66,12 @@ static int client_extension(tls_conn_t *t, client_hello_t *ch, const uint8_t *m,
   case TLS_EXT_SUPPORTED_VERSIONS:
     v = rd_vec(d, 1);
     while (v.n >= 2)
-      if (rd_uint(&v, 2) == TLS_VERSION_13)
+      if (rd_uint(&v, 2) == tls_version(t))
         ch->tls13 = 1;
+    break;
+  case TLS_EXT_COOKIE: /* DTLS: ours, returned */
+    if (tls_is_dtls(t))
+      ch->cookie = rd_vec(d, 2);
     break;
   case TLS_EXT_SIGNATURE_ALGORITHMS:
     ch->has_sig_algs = 1;
@@ -133,11 +140,15 @@ static int parse_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen,
   memset(ch, 0, sizeof(*ch));
   rd_uint(&r, 2); /* legacy_version: the extension decides */
   rd_take(&r, TLS_RANDOM_LEN);
-  v = rd_vec(&r, 1); /* legacy_session_id, echoed */
+  v = rd_vec(&r, 1); /* legacy_session_id, echoed — but not by DTLS (§5) */
   if (v.n > sizeof(t->sid))
     return TLS_ALERT_DECODE_ERROR;
-  memcpy(t->sid, v.p, v.n);
-  t->sid_len = (uint8_t)v.n;
+  if (!tls_is_dtls(t)) {
+    memcpy(t->sid, v.p, v.n);
+    t->sid_len = (uint8_t)v.n;
+  } else if (rd_vec(&r, 1).n) { /* legacy_cookie: empty (RFC 9147 §5.3) */
+    return TLS_ALERT_ILLEGAL_PARAMETER;
+  }
   v = rd_vec(&r, 2); /* cipher_suites */
   while (v.n >= 2)
     if (rd_uint(&v, 2) == TLS_AES_128_GCM_SHA256)
@@ -193,20 +204,23 @@ static uint8_t choose_psk_mode(const tls_config_t *cfg,
 }
 
 /* RFC 8446 §4.1.4: no share we can use, but a group in common — ask for a
- * share of it.  ClientHello1 gives way to message_hash. */
+ * share of @p group; and for DTLS, unless configured not to, a cookie the
+ * second ClientHello must return (RFC 9147 §5.1), with or without a
+ * group.  ClientHello1 gives way to message_hash. */
 static int send_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen,
                             uint16_t group) {
   const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t *hrr =
-      tls_hs_begin(t, HS_HDR + SERVER_HELLO_FIXED + SELECTED_GROUP_EXT +
-                          SUPPORTED_VERSIONS_EXT);
+  int cookie = tls_is_dtls(t) && !t->cfg->dtls_no_cookie;
+  size_t exts = (group ? SELECTED_GROUP_EXT : 0u) + SUPPORTED_VERSIONS_EXT +
+                (cookie ? COOKIE_EXT : 0u);
+  uint8_t *hrr = tls_hs_begin(t, HS_HDR + SERVER_HELLO_FIXED + exts);
   uint8_t *p;
-  if (!hrr)
+  if (!hrr || (cookie && c->random(c->ctx, t->sid, DTLS_COOKIE_LEN) != 0))
     return tls_fail(t, TLS_ALERT_INTERNAL_ERROR);
   c->hash_update(&t->transcript, m, mlen);
   tls_transcript_hrr(c, &t->transcript);
   p = hrr + HS_HDR;
-  net_write16be(p, TLS_LEGACY_VERSION);
+  net_write16be(p, tls_legacy_version(t));
   memcpy(p + 2, tls_hrr_random, TLS_RANDOM_LEN);
   p += 2 + TLS_RANDOM_LEN;
   *p++ = t->sid_len;
@@ -214,21 +228,31 @@ static int send_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen,
   p += t->sid_len;
   net_write16be(p, TLS_AES_128_GCM_SHA256);
   p[2] = 0; /* legacy_compression_method */
-  net_write16be(p + 3, SELECTED_GROUP_EXT + SUPPORTED_VERSIONS_EXT);
+  net_write16be(p + 3, exts);
   p += 5;
-  net_write16be(p, TLS_EXT_KEY_SHARE);
+  if (group) {
+    net_write16be(p, TLS_EXT_KEY_SHARE);
+    net_write16be(p + 2, 2);
+    net_write16be(p + 4, group);
+    p += SELECTED_GROUP_EXT;
+  }
+  net_write16be(p, TLS_EXT_SUPPORTED_VERSIONS);
   net_write16be(p + 2, 2);
-  net_write16be(p + 4, group);
-  net_write16be(p + 6, TLS_EXT_SUPPORTED_VERSIONS);
-  net_write16be(p + 8, 2);
-  net_write16be(p + 10, TLS_VERSION_13);
-  p += SELECTED_GROUP_EXT + SUPPORTED_VERSIONS_EXT;
+  net_write16be(p + 4, tls_version(t));
+  p += SUPPORTED_VERSIONS_EXT;
+  if (cookie) {
+    net_write16be(p, TLS_EXT_COOKIE);
+    net_write16be(p + 2, 2 + DTLS_COOKIE_LEN);
+    net_write16be(p + 4, DTLS_COOKIE_LEN);
+    memcpy(p + 6, t->sid, DTLS_COOKIE_LEN);
+    p += COOKIE_EXT;
+  }
   tls_hs_end(t, hrr, TLS_HS_SERVER_HELLO, (size_t)(p - hrr - HS_HDR));
   tls_hs_flush(t);
   if (t->sid_len) /* compatibility mode: the dummy CCS goes here */
     (void)tls_queue_ccs(t);
   t->group = group;
-  t->flags |= F_HRR | F_CCS_OK;
+  t->flags |= F_HRR | F_CCS_OK | (cookie ? F_COOKIE : 0u);
   return 0;
 }
 
@@ -277,7 +301,7 @@ static int send_server_hello(tls_conn_t *t, uint8_t psk_mode, int pick,
   if (!sh)
     return -1;
   p = sh + HS_HDR;
-  net_write16be(p, TLS_LEGACY_VERSION);
+  net_write16be(p, tls_legacy_version(t));
   if (c->random(c->ctx, p + 2, TLS_RANDOM_LEN) != 0)
     return -1;
   p += 2 + TLS_RANDOM_LEN;
@@ -304,7 +328,7 @@ static int send_server_hello(tls_conn_t *t, uint8_t psk_mode, int pick,
   }
   net_write16be(p, TLS_EXT_SUPPORTED_VERSIONS);
   net_write16be(p + 2, 2);
-  net_write16be(p + 4, TLS_VERSION_13);
+  net_write16be(p + 4, tls_version(t));
   p += SUPPORTED_VERSIONS_EXT;
   tls_hs_end(t, sh, TLS_HS_SERVER_HELLO, (size_t)(p - sh - HS_HDR));
   tls_hs_flush(t);
@@ -342,6 +366,12 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
 
   if ((alert = parse_client_hello(t, m, mlen, &ch)))
     return tls_fail(t, alert);
+  if (t->flags & F_COOKIE) { /* DTLS: the cookie must come back (§5.1) */
+    if (ch.cookie.n != DTLS_COOKIE_LEN ||
+        !tls_equal(ch.cookie.p, t->sid, DTLS_COOKIE_LEN))
+      return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+    t->flags |= F_VERIFIED;
+  }
   if (!ch.tls13)
     return tls_fail(t, TLS_ALERT_PROTOCOL_VERSION);
   if (!ch.our_suite)
@@ -384,6 +414,13 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
       ch.share_len != (ch.group == TLS_GROUP_X25519 ? X25519_SHARE_LEN
                                                     : SECP256R1_SHARE_LEN))
     return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+  /* DTLS: a first ClientHello that would get a ServerHello gets a cookie to
+   * return first (RFC 9147 §5.1); the second must use the same share */
+  if (tls_is_dtls(t) && !(t->flags & F_HRR) && !cfg->dtls_no_cookie) {
+    alert = send_hello_retry(t, m, mlen, 0);
+    t->group = ch.group;
+    return alert;
+  }
   if ((alert = take_early_secret(t, &ch, m, mlen, psk_mode ? pick : -1)))
     return alert;
 

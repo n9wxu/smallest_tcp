@@ -25,6 +25,9 @@
 #define F_HRR 0x100u     /* a HelloRetryRequest was sent (received) */
 #define F_KU_REQ 0x200u  /* tls_key_update() asked for the peer's too */
 #define F_KU_ANS 0x400u  /* the owed KeyUpdate answers the peer's request */
+#define F_KU_SENT 0x800u /* DTLS: our KeyUpdate awaits its ACK */
+#define F_COOKIE 0x1000u /* DTLS server: our HelloRetryRequest had a cookie */
+#define F_VERIFIED 0x2000u /* DTLS server: the cookie came back */
 
 /* tls_conn_t.step: where the handshake is */
 enum {
@@ -158,7 +161,19 @@ typedef struct tls_rl_s {
 
 extern const tls_rl_t tls_stream_rl;
 
-static inline int tls_is_dtls(const tls_conn_t *t) { return t->rl->dtls; }
+static inline int tls_is_dtls(const tls_conn_t *t) {
+  return TLS_USE_DTLS && t->rl->dtls;
+}
+
+/** supported_versions' value for this protocol */
+static inline uint16_t tls_version(const tls_conn_t *t) {
+  return tls_is_dtls(t) ? DTLS_VERSION_13 : TLS_VERSION_13;
+}
+
+/** A hello's legacy_version for this protocol */
+static inline uint16_t tls_legacy_version(const tls_conn_t *t) {
+  return tls_is_dtls(t) ? DTLS_LEGACY_VERSION : TLS_LEGACY_VERSION;
+}
 
 #define ALERT_WARNING 1
 #define ALERT_FATAL 2

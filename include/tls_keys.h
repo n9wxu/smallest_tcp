@@ -27,6 +27,10 @@
 
 #define TLS_LEGACY_VERSION 0x0303 /**< In record headers and hellos */
 #define TLS_VERSION_13 0x0304
+#define DTLS_LEGACY_VERSION                                                    \
+  0xfefd                       /**< DTLS 1.2: in DTLS hellos and records       \
+                                */
+#define DTLS_VERSION_13 0xfefc /**< In supported_versions (RFC 9147) */
 
 /* AlertDescription (RFC 8446 §6) */
 #define TLS_ALERT_CLOSE_NOTIFY 0

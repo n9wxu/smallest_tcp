@@ -277,9 +277,9 @@ the TLS stream one.
 - [x] Stage 2: `aes_block` in the backend; "dtls13" labels and the "sn" key
 - [x] Stage 3: records — DTLSPlaintext, the unified header, record number
       encryption, sequence reconstruction, the replay window
-- [ ] Stage 4: the handshake over datagrams — the roles' DTLS formats,
+- [x] Stage 4: the handshake over datagrams — the roles' DTLS formats,
       flights, fragmentation and reassembly, the timer, ACKs, the cookie
-- [ ] Stage 5: after the handshake — application data, KeyUpdate with
+- [x] Stage 5: after the handshake — application data, KeyUpdate with
       ACKs, close_notify, `dtls_release()`
 - [ ] Stage 6: demos, blackbox and interop with wolfSSL (OpenSSL and Mbed
       TLS have no DTLS 1.3), CI

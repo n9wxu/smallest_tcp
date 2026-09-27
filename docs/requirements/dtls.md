@@ -5,7 +5,7 @@
 **Supporting:** RFC 8446 (TLS 1.3, whose handshake DTLS reuses); [tls.md](tls.md) (REQ-TLS-*), which applies to DTLS except where this document says otherwise  
 **Scope:** V1 (datagram security layer, Milestone 14)  
 **Last updated:** 2026-09-27  
-**Status:** In progress — see the traceability table at the end.
+**Status:** Implemented in the library (unit-tested); interop in progress.  REQ-DTLS-058 (SHOULD) is not implemented.  See the traceability table at the end.
 
 ## Overview
 
@@ -121,4 +121,64 @@ only the unacknowledged part of a flight (REQ-DTLS-058).
 
 ## Traceability
 
-To be filled in as each part is implemented.
+Unit tests are in `tests/unit/test_dtls.c` (and the label prefix in
+`test_tls_keys.c`, the AES block in `test_tls_crypto.c`); blackbox and
+interop tests follow in Stage 6.
+
+| Requirement | Status | Tests |
+|---|---|---|
+| REQ-DTLS-001 | ✅ | `test_refuse_dtls12`, `test_client_hello_format`, `test_server_hello_format` |
+| REQ-DTLS-002 | ✅ | `test_client_hello_format` |
+| REQ-DTLS-003 | ✅ | `test_refuse_legacy_cookie` |
+| REQ-DTLS-004 | ✅ | `test_server_hello_format` |
+| REQ-DTLS-005 | ✅ | `test_server_hello_format` (no change_cipher_spec in either direction) |
+| REQ-DTLS-006 | ✅ | `test_dtls13_labels` (against `tests/tls/gen_dtls13.py`), `test_keys_from_secret` |
+| REQ-DTLS-007 | ✅ | every handshake: both Finished MACs check out over the TLS-form transcript |
+| REQ-DTLS-010 | ✅ | `test_client_hello_format` |
+| REQ-DTLS-011 | ✅ | `test_seal_as_rfc_describes`, `test_epochs` |
+| REQ-DTLS-012 | ✅ | `test_open_short_header`, `test_parse_uses_the_length` |
+| REQ-DTLS-013 | ✅ | `test_parse_refuses` |
+| REQ-DTLS-014 | ✅ | `test_parse_refuses`, `test_bad_records_dropped` |
+| REQ-DTLS-015 | ✅ | `test_seal_as_rfc_describes` (the record rebuilt from the backend's primitives) |
+| REQ-DTLS-016 | ✅ | `test_seal_as_rfc_describes`, `test_seal_masks_the_record_number`, `test_open_refuses_short_ciphertext` |
+| REQ-DTLS-017 | ✅ | `test_seq_expand`, `test_open_reconstructs_the_number`, `test_late_record_of_old_epoch` |
+| REQ-DTLS-018 | ✅ | `test_epochs`, `test_key_update` |
+| REQ-DTLS-019 | ✅ | `test_small_mtu`, `test_epochs` (the ServerHello and a protected record in one datagram) |
+| REQ-DTLS-020 | ✅ | `test_small_mtu`, `test_max_data` |
+| REQ-DTLS-021 | ✅ | `test_replay_window`, `test_open_refuses_tampering` |
+| REQ-DTLS-022 | ✅ | `test_bad_records_dropped`, `test_open_refuses_tampering` |
+| REQ-DTLS-023 | ✅ | `bad_records` counted (`test_bad_records_dropped`); the connection ends at 2^32 − 1, below the RFC's 2^36 |
+| REQ-DTLS-024 | ✅ | `test_key_update_at_record_limit` |
+| REQ-DTLS-030, -031 | ✅ | `test_client_hello_format`, `test_timer` (a retransmission: the same message_seq, a new record) |
+| REQ-DTLS-032 | ✅ | `test_duplicates`, `test_fragments_in_any_order`; later messages are dropped (the MAY) |
+| REQ-DTLS-033 | ✅ | `test_small_mtu` |
+| REQ-DTLS-034 | ✅ | `test_fragments_in_any_order`, `test_retransmission_cut_differently`, `test_refuse_changed_bytes` |
+| REQ-DTLS-035 | ✅ | `test_timer` (the retransmitted message byte for byte) |
+| REQ-DTLS-036 | ✅ | `test_each_datagram_lost`, `test_finished_lost` (the Finished resent under the handshake keys after the application keys took over) |
+| REQ-DTLS-037 | ✅ | `test_timer` |
+| REQ-DTLS-038 | ✅ | `test_timer`, `test_each_datagram_lost`, `test_finished_lost` |
+| REQ-DTLS-039 | ✅ | `test_ack_lost`, `test_key_update_ack_lost` |
+| REQ-DTLS-040 | ✅ | `test_data_before_finished_dropped` |
+| REQ-DTLS-041 | ✅ | `test_records_per_transmission` |
+| REQ-DTLS-042 | ✅ | `test_handshake` (every handshake has the cookie exchange) |
+| REQ-DTLS-043 | ✅ | `test_server_hello_format`, `test_no_cookie` |
+| REQ-DTLS-044 | ✅ | `test_refuse_wrong_cookie` |
+| REQ-DTLS-045 | ✅ | the TLS client's rule (a second HelloRetryRequest is `unexpected_message`, `test_tls_client`) |
+| REQ-DTLS-046 | ✅ | `test_alert_not_retransmitted`, `test_close_notify` |
+| REQ-DTLS-047 | ✅ | `test_close_notify` |
+| REQ-DTLS-050 | ✅ | `test_last_flight_acknowledged`, `test_new_session_ticket_acknowledged` (the ACK opened and read) |
+| REQ-DTLS-051 | ✅ | only records whose fragments were placed are noted (`note_record()`); `test_plaintext_after_keys_ignored` |
+| REQ-DTLS-052 | ✅ | `test_last_flight_acknowledged`, `test_new_session_ticket_acknowledged`, `test_key_update` |
+| REQ-DTLS-053 | ✅ | `test_last_flight_acknowledged` (epoch 3), `test_ack_on_disruption` (epoch 2) |
+| REQ-DTLS-054 | ✅ | only handshake records are noted |
+| REQ-DTLS-055 | ✅ | `test_ack_on_disruption` |
+| REQ-DTLS-056 | ✅ | `test_last_flight_acknowledged`, `test_each_datagram_lost` (every flight answered) |
+| REQ-DTLS-057 | ✅ | `test_key_update_waits_for_flight` (an ACK of the first transmission, late) |
+| REQ-DTLS-058 | — | not implemented (SHOULD): the timer resends the whole flight |
+| REQ-DTLS-060 | ✅ | `test_key_update`, `test_key_update_ack_lost`, `test_key_update_waits_for_flight` |
+| REQ-DTLS-061 | ✅ | `test_late_record_of_old_epoch`, `test_key_update` |
+| REQ-DTLS-062 | ✅ | `test_last_epoch` |
+| REQ-DTLS-070 | ✅ | `dtls.c` calls only the backend; `test_init_checks` (a backend without `aes_block` refused) |
+| REQ-DTLS-071 | ✅ | no allocator calls in `dtls.c` |
+| REQ-DTLS-072 | ✅ | `SMALLEST_TCP_DTLS=OFF` builds and passes; the link check follows in Stage 7 |
+| REQ-DTLS-073 | ✅ | `dtls.c` includes no network header |

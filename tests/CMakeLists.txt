@@ -105,9 +105,11 @@ if(SMALLEST_TCP_TLS)
     add_unit_test(test_tls_client)
     target_link_libraries(test_tls_client PRIVATE
         smallest_tcp_tls smallest_tcp_tls_mbedtls)
-    add_unit_test(test_dtls)
-    target_link_libraries(test_dtls PRIVATE
-        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+    if(SMALLEST_TCP_DTLS)
+        add_unit_test(test_dtls)
+        target_link_libraries(test_dtls PRIVATE
+            smallest_tcp_tls smallest_tcp_tls_mbedtls)
+    endif()
 endif()
 
 # ── Configurations that must not compile ─────────────────────────────

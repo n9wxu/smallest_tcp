@@ -11,7 +11,8 @@
 #define PSK_BINDER_LIST_LEN (2 + 1 + TLS_HASH_LEN) /* one binder */
 
 /* Bytes of the ClientHello before its extensions: version, random, empty
- * session ID, one cipher suite, null compression, extensions length */
+ * session ID, one cipher suite, null compression, extensions length — and
+ * for DTLS an empty legacy_cookie (RFC 9147 §5.3) */
 #define CLIENT_HELLO_FIXED (2 + TLS_RANDOM_LEN + 1 + 4 + 2 + 2)
 
 /* A literal IPv4 or IPv6 address is not sent as server_name (RFC 6066 §3) */
@@ -64,10 +65,10 @@ static uint8_t *put_server_name(const tls_conn_t *t, uint8_t *p) {
   return p + 5 + len;
 }
 
-static uint8_t *put_versions_and_signatures(uint8_t *p) {
+static uint8_t *put_versions_and_signatures(uint8_t *p, uint16_t version) {
   p = put_extension_header(p, TLS_EXT_SUPPORTED_VERSIONS, 3);
   p[0] = 2;
-  net_write16be(p + 1, TLS_VERSION_13);
+  net_write16be(p + 1, version);
   p = put_extension_header(p + 3, TLS_EXT_SIGNATURE_ALGORITHMS, 6);
   net_write16be(p, 4);
   net_write16be(p + 2, TLS_SIG_ECDSA_SECP256R1_SHA256);
@@ -189,19 +190,22 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie, size_t cookie_len,
   if (t->group &&
       c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
     return -1;
-  m = tls_hs_begin(
-      t, HS_HDR + CLIENT_HELLO_FIXED + server_name_size(t) +
-             VERSIONS_AND_SIGNATURES_SIZE + key_share_size(t, pub_len) +
-             (cookie_len ? EXT_HDR + 2 + cookie_len : 0) +
-             (cfg->max_fragment ? EXT_HDR + 1 : 0) + psk_size(cfg));
+  m = tls_hs_begin(t, HS_HDR + CLIENT_HELLO_FIXED + (size_t)tls_is_dtls(t) +
+                          server_name_size(t) + VERSIONS_AND_SIGNATURES_SIZE +
+                          key_share_size(t, pub_len) +
+                          (cookie_len ? EXT_HDR + 2 + cookie_len : 0) +
+                          (cfg->max_fragment ? EXT_HDR + 1 : 0) +
+                          psk_size(cfg));
   if (!m)
     return -1;
 
   p = m + HS_HDR;
-  net_write16be(p, TLS_LEGACY_VERSION);
+  net_write16be(p, tls_legacy_version(t));
   memcpy(p + 2, t->sid, TLS_RANDOM_LEN); /* a client keeps its random in sid */
   p += 2 + TLS_RANDOM_LEN;
   *p++ = 0; /* legacy_session_id: none (no middlebox compatibility mode) */
+  if (tls_is_dtls(t))
+    *p++ = 0; /* legacy_cookie: empty */
   net_write16be(p, 2);
   net_write16be(p + 2, TLS_AES_128_GCM_SHA256);
   p[4] = 1; /* legacy_compression_methods: null */
@@ -210,7 +214,7 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie, size_t cookie_len,
   p = exts + 2;
   if (sends_server_name(t))
     p = put_server_name(t, p);
-  p = put_versions_and_signatures(p);
+  p = put_versions_and_signatures(p, tls_version(t));
   if (t->group)
     p = put_groups_and_share(t, p, pub, pub_len);
   if (cfg->max_fragment)
@@ -259,7 +263,7 @@ static int on_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen) {
       return tls_fail(t, alert);
     switch (type) {
     case TLS_EXT_SUPPORTED_VERSIONS:
-      if (rd_uint(&d, 2) != TLS_VERSION_13)
+      if (rd_uint(&d, 2) != tls_version(t))
         return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
       tls13 = 1;
       break;
@@ -345,7 +349,7 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
       return tls_fail(t, alert);
     switch (type) {
     case TLS_EXT_SUPPORTED_VERSIONS:
-      if (rd_uint(&d, 2) != TLS_VERSION_13)
+      if (rd_uint(&d, 2) != tls_version(t))
         return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
       tls13 = 1;
       break;
