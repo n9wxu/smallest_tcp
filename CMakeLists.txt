@@ -12,6 +12,7 @@ option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${PROJECT_IS_TOP_
 option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_BUILD_DRIVERS "Build platform MAC drivers" ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_IPV6          "Dual stack: IPv6 + ICMPv6 + NDP in the core" ON)
+option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${PROJECT_IS_TOP_LEVEL})
 
 # ── Core library (always built) ───────────────────────────────────────
 #
@@ -146,6 +147,41 @@ if(SMALLEST_TCP_IPV6)
         )
     endif()
     add_library(smallest_tcp::dhcpv6_client ALIAS smallest_tcp_dhcpv6_client)
+endif()
+
+# ── TLS 1.3 (optional): tls.c + the Mbed TLS crypto backend ──────────
+#
+# Mbed TLS provides the cryptography only (crypto + X.509); the protocol is
+# smallest_tcp's own.  Pinned to the 3.6 LTS release tarball.
+
+if(SMALLEST_TCP_TLS)
+    include(FetchContent)
+    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+    set(MBEDTLS_USER_CONFIG_FILE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/tls_mbedtls_user_config.h"
+        CACHE FILEPATH "" FORCE)
+    FetchContent_Declare(mbedtls
+        URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+        URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+    )
+    FetchContent_MakeAvailable(mbedtls)
+
+    add_library(smallest_tcp_tls_mbedtls STATIC
+        src/tls_crypto_mbedtls.c
+    )
+    target_include_directories(smallest_tcp_tls_mbedtls PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_link_libraries(smallest_tcp_tls_mbedtls PUBLIC mbedx509 mbedcrypto)
+    target_compile_features(smallest_tcp_tls_mbedtls PUBLIC c_std_99)
+    if(PROJECT_IS_TOP_LEVEL)
+        target_compile_options(smallest_tcp_tls_mbedtls PRIVATE
+            -Wall -Wextra -Werror -pedantic
+        )
+    endif()
+    add_library(smallest_tcp::tls_mbedtls ALIAS smallest_tcp_tls_mbedtls)
 endif()
 
 # ── Platform MAC drivers (optional) ──────────────────────────────────

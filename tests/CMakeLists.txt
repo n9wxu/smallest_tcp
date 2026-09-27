@@ -111,3 +111,8 @@ if(SMALLEST_TCP_IPV6)
     add_unit_test(test_dhcpv6)
     target_link_libraries(test_dhcpv6 PRIVATE smallest_tcp_dhcpv6_client)
 endif()
+
+if(SMALLEST_TCP_TLS)
+    add_unit_test(test_tls_crypto)
+    target_link_libraries(test_tls_crypto PRIVATE smallest_tcp_tls_mbedtls)
+endif()
