@@ -278,6 +278,7 @@ int main(int argc, char *argv[]) {
       step();
     tcp_abort(&net, &conn);
   }
+  tls_release(&tls);
   demo_net_close(&nic);
   tls_mbedtls_free(&backend.backend);
   printf("[tls_client] exit %d\n", rc);

@@ -218,8 +218,17 @@ size_t tls_read(tls_conn_t *tls, uint8_t *buf, size_t len);
  */
 int tls_key_update(tls_conn_t *tls, int request);
 
-/** Send close_notify; nothing more may be written. */
+/** Send close_notify; nothing more may be written.  Once close_notify has
+ *  gone both ways, the keys are wiped. */
 int tls_close(tls_conn_t *tls);
+
+/**
+ * Done with the connection, however it ended — closed, failed, or given
+ * up: wipe its secrets, record keys and key share and both buffers (which
+ * held plaintext).  It is left IDLE with the same configuration, buffers,
+ * callback and user pointer, ready for tls_accept() or tls_connect().
+ */
+void tls_release(tls_conn_t *tls);
 
 static inline tls_state_t tls_state(const tls_conn_t *tls) {
   return (tls_state_t)tls->state;

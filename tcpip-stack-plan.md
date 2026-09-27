@@ -296,9 +296,10 @@ starts with a unit test that fails on the current code.
       `tcp_echo_demo`, `make arm-size-ipv6-only` (5,977 B)
 
 **TLS 1.3** ([docs/design/tls.md](docs/design/tls.md))
-- [ ] No API wipes a connection's secrets: one abandoned without an error,
+- [x] No API wipes a connection's secrets: one abandoned without an error,
       or closed cleanly with close_notify, keeps its keys and `kx_priv`
-      until the next `tls_init()`
+      until the next `tls_init()` — `tls_release()`, called by HTTPS; the
+      keys also go once close_notify has gone both ways
 - [ ] The `shared` secret on the stack is not wiped when `kx_shared()` fails
       (client `on_server_hello()`, server `on_client_hello()`), nor the
       server's `priv` when `kx_keygen()` fails — matters if a backend writes

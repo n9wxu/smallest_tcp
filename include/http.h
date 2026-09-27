@@ -129,6 +129,10 @@ typedef struct {
   int (*client_done)(const struct http_conn_s *c);
   /** Everything queued has reached the client. */
   int (*delivered)(struct http_conn_s *c);
+  /** The client is gone — closed, reset or timed out — and the slot
+   *  listens again: forget the stream (e.g. wipe TLS secrets).  May be
+   *  NULL. */
+  void (*release)(struct http_conn_s *c);
 } http_transport_t;
 
 /** One connection slot.  Initialise with http_conn_init(). */

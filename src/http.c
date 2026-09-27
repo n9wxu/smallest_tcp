@@ -370,7 +370,7 @@ static int tcp_delivered(http_conn_t *c) { return tcp_tx_idle(&c->tcp); }
 
 static const http_transport_t tcp_transport = {
     tcp_accepted, tcp_read,        tcp_write_some, tcp_flush,
-    tcp_finish,   tcp_client_done, tcp_delivered,
+    tcp_finish,   tcp_client_done, tcp_delivered,  NULL,
 };
 
 /* ── Server ── */
@@ -400,9 +400,12 @@ net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
                        &c->rx_ctx, NULL);
 }
 
-/* (Re)arm a slot: fresh TCP state and buffers, LISTEN on the port — also
- * how a slot leaves TIME-WAIT at once (docs/design/http.md) */
+/* (Re)arm a slot: the last client's stream released, fresh TCP state and
+ * buffers, LISTEN on the port — also how a slot leaves TIME-WAIT at once
+ * (docs/design/http.md) */
 static void slot_listen(http_server_t *s, http_conn_t *c) {
+  if (c->transport->release)
+    c->transport->release(c);
   tcp_saw_tx_init(&c->tx_ctx, c->tx_ctx.buf, c->tx_ctx.capacity);
   tcp_saw_rx_init(&c->rx_ctx, c->rx_ctx.buf, c->rx_ctx.capacity);
   tcp_conn_init(&c->tcp, &tcp_saw_tx_ops, &c->tx_ctx, &tcp_saw_rx_ops,

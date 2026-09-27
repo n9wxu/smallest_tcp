@@ -69,7 +69,9 @@ static void on_tcp_event(tcp_conn_t *c, uint8_t events) {
   fflush(stdout);
 }
 
+/* The last session is over, however it ended: its secrets go */
 static void listen_again(void) {
+  tls_release(&tls);
   tcp_saw_tx_init(&tx_ctx, tcp_tx_mem, TCP_TX_SIZE);
   tcp_saw_rx_init(&rx_ctx, tcp_rx_mem, TCP_RX_SIZE);
   tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,

@@ -230,6 +230,7 @@ if (tls_state(&tls) == TLS_STATE_CONNECTED) {
 | `tls_read()` | Copy out received plaintext — from one record per call; call again for more |
 | `tls_key_update(tls, request)` | New write keys; `request` asks the peer to update too |
 | `tls_close(tls)` | Queue close_notify; nothing more may be written |
+| `tls_release(tls)` | Done with the connection, however it ended: wipe the secrets, record keys and key share, and both buffers (they held plaintext); it is left `IDLE` with the same configuration, buffers, callback and user pointer, ready for `tls_accept()` or `tls_connect()` |
 | `tls_state()`, `tls->alert`, `tls->group`, `tls_psk_used()`, `tls->max_frag` | Status: state, the fatal alert, the key-exchange group (0 with psk_ke), whether a PSK authenticated the handshake, the negotiated record size (0: 2^14) |
 | `tls->on_event` | Optional callback: `TLS_EVT_CONNECTED`, `TLS_EVT_CLOSED` (close_notify received), `TLS_EVT_ERROR` (REQ-TLS-038..040).  It runs inside the call that made the progress — usually `tls_rx_commit()`, also `tls_tx_done()` or `tls_read()` |
 
@@ -590,6 +591,13 @@ switches our records to the client application keys, and reports
 - **close_notify.**  `tls_close()` queues it (a warning-level alert) and
   sets `F_WCLOSED`; no KeyUpdate or data follows it.  A received
   close_notify moves to `CLOSED`, in which we may still write until we close.
+  Once it has gone both ways — the second of the two, sent or received —
+  no key is used again, and they are wiped.
+- **The end.**  A connection that ends without an alert or a close — the
+  TCP connection reset, the application giving up — would keep its keys
+  until the next `tls_init()`; `tls_release()` wipes them and the buffers at
+  once.  The HTTPS transport calls it whenever a slot listens again
+  ([http.md §7](http.md#7-transports)), and the demos when a session ends.
 - **NewSessionTicket** is ignored by a client (there is no ticket store) and
   is `unexpected_message` to a server, as is any other handshake message.
 
@@ -666,8 +674,10 @@ The Master Secret exists only on the stack for the moment it is used.
 - Finished MACs and PSK binders are compared in constant time (`tls_equal()`).
 - Secrets, traffic keys and ephemeral private keys are wiped as soon as they
   are done with — the client's (`kx_priv`) once the ServerHello has been
-  processed — and all of them on any fatal error or fatal alert, and when
-  `tls_connect()` fails.
+  processed — and all of them on any fatal error or fatal alert, when
+  `tls_connect()` fails, and once close_notify has gone both ways.
+  `tls_release()` wipes them, and the plaintext in the buffers, however the
+  connection ended.
 - The client verifies the chain, the name (DNS or IP) and CertificateVerify
   before it sends its Finished — before that it has sent only its
   ClientHello — and refuses any extension it did not offer.
@@ -680,14 +690,14 @@ The Master Secret exists only on the stack for the moment it is used.
 
 ## 13. Testing
 
-**Unit (208 tests, CMake with `SMALLEST_TCP_TLS`):**
+**Unit (210 tests, CMake with `SMALLEST_TCP_TLS`):**
 
 | Suite | Tests | |
 |---|---:|---|
 | `test_tls_crypto` | 22 | The backend: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, chains (alerts, IP names, other anchors), random |
 | `test_tls_keys` | 34 | Key schedule and records against RFC 8448 §3 (every secret, key, IV, both Finished, all eight protected records byte for byte), §4 (resumption PSK binder, PSK + DHE schedule), §5 (HelloRetryRequest transcript); malformed records |
 | `test_tls_server` | 105 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts |
-| `test_tls_client` | 50 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate) and against a scripted server that gets each message wrong on purpose |
+| `test_tls_client` | 52 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()`) and against a scripted server that gets each message wrong on purpose |
 
 `tests/tls/gen_rfc8448.py` extracts the RFC 8448 traces into
 `tests/unit/tls_rfc8448.h`, checking every value's stated length;

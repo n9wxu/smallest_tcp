@@ -1340,6 +1340,66 @@ TEST(test_key_update_both_ways) {
   ASSERT_TRUE(sv.wkeys.seq == 1 && sv.rkeys.seq == 1);
 }
 
+/* ══ Secrets at the end of a connection ═══════════════════════════ */
+
+static int all_zero(const void *p, size_t n) {
+  const uint8_t *b = (const uint8_t *)p;
+  size_t i;
+  for (i = 0; i < n; i++)
+    if (b[i])
+      return 0;
+  return 1;
+}
+
+/* No secret, record key or key share left in the connection */
+static int secrets_wiped(const tls_conn_t *t) {
+  return all_zero(t->secret, sizeof(t->secret)) &&
+         all_zero(t->rsec, sizeof(t->rsec)) &&
+         all_zero(t->wsec, sizeof(t->wsec)) &&
+         all_zero(&t->rkeys, sizeof(t->rkeys)) &&
+         all_zero(&t->wkeys, sizeof(t->wkeys)) &&
+         all_zero(t->kx_priv, sizeof(t->kx_priv));
+}
+
+/* Once close_notify has gone both ways, no key is used again */
+TEST(test_keys_wiped_once_closed_both_ways) {
+  ASSERT_EQ(pair(&cli, &srv_ec, HOST, 65536), 0);
+  ASSERT_FALSE(secrets_wiped(&cl));
+  ASSERT_EQ(tls_close(&cl), 0);
+  shuttle(&cl, &sv, 65536);
+  ASSERT_FALSE(secrets_wiped(&cl)); /* the server may still write */
+  ASSERT_FALSE(secrets_wiped(&sv));
+  ASSERT_EQ(tls_close(&sv), 0);
+  ASSERT_TRUE(secrets_wiped(&sv));
+  shuttle(&cl, &sv, 65536);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CLOSED);
+  ASSERT_TRUE(secrets_wiped(&cl));
+}
+
+/* A connection given up without an error or a close keeps its keys until
+ * tls_release(): it wipes them and both buffers, and leaves the connection
+ * IDLE with its configuration, buffers and callback, for the next peer */
+TEST(test_release_wipes_and_readies_for_the_next_peer) {
+  uint8_t buf[16];
+  ASSERT_EQ(pair(&cli, &srv_ec, HOST, 65536), 0);
+  ASSERT_EQ(tls_write(&cl, (const uint8_t *)"secret", 6), 6);
+  shuttle(&cl, &sv, 65536); /* unread, in the server's rx */
+  tls_release(&sv);
+  ASSERT_TRUE(secrets_wiped(&sv));
+  ASSERT_TRUE(all_zero(srv_rx, sizeof(srv_rx)));
+  ASSERT_TRUE(all_zero(srv_tx, sizeof(srv_tx)));
+  ASSERT_EQ(tls_state(&sv), TLS_STATE_IDLE);
+  ASSERT_EQ(tls_read(&sv, buf, sizeof(buf)), 0);
+  ASSERT_TRUE(sv.cfg == &srv_ec && sv.rx == srv_rx && sv.tx == srv_tx);
+
+  srv_evts = 0;
+  ASSERT_EQ(tls_accept(&sv), 0);
+  ASSERT_EQ(client_start(&cl, &cli, sizeof(cli_rx), sizeof(cli_tx), HOST), 0);
+  shuttle(&cl, &sv, 65536);
+  ASSERT_EQ(tls_state(&sv), TLS_STATE_CONNECTED);
+  ASSERT_EQ(srv_evts, TLS_EVT_CONNECTED);
+}
+
 int main(void) {
   fprintf(stderr, "=== TLS client handshake tests ===\n");
   if (tls_mbedtls_init(&be, &c) != 0 || tls_mbedtls_init(&be_noca, &c_noca) ||
@@ -1454,6 +1514,8 @@ int main(void) {
   RUN_TEST(test_mfl_small_rx_buffer);
   RUN_TEST(test_scripted_mfl);
   RUN_TEST(test_key_update_both_ways);
+  RUN_TEST(test_keys_wiped_once_closed_both_ways);
+  RUN_TEST(test_release_wipes_and_readies_for_the_next_peer);
 
   mbedtls_pk_free(&ec_key);
   mbedtls_pk_free(&rsa_key);

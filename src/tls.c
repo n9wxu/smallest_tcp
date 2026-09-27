@@ -37,6 +37,12 @@ static void wipe_keys(tls_conn_t *t) {
   tls_wipe(t->kx_priv, sizeof(t->kx_priv));
 }
 
+/* Once close_notify has gone both ways no key is used again */
+static void wipe_keys_if_closed_both_ways(tls_conn_t *t) {
+  if (t->state == TLS_STATE_CLOSED && (t->flags & F_WCLOSED))
+    wipe_keys(t);
+}
+
 /* ── Shared by both roles ── */
 
 /* Extension types seen so far (below 64), to refuse duplicates */
@@ -285,6 +291,7 @@ static int on_alert(tls_conn_t *t, const uint8_t *a, size_t n, size_t rlen) {
     return 0;
   if (desc == TLS_ALERT_CLOSE_NOTIFY) {
     t->state = TLS_STATE_CLOSED;
+    wipe_keys_if_closed_both_ways(t);
     tls_notify(t, TLS_EVT_CLOSED);
     return 0;
   }
@@ -554,5 +561,27 @@ int tls_close(tls_conn_t *t) {
   if (send_alert(t, ALERT_WARNING, TLS_ALERT_CLOSE_NOTIFY) != 0)
     return -1;
   t->flags |= F_WCLOSED;
+  wipe_keys_if_closed_both_ways(t);
   return 0;
+}
+
+void tls_release(tls_conn_t *t) {
+  const tls_config_t *cfg = t->cfg;
+  uint8_t *rx = t->rx, *tx = t->tx;
+  uint16_t rx_cap = t->rx_cap, tx_cap = t->tx_cap;
+  void (*on_event)(tls_conn_t *, uint8_t) = t->on_event;
+  void *user = t->user;
+  if (rx)
+    tls_wipe(rx, rx_cap);
+  if (tx)
+    tls_wipe(tx, tx_cap);
+  tls_wipe(t, sizeof(*t));
+  t->cfg = cfg;
+  t->rx = rx;
+  t->rx_cap = rx_cap;
+  t->tx = tx;
+  t->tx_cap = tx_cap;
+  t->rec_start = NO_REC;
+  t->on_event = on_event;
+  t->user = user;
 }

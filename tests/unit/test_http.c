@@ -773,6 +773,34 @@ TEST(test_server_rst_mid_request_recycles) {
   ASSERT_TRUE(strcmp(resp_body(&cl2), root_page) == 0);
 }
 
+/* The transport forgets each client when its slot listens again — after a
+ * response, a reset or a timeout alike (HTTPS wipes the TLS secrets) */
+static int releases;
+static void count_release(http_conn_t *c) {
+  (void)c;
+  releases++;
+}
+
+TEST(test_server_transport_released_when_client_gone) {
+  static http_transport_t spy;
+  server_setup();
+  spy = *conns[0].transport;
+  spy.release = count_release;
+  conns[0].transport = &spy;
+  releases = 0;
+  exchange(&cl, 40801, "GET / HTTP/1.0\r\n\r\n");
+  ASSERT_EQ(conns[0].tcp.state, TCP_LISTEN);
+  ASSERT_EQ(releases, 1);
+  client_connect(&cl, 40802, 1460);
+  inject_tcp(&cl, TCP_FLAG_RST | TCP_FLAG_ACK, NULL, 0, 0);
+  http_server_poll(&srv);
+  ASSERT_EQ(releases, 2);
+  client_connect(&cl, 40803, 1460);
+  http_server_tick(&srv, HTTP_REQUEST_TIMEOUT_MS);
+  ASSERT_EQ(conns[0].tcp.state, TCP_LISTEN);
+  ASSERT_EQ(releases, 3);
+}
+
 TEST(test_server_init_validates) {
   static http_server_t s2;
   static http_conn_t c2;
@@ -831,6 +859,7 @@ int main(void) {
   RUN_TEST(test_server_drains_after_error_response);
   RUN_TEST(test_server_idle_client_times_out);
   RUN_TEST(test_server_rst_mid_request_recycles);
+  RUN_TEST(test_server_transport_released_when_client_gone);
   RUN_TEST(test_server_init_validates);
   TEST_REPORT();
   return test_failures;

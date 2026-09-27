@@ -204,12 +204,16 @@ typedef struct {
   void (*finish)(net_t *net, struct http_conn_s *c);      /* the response is complete */
   int (*client_done)(const struct http_conn_s *c);        /* the client can send no more */
   int (*delivered)(struct http_conn_s *c);                /* everything queued reached the client */
+  void (*release)(struct http_conn_s *c);                 /* the client is gone; may be NULL */
 } http_transport_t;
 ```
 
 `http_conn_init()` sets the plain TCP transport; `http_conn_use_tls(c, tls)`
 switches a slot to TLS.  `http_conn_t.transport_ctx` is the transport's own
-state (the slot's `tls_conn_t`).
+state (the slot's `tls_conn_t`).  `release` runs whenever a slot listens
+again — after a response, a reset, a timeout, and once at
+`http_server_init()` — so a transport can forget the last client however
+its connection ended.
 
 ### 7.1 TCP (`http.c`)
 
@@ -222,6 +226,7 @@ state (the slot's `tls_conn_t`).
 | `finish` | Nothing: the FIN ends an HTTP/1.0 response |
 | `client_done` | TCP is in CLOSE-WAIT (the client's FIN arrived) |
 | `delivered` | `tcp_tx_idle()`: everything written has been sent and acknowledged |
+| `release` | None (NULL) |
 
 ### 7.2 TLS (`http_tls.c`)
 
@@ -238,6 +243,7 @@ re-initialises it for each client with the same configuration and buffers.
 | `finish` | `tls_close()` (close_notify), then `tls_tcp_carry()` |
 | `client_done` | TCP in CLOSE-WAIT, or the TLS connection `CLOSED` (the client's close_notify) or in `ERROR` |
 | `delivered` | `tls_tcp_idle()`: no TLS records pending and TCP idle |
+| `release` | `tls_release()`: the client's secrets, record keys and the plaintext left in the TLS buffers are wiped at once, not at the next client's `tls_init()` |
 
 The TLS handshake happens while the slot is in `S_RECV` (section 8), so it
 counts against the request timeout.  A failed handshake makes `client_done`
@@ -345,12 +351,13 @@ complete program.
   line, versions, methods, absolute-form, query split, headers
   (Content-Length, Host, Transfer-Encoding), LF-only lines, leading empty
   lines, every error status, reason phrases, header formatting (Allow, 204).
-- **Unit, server** (`test_http.c`, 23): a simulated client drives the real
+- **Unit, server** (`test_http.c`, 24): a simulated client drives the real
   TCP stack with injected segments: GET/HEAD/POST, 404/405/501/400/413/414/431/500,
   responses larger than the TX buffer, requests arriving in pieces, the
   header and first body bytes in one segment, a half-closed request, slot
   recycling from TIME-WAIT and CLOSING (simultaneous close), draining after
-  an error, timeouts, RST mid-request, two slots at once, init checks.
+  an error, timeouts, RST mid-request, the transport released however the
+  client went, two slots at once, init checks.
 - **Blackbox** (`tests/blackbox/test_http_conform.py`, 22): the host kernel is
   the client (Python `http.client` and raw sockets) against `http_demo` over
   TAP, the raw-socket driver or feth: every status above, large responses,
