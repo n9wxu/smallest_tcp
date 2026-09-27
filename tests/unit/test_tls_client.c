@@ -28,6 +28,7 @@ static tls_config_t cli, cli_noca, cli_other; /* the client */
 static tls_config_t srv_psk, srv_psk_only;    /* .. with a PSK */
 static tls_config_t cli_psk, cli_psk_ke, cli_psk_both, cli_psk_other;
 static tls_config_t srv_p256, srv_psk_p256, cli_p256; /* secp256r1 only */
+static tls_config_t cli_mfl;                          /* 512-byte records */
 
 static const uint8_t test_psk[32] = {
     0x70, 0x73, 0x6b, 0x21, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
@@ -225,6 +226,7 @@ typedef struct {
   uint16_t ee_ext;          /* an extension, empty (0: none) */
   int ee_sni;               /* server_name: 1 empty (the acknowledgement),
                                2 with a byte (wrong) */
+  int ee_mfl;               /* max_fragment_length granted (a code) */
   int cert_req;             /* CertificateRequest (2: twice) */
   int cert_req_ctx;         /* .. with a context */
   /* Certificate */
@@ -500,6 +502,12 @@ static int script(tls_conn_t *t, const script_t *o) {
     put16(body + bn, o->ee_ext);
     put16(body + bn + 2, 0);
     bn += 4;
+  }
+  if (o->ee_mfl) {
+    put16(body + bn, TLS_EXT_MAX_FRAGMENT_LENGTH);
+    put16(body + bn + 2, 1);
+    body[bn + 4] = (uint8_t)o->ee_mfl;
+    bn += 5;
   }
   put16(body, bn - 2);
   add_msg(msgs, &mn, TLS_HS_ENCRYPTED_EXTENSIONS, body, bn);
@@ -1225,6 +1233,92 @@ TEST(test_client_random_differs) {
   ASSERT_TRUE(memcmp(r1, out + 5 + 4 + 2, 32) != 0);
 }
 
+/* ══ max_fragment_length (REQ-TLS-031) and KeyUpdate ══════════════ */
+
+TEST(test_mfl_with_our_server) {
+  static uint8_t big[2000];
+  const uint8_t *e;
+  size_t n;
+  tls_conn_t t;
+  ASSERT_EQ(client_start(&t, &cli_mfl, sizeof(cli_rx), sizeof(cli_tx), HOST),
+            0);
+  e = ch_ext(&t, TLS_EXT_MAX_FRAGMENT_LENGTH, &n);
+  ASSERT_TRUE(e && n == 1 && e[0] == TLS_MFL_512);
+  ASSERT_EQ(pair(&cli_mfl, &srv_rsa, "rsa.example", 65536), 0);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CONNECTED);
+  ASSERT_EQ(cl.max_frag, 512);
+  ASSERT_EQ(sv.max_frag, 512);
+  ASSERT_EQ(tls_write(&cl, big, sizeof(big)), 512);
+  ASSERT_EQ(tls_write(&sv, big, sizeof(big)), 512);
+}
+
+/* The server writes 2000 bytes; the client reads as it can */
+static size_t read_2000(void) {
+  static uint8_t big[2000];
+  uint8_t buf[256];
+  size_t sent = 0, got = 0, n;
+  int w, idle = 0;
+  while (got < sizeof(big) && idle < 3 && tls_state(&cl) != TLS_STATE_ERROR) {
+    if (sent < sizeof(big) &&
+        (w = tls_write(&sv, big + sent, sizeof(big) - sent)) > 0)
+      sent += (size_t)w;
+    shuttle(&cl, &sv, 65536);
+    n = tls_read(&cl, buf, sizeof(buf));
+    got += n;
+    idle = n ? 0 : idle + 1;
+  }
+  return got;
+}
+
+TEST(test_mfl_small_rx_buffer) {
+  /* An 800-byte receive buffer holds the handshake; the server's 2000
+   * bytes come in 512-byte records only when asked for */
+  ASSERT_EQ(client_start(&cl, &cli_mfl, 800, 256, HOST), 0);
+  ASSERT_EQ(server_start(&sv, &srv_ec), 0);
+  shuttle(&cl, &sv, 65536);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CONNECTED);
+  ASSERT_EQ(read_2000(), 2000);
+  ASSERT_EQ(client_start(&cl, &cli, 800, 256, HOST), 0);
+  ASSERT_EQ(server_start(&sv, &srv_ec), 0);
+  shuttle(&cl, &sv, 65536);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CONNECTED);
+  read_2000();
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_ERROR);
+  ASSERT_EQ(cl.alert, TLS_ALERT_RECORD_OVERFLOW);
+}
+
+TEST(test_scripted_mfl) {
+  tls_conn_t t;
+  script_t o;
+  memset(&o, 0, sizeof(o));
+  o.ee_mfl = TLS_MFL_512;
+  ASSERT_EQ(scripted_as(&cli_mfl, &t, &o), 0);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_CONNECTED);
+  ASSERT_EQ(t.max_frag, 512);
+  memset(&o, 0, sizeof(o));
+  o.ee_mfl = TLS_MFL_1024; /* not what was asked */
+  ASSERT_EQ(script_refused_as(&cli_mfl, &o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.ee_mfl = TLS_MFL_512; /* nothing was asked */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_UNSUPPORTED_EXTENSION), 0);
+}
+
+TEST(test_key_update_both_ways) {
+  /* The client asks; the server updates too; data flows on */
+  uint8_t buf[16];
+  ASSERT_EQ(pair(&cli, &srv_ec, HOST, 65536), 0);
+  ASSERT_EQ(tls_key_update(&cl, 1), 0);
+  ASSERT_EQ(tls_write(&cl, (const uint8_t *)"after", 5), 5);
+  shuttle(&cl, &sv, 65536);
+  ASSERT_EQ(tls_read(&sv, buf, sizeof(buf)), 5);
+  ASSERT_EQ(tls_write(&sv, (const uint8_t *)"reply", 5), 5);
+  shuttle(&cl, &sv, 65536);
+  ASSERT_EQ(tls_read(&cl, buf, sizeof(buf)), 5);
+  ASSERT_MEM_EQ(buf, "reply", 5);
+  ASSERT_TRUE(cl.wkeys.seq == 1 && cl.rkeys.seq == 1);
+  ASSERT_TRUE(sv.wkeys.seq == 1 && sv.rkeys.seq == 1);
+}
+
 int main(void) {
   fprintf(stderr, "=== TLS client handshake tests ===\n");
   if (tls_mbedtls_init(&be, &c) != 0 || tls_mbedtls_init(&be_noca, &c_noca) ||
@@ -1282,6 +1376,8 @@ int main(void) {
   srv_psk_p256.groups = TLS_GROUPS_SECP256R1;
   cli_p256 = cli;
   cli_p256.groups = TLS_GROUPS_SECP256R1;
+  cli_mfl = cli;
+  cli_mfl.max_fragment = TLS_MFL_512;
 
   RUN_TEST(test_handshake_with_our_server);
   RUN_TEST(test_data_both_ways);
@@ -1331,6 +1427,11 @@ int main(void) {
   RUN_TEST(test_scripted_hrr);
   RUN_TEST(test_scripted_hrr_refusals);
   RUN_TEST(test_client_random_differs);
+
+  RUN_TEST(test_mfl_with_our_server);
+  RUN_TEST(test_mfl_small_rx_buffer);
+  RUN_TEST(test_scripted_mfl);
+  RUN_TEST(test_key_update_both_ways);
 
   mbedtls_pk_free(&ec_key);
   mbedtls_pk_free(&rsa_key);

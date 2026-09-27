@@ -456,6 +456,15 @@ def test_tls_035_hello_retry(sut):
     assert "\nhello\n" in out.split("Peer Temp Key")[1], out
 
 
+def test_tls_036_max_fragment_length(sut):
+    """REQ-TLS-031: s_client asks for 512-byte records and refuses bigger
+    ones; a 3000-byte line comes back in them."""
+    line = b"m" * 3000
+    rc, out = s_client(sut, "-maxfraglen", "512", "-brief", line=line)
+    assert rc is None, out[:2000]
+    assert "\n" + "m" * 3000 + "\n" in out.split("Peer Temp Key")[1]
+
+
 def test_tls_034_key_update(sut):
     """s_client 'K': KeyUpdate(update_requested); the SUT answers with its
     own and data flows under the new keys both ways."""

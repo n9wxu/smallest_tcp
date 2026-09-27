@@ -181,6 +181,7 @@ int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
 
 /* ExtensionType */
 #define TLS_EXT_SERVER_NAME 0
+#define TLS_EXT_MAX_FRAGMENT_LENGTH 1
 #define TLS_EXT_SUPPORTED_GROUPS 10
 #define TLS_EXT_SIGNATURE_ALGORITHMS 13
 #define TLS_EXT_PRE_SHARED_KEY 41
@@ -189,6 +190,16 @@ int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
 #define TLS_EXT_KEY_SHARE 51
 
 #define TLS_AES_128_GCM_SHA256 0x1301
+
+/* max_fragment_length (RFC 6066 §4), tls_config_t.max_fragment */
+#define TLS_MFL_512 1
+#define TLS_MFL_1024 2
+#define TLS_MFL_2048 3
+#define TLS_MFL_4096 4
+
+/** Records protected under one key before a KeyUpdate replaces it (RFC
+ *  8446 §5.5 allows 2^24.5 for AES-GCM). */
+#define TLS_KEY_UPDATE_RECORDS (1ul << 24)
 
 /* Key-exchange groups to use, tls_config_t.groups (0: both) */
 #define TLS_GROUPS_X25519 0x01
@@ -227,6 +238,10 @@ typedef struct {
   uint16_t sig_scheme; /**< TLS_SIG_* that @ref key signs with */
   uint8_t groups;      /**< TLS_GROUPS_* for (EC)DHE; 0: both (x25519
                             preferred) */
+  uint8_t max_fragment; /**< Client: TLS_MFL_* to ask the server for (records
+                             of at most 512 .. 4096 bytes, so a small rx
+                             buffer suffices); 0: none.  A server grants
+                             what a client asks. */
 
   /* A pre-shared key (RFC 8446 §2.2; SHA-256).  A client offers it, a
    * server takes it when the identity matches and the binder checks out,
@@ -250,6 +265,7 @@ typedef struct tls_conn_s {
   uint8_t step;   /**< Handshake step (internal) */
   uint16_t flags; /**< (internal) */
   uint16_t group; /**< Negotiated key-exchange group */
+  uint16_t max_frag; /**< Negotiated record size limit (0: 2^14) */
   uint8_t sid_len;
   uint8_t sid[32]; /**< Server: the client's legacy_session_id, echoed;
                         client: its random, for a second ClientHello */
@@ -341,6 +357,13 @@ int tls_write(tls_conn_t *tls, const uint8_t *data, size_t len);
 
 /** Copy out received application data; returns the byte count. */
 size_t tls_read(tls_conn_t *tls, uint8_t *buf, size_t len);
+
+/**
+ * KeyUpdate (RFC 8446 §4.6.3): our next keys; with @p request, the peer's
+ * too.  It also happens by itself after TLS_KEY_UPDATE_RECORDS records.
+ * @return 0, or -1 if the connection is not open for writing.
+ */
+int tls_key_update(tls_conn_t *tls, int request);
 
 /** Send close_notify; nothing more may be written. */
 int tls_close(tls_conn_t *tls);

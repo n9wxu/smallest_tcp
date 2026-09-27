@@ -250,6 +250,28 @@ def test_tls_c30_openssl_s_server(client):
     assert "Protocol version: TLSv1.3" in srv_out
 
 
+def test_tls_c05_max_fragment_length(client):
+    """REQ-TLS-031: the client asks for 512-byte records (the server, an
+    OpenSSL, grants it); 20 kB echo through them."""
+    srv = serve(client)
+    rc, out = client(TLS_MFL=512, TLS_BYTES=20000)
+    finish(srv)
+    assert rc == 0, out
+    assert "max_fragment_length 512" in out
+    assert "echo ok (20000 bytes)" in out
+
+
+def test_tls_c06_key_update(client):
+    """The client updates its keys and asks the server to; data flows on
+    under the new keys both ways."""
+    srv = serve(client)
+    rc, out = client(TLS_KEY_UPDATE=1, TLS_BYTES=5000)
+    finish(srv)
+    assert rc == 0, out
+    assert "KeyUpdate sent" in out and "echo ok (5000 bytes)" in out
+    assert srv.error is None, srv.error
+
+
 def test_tls_c31_hello_retry(client):
     """A secp256r1-only s_server answers the x25519 share with a
     HelloRetryRequest; the second ClientHello has a secp256r1 share."""

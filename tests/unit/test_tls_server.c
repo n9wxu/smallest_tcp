@@ -155,6 +155,8 @@ typedef struct {
   int psk_no_ids;    /* an empty identity list */
   int psk_empty_id;  /* a zero-length identity */
   int psk_twice;     /* our identity twice */
+  int mfl;           /* max_fragment_length code to ask for (0: none;
+                        -1: a malformed request) */
 } ch_opt_t;
 
 static const uint8_t test_psk[32] = {
@@ -179,6 +181,8 @@ typedef struct {
   int psk_resumption;
   int selected;         /* the server's selected_identity, or -1 */
   int share_seen;       /* its key_share */
+  int mfl;              /* max_fragment_length asked for */
+  size_t biggest;       /* the largest record content from the server */
 } peer_t;
 
 static peer_t peer;
@@ -297,6 +301,15 @@ static size_t build_ch(peer_t *p, const ch_opt_t *o, uint8_t *m) {
     }
     put16(list, (size_t)(q - list - 2));
     q = ext_end(e, q);
+  }
+  if (o->mfl) {
+    e = q;
+    q = ext_begin(q, TLS_EXT_MAX_FRAGMENT_LENGTH);
+    *q++ = (uint8_t)(o->mfl > 0 ? o->mfl : 1);
+    if (o->mfl < 0)
+      *q++ = 1;
+    q = ext_end(e, q);
+    p->mfl = o->mfl;
   }
   if (o->psk) {
     static const char stranger[] = "nobody";
@@ -513,18 +526,29 @@ static int peer_read_flight(peer_t *p) {
     memcpy(buf, out + off, rl);
     r = tls_record_open(&c, &p->rd, buf, rl, &type);
     CHECK(r > 0 && type == TLS_CT_HANDSHAKE);
+    if ((size_t)r > p->biggest)
+      p->biggest = (size_t)r;
     memcpy(p->msgs + p->mlen, buf + 5, (size_t)r);
     p->mlen += (size_t)r;
     p->records++;
     off += rl;
   }
 
-  /* EncryptedExtensions: none */
+  /* EncryptedExtensions: none, or max_fragment_length granted */
   q = p->msgs;
-  CHECK(p->mlen >= 6 &&
-        memcmp(q, "\x08\x00\x00\x02\x00\x00", 6) == 0);
-  c.hash_update(&p->th, q, 6);
-  q += 6;
+  if (p->mfl > 0) {
+    CHECK(p->mlen >= 11 &&
+          memcmp(q, "\x08\x00\x00\x07\x00\x05\x00\x01\x00\x01", 10) ==
+              0 &&
+          q[10] == p->mfl);
+    c.hash_update(&p->th, q, 11);
+    q += 11;
+  } else {
+    CHECK(p->mlen >= 6 &&
+          memcmp(q, "\x08\x00\x00\x02\x00\x00", 6) == 0);
+    c.hash_update(&p->th, q, 6);
+    q += 6;
+  }
   if (p->selected >= 0) /* PSK: no certificates */
     goto finished;
   /* Certificate: exactly the configured chain */
@@ -2044,6 +2068,188 @@ TEST(test_p256_only_server) {
   ASSERT_EQ(refused_by(&cfg_p256, &o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
 }
 
+/* ══ max_fragment_length (RFC 6066 §4, REQ-TLS-031) ════════════════ */
+
+/* Everything the server now writes comes in records of at most @p limit */
+static int records_within(tls_conn_t *s, size_t limit, size_t *count) {
+  static uint8_t big[5000], buf[5000];
+  size_t off = 0, done = 0;
+  uint8_t type;
+  int w, r;
+  memset(big, 'm', sizeof(big));
+  *count = 0;
+  out_len = 0;
+  while (done < sizeof(big)) {
+    w = tls_write(s, big + done, sizeof(big) - done);
+    if (w == 0) { /* tx full */
+      drain(s);
+      continue;
+    }
+    CHECK(w > 0 && (size_t)w <= limit);
+    done += (size_t)w;
+  }
+  drain(s);
+  while (off < out_len) {
+    r = peer_open(&peer, &off, &type, buf);
+    CHECK(r > 0 && (size_t)r <= limit && type == TLS_CT_APPLICATION_DATA);
+    (*count)++;
+  }
+  return 0;
+}
+
+TEST(test_mfl_512) {
+  tls_conn_t s;
+  ch_opt_t o;
+  size_t n;
+  ch_default(&o);
+  o.mfl = TLS_MFL_512;
+  ASSERT_EQ(handshake(&s, &cfg_ec, &o, sizeof(srv_tx)), 0);
+  ASSERT_TRUE(peer.biggest <= 512);
+  ASSERT_EQ(s.max_frag, 512);
+  ASSERT_EQ(records_within(&s, 512, &n), 0);
+  ASSERT_TRUE(n >= 10);
+}
+
+TEST(test_mfl_splits_certificate) {
+  /* The RSA certificate message (635 bytes) does not fit 512: it goes out
+   * over two records */
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.mfl = TLS_MFL_512;
+  ASSERT_EQ(handshake(&s, &cfg_rsa, &o, sizeof(srv_tx)), 0);
+  ASSERT_TRUE(peer.biggest <= 512);
+  ASSERT_TRUE(peer.records >= 3);
+}
+
+TEST(test_mfl_splits_in_small_tx) {
+  /* .. also when tx drains in between */
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.mfl = TLS_MFL_512;
+  ASSERT_EQ(handshake(&s, &cfg_rsa, &o, 800), 0);
+  ASSERT_TRUE(peer.biggest <= 512);
+}
+
+TEST(test_mfl_split_stays_in_tx) {
+  /* A split message needs a header and tag per piece: rec_room() must
+   * count them, or the pieces run past tx_cap.  A canary follows the
+   * buffer; 670 bytes cannot take the split certificate at all */
+  static uint8_t m[2048];
+  tls_conn_t s;
+  ch_opt_t o;
+  size_t i, n;
+  memset(srv_tx, 0, 700);
+  memset(srv_tx + 700, 0xA5, sizeof(srv_tx) - 700);
+  ch_default(&o);
+  o.mfl = TLS_MFL_512;
+  ASSERT_EQ(handshake(&s, &cfg_rsa, &o, 700), 0);
+  for (i = 700; i < sizeof(srv_tx); i++)
+    ASSERT_EQ(srv_tx[i], 0xA5);
+  memset(srv_tx, 0, 670);
+  memset(srv_tx + 670, 0xA5, sizeof(srv_tx) - 670);
+  ASSERT_EQ(server_start(&s, &cfg_rsa, 670), 0);
+  peer_init(&peer, &cfg_rsa);
+  n = build_ch(&peer, &o, m);
+  send_ch(&s, &peer, m, n);
+  drain(&s);
+  ASSERT_EQ(tls_state(&s), TLS_STATE_ERROR);
+  ASSERT_EQ(s.alert, TLS_ALERT_INTERNAL_ERROR);
+  for (i = 670; i < sizeof(srv_tx); i++)
+    ASSERT_EQ(srv_tx[i], 0xA5);
+}
+
+TEST(test_mfl_4096) {
+  tls_conn_t s;
+  ch_opt_t o;
+  size_t n;
+  ch_default(&o);
+  o.mfl = TLS_MFL_4096;
+  ASSERT_EQ(handshake(&s, &cfg_ec, &o, sizeof(srv_tx)), 0);
+  ASSERT_EQ(s.max_frag, 4096);
+  ASSERT_EQ(records_within(&s, 4096, &n), 0);
+}
+
+TEST(test_mfl_refusals) {
+  ch_opt_t o;
+  ch_default(&o);
+  o.mfl = 5; /* 2^13: not a length RFC 6066 has */
+  ASSERT_EQ(refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  ch_default(&o);
+  o.mfl = -1; /* two bytes */
+  ASSERT_EQ(refused(&o, TLS_ALERT_DECODE_ERROR), 0);
+}
+
+/* ══ KeyUpdate, ours ═══════════════════════════════════════════════ */
+
+TEST(test_key_update_api) {
+  /* tls_key_update(1): KeyUpdate(update_requested) under the old keys,
+   * then data under the new */
+  tls_conn_t s;
+  uint8_t buf[64], type;
+  size_t off = 0;
+  ASSERT_EQ(connected(&s), 0);
+  ASSERT_EQ(tls_key_update(&s, 1), 0);
+  ASSERT_EQ(tls_write(&s, (const uint8_t *)"new", 3), 3);
+  drain(&s);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
+  ASSERT_EQ(type, TLS_CT_HANDSHAKE);
+  ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x01", 5);
+  tls_update_secret(&c, peer.s_ap);
+  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 3);
+  ASSERT_MEM_EQ(buf + 5, "new", 3);
+  ASSERT_EQ(tls_key_update(&s, 0), 0);
+  drain(&s);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
+  ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
+}
+
+TEST(test_key_update_by_itself) {
+  /* After TLS_KEY_UPDATE_RECORDS records under one key */
+  tls_conn_t s;
+  uint8_t buf[64], type;
+  size_t off = 0;
+  ASSERT_EQ(connected(&s), 0);
+  s.wkeys.seq = TLS_KEY_UPDATE_RECORDS;
+  peer.rd.seq = TLS_KEY_UPDATE_RECORDS;
+  ASSERT_EQ(tls_write(&s, (const uint8_t *)"x", 1), 1);
+  ASSERT_TRUE(s.wkeys.seq == 1);
+  drain(&s);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
+  ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
+  tls_update_secret(&c, peer.s_ap);
+  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 1);
+}
+
+TEST(test_no_data_past_key_limit) {
+  /* Room for three bytes of data but not for the 27-byte KeyUpdate: no
+   * data goes out under the worn-out key */
+  static uint8_t big[5000];
+  tls_conn_t s;
+  const uint8_t *p;
+  ASSERT_EQ(connected(&s), 0);
+  ASSERT_EQ(tls_write(&s, big, sizeof(srv_tx) - TLS_RECORD_OVERHEAD - 25),
+            (int)(sizeof(srv_tx) - TLS_RECORD_OVERHEAD - 25));
+  s.wkeys.seq = TLS_KEY_UPDATE_RECORDS;
+  ASSERT_EQ(tls_write(&s, (const uint8_t *)"abc", 3), 0);
+  ASSERT_EQ(tls_tx_pending(&s, &p), sizeof(srv_tx) - 25);
+  drain(&s); /* room: the KeyUpdate first, then the data */
+  ASSERT_EQ(tls_write(&s, (const uint8_t *)"abc", 3), 3);
+  ASSERT_TRUE(s.wkeys.seq == 1);
+}
+
+TEST(test_key_update_needs_connection) {
+  tls_conn_t s;
+  ASSERT_EQ(server_start(&s, &cfg_ec, sizeof(srv_tx)), 0);
+  ASSERT_EQ(tls_key_update(&s, 1), -1);
+  ASSERT_EQ(connected(&s), 0);
+  ASSERT_EQ(tls_close(&s), 0);
+  ASSERT_EQ(tls_key_update(&s, 1), -1);
+}
+
 /* ══ API ══════════════════════════════════════════════════════════ */
 
 TEST(test_init_and_accept_checks) {
@@ -2229,6 +2435,17 @@ int main(void) {
   RUN_TEST(test_hrr_refusals);
   RUN_TEST(test_hrr_not_when_pointless);
   RUN_TEST(test_p256_only_server);
+
+  RUN_TEST(test_mfl_512);
+  RUN_TEST(test_mfl_splits_certificate);
+  RUN_TEST(test_mfl_splits_in_small_tx);
+  RUN_TEST(test_mfl_split_stays_in_tx);
+  RUN_TEST(test_mfl_4096);
+  RUN_TEST(test_mfl_refusals);
+  RUN_TEST(test_key_update_api);
+  RUN_TEST(test_key_update_by_itself);
+  RUN_TEST(test_no_data_past_key_limit);
+  RUN_TEST(test_key_update_needs_connection);
 
   RUN_TEST(test_init_and_accept_checks);
 

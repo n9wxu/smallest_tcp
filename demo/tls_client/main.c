@@ -20,6 +20,8 @@
  *                back unchanged (an echo server)
  *   TLS_PSK, TLS_PSK_ID, TLS_PSK_MODES   offer a pre-shared key
  *                (demo_tls.h)
+ *   TLS_MFL      ask for records of at most 512/1024/2048/4096 bytes
+ *   TLS_KEY_UPDATE  1: new keys (both ways) before sending
  *
  * Exit status: 0 done, 2 TLS alert, 3 timeout or TCP failure, 1 setup.
  * Also the SUT for tests/blackbox/test_tls_client_conform.py.
@@ -180,6 +182,12 @@ int main(int argc, char *argv[]) {
   }
   cfg.crypto = &crypto;
   {
+    unsigned mfl = (unsigned)atoi(env("TLS_MFL", "0")), code;
+    for (code = 1; code <= 4; code++)
+      if (mfl == 256u << code)
+        cfg.max_fragment = (uint8_t)code;
+  }
+  {
     static uint8_t psk[64];
     if (demo_tls_psk(&cfg, psk, sizeof(psk)) < 0) {
       fprintf(stderr, "[tls_client] TLS_PSK is not hex\n");
@@ -257,6 +265,11 @@ int main(int argc, char *argv[]) {
                : tls.group == TLS_GROUP_SECP256R1 ? "secp256r1"
                                                   : "no (EC)DHE",
                tls_psk_used(&tls) ? "PSK" : "certificate");
+        if (tls.max_frag)
+          printf("[tls_client] max_fragment_length %u\n",
+                 (unsigned)tls.max_frag);
+        if (atoi(env("TLS_KEY_UPDATE", "0")) && tls_key_update(&tls, 1) == 0)
+          printf("[tls_client] KeyUpdate sent\n");
         fflush(stdout);
       }
       if (sent < out_len) {

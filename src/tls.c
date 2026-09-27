@@ -213,6 +213,7 @@ int tls_record_open(const tls_crypto_t *c, tls_keys_t *k, uint8_t *rec,
 #define F_CERT_REQ 0x40u /* client: the server asked for our certificate */
 #define F_PSK 0x80u      /* a PSK authenticates the handshake */
 #define F_HRR 0x100u     /* a HelloRetryRequest was sent (received) */
+#define F_KU_REQ 0x200u  /* the owed KeyUpdate asks the peer for one */
 
 /* step: where the handshake is */
 enum {
@@ -333,22 +334,49 @@ static void tx_compact(tls_conn_t *t) {
   t->tx_sent = 0;
 }
 
+/* The most content a record of ours may carry */
+static size_t frag_limit(const tls_conn_t *t) {
+  return t->max_frag ? t->max_frag : TLS_MAX_PLAINTEXT;
+}
+
+/* Bytes a record adds to its content */
+static size_t rec_over(const tls_conn_t *t) {
+  return TLS_RECORD_HDR +
+         ((t->flags & F_WPROT) ? 1u + TLS_AEAD_TAG_LEN : 0u);
+}
+
+/* Finish the record being built: header, protection — as several
+ * records if a message made it longer than the limit (rec_room() left
+ * room for that). */
 static void rec_close(tls_conn_t *t) {
-  uint8_t *rec;
-  size_t len;
+  size_t limit = frag_limit(t), len, piece, off, n = 1, i;
   if (t->rec_start == NO_REC)
     return;
-  rec = t->tx + t->rec_start;
   len = (size_t)(t->tx_len - t->rec_start - TLS_RECORD_HDR);
-  if (t->flags & F_WPROT) {
-    len = tls_record_seal(t->cfg->crypto, &t->wkeys, t->rec_type, rec, len);
-    t->tx_len = (uint16_t)(t->rec_start + len);
-  } else {
-    rec[0] = t->rec_type;
-    rec[1] = 0x03;
-    rec[2] = 0x03;
-    put16(rec + 3, len);
+  for (off = limit; off < len; off += limit)
+    n++;
+  /* spread the pieces out, last first: piece i to rec_start + i * stride */
+  for (i = n - 1; i > 0; i--) {
+    off = i * limit;
+    piece = len - off < limit ? len - off : limit;
+    memmove(t->tx + t->rec_start + i * (limit + rec_over(t)) +
+                TLS_RECORD_HDR,
+            t->tx + t->rec_start + TLS_RECORD_HDR + off, piece);
   }
+  for (i = 0, off = 0; i < n; i++, off += limit) {
+    uint8_t *rec = t->tx + t->rec_start + i * (limit + rec_over(t));
+    piece = len - off < limit ? len - off : limit;
+    if (t->flags & F_WPROT) {
+      tls_record_seal(t->cfg->crypto, &t->wkeys, t->rec_type, rec, piece);
+    } else {
+      rec[0] = t->rec_type;
+      rec[1] = 0x03;
+      rec[2] = 0x03;
+      put16(rec + 3, piece);
+    }
+  }
+  t->tx_len = (uint16_t)(t->rec_start + (n - 1) * (limit + rec_over(t)) +
+                         (len - (n - 1) * limit) + rec_over(t));
   t->rec_start = NO_REC;
 }
 
@@ -356,16 +384,19 @@ static void rec_close(tls_conn_t *t) {
  * being built or starts one.  NULL when tx cannot take them yet. */
 static uint8_t *rec_room(tls_conn_t *t, uint8_t type, size_t need) {
   size_t over = (t->flags & F_WPROT) ? 1 + TLS_AEAD_TAG_LEN : 0;
+  size_t limit = frag_limit(t), n, extra = over;
   if (t->rec_start != NO_REC) {
     size_t used = (size_t)(t->tx_len - t->rec_start - TLS_RECORD_HDR);
-    if (t->rec_type == type && used + need <= TLS_MAX_PLAINTEXT &&
+    if (t->rec_type == type && used + need <= limit &&
         t->tx_len + need + over <= t->tx_cap)
       return t->tx + t->tx_len;
     rec_close(t);
   }
   tx_compact(t);
-  if (need > TLS_MAX_PLAINTEXT ||
-      t->tx_len + TLS_RECORD_HDR + need + over > t->tx_cap)
+  /* a message over the limit leaves as several records */
+  for (n = need; n > limit; n -= limit)
+    extra += TLS_RECORD_HDR + over;
+  if (t->tx_len + TLS_RECORD_HDR + need + extra > t->tx_cap)
     return NULL;
   t->rec_start = t->tx_len;
   t->rec_type = type;
@@ -582,6 +613,13 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         }
       }
       break;
+    case TLS_EXT_MAX_FRAGMENT_LENGTH: /* granted: records of 2^(8+code) */
+      if (d.n != 1)
+        return fail(t, TLS_ALERT_DECODE_ERROR);
+      if (d.p[0] < TLS_MFL_512 || d.p[0] > TLS_MFL_4096)
+        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+      t->max_frag = (uint16_t)(256u << d.p[0]);
+      break;
     case TLS_EXT_PSK_KEY_EXCHANGE_MODES:
       have_modes = 1;
       v = rd_vec(&d, 1);
@@ -770,11 +808,20 @@ static int pump_server(tls_conn_t *t) {
       t->step = ST_SEND_EE;
       break;
 
-    case ST_SEND_EE: /* no extensions to report */
-      if (!(m = hs_begin(t, 6)))
+    case ST_SEND_EE: /* max_fragment_length, if granted */
+      if (!(m = hs_begin(t, 6 + 5)))
         return 0;
       put16(m + 4, 0);
-      hs_end(t, m, TLS_HS_ENCRYPTED_EXTENSIONS, 2);
+      if (t->max_frag) {
+        uint8_t code = TLS_MFL_512;
+        for (i = 512; i < t->max_frag; i <<= 1)
+          code++;
+        put16(m + 4, 5);
+        put16(m + 6, TLS_EXT_MAX_FRAGMENT_LENGTH);
+        put16(m + 8, 1);
+        m[10] = code;
+      }
+      hs_end(t, m, TLS_HS_ENCRYPTED_EXTENSIONS, t->max_frag ? 7u : 2u);
       t->step = (t->flags & F_PSK) ? ST_SEND_FIN : ST_SEND_CERT;
       break;
 
@@ -1069,6 +1116,12 @@ static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
       return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
     if (type == TLS_EXT_SERVER_NAME && d.n == 0)
       continue;
+    if (type == TLS_EXT_MAX_FRAGMENT_LENGTH && t->cfg->max_fragment) {
+      if (d.n != 1 || d.p[0] != t->cfg->max_fragment) /* RFC 6066 §4 */
+        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+      t->max_frag = (uint16_t)(256u << d.p[0]);
+      continue;
+    }
     if (type != TLS_EXT_SUPPORTED_GROUPS)
       return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
   }
@@ -1194,13 +1247,13 @@ static int pump(tls_conn_t *t) {
     r = (t->flags & F_SERVER) ? pump_server(t) : pump_client(t);
   if (r == 0 && (t->flags & F_KU_OWED) && !(t->flags & F_WCLOSED)) {
     uint8_t *m = hs_begin(t, 5);
-    if (m) { /* KeyUpdate(update_not_requested), then our next keys */
-      m[4] = 0;
+    if (m) { /* KeyUpdate, then our next keys */
+      m[4] = (t->flags & F_KU_REQ) ? 1 : 0;
       hs_end(t, m, TLS_HS_KEY_UPDATE, 1);
       rec_close(t);
       tls_update_secret(t->cfg->crypto, t->wsec);
       tls_traffic_keys(t->cfg->crypto, t->wsec, &t->wkeys);
-      t->flags &= (uint16_t)~F_KU_OWED;
+      t->flags &= (uint16_t)~(F_KU_OWED | F_KU_REQ);
     }
   }
   rec_close(t);
@@ -1485,6 +1538,7 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie,
                                              : TLS_PSK_DHE_KE)
                            : 0;
   int sni = t->host && !ip_literal(t->host);
+  uint8_t mfl = cfg->max_fragment;
 
   if (sni)
     hl = strlen(t->host);
@@ -1493,7 +1547,7 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie,
     return -1;
   m = hs_begin(t, 4 + 2 + 32 + 1 + 4 + 2 + 2 + (sni ? 9 + hl : 0) + 7 + 10 +
                       (t->group ? 6 + 2u * ng + 10 + pub_len : 0) +
-                      (cookie_len ? 6 + cookie_len : 0) +
+                      (cookie_len ? 6 + cookie_len : 0) + (mfl ? 5 : 0) +
                       (cfg->psk ? 7 + 4 + 2 + 2 + idl + 4 + 2 + 33 : 0));
   if (!m)
     return -1;
@@ -1547,6 +1601,12 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie,
     put16(p + 8, pub_len);
     memcpy(p + 10, pub, pub_len);
     p += 10 + pub_len;
+  }
+  if (mfl) {
+    put16(p, TLS_EXT_MAX_FRAGMENT_LENGTH);
+    put16(p + 2, 1);
+    p[4] = mfl;
+    p += 5;
   }
   if (cookie_len) { /* the HRR's cookie, back */
     put16(p, 44);
@@ -1684,6 +1744,12 @@ int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
   if ((t->state != TLS_STATE_CONNECTED && t->state != TLS_STATE_CLOSED) ||
       (t->flags & F_WCLOSED))
     return -1;
+  if (t->wkeys.seq >= TLS_KEY_UPDATE_RECORDS) { /* RFC 8446 §5.5 */
+    t->flags |= F_KU_OWED;
+    (void)pump(t);
+    if (t->flags & F_KU_OWED)
+      return 0; /* no room for it yet */
+  }
   tx_compact(t);
   room = (size_t)(t->tx_cap - t->tx_len);
   if (room <= TLS_RECORD_OVERHEAD)
@@ -1691,8 +1757,8 @@ int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
   room -= TLS_RECORD_OVERHEAD;
   if (len > room)
     len = room;
-  if (len > TLS_MAX_PLAINTEXT)
-    len = TLS_MAX_PLAINTEXT;
+  if (len > frag_limit(t))
+    len = frag_limit(t);
   p = rec_room(t, TLS_CT_APPLICATION_DATA, len);
   memcpy(p, data, len);
   t->tx_len = (uint16_t)(t->tx_len + len);
@@ -1718,6 +1784,15 @@ size_t tls_read(tls_conn_t *t, uint8_t *buf, size_t len) {
 }
 
 int tls_psk_used(const tls_conn_t *t) { return (t->flags & F_PSK) != 0; }
+
+int tls_key_update(tls_conn_t *t, int request) {
+  if ((t->state != TLS_STATE_CONNECTED && t->state != TLS_STATE_CLOSED) ||
+      (t->flags & F_WCLOSED))
+    return -1;
+  t->flags |= F_KU_OWED | (request ? F_KU_REQ : 0u);
+  (void)pump(t); /* now, or once tx has room */
+  return 0;
+}
 
 int tls_close(tls_conn_t *t) {
   if (t->flags & F_WCLOSED)
