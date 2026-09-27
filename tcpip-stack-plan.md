@@ -305,7 +305,7 @@ starts with a unit test that fails on the current code.
       server's `priv` when `kx_keygen()` fails — matters if a backend writes
       partial output on failure — both now live in the connection
       (`kx_priv`, `rsec`), which `tls_fail()` wipes
-- [ ] A crossed KeyUpdate: if the peer's says update_not_requested while our
+- [x] A crossed KeyUpdate: if the peer's says update_not_requested while our
       `tls_key_update(t, 1)` is pending, ours still asks — allowed by RFC 8446
       §4.6.3, but costs the peer an extra KeyUpdate
 

@@ -2383,6 +2383,29 @@ TEST(test_key_update_answer_never_asks) {
   ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x01", 5);
 }
 
+/* Our tls_key_update(1) waits for room while the client updates its keys
+ * on its own (update_not_requested): the client's sending keys have just
+ * changed, which is all ours asked for, so ours no longer asks */
+TEST(test_key_update_request_met_by_the_peers_own) {
+  static uint8_t big[5000], buf[4096];
+  tls_conn_t s;
+  uint8_t rec[64], type;
+  size_t n, off = 0;
+  ASSERT_EQ(connected(&s), 0);
+  out_len = 0;
+  ASSERT_TRUE(tls_write(&s, big, sizeof(big)) > 0); /* tx full */
+  ASSERT_EQ(tls_key_update(&s, 1), 0);
+  n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x00", 5, rec);
+  tls_update_secret(&c, peer.c_ap);
+  tls_traffic_keys(&c, peer.c_ap, &peer.wr);
+  ASSERT_EQ(tls_input(&s, rec, n), n);
+  drain(&s);
+  ASSERT_TRUE(peer_open(&peer, &off, &type, buf) > 0); /* the data */
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
+  ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
+  ASSERT_EQ(off, out_len);
+}
+
 TEST(test_key_update_needs_connection) {
   tls_conn_t s;
   ASSERT_EQ(server_start(&s, &cfg_ec, sizeof(srv_tx)), 0);
@@ -2590,6 +2613,7 @@ int main(void) {
   RUN_TEST(test_no_data_past_key_limit);
   RUN_TEST(test_no_data_before_owed_key_update);
   RUN_TEST(test_key_update_answer_never_asks);
+  RUN_TEST(test_key_update_request_met_by_the_peers_own);
   RUN_TEST(test_key_update_needs_connection);
 
   RUN_TEST(test_init_and_accept_checks);

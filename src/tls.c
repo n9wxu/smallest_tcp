@@ -211,7 +211,9 @@ int tls_fail(tls_conn_t *t, int alert) {
 
 /* ── Handshake messages ── */
 
-/* RFC 8446 §4.6.3: the peer's next keys; answer if asked */
+/* RFC 8446 §4.6.3: the peer's next keys; answer if asked.  Its sending
+ * keys have now changed, which is all a request of ours still waiting to
+ * go would ask for: ours no longer asks. */
 static int on_key_update(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   if (mlen != HS_HDR + 1)
     return tls_fail(t, TLS_ALERT_DECODE_ERROR);
@@ -219,6 +221,7 @@ static int on_key_update(tls_conn_t *t, const uint8_t *m, size_t mlen) {
     return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   tls_update_secret(t->cfg->crypto, t->rsec);
   tls_traffic_keys(t->cfg->crypto, t->rsec, &t->rkeys);
+  t->flags &= (uint16_t)~F_KU_REQ;
   if (m[HS_HDR])
     t->flags |= F_KU_OWED | F_KU_ANS;
   return HS_KEYS;

@@ -587,8 +587,12 @@ switches our records to the client application keys, and reports
   owed, one KeyUpdate goes, and an answer is update_not_requested even when
   the application asked as well: the peer's sending keys have just changed,
   which is all the request wanted, and asking back could keep the two sides
-  updating each other (§4.6.3).  `pump()` sends an owed KeyUpdate as soon as
-  tx has room, then moves our secret on and installs the new keys.  Until it
+  updating each other (§4.6.3).  A request of ours still waiting to go is
+  dropped, too, when the peer's KeyUpdate arrives with update_not_requested:
+  the peer's sending keys have changed since we asked, and asking anyway —
+  allowed, but pointless — would cost it a KeyUpdate more.  `pump()` sends
+  an owed KeyUpdate as soon as tx has room, then moves our secret on and
+  installs the new keys.  Until it
   has gone, `tls_write()` accepts nothing, so no data goes out under the key
   it retires.
 - **The record limit.**  `tls_write()` owes a KeyUpdate itself once
@@ -697,13 +701,13 @@ The Master Secret exists only on the stack for the moment it is used.
 
 ## 13. Testing
 
-**Unit (212 tests, CMake with `SMALLEST_TCP_TLS`):**
+**Unit (213 tests, CMake with `SMALLEST_TCP_TLS`):**
 
 | Suite | Tests | |
 |---|---:|---|
 | `test_tls_crypto` | 22 | The backend: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, chains (alerts, IP names, other anchors), random |
 | `test_tls_keys` | 34 | Key schedule and records against RFC 8448 §3 (every secret, key, IV, both Finished, all eight protected records byte for byte), §4 (resumption PSK binder, PSK + DHE schedule), §5 (HelloRetryRequest transcript); malformed records |
-| `test_tls_server` | 106 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts, a backend failing the key exchange after writing part of its output |
+| `test_tls_server` | 107 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts, a backend failing the key exchange after writing part of its output |
 | `test_tls_client` | 53 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()`) and against a scripted server that gets each message wrong on purpose |
 
 `tests/tls/gen_rfc8448.py` extracts the RFC 8448 traces into
