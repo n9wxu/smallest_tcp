@@ -18,6 +18,8 @@
  *   TLS_MESSAGE  what to send                   ("hello from smallest_tcp\n")
  *   TLS_BYTES    send this many pattern bytes instead, and require them
  *                back unchanged (an echo server)
+ *   TLS_PSK, TLS_PSK_ID, TLS_PSK_MODES   offer a pre-shared key
+ *                (demo_tls.h)
  *
  * Exit status: 0 done, 2 TLS alert, 3 timeout or TCP failure, 1 setup.
  * Also the SUT for tests/blackbox/test_tls_client_conform.py.
@@ -38,6 +40,7 @@
 #include <time.h>
 
 #include "demo_mac.h"
+#include "demo_tls.h"
 
 #define NET_BUF_SIZE 1514u
 #define TCP_TX_SIZE 1460u
@@ -176,6 +179,13 @@ int main(int argc, char *argv[]) {
     }
   }
   cfg.crypto = &crypto;
+  {
+    static uint8_t psk[64];
+    if (demo_tls_psk(&cfg, psk, sizeof(psk)) < 0) {
+      fprintf(stderr, "[tls_client] TLS_PSK is not hex\n");
+      return 1;
+    }
+  }
 
   if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0)
     return 1;
@@ -242,8 +252,9 @@ int main(int argc, char *argv[]) {
       if (!announced) {
         announced = 1;
         printf("[tls_client] TLS 1.3 established (TLS_AES_128_GCM_SHA256, "
-               "%s)\n",
-               tls.group == TLS_GROUP_X25519 ? "x25519" : "secp256r1");
+               "%s, %s)\n",
+               tls.group == TLS_GROUP_X25519 ? "x25519" : "no (EC)DHE",
+               tls_psk_used(&tls) ? "PSK" : "certificate");
         fflush(stdout);
       }
       if (sent < out_len) {

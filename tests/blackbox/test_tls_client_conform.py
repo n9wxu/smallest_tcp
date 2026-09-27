@@ -35,6 +35,8 @@ import pytest
 from helpers import sut_argv
 
 PORT = 4433
+PSK = bytes.fromhex("707366b2103254769ba8dcfe0123456789abcdef1122334455667788990aabbc")
+PSK_ID = "device-1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 TLS_DIR = os.path.join(HERE, "..", "tls")
 CA = os.path.join(TLS_DIR, "ca.pem")
@@ -49,14 +51,18 @@ class Server(threading.Thread):
     """One-connection TLS 1.3 echo server (Python ssl) on the test host."""
 
     def __init__(self, host, cert="server.pem", key="server.key",
-                 verify=ssl.CERT_NONE, maximum=None):
+                 verify=ssl.CERT_NONE, maximum=None, psk=None):
         super().__init__(daemon=True)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         if maximum:
             ctx.maximum_version = maximum
         else:
             ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-        ctx.load_cert_chain(cred(cert), cred(key))
+        if cert:
+            ctx.load_cert_chain(cred(cert), cred(key))
+        if psk:
+            ctx.set_psk_server_callback(
+                lambda identity: psk if identity == PSK_ID else b"")
         if verify != ssl.CERT_NONE:
             ctx.verify_mode = verify
             ctx.load_verify_locations(CA)
@@ -242,3 +248,74 @@ def test_tls_c30_openssl_s_server(client):
     assert rc == 0, out + srv_out
     assert "received: revres_s olleh" in out
     assert "Protocol version: TLSv1.3" in srv_out
+
+
+# ── Pre-shared keys (REQ-TLS-023/024) ──────────────────────────────────────────
+
+PSK_ENV = {"TLS_PSK": PSK.hex(), "TLS_PSK_ID": PSK_ID,
+           # trusting nothing the servers could show: the PSK must do
+           "TLS_CA": cred("rsa.pem")}
+
+
+@pytest.mark.skipif(not hasattr(ssl.SSLContext, "set_psk_server_callback"),
+                    reason="Python ssl without PSK callbacks (< 3.13)")
+def test_tls_c40_psk_python(client):
+    """A PSK-only Python server (no certificate at all)."""
+    srv = serve(client, cert=None, psk=PSK)
+    rc, out = client(**PSK_ENV)
+    finish(srv)
+    assert rc == 0, out
+    assert "PSK" in out and "received: hello from smallest_tcp" in out
+    assert srv.error is None, srv.error
+
+
+def s_server(client, *args):
+    if not OPENSSL:
+        pytest.skip("no openssl CLI")
+    p = subprocess.Popen(
+        [OPENSSL, "s_server", "-accept", f"{client.our_ip}:{PORT}", "-nocert",
+         "-psk", PSK.hex(), "-psk_identity", PSK_ID, "-tls1_3", "-rev",
+         "-naccept", "1", *args],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT)
+    time.sleep(1.0)
+    return p
+
+
+def test_tls_c41_psk_openssl(client):
+    """PSK with (EC)DHE against OpenSSL's s_server, which has no
+    certificate."""
+    p = s_server(client)
+    try:
+        rc, out = client(TLS_MESSAGE="psk\n", **PSK_ENV)
+    finally:
+        p.kill()
+        srv_out = p.communicate()[0].decode(errors="replace")
+    assert rc == 0, out + srv_out
+    assert "x25519, PSK" in out
+    assert "received: ksp" in out
+
+
+def test_tls_c42_psk_ke_openssl(client):
+    """psk_ke: the PSK alone, no (EC)DHE — the cheapest handshake."""
+    p = s_server(client, "-allow_no_dhe_kex")
+    try:
+        rc, out = client(TLS_MESSAGE="ke\n", TLS_PSK_MODES="ke", **PSK_ENV)
+    finally:
+        p.kill()
+        srv_out = p.communicate()[0].decode(errors="replace")
+    assert rc == 0, out + srv_out
+    assert "no (EC)DHE, PSK" in out
+    assert "received: ek" in out
+
+
+def test_tls_c43_psk_wrong_key(client):
+    p = s_server(client)
+    try:
+        env = dict(PSK_ENV, TLS_PSK="00" * 32)
+        rc, out = client(**env)
+    finally:
+        p.kill()
+        p.communicate()
+    assert rc == 2, out
+    assert "TLS alert 51" in out  # decrypt_error, from s_server

@@ -28,6 +28,8 @@ static const uint8_t *const rsa_chain[1] = {rsa_der};
 static const uint16_t rsa_chain_len[1] = {sizeof(rsa_der)};
 
 static tls_config_t cfg_ec, cfg_rsa, cfg_fixed;
+static tls_config_t cfg_psk, cfg_psk_only, cfg_psk4;
+static tls_crypto_t fixed4; /* .. with the RFC 8448 §4 server's */
 
 static uint8_t srv_rx[4096], srv_tx[4096];
 static uint8_t out[16384]; /* what the server sent */
@@ -59,6 +61,24 @@ static int fixed_random(void *ctx, uint8_t *o, size_t len) {
     return 0;
   }
   return c.random(ctx, o, len);
+}
+
+static int fixed4_random(void *ctx, uint8_t *o, size_t len) {
+  if (len == 32) {
+    memcpy(o, r4_server_hello + 6, 32);
+    return 0;
+  }
+  return c.random(ctx, o, len);
+}
+
+static int fixed4_keygen(void *ctx, uint16_t group, uint8_t *priv,
+                         uint8_t *pub, size_t *pub_len) {
+  if (group != TLS_GROUP_X25519)
+    return c.kx_keygen(ctx, group, priv, pub, pub_len);
+  memcpy(priv, r4_s_x25519_priv, 32);
+  memcpy(pub, r4_s_x25519_pub, 32);
+  *pub_len = 32;
+  return 0;
 }
 
 static int fixed_keygen(void *ctx, uint16_t group, uint8_t *priv,
@@ -123,7 +143,25 @@ typedef struct {
   int ks_overrun;  /* a key share running past its list */
   int sv_overrun;  /* supported_versions running past its extension */
   int trailing;    /* a byte after the extensions */
+  /* A pre-shared key (test_psk as "device-1") */
+  int psk;           /* offer it */
+  int psk_modes;     /* TLS_PSK_* offered (0: psk_dhe_ke) */
+  int psk_stranger;  /* an unknown identity instead of ours */
+  int psk_second;    /* an unknown identity first, ours second */
+  int bad_binder;
+  int one_binder;    /* fewer binders than identities */
+  int no_modes;      /* no psk_key_exchange_modes */
+  int psk_not_last;  /* an extension after pre_shared_key */
+  int psk_no_ids;    /* an empty identity list */
+  int psk_empty_id;  /* a zero-length identity */
+  int psk_twice;     /* our identity twice */
 } ch_opt_t;
+
+static const uint8_t test_psk[32] = {
+    0x70, 0x73, 0x6b, 0x21, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
+    0xfe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11, 0x22,
+    0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc};
+#define TEST_PSK_ID "device-1"
 
 typedef struct {
   uint8_t p256_priv[32], p256_pub[65];
@@ -136,6 +174,11 @@ typedef struct {
   int ccs_seen, records;
   uint8_t msgs[4096];
   size_t mlen;
+  const uint8_t *psk;   /* offered */
+  size_t psk_len;
+  int psk_resumption;
+  int selected;         /* the server's selected_identity, or -1 */
+  int share_seen;       /* its key_share */
 } peer_t;
 
 static peer_t peer;
@@ -160,6 +203,7 @@ static void peer_init(peer_t *p, const tls_config_t *cfg) {
   size_t n;
   memset(p, 0, sizeof(*p));
   p->cfg = cfg;
+  p->selected = -1;
   c.kx_keygen(c.ctx, TLS_GROUP_SECP256R1, p->p256_priv, p->p256_pub, &n);
   c.hash_init(&p->th);
 }
@@ -254,6 +298,81 @@ static size_t build_ch(peer_t *p, const ch_opt_t *o, uint8_t *m) {
     put16(list, (size_t)(q - list - 2));
     q = ext_end(e, q);
   }
+  if (o->psk) {
+    static const char stranger[] = "nobody";
+    uint8_t *ids, *b0 = NULL, *b1 = NULL, early[32], h[32];
+    size_t trunc;
+    int mine = -1;
+    tls_hash_t th;
+    int modes = o->psk_modes ? o->psk_modes : TLS_PSK_DHE_KE;
+    if (!o->no_modes) {
+      e = q;
+      q = ext_begin(q, TLS_EXT_PSK_KEY_EXCHANGE_MODES);
+      *q++ = (uint8_t)(((modes & TLS_PSK_DHE_KE) ? 1 : 0) +
+                       ((modes & TLS_PSK_KE) ? 1 : 0));
+      if (modes & TLS_PSK_DHE_KE)
+        *q++ = 1;
+      if (modes & TLS_PSK_KE)
+        *q++ = 0;
+      q = ext_end(e, q);
+    }
+    e = q;
+    q = ext_begin(q, TLS_EXT_PRE_SHARED_KEY);
+    ids = q;
+    q += 2;
+    for (i = 0; i < ((o->psk_second || o->psk_twice) ? 2 : 1) &&
+                !o->psk_no_ids;
+         i++) {
+      int ours = !o->psk_stranger && (i == 1 || !o->psk_second);
+      const char *id = o->psk_empty_id ? "" : ours ? TEST_PSK_ID : stranger;
+      put16(q, strlen(id));
+      memcpy(q + 2, id, strlen(id));
+      memset(q + 2 + strlen(id), 0, 4); /* obfuscated_ticket_age */
+      q += 6 + strlen(id);
+      if (ours && mine < 0)
+        mine = i;
+    }
+    put16(ids, (size_t)(q - ids - 2));
+    trunc = (size_t)(q - m);
+    i = ((o->psk_second || o->psk_twice) && !o->one_binder) ? 2 : 1;
+    put16(q, (size_t)(33 * i));
+    q += 2;
+    b0 = q + 1;
+    q[0] = 32;
+    q += 33;
+    if (i == 2) {
+      b1 = q + 1;
+      q[0] = 32;
+      q += 33;
+    }
+    q = ext_end(e, q);
+    if (o->psk_not_last) {
+      e = q;
+      q = ext_end(e, ext_begin(q, 0x1a1a));
+    }
+    put16(ext, (size_t)(q - ext - 2));
+    m[0] = TLS_HS_CLIENT_HELLO;
+    put24(m + 1, (size_t)(q - m - 4));
+    /* the binders, over the ClientHello up to them */
+    memset(b0, 0x5b, 32);
+    if (b1)
+      memset(b1, 0x5b, 32);
+    tls_early_secret(&c, test_psk, sizeof(test_psk), early);
+    c.hash_init(&th);
+    c.hash_update(&th, m, trunc);
+    c.hash_peek(&th, h);
+    if (mine == 0)
+      tls_psk_binder(&c, early, 0, h, b0);
+    else if (mine == 1 && b1)
+      tls_psk_binder(&c, early, 0, h, b1);
+    if (o->psk_twice && b1)
+      memset(b1, 0x5c, 32); /* only the first is looked at */
+    if (o->bad_binder)
+      (mine == 1 ? b1 : b0)[31] ^= 1;
+    p->psk = test_psk;
+    p->psk_len = sizeof(test_psk);
+    return (size_t)(q - m);
+  }
   put16(ext, (size_t)(q - ext - 2));
   if (o->trailing)
     *q++ = 0;
@@ -334,20 +453,28 @@ static int peer_read_sh(peer_t *p, size_t *off) {
     } else if (type16 == TLS_EXT_SUPPORTED_VERSIONS) {
       CHECK(l == 2 && be16(q + 4) == 0x0304);
       sv = 1;
+    } else if (type16 == TLS_EXT_PRE_SHARED_KEY) {
+      CHECK(p->psk && l == 2 && key == NULL); /* first, before key_share */
+      p->selected = (int)be16(q + 4);
     } else {
       CHECK(0); /* nothing else belongs in a ServerHello here */
     }
     q += 4 + l;
     elen -= 4 + l;
   }
-  CHECK(sv && key);
-  CHECK(c.kx_shared(c.ctx, p->group,
-                    p->group == TLS_GROUP_X25519 ? r3_c_x25519_priv
-                                                 : p->p256_priv,
-                    key, klen, z) == 0);
+  CHECK(sv && (key || p->selected >= 0));
+  p->share_seen = key != NULL;
+  if (key)
+    CHECK(c.kx_shared(c.ctx, p->group,
+                      p->group == TLS_GROUP_X25519 ? r3_c_x25519_priv
+                                                   : p->p256_priv,
+                      key, klen, z) == 0);
   c.hash_update(&p->th, sh, sh_len);
-  tls_early_secret(&c, NULL, 0, p->hs);
-  tls_next_secret(&c, p->hs, z, 32);
+  if (p->selected >= 0)
+    tls_early_secret(&c, p->psk, p->psk_len, p->hs);
+  else
+    tls_early_secret(&c, NULL, 0, p->hs);
+  tls_next_secret(&c, p->hs, key ? z : NULL, 32);
   c.hash_peek(&p->th, h);
   tls_derive_secret(&c, p->hs, "c hs traffic", h, p->c_hs);
   tls_derive_secret(&c, p->hs, "s hs traffic", h, p->s_hs);
@@ -398,6 +525,8 @@ static int peer_read_flight(peer_t *p) {
         memcmp(q, "\x08\x00\x00\x02\x00\x00", 6) == 0);
   c.hash_update(&p->th, q, 6);
   q += 6;
+  if (p->selected >= 0) /* PSK: no certificates */
+    goto finished;
   /* Certificate: exactly the configured chain */
   m = cert_msg(p->cfg, want);
   CHECK((size_t)(q - p->msgs) + m <= p->mlen && memcmp(q, want, m) == 0);
@@ -421,7 +550,7 @@ static int peer_read_flight(peer_t *p) {
     c.hash_update(&p->th, q, m);
     q += m;
   }
-  /* Finished */
+finished: /* Finished */
   CHECK(memcmp(q, "\x14\x00\x00\x20", 4) == 0);
   c.hash_peek(&p->th, h);
   tls_finished_mac(&c, p->s_hs, h, z);
@@ -497,20 +626,25 @@ static int handshake(tls_conn_t *s, const tls_config_t *cfg,
 
 /* ClientHello with options @p o; the server must answer with fatal alert
  * @p alert in plaintext, as its only output */
-static int refused(const ch_opt_t *o, uint8_t alert) {
+static int refused_by(const tls_config_t *cfg, const ch_opt_t *o,
+                      uint8_t alert) {
   static uint8_t m[2048];
   tls_conn_t s;
   uint8_t want[7] = {TLS_CT_ALERT, 3, 3, 0, 2, 2, 0};
   size_t n;
   want[6] = alert;
-  CHECK(server_start(&s, &cfg_ec, sizeof(srv_tx)) == 0);
-  peer_init(&peer, &cfg_ec);
+  CHECK(server_start(&s, cfg, sizeof(srv_tx)) == 0);
+  peer_init(&peer, cfg);
   n = build_ch(&peer, o, m);
   send_ch(&s, &peer, m, n);
   CHECK(tls_state(&s) == TLS_STATE_ERROR && s.alert == alert);
   CHECK(evts == TLS_EVT_ERROR);
   CHECK(drain(&s) == 7 && memcmp(out, want, 7) == 0);
   return 0;
+}
+
+static int refused(const ch_opt_t *o, uint8_t alert) {
+  return refused_by(&cfg_ec, o, alert);
 }
 
 /* After a handshake: the server's next output must be fatal alert
@@ -1404,6 +1538,259 @@ TEST(test_write_needs_room_for_a_byte) {
   ASSERT_EQ(tls_tx_pending(&s, &p), sizeof(srv_tx) - 20);
 }
 
+/* ══ Pre-shared keys (REQ-TLS-023/024) ════════════════════════════ */
+
+TEST(test_rfc8448_psk_server_hello) {
+  /* The RFC's resumption ClientHello (a ticket as identity, "res binder",
+   * an early_data offer we ignore): with the RFC server's randomness and
+   * key share, our ServerHello is the RFC's, and the handshake keys are */
+  tls_conn_t s;
+  tls_keys_t k;
+  uint8_t buf[2048], type, h[32], mac[32];
+  tls_hash_t th;
+  size_t off;
+  ASSERT_EQ(server_start(&s, &cfg_psk4, sizeof(srv_tx)), 0);
+  ASSERT_EQ(tls_input(&s, r4_ch_record, sizeof(r4_ch_record)),
+            sizeof(r4_ch_record));
+  ASSERT_EQ(tls_state(&s), TLS_STATE_HANDSHAKE);
+  drain(&s);
+  ASSERT_TRUE(out_len > sizeof(r4_sh_record));
+  ASSERT_MEM_EQ(out, r4_sh_record, sizeof(r4_sh_record));
+  memcpy(k.key, r4_s_hs_key, 16);
+  memcpy(k.iv, r4_s_hs_iv, 12);
+  k.seq = 0;
+  off = sizeof(r4_sh_record);
+  memcpy(buf, out + off, out_len - off);
+  ASSERT_EQ(tls_record_open(&c, &k, buf, out_len - off, &type), 6 + 36);
+  /* EncryptedExtensions, then Finished: no certificates */
+  ASSERT_MEM_EQ(buf + 5, "\x08\x00\x00\x02\x00\x00\x14\x00\x00\x20", 10);
+  c.hash_init(&th);
+  c.hash_update(&th, r4_client_hello, sizeof(r4_client_hello));
+  c.hash_update(&th, r4_server_hello, sizeof(r4_server_hello));
+  c.hash_update(&th, buf + 5, 6);
+  c.hash_peek(&th, h);
+  tls_finished_mac(&c, r4_s_hs_traffic, h, mac);
+  ASSERT_MEM_EQ(buf + 5 + 10, mac, 32);
+}
+
+static int psk_handshake(const tls_config_t *cfg, const ch_opt_t *o,
+                         tls_conn_t *s) {
+  int r = handshake(s, cfg, o, sizeof(srv_tx));
+  return r;
+}
+
+TEST(test_psk_dhe) {
+  tls_conn_t s;
+  ch_opt_t o;
+  uint8_t rec[64], buf[8];
+  size_t n;
+  ch_default(&o);
+  o.psk = 1;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 0);
+  ASSERT_EQ(peer.share_seen, 1);
+  ASSERT_EQ(s.group, TLS_GROUP_X25519);
+  n = peer_seal(&peer, TLS_CT_APPLICATION_DATA, "psk", 3, rec);
+  ASSERT_EQ(tls_input(&s, rec, n), n);
+  ASSERT_EQ(tls_read(&s, buf, sizeof(buf)), 3);
+}
+
+TEST(test_psk_ke) {
+  /* The PSK alone: no key_share, no supported_groups, no (EC)DHE */
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_modes = TLS_PSK_KE;
+  o.no_key_share = 1;
+  o.ngroups = 0;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 0);
+  ASSERT_EQ(peer.share_seen, 0);
+  ASSERT_EQ(s.group, 0);
+}
+
+TEST(test_psk_prefers_dhe) {
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_modes = TLS_PSK_KE | TLS_PSK_DHE_KE;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.share_seen, 1);
+}
+
+TEST(test_psk_ke_without_share_even_if_dhe_offered) {
+  /* Both modes offered but no usable share: the PSK alone */
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_modes = TLS_PSK_KE | TLS_PSK_DHE_KE;
+  o.shares[0] = 0x0018;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 0);
+  ASSERT_EQ(peer.share_seen, 0);
+}
+
+TEST(test_psk_mode_mismatch_uses_certificate) {
+  /* Server allows psk_ke only, client offers psk_dhe_ke only */
+  tls_conn_t s;
+  tls_config_t ke = cfg_psk;
+  ch_opt_t o;
+  ke.psk_modes = TLS_PSK_KE;
+  ch_default(&o);
+  o.psk = 1;
+  ASSERT_EQ(psk_handshake(&ke, &o, &s), 0);
+  ASSERT_EQ(peer.selected, -1);
+}
+
+TEST(test_psk_unknown_identity_uses_certificate) {
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_stranger = 1;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.selected, -1);
+}
+
+TEST(test_psk_second_identity) {
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_second = 1;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 1);
+}
+
+TEST(test_psk_only_server) {
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  ASSERT_EQ(psk_handshake(&cfg_psk_only, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 0);
+}
+
+TEST(test_psk_refusals) {
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.bad_binder = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_DECRYPT_ERROR), 0);
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_second = 1;
+  o.bad_binder = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_DECRYPT_ERROR), 0);
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_second = 1;
+  o.one_binder = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_not_last = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  ch_default(&o);
+  o.psk = 1;
+  o.no_modes = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_MISSING_EXTENSION), 0);
+  /* a PSK-only server */
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_stranger = 1;
+  ASSERT_EQ(refused_by(&cfg_psk_only, &o, TLS_ALERT_UNKNOWN_PSK_IDENTITY), 0);
+  ch_default(&o);
+  ASSERT_EQ(refused_by(&cfg_psk_only, &o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
+}
+
+TEST(test_psk_more_refusals) {
+  tls_config_t dhe_only = cfg_psk;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_no_ids = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_DECODE_ERROR), 0);
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_empty_id = 1;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_DECODE_ERROR), 0);
+  /* psk_dhe_ke offered, but no share we can use: not psk_ke instead;
+   * and no certificate handshake without a share either */
+  ch_default(&o);
+  o.psk = 1;
+  o.shares[0] = 0x0018;
+  ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
+  /* a server allowing psk_dhe_ke only (the default): no psk_ke */
+  dhe_only.psk_modes = 0;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_modes = TLS_PSK_KE;
+  o.no_key_share = 1;
+  ASSERT_EQ(refused_by(&dhe_only, &o, TLS_ALERT_MISSING_EXTENSION), 0);
+}
+
+TEST(test_psk_first_matching_identity) {
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_twice = 1;
+  ASSERT_EQ(psk_handshake(&cfg_psk, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 0);
+}
+
+TEST(test_psk_ke_server_ignores_share) {
+  /* A server allowing psk_ke only answers without a key share, whatever
+   * the client offers */
+  tls_conn_t s;
+  tls_config_t ke = cfg_psk;
+  ch_opt_t o;
+  ke.psk_modes = TLS_PSK_KE;
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_modes = TLS_PSK_KE | TLS_PSK_DHE_KE;
+  ASSERT_EQ(psk_handshake(&ke, &o, &s), 0);
+  ASSERT_EQ(peer.selected, 0);
+  ASSERT_EQ(peer.share_seen, 0);
+  ASSERT_EQ(s.group, 0);
+}
+
+TEST(test_psk_accept_checks) {
+  tls_conn_t s;
+  tls_config_t bad = cfg_psk_only;
+  bad.psk_id_len = 0;
+  ASSERT_EQ(tls_init(&s, &bad, srv_rx, 1024, srv_tx, 1024), 0);
+  ASSERT_EQ(tls_accept(&s), -1);
+  bad = cfg_psk_only;
+  bad.psk_len = 0;
+  ASSERT_EQ(tls_init(&s, &bad, srv_rx, 1024, srv_tx, 1024), 0);
+  ASSERT_EQ(tls_accept(&s), -1);
+  bad = cfg_psk_only;
+  bad.psk_id = NULL;
+  ASSERT_EQ(tls_init(&s, &bad, srv_rx, 1024, srv_tx, 1024), 0);
+  ASSERT_EQ(tls_accept(&s), -1);
+  ASSERT_EQ(tls_init(&s, &cfg_psk_only, srv_rx, 1024, srv_tx, 1024), 0);
+  ASSERT_EQ(tls_accept(&s), 0);
+}
+
+TEST(test_psk_ignored_without_configured_psk) {
+  /* A server without a PSK ignores the offer (still checks its place) */
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.psk = 1;
+  ASSERT_EQ(psk_handshake(&cfg_ec, &o, &s), 0);
+  ASSERT_EQ(peer.selected, -1);
+  ch_default(&o);
+  o.psk = 1;
+  o.psk_not_last = 1;
+  ASSERT_EQ(refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+}
+
 /* ══ API ══════════════════════════════════════════════════════════ */
 
 TEST(test_init_and_accept_checks) {
@@ -1451,6 +1838,42 @@ int main(void) {
   cfg_rsa.cert_len = rsa_chain_len;
   cfg_rsa.key = &rsa_key;
   cfg_rsa.sig_scheme = TLS_SIG_RSA_PSS_RSAE_SHA256;
+  cfg_psk = cfg_ec;
+  cfg_psk.psk = test_psk;
+  cfg_psk.psk_len = sizeof(test_psk);
+  cfg_psk.psk_id = (const uint8_t *)TEST_PSK_ID;
+  cfg_psk.psk_id_len = sizeof(TEST_PSK_ID) - 1;
+  cfg_psk.psk_modes = TLS_PSK_KE | TLS_PSK_DHE_KE;
+  cfg_psk_only = cfg_psk;
+  cfg_psk_only.cert = NULL;
+  cfg_psk_only.cert_len = NULL;
+  cfg_psk_only.cert_count = 0;
+  cfg_psk_only.key = NULL;
+  cfg_psk_only.sig_scheme = 0;
+  fixed4 = c;
+  fixed4.random = fixed4_random;
+  fixed4.kx_keygen = fixed4_keygen;
+  cfg_psk4 = cfg_ec;
+  cfg_psk4.crypto = &fixed4;
+  cfg_psk4.psk = r4_psk;
+  cfg_psk4.psk_len = sizeof(r4_psk);
+  { /* the identity: the §3 ticket, as the §4 ClientHello offers it */
+    const uint8_t *q = r4_client_hello + 4 + 2 + 32;
+    size_t elen;
+    q += 1 + q[0];
+    q += 2 + be16(q);
+    q += 1 + q[0];
+    elen = be16(q);
+    q += 2;
+    while (elen && be16(q) != TLS_EXT_PRE_SHARED_KEY) {
+      elen -= 4 + be16(q + 2);
+      q += 4 + be16(q + 2);
+    }
+    cfg_psk4.psk_id = q + 4 + 2 + 2;
+    cfg_psk4.psk_id_len = (uint16_t)be16(q + 4 + 2);
+  }
+  cfg_psk4.psk_modes = TLS_PSK_DHE_KE;
+  cfg_psk4.psk_resumption = 1;
 
   RUN_TEST(test_rfc8448_server_hello);
   RUN_TEST(test_rfc8448_client_hello_full_handshake);
@@ -1526,6 +1949,22 @@ int main(void) {
   RUN_TEST(test_input_discarded_after_close);
   RUN_TEST(test_close_once);
   RUN_TEST(test_write_needs_room_for_a_byte);
+
+  RUN_TEST(test_rfc8448_psk_server_hello);
+  RUN_TEST(test_psk_dhe);
+  RUN_TEST(test_psk_ke);
+  RUN_TEST(test_psk_prefers_dhe);
+  RUN_TEST(test_psk_ke_without_share_even_if_dhe_offered);
+  RUN_TEST(test_psk_mode_mismatch_uses_certificate);
+  RUN_TEST(test_psk_unknown_identity_uses_certificate);
+  RUN_TEST(test_psk_second_identity);
+  RUN_TEST(test_psk_only_server);
+  RUN_TEST(test_psk_refusals);
+  RUN_TEST(test_psk_more_refusals);
+  RUN_TEST(test_psk_first_matching_identity);
+  RUN_TEST(test_psk_ke_server_ignores_share);
+  RUN_TEST(test_psk_accept_checks);
+  RUN_TEST(test_psk_ignored_without_configured_psk);
 
   RUN_TEST(test_init_and_accept_checks);
 

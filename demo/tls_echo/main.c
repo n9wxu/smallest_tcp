@@ -13,7 +13,10 @@
  * The certificate chain (PEM, leaf first) and key default to the test
  * credentials in tests/tls — TEST ONLY; set TLS_CERT and TLS_KEY to use
  * others.  An ECDSA P-256 key signs with ecdsa_secp256r1_sha256, an RSA
- * key with rsa_pss_rsae_sha256.
+ * key with rsa_pss_rsae_sha256.  TLS_PSK (hex), TLS_PSK_ID and
+ * TLS_PSK_MODES add a pre-shared key (demo_tls.h); clients that offer it
+ * need no certificate:
+ *   openssl s_client -connect 10.0.0.2:4433 -psk <hex> -psk_identity <id>
  *
  * Also the SUT for tests/blackbox/test_tls_conform.py.
  */
@@ -33,6 +36,7 @@
 
 #include "demo_ipv6.h"
 #include "demo_mac.h"
+#include "demo_tls.h"
 
 #define TLS_PORT 4433u
 #define NET_BUF_SIZE 1514u
@@ -67,6 +71,7 @@ static mbedtls_pk_context key;
 static const uint8_t *chain_der[MAX_CHAIN];
 static uint16_t chain_len[MAX_CHAIN];
 static tls_config_t cfg;
+static uint8_t psk[64];
 
 static uint8_t tls_rx[TLS_RX_SIZE];
 static uint8_t tls_tx[TLS_TX_SIZE];
@@ -231,8 +236,11 @@ static void tls_service(void) {
     if (!announced) {
       announced = 1;
       printf("[tls_echo] TLS 1.3 established (TLS_AES_128_GCM_SHA256, "
-             "%s)\n",
-             tls.group == TLS_GROUP_X25519 ? "x25519" : "secp256r1");
+             "%s, %s)\n",
+             tls.group == TLS_GROUP_X25519    ? "x25519"
+             : tls.group == TLS_GROUP_SECP256R1 ? "secp256r1"
+                                                : "no (EC)DHE",
+             tls_psk_used(&tls) ? "PSK" : "certificate");
       fflush(stdout);
     }
     break;
@@ -279,6 +287,10 @@ int main(int argc, char *argv[]) {
   }
   if (load_credentials() != 0)
     return 1;
+  if (demo_tls_psk(&cfg, psk, sizeof(psk)) < 0) {
+    fprintf(stderr, "[tls_echo] TLS_PSK is not hex\n");
+    return 1;
+  }
 
   if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0)
     return 1;
@@ -297,13 +309,14 @@ int main(int argc, char *argv[]) {
   tcp_connections.conns = conn_table;
   tcp_connections.count = 1;
 
-  printf("[tls_echo] IP: %u.%u.%u.%u, %u certificate(s), %s key\n",
+  printf("[tls_echo] IP: %u.%u.%u.%u, %u certificate(s), %s key%s%s\n",
          (unsigned)((net.ipv4_addr >> 24) & 0xFF),
          (unsigned)((net.ipv4_addr >> 16) & 0xFF),
          (unsigned)((net.ipv4_addr >> 8) & 0xFF),
          (unsigned)(net.ipv4_addr & 0xFF), (unsigned)cfg.cert_count,
          cfg.sig_scheme == TLS_SIG_ECDSA_SECP256R1_SHA256 ? "ECDSA P-256"
-                                                          : "RSA");
+                                                          : "RSA",
+         cfg.psk ? ", PSK " : "", cfg.psk ? (const char *)cfg.psk_id : "");
   do_listen();
 
   last_tick = now_ms();

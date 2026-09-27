@@ -3,7 +3,8 @@ test_tls_conform.py — TLS 1.3 server conformance and interop (RFC 8446).
 
 SUT: demo/tls_echo, started once for this module: a TLS 1.3 echo server on
 port 4433 with the ECDSA P-256 test certificate from tests/tls (issued by
-tests/tls/ca.pem for pyro-dead01.local, localhost and 10.0.0.2).  The
+tests/tls/ca.pem for pyro-dead01.local, localhost and 10.0.0.2) and a
+pre-shared key ("device-1", psk_ke and psk_dhe_ke).  The
 clients are production TLS stacks on the test host — Python's ssl module and
 the openssl s_client CLI (OpenSSL 3) — over the TAP or veth (Linux) or feth
 (macOS) link, through the host's TCP to ours.
@@ -38,6 +39,8 @@ from helpers import sut_argv
 
 PORT = 4433
 HOSTNAME = "pyro-dead01.local"
+PSK = bytes.fromhex("707366b2103254769ba8dcfe0123456789abcdef1122334455667788990aabbc")
+PSK_ID = "device-1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CA = os.path.join(HERE, "..", "tls", "ca.pem")
 OPENSSL = shutil.which("openssl")
@@ -66,7 +69,9 @@ class TlsSut:
 
     def start(self, timeout=8.0):
         fd, self.log_path = tempfile.mkstemp(prefix="tls_sut_", suffix=".log")
-        self.proc = subprocess.Popen(self.argv, stdout=fd,
+        env = dict(os.environ, TLS_PSK=PSK.hex(), TLS_PSK_ID=PSK_ID,
+                   TLS_PSK_MODES="both")
+        self.proc = subprocess.Popen(self.argv, stdout=fd, env=env,
                                      stderr=subprocess.STDOUT)
         os.close(fd)
         deadline = time.monotonic() + timeout
@@ -486,3 +491,45 @@ def test_tls_040_over_ipv6(sut, request):
     with client_ctx().wrap_socket(raw, server_hostname=HOSTNAME) as s:
         s.sendall(b"over IPv6")
         assert recv_exact(s, 9) == b"over IPv6"
+
+
+# ── Pre-shared keys (REQ-TLS-023/024) ──────────────────────────────────────────
+
+def test_tls_050_psk_openssl(sut):
+    """An external PSK: no certificate, (EC)DHE for forward secrecy."""
+    rc, out = s_client(sut, "-psk", PSK.hex(), "-psk_identity", PSK_ID,
+                       "-brief")
+    assert rc is None, out
+    assert "No peer certificate" in out
+    assert "Peer Temp Key: X25519" in out
+    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+
+
+def test_tls_051_psk_wrong_key(sut):
+    """The binder does not check out: decrypt_error."""
+    rc, out = s_client(sut, "-psk", "00" * 32, "-psk_identity", PSK_ID,
+                       "-brief")
+    assert rc not in (None, 0), out
+    assert "alert decrypt error" in out, out
+
+
+def test_tls_052_psk_unknown_identity(sut):
+    """An identity the server does not know: the certificate instead."""
+    rc, out = s_client(sut, "-psk", PSK.hex(), "-psk_identity", "device-2",
+                       "-brief")
+    assert rc is None, out
+    assert "Peer certificate: CN=pyro-dead01.local" in out
+
+
+@pytest.mark.skipif(not hasattr(ssl.SSLContext, "set_psk_client_callback"),
+                    reason="Python ssl without PSK callbacks (< 3.13)")
+def test_tls_053_psk_python(sut):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_psk_client_callback(lambda hint: (PSK_ID, PSK))
+    with ctx.wrap_socket(connect(sut.host)) as s:
+        assert s.getpeercert(binary_form=True) is None
+        s.sendall(b"psk from python")
+        assert recv_exact(s, 15) == b"psk from python"

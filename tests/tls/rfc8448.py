@@ -5,6 +5,7 @@ steps(text, section) -> list of (actor, title, {field: bytes}) in order.
 import re
 
 SECTIONS = {3: ("3.  Simple 1-RTT Handshake", "4.  Resumed 0-RTT Handshake"),
+            4: ("4.  Resumed 0-RTT Handshake", "5.  HelloRetryRequest"),
             5: ("5.  HelloRetryRequest", "6.  Client Authentication")}
 
 

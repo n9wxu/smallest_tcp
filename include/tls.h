@@ -143,6 +143,16 @@ void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
                       const uint8_t hash[TLS_HASH_LEN],
                       uint8_t out[TLS_HASH_LEN]);
 
+/**
+ * PSK binder (RFC 8446 §4.2.11.2): HMAC under the binder key of the PSK's
+ * Early Secret @p early — "res binder" for a @p resumption PSK (from a
+ * ticket), "ext binder" for an external one — over @p hash, the transcript
+ * hash of the ClientHello up to its binders.
+ */
+void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early,
+                    int resumption, const uint8_t hash[TLS_HASH_LEN],
+                    uint8_t out[TLS_HASH_LEN]);
+
 /** KeyUpdate (RFC 8446 §7.2): the next generation of a traffic secret. */
 void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]);
 
@@ -173,6 +183,10 @@ int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
 
 #define TLS_AES_128_GCM_SHA256 0x1301
 
+/* PSK key-exchange modes, tls_config_t.psk_modes (RFC 8446 §4.2.9) */
+#define TLS_PSK_KE 0x01     /**< psk_ke: the PSK alone, no (EC)DHE */
+#define TLS_PSK_DHE_KE 0x02 /**< psk_dhe_ke: PSK with (EC)DHE */
+
 /** Connection state, tls_state(). */
 typedef enum {
   TLS_STATE_IDLE = 0,  /**< Initialised; tls_accept() not yet called */
@@ -200,6 +214,16 @@ typedef struct {
   uint8_t cert_count;
   const void *key;     /**< Private key, as the backend's sign() takes it */
   uint16_t sig_scheme; /**< TLS_SIG_* that @ref key signs with */
+
+  /* A pre-shared key (RFC 8446 §2.2; SHA-256).  A client offers it, a
+   * server takes it when the identity matches and the binder checks out,
+   * and neither side then uses certificates (REQ-TLS-023/024). */
+  const uint8_t *psk;      /**< NULL: none */
+  uint16_t psk_len;
+  const uint8_t *psk_id;   /**< Its identity */
+  uint16_t psk_id_len;
+  uint8_t psk_modes;       /**< TLS_PSK_KE and/or TLS_PSK_DHE_KE (0: DHE) */
+  uint8_t psk_resumption;  /**< 1: from a ticket ("res binder") */
 } tls_config_t;
 
 /**
@@ -211,7 +235,7 @@ typedef struct tls_conn_s {
   uint8_t state;  /**< tls_state_t */
   uint8_t alert;  /**< The fatal alert sent or received */
   uint8_t step;   /**< Handshake step (internal) */
-  uint8_t flags;  /**< TLS_F_* (internal) */
+  uint16_t flags; /**< (internal) */
   uint16_t group; /**< Negotiated key-exchange group */
   uint8_t sid_len;
   uint8_t sid[32]; /**< legacy_session_id (the ServerHello echoes it) */
@@ -310,5 +334,8 @@ int tls_close(tls_conn_t *tls);
 static inline tls_state_t tls_state(const tls_conn_t *tls) {
   return (tls_state_t)tls->state;
 }
+
+/** 1 if the pre-shared key authenticated the handshake (no certificate). */
+int tls_psk_used(const tls_conn_t *tls);
 
 #endif /* TLS_H */

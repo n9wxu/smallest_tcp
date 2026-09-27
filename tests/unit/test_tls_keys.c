@@ -182,6 +182,52 @@ TEST(test_key_update) {
   ASSERT_MEM_EQ(k.iv, iv, 12);
 }
 
+/* ══ RFC 8448 §4: a resumption PSK ═══════════════════════════════ */
+
+TEST(test_psk_early_secret) {
+  /* The PSK is §3's ticket's */
+  uint8_t s[32];
+  ASSERT_MEM_EQ(r4_psk, r3_resumption_psk, 32);
+  tls_early_secret(&c, r4_psk, sizeof(r4_psk), s);
+  ASSERT_MEM_EQ(s, r4_early_secret, 32);
+}
+
+TEST(test_psk_binder) {
+  /* Over the ClientHello up to its binders: the RFC's binder, which then
+   * completes the ClientHello */
+  uint8_t bk[32], h[32], b[32];
+  tls_hash_t th;
+  tls_derive_secret(&c, r4_early_secret, "res binder", NULL, bk);
+  ASSERT_MEM_EQ(bk, r4_binder_key, 32);
+  c.hash_init(&th);
+  c.hash_update(&th, r4_ch_prefix, sizeof(r4_ch_prefix));
+  c.hash_peek(&th, h);
+  ASSERT_MEM_EQ(h, r4_binder_hash, 32);
+  tls_psk_binder(&c, r4_early_secret, 1, h, b);
+  ASSERT_MEM_EQ(b, r4_binder, 32);
+  ASSERT_MEM_EQ(r4_client_hello, r4_ch_prefix, sizeof(r4_ch_prefix));
+  ASSERT_MEM_EQ(r4_client_hello + sizeof(r4_ch_prefix), "\x00\x21\x20", 3);
+  ASSERT_MEM_EQ(r4_client_hello + sizeof(r4_ch_prefix) + 3, r4_binder, 32);
+  /* an external PSK's binder uses another label */
+  tls_psk_binder(&c, r4_early_secret, 0, h, b);
+  ASSERT_TRUE(memcmp(b, r4_binder, 32) != 0);
+}
+
+TEST(test_psk_dhe_handshake_secrets) {
+  uint8_t s[32], th[32], t2[32];
+  memcpy(s, r4_early_secret, 32);
+  tls_next_secret(&c, s, r4_ecdhe_shared, 32);
+  ASSERT_MEM_EQ(s, r4_handshake_secret, 32);
+  hash2(r4_client_hello, sizeof(r4_client_hello), r4_server_hello,
+        sizeof(r4_server_hello), th);
+  tls_derive_secret(&c, s, "c hs traffic", th, t2);
+  ASSERT_MEM_EQ(t2, r4_c_hs_traffic, 32);
+  tls_derive_secret(&c, s, "s hs traffic", th, t2);
+  ASSERT_MEM_EQ(t2, r4_s_hs_traffic, 32);
+  tls_next_secret(&c, s, NULL, 0);
+  ASSERT_MEM_EQ(s, r4_master_secret, 32);
+}
+
 TEST(test_equal) {
   static const uint8_t a[4] = {1, 2, 3, 4}, b[4] = {1, 2, 3, 5},
                        d[4] = {0, 2, 3, 4};
@@ -464,6 +510,9 @@ int main(void) {
   RUN_TEST(test_server_finished);
   RUN_TEST(test_client_finished);
   RUN_TEST(test_key_update);
+  RUN_TEST(test_psk_early_secret);
+  RUN_TEST(test_psk_binder);
+  RUN_TEST(test_psk_dhe_handshake_secrets);
   RUN_TEST(test_equal);
 
   RUN_TEST(test_seal_server_handshake_flight);

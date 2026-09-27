@@ -109,6 +109,16 @@ void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
   wipe(fk, sizeof(fk));
 }
 
+void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early,
+                    int resumption, const uint8_t hash[TLS_HASH_LEN],
+                    uint8_t out[TLS_HASH_LEN]) {
+  uint8_t bk[TLS_HASH_LEN];
+  tls_derive_secret(c, early, resumption ? "res binder" : "ext binder", NULL,
+                    bk);
+  tls_finished_mac(c, bk, hash, out);
+  wipe(bk, sizeof(bk));
+}
+
 void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]) {
   uint8_t next[TLS_HASH_LEN];
   tls_expand_label(c, secret, "traffic upd", NULL, 0, next, TLS_HASH_LEN);
@@ -194,6 +204,7 @@ int tls_record_open(const tls_crypto_t *c, tls_keys_t *k, uint8_t *rec,
 #define F_WCLOSED 0x10u  /* we sent close_notify */
 #define F_KU_OWED 0x20u  /* the peer asked for a KeyUpdate */
 #define F_CERT_REQ 0x40u /* client: the server asked for our certificate */
+#define F_PSK 0x80u      /* a PSK authenticates the handshake */
 
 /* step: where the handshake is */
 enum {
@@ -411,16 +422,38 @@ static int ext_seen(uint32_t seen[2], uint16_t type) {
   return 0;
 }
 
+/* A pre-shared key offer (RFC 8446 §4.2.11): the index of the identity
+ * that is our PSK, or -1 (none, or no PSK configured). */
+static int psk_pick(const tls_config_t *cfg, rd_t ids) {
+  int i = 0, pick = -1;
+  if (ids.n == 0)
+    return -2; /* identities<7..2^16-1> */
+  while (ids.n) {
+    rd_t id = rd_vec(&ids, 2);
+    rd_uint(&ids, 4); /* obfuscated_ticket_age: none for these PSKs */
+    if (ids.bad || id.n == 0)
+      return -2;
+    if (pick < 0 && cfg->psk && id.n == cfg->psk_id_len &&
+        memcmp(id.p, cfg->psk_id, id.n) == 0)
+      pick = i;
+    i++;
+  }
+  return pick;
+}
+
 /* RFC 8446 §4.1.2-4.1.3: pick the parameters, answer with ServerHello,
- * and enter the handshake keys.  Returns 1 (a key change), or < 0. */
+ * and enter the handshake keys.  Returns HS_KEYS, or < 0. */
 static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  rd_t r, v, ext;
+  const tls_config_t *cfg = t->cfg;
+  const tls_crypto_t *c = cfg->crypto;
+  rd_t r, v, ext, ids = {NULL, 0, 0}, binders = {NULL, 0, 0};
   const uint8_t *share = NULL;
-  size_t share_len = 0, pub_len = 0;
+  size_t share_len = 0, pub_len = 0, trunc = 0;
   uint16_t group = 0;
   uint32_t seen[2] = {0, 0};
   int tls13 = 0, suite = 0, sig = 0, have_ks = 0, have_sa = 0;
+  int psk_ext = 0, have_modes = 0, pick = -1;
+  uint8_t cmodes = 0, smodes, mode = 0;
   uint8_t priv[TLS_KX_PRIV_MAX], pub[TLS_KX_PUB_MAX], z[TLS_HASH_LEN];
   uint8_t h[TLS_HASH_LEN], *sh, *p;
 
@@ -465,7 +498,7 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
       have_sa = 1;
       v = rd_vec(&d, 2);
       while (v.n >= 2)
-        if (rd_uint(&v, 2) == t->cfg->sig_scheme)
+        if (rd_uint(&v, 2) == cfg->sig_scheme)
           sig = 1;
       break;
     case TLS_EXT_KEY_SHARE:
@@ -485,6 +518,23 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         }
       }
       break;
+    case TLS_EXT_PSK_KEY_EXCHANGE_MODES:
+      have_modes = 1;
+      v = rd_vec(&d, 1);
+      while (v.n) { /* psk_ke (0) → TLS_PSK_KE, psk_dhe_ke (1) → .._DHE_KE */
+        uint32_t k = rd_uint(&v, 1);
+        if (k < 2)
+          cmodes |= (uint8_t)(1u << k);
+      }
+      break;
+    case TLS_EXT_PRE_SHARED_KEY: /* the last extension (§4.2.11) */
+      if (ext.n)
+        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+      psk_ext = 1;
+      ids = rd_vec(&d, 2);
+      trunc = (size_t)(d.p - m); /* the binders are not in their hash */
+      binders = rd_vec(&d, 2);
+      break;
     default: /* not ours: ignored */
       break;
     }
@@ -497,26 +547,74 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
     return fail(t, TLS_ALERT_PROTOCOL_VERSION);
   if (!suite)
     return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
-  if (!have_ks || !have_sa || !(seen[0] & (1ul << TLS_EXT_SUPPORTED_GROUPS)))
-    return fail(t, TLS_ALERT_MISSING_EXTENSION);
-  if (!sig || !group)
-    return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
-  if (share_len != (group == TLS_GROUP_X25519 ? 32u : 65u))
+
+  /* Our PSK, if offered, with a mode both sides allow (DHE preferred) */
+  if (psk_ext) {
+    if (!have_modes)
+      return fail(t, TLS_ALERT_MISSING_EXTENSION);
+    if ((pick = psk_pick(cfg, ids)) == -2)
+      return fail(t, TLS_ALERT_DECODE_ERROR);
+  }
+  smodes = cfg->psk_modes ? cfg->psk_modes : TLS_PSK_DHE_KE;
+  if (pick >= 0) {
+    if ((cmodes & smodes & TLS_PSK_DHE_KE) && group)
+      mode = TLS_PSK_DHE_KE;
+    else if (cmodes & smodes & TLS_PSK_KE)
+      mode = TLS_PSK_KE;
+  }
+
+  if (!mode) { /* certificates */
+    if (!cfg->cert_count)
+      return fail(t, psk_ext ? TLS_ALERT_UNKNOWN_PSK_IDENTITY
+                             : TLS_ALERT_HANDSHAKE_FAILURE);
+    if (!have_ks || !have_sa ||
+        !(seen[0] & (1ul << TLS_EXT_SUPPORTED_GROUPS)))
+      return fail(t, TLS_ALERT_MISSING_EXTENSION);
+    if (!sig || !group)
+      return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
+  }
+  if (mode == TLS_PSK_KE)
+    group = 0;
+  if (group && share_len != (group == TLS_GROUP_X25519 ? 32u : 65u))
     return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+
+  /* The Early Secret; with a PSK, its binder must check out */
+  if (mode) {
+    rd_t b = {NULL, 0, 0};
+    int i;
+    for (i = 0; i <= pick; i++)
+      b = rd_vec(&binders, 1);
+    if (b.n != TLS_HASH_LEN) /* (a malformed list reads as empty) */
+      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+    tls_early_secret(c, cfg->psk, cfg->psk_len, t->secret);
+    c->hash_update(&t->transcript, m, trunc);
+    c->hash_peek(&t->transcript, h);
+    tls_psk_binder(c, t->secret, cfg->psk_resumption, h, z);
+    if (!tls_equal(z, b.p, TLS_HASH_LEN))
+      return fail(t, TLS_ALERT_DECRYPT_ERROR);
+    c->hash_update(&t->transcript, m + trunc, mlen - trunc);
+    t->flags |= F_PSK;
+  } else {
+    tls_early_secret(c, NULL, 0, t->secret);
+    c->hash_update(&t->transcript, m, mlen);
+  }
 
   /* Our share, and the shared secret (the peer's share checked) */
-  if (c->kx_keygen(c->ctx, group, priv, pub, &pub_len) != 0)
-    return fail(t, TLS_ALERT_INTERNAL_ERROR);
-  if (c->kx_shared(c->ctx, group, priv, share, share_len, z) != 0) {
+  if (group) {
+    if (c->kx_keygen(c->ctx, group, priv, pub, &pub_len) != 0)
+      return fail(t, TLS_ALERT_INTERNAL_ERROR);
+    if (c->kx_shared(c->ctx, group, priv, share, share_len, z) != 0) {
+      wipe(priv, sizeof(priv));
+      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+    }
     wipe(priv, sizeof(priv));
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   }
-  wipe(priv, sizeof(priv));
   t->group = group;
-  c->hash_update(&t->transcript, m, mlen);
 
-  /* ServerHello: extensions key_share, supported_versions */
-  sh = hs_begin(t, 4 + 2 + 32 + 1 + 32 + 2 + 1 + 2 + 8 + TLS_KX_PUB_MAX + 6);
+  /* ServerHello: extensions pre_shared_key, key_share, supported_versions
+   * (the order of RFC 8448) */
+  sh = hs_begin(t, 4 + 2 + 32 + 1 + 32 + 2 + 1 + 2 + 6 + 8 + TLS_KX_PUB_MAX +
+                       6);
   if (!sh) {
     wipe(z, sizeof(z));
     return fail(t, TLS_ALERT_INTERNAL_ERROR);
@@ -535,13 +633,22 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   put16(p, TLS_AES_128_GCM_SHA256);
   p[2] = 0; /* legacy_compression_method */
   p += 3;
-  put16(p, 8 + pub_len + 6);
-  put16(p + 2, TLS_EXT_KEY_SHARE);
-  put16(p + 4, 4 + pub_len);
-  put16(p + 6, group);
-  put16(p + 8, pub_len);
-  memcpy(p + 10, pub, pub_len);
-  p += 10 + pub_len;
+  put16(p, (mode ? 6u : 0u) + (group ? 8 + pub_len : 0u) + 6);
+  p += 2;
+  if (mode) {
+    put16(p, TLS_EXT_PRE_SHARED_KEY);
+    put16(p + 2, 2);
+    put16(p + 4, (size_t)pick);
+    p += 6;
+  }
+  if (group) {
+    put16(p, TLS_EXT_KEY_SHARE);
+    put16(p + 2, 4 + pub_len);
+    put16(p + 4, group);
+    put16(p + 6, pub_len);
+    memcpy(p + 8, pub, pub_len);
+    p += 8 + pub_len;
+  }
   put16(p, TLS_EXT_SUPPORTED_VERSIONS);
   put16(p + 2, 2);
   put16(p + 4, 0x0304);
@@ -550,8 +657,7 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   rec_close(t);
 
   /* Handshake Secret and traffic keys (RFC 8446 §7.1) */
-  tls_early_secret(c, NULL, 0, t->secret);
-  tls_next_secret(c, t->secret, z, sizeof(z));
+  tls_next_secret(c, t->secret, group ? z : NULL, sizeof(z));
   wipe(z, sizeof(z));
   c->hash_peek(&t->transcript, h);
   tls_derive_secret(c, t->secret, "c hs traffic", h, t->rsec);
@@ -588,7 +694,7 @@ static int pump_server(tls_conn_t *t) {
         return 0;
       put16(m + 4, 0);
       hs_end(t, m, TLS_HS_ENCRYPTED_EXTENSIONS, 2);
-      t->step = ST_SEND_CERT;
+      t->step = (t->flags & F_PSK) ? ST_SEND_FIN : ST_SEND_CERT;
       break;
 
     case ST_SEND_CERT: /* context "", then each DER cert, no extensions */
@@ -705,7 +811,7 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   rd_t r, v, ext, share = {NULL, 0, 0};
   const uint8_t *random;
   uint32_t seen[2] = {0, 0};
-  int tls13 = 0;
+  int tls13 = 0, psk = 0;
   uint8_t z[TLS_HASH_LEN], h[TLS_HASH_LEN];
 
   r.p = m + 4;
@@ -745,6 +851,13 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
       share = rd_vec(&d, 2);
       break;
+    case TLS_EXT_PRE_SHARED_KEY: /* the one identity we offered */
+      if (!t->cfg->psk)
+        return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
+      if (rd_uint(&d, 2) != 0)
+        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+      psk = 1;
+      break;
     default: /* nothing else was offered for a ServerHello */
       return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
     }
@@ -753,15 +866,23 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   }
   if (!tls13) /* a TLS 1.2 (or older) server */
     return fail(t, TLS_ALERT_PROTOCOL_VERSION);
-  if (!share.p)
+  /* without a share: only the PSK alone, if psk_ke was offered */
+  if (!share.p &&
+      !(psk && t->cfg->psk_modes && (t->cfg->psk_modes & TLS_PSK_KE)))
     return fail(t, TLS_ALERT_MISSING_EXTENSION);
-  if (c->kx_shared(c->ctx, t->group, t->kx_priv, share.p, share.n, z) != 0)
+  if (share.p &&
+      c->kx_shared(c->ctx, t->group, t->kx_priv, share.p, share.n, z) != 0)
     return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   wipe(t->kx_priv, sizeof(t->kx_priv));
+  if (!share.p)
+    t->group = 0;
 
   c->hash_update(&t->transcript, m, mlen);
-  tls_early_secret(c, NULL, 0, t->secret);
-  tls_next_secret(c, t->secret, z, sizeof(z));
+  if (psk) /* t->secret: the PSK's Early Secret, from tls_connect() */
+    t->flags |= F_PSK;
+  else
+    tls_early_secret(c, NULL, 0, t->secret);
+  tls_next_secret(c, t->secret, share.p ? z : NULL, sizeof(z));
   wipe(z, sizeof(z));
   c->hash_peek(&t->transcript, h);
   tls_derive_secret(c, t->secret, "s hs traffic", h, t->rsec);
@@ -798,7 +919,7 @@ static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
       return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
   }
   t->cfg->crypto->hash_update(&t->transcript, m, mlen);
-  t->step = ST_C_WAIT_CERT;
+  t->step = (t->flags & F_PSK) ? ST_C_WAIT_FIN : ST_C_WAIT_CERT;
   return 0;
 }
 
@@ -907,7 +1028,7 @@ static int on_server_finished(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   tls_derive_secret(c, ms, "c ap traffic", h, t->secret);
   wipe(ms, sizeof(ms));
   tls_traffic_keys(c, t->rsec, &t->rkeys);
-  t->flags &= (uint8_t)~F_CCS_OK;
+  t->flags &= (uint16_t)~F_CCS_OK;
   t->step = ST_C_SEND_FIN;
   return HS_KEYS;
 }
@@ -925,7 +1046,7 @@ static int pump(tls_conn_t *t) {
       rec_close(t);
       tls_update_secret(t->cfg->crypto, t->wsec);
       tls_traffic_keys(t->cfg->crypto, t->wsec, &t->wkeys);
-      t->flags &= (uint8_t)~F_KU_OWED;
+      t->flags &= (uint16_t)~F_KU_OWED;
     }
   }
   rec_close(t);
@@ -949,7 +1070,7 @@ static int on_client_finished(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   memcpy(t->rsec, t->secret, TLS_HASH_LEN);
   wipe(t->secret, sizeof(t->secret));
   tls_traffic_keys(c, t->rsec, &t->rkeys);
-  t->flags &= (uint8_t)~F_CCS_OK;
+  t->flags &= (uint16_t)~F_CCS_OK;
   t->step = ST_DONE;
   t->state = TLS_STATE_CONNECTED;
   event(t, TLS_EVT_CONNECTED);
@@ -1180,8 +1301,10 @@ int tls_init(tls_conn_t *t, const tls_config_t *cfg, uint8_t *rx,
 
 int tls_accept(tls_conn_t *t) {
   const tls_config_t *cfg = t->cfg;
-  if (t->state != TLS_STATE_IDLE || !cfg->cert_count || !cfg->cert ||
-      !cfg->cert_len || !cfg->key || !cfg->sig_scheme)
+  if (t->state != TLS_STATE_IDLE || (!cfg->cert_count && !cfg->psk) ||
+      (cfg->cert_count &&
+       (!cfg->cert || !cfg->cert_len || !cfg->key || !cfg->sig_scheme)) ||
+      (cfg->psk && (!cfg->psk_len || !cfg->psk_id || !cfg->psk_id_len)))
     return -1;
   t->flags = F_SERVER;
   t->state = TLS_STATE_HANDSHAKE;
@@ -1191,22 +1314,30 @@ int tls_accept(tls_conn_t *t) {
 }
 
 int tls_connect(tls_conn_t *t, const char *host) {
-  const tls_crypto_t *c = t->cfg->crypto;
+  const tls_config_t *cfg = t->cfg;
+  const tls_crypto_t *c = cfg->crypto;
   uint8_t pub[TLS_KX_PUB_MAX], *m, *p, *ext;
-  size_t pub_len = 0, hl = 0;
+  size_t pub_len = 0, hl = 0, idl = cfg->psk_id_len, trunc = 0;
   int sni = host && !ip_literal(host);
+  uint8_t modes = cfg->psk ? (cfg->psk_modes ? cfg->psk_modes
+                                             : TLS_PSK_DHE_KE)
+                           : 0;
+  int dhe = !cfg->psk || (modes & TLS_PSK_DHE_KE);
 
   if (t->state != TLS_STATE_IDLE)
     return -1;
   if (sni && (hl = strlen(host)) > 255)
     return -1;
+  if (cfg->psk && (!cfg->psk_len || !cfg->psk_id || !idl))
+    return -1;
   t->host = host;
-  t->group = TLS_GROUP_X25519;
+  t->group = dhe ? TLS_GROUP_X25519 : 0;
   c->hash_init(&t->transcript);
-  if (c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
+  if (dhe && c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
     return -1;
   m = hs_begin(t, 4 + 2 + 32 + 1 + 4 + 2 + 2 + (sni ? 9 + hl : 0) + 7 + 10 +
-                      10 + 10 + pub_len);
+                      (dhe ? 10 + 10 + pub_len : 0) +
+                      (cfg->psk ? 7 + 4 + 2 + 2 + idl + 4 + 2 + 33 : 0));
   if (!m)
     return -1;
 
@@ -1237,26 +1368,63 @@ int tls_connect(tls_conn_t *t, const char *host) {
   }
   memcpy(p, "\x00\x2b\x00\x03\x02\x03\x04", 7); /* supported_versions */
   p += 7;
-  put16(p, TLS_EXT_SUPPORTED_GROUPS);
-  put16(p + 2, 6);
-  put16(p + 4, 4);
-  put16(p + 6, TLS_GROUP_X25519);
-  put16(p + 8, TLS_GROUP_SECP256R1);
-  p += 10;
   put16(p, TLS_EXT_SIGNATURE_ALGORITHMS);
   put16(p + 2, 6);
   put16(p + 4, 4);
   put16(p + 6, TLS_SIG_ECDSA_SECP256R1_SHA256);
   put16(p + 8, TLS_SIG_RSA_PSS_RSAE_SHA256);
   p += 10;
-  put16(p, TLS_EXT_KEY_SHARE); /* one share: x25519 */
-  put16(p + 2, 6 + pub_len);
-  put16(p + 4, 4 + pub_len);
-  put16(p + 6, t->group);
-  put16(p + 8, pub_len);
-  memcpy(p + 10, pub, pub_len);
-  p += 10 + pub_len;
+  if (dhe) {
+    put16(p, TLS_EXT_SUPPORTED_GROUPS);
+    put16(p + 2, 6);
+    put16(p + 4, 4);
+    put16(p + 6, TLS_GROUP_X25519);
+    put16(p + 8, TLS_GROUP_SECP256R1);
+    p += 10;
+    put16(p, TLS_EXT_KEY_SHARE); /* one share: x25519 */
+    put16(p + 2, 6 + pub_len);
+    put16(p + 4, 4 + pub_len);
+    put16(p + 6, t->group);
+    put16(p + 8, pub_len);
+    memcpy(p + 10, pub, pub_len);
+    p += 10 + pub_len;
+  }
+  if (cfg->psk) {
+    uint8_t n = (uint8_t)(((modes & TLS_PSK_DHE_KE) ? 1 : 0) +
+                          ((modes & TLS_PSK_KE) ? 1 : 0));
+    put16(p, TLS_EXT_PSK_KEY_EXCHANGE_MODES);
+    put16(p + 2, 1u + n);
+    p[4] = n;
+    p += 5;
+    if (modes & TLS_PSK_DHE_KE)
+      *p++ = 1;
+    if (modes & TLS_PSK_KE)
+      *p++ = 0;
+    /* pre_shared_key, the last extension: one identity, one binder */
+    put16(p, TLS_EXT_PRE_SHARED_KEY);
+    put16(p + 2, 2 + 2 + idl + 4 + 2 + 33);
+    put16(p + 4, 2 + idl + 4);
+    put16(p + 6, idl);
+    memcpy(p + 8, cfg->psk_id, idl);
+    memset(p + 8 + idl, 0, 4); /* obfuscated_ticket_age */
+    p += 12 + idl;
+    trunc = (size_t)(p - m);
+    put16(p, 33);
+    p[2] = TLS_HASH_LEN;
+    p += 3 + TLS_HASH_LEN;
+  }
   put16(ext, (size_t)(p - ext - 2));
+  if (cfg->psk) { /* the binder, over the ClientHello up to the binders */
+    uint8_t h[TLS_HASH_LEN];
+    tls_hash_t th;
+    m[0] = TLS_HS_CLIENT_HELLO;
+    put24(m + 1, (size_t)(p - m - 4));
+    tls_early_secret(c, cfg->psk, cfg->psk_len, t->secret);
+    c->hash_init(&th);
+    c->hash_update(&th, m, trunc);
+    c->hash_peek(&th, h);
+    tls_psk_binder(c, t->secret, cfg->psk_resumption, h, m + trunc + 3);
+  }
   hs_end(t, m, TLS_HS_CLIENT_HELLO, (size_t)(p - m - 4));
   rec_close(t);
 
@@ -1354,6 +1522,8 @@ size_t tls_read(tls_conn_t *t, uint8_t *buf, size_t len) {
   }
   return len;
 }
+
+int tls_psk_used(const tls_conn_t *t) { return (t->flags & F_PSK) != 0; }
 
 int tls_close(tls_conn_t *t) {
   if (t->flags & F_WCLOSED)
