@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **680 tests on macOS; on Linux 683, or 691 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17.
+**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **682 tests on macOS; on Linux 685, or 693 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -36,7 +36,7 @@ verified at both the unit and integration levels:
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 20 | Stop-and-wait TX/RX buffers (incl. RX ring wrap) |
 | `test_tcp` | tests/unit/test_tcp.c | **46** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
 | `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
-| `test_dhcpv4` | tests/unit/test_dhcpv4.c | 16 | DHCPv4 client + server (REQ-DHCPv4-*) |
+| `test_dhcpv4` | tests/unit/test_dhcpv4.c | 18 | DHCPv4 client + server (REQ-DHCPv4-*) |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |

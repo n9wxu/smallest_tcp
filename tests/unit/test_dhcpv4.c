@@ -486,6 +486,60 @@ TEST(test_dhcp_client_retransmit_discover) {
   ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
 }
 
+/* ── Helpers: retransmission timing ──────────────────────────────── */
+
+/* Tick 1 ms at a time until the client sends (at most limit_ms); the ms
+   waited */
+static uint32_t ms_until_sent(uint32_t limit_ms) {
+  int before = send_count;
+  uint32_t ms = 0;
+  while (send_count == before && ms < limit_ms) {
+    dhcpv4_client_tick(&net, &cli, 1u);
+    ms++;
+  }
+  return ms;
+}
+
+/* 1 if ms is base_ms ± 1 s; says what it was if not */
+static int within_a_second(uint32_t ms, uint32_t base_ms) {
+  if (ms + 1000u >= base_ms && ms <= base_ms + 1000u)
+    return 1;
+  fprintf(stderr, "    waited %lu ms, expected %lu ± 1000\n", (unsigned long)ms,
+          (unsigned long)base_ms);
+  return 0;
+}
+
+/* REQ-DHCPv4-045: 4, 8, 16, 32, then 64 s between DISCOVERs, ±1 s */
+TEST(test_dhcp_client_discover_backoff) {
+  static const uint32_t base_ms[] = {4000, 8000, 16000, 32000, 64000, 64000};
+  uint8_t i;
+  setup();
+  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  for (i = 0; i < 6; i++)
+    ASSERT_TRUE(within_a_second(ms_until_sent(70000u), base_ms[i]));
+  ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
+}
+
+/* REQ-DHCPv4-046: the wait is randomised */
+TEST(test_dhcp_client_backoff_randomised) {
+  uint32_t seed, first = 0, waited;
+  int differs = 0;
+  for (seed = 1; seed <= 8; seed++) {
+    setup();
+    net_random_seed(&net, seed * 0x9E3779B9u);
+    dhcpv4_client_init(&cli, NULL, NULL, NULL);
+    dhcpv4_client_start(&net, &cli);
+    waited = ms_until_sent(10000u);
+    ASSERT_TRUE(within_a_second(waited, 4000u));
+    if (seed == 1)
+      first = waited;
+    else if (waited != first)
+      differs = 1;
+  }
+  ASSERT_TRUE(differs);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * SERVER TESTS
  * ══════════════════════════════════════════════════════════════════ */
@@ -665,6 +719,8 @@ int main(void) {
   RUN_TEST(test_dhcp_client_opt_handler_called_v2);
   RUN_TEST(test_dhcp_client_null_opt_table);
   RUN_TEST(test_dhcp_client_retransmit_discover);
+  RUN_TEST(test_dhcp_client_discover_backoff);
+  RUN_TEST(test_dhcp_client_backoff_randomised);
   RUN_TEST(test_dhcp_server_offer_on_discover);
   RUN_TEST(test_dhcp_server_ack_on_correct_request);
   RUN_TEST(test_dhcp_server_nak_on_wrong_request);

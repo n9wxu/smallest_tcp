@@ -7,9 +7,10 @@
 #include "dhcpv4_wire.h"
 #include "ipv4.h"
 
-/* REQ-DHCPv4-045: retransmissions back off from 4 s to 64 s */
-#define RETRY_INIT_MS 4000u
-#define RETRY_MAX_MS 64000u
+/* REQ-DHCPv4-045, 046: 4, 8, 16, 32, then 64 s, each ±1 s (RFC 2131 §4.1) */
+#define RETRANSMIT_FIRST_MS 4000u
+#define RETRANSMIT_MAX_MS 64000u
+#define RETRANSMIT_JITTER_MS 1000u
 
 #define PARAM_REQUEST_MAX 35
 
@@ -20,11 +21,12 @@ static void fire_event(dhcpv4_client_t *c, uint8_t evt) {
     c->on_event(evt, c->evt_ctx);
 }
 
-static uint32_t retry_interval_ms(uint8_t retries) {
-  uint32_t t = RETRY_INIT_MS;
-  while (retries-- > 0 && t < RETRY_MAX_MS)
-    t *= 2u;
-  return t > RETRY_MAX_MS ? RETRY_MAX_MS : t;
+static uint32_t retransmit_wait_ms(net_t *net, uint8_t retries) {
+  uint32_t ms = RETRANSMIT_FIRST_MS;
+  while (retries-- > 0 && ms < RETRANSMIT_MAX_MS)
+    ms *= 2u;
+  return ms - RETRANSMIT_JITTER_MS +
+         net_random_below(net, 2u * RETRANSMIT_JITTER_MS + 1u);
 }
 
 /* REQ-DHCPv4-059: the built-in parameters, then the application's */
@@ -145,12 +147,24 @@ static void clear_address(net_t *net) {
   net->gateway_ipv4 = 0u;
 }
 
+/* The state's DISCOVER or REQUEST, and the wait for an answer */
+static void transmit(net_t *net, dhcpv4_client_t *c) {
+  if (c->state == DHCPV4_CLI_SELECTING)
+    send_discover(net, c);
+  else
+    send_request(net, c);
+  c->timer_ms = retransmit_wait_ms(net, c->retries);
+}
+
+static void begin_exchange(net_t *net, dhcpv4_client_t *c, uint8_t state) {
+  c->state = state;
+  c->retries = 0;
+  transmit(net, c);
+}
+
 static void start_selecting(net_t *net, dhcpv4_client_t *c) {
   c->xid = net_random(net);
-  c->state = DHCPV4_CLI_SELECTING;
-  c->retries = 0;
-  send_discover(net, c);
-  c->timer_ms = RETRY_INIT_MS;
+  begin_exchange(net, c, DHCPV4_CLI_SELECTING);
 }
 
 static void enter_state(net_t *net, dhcpv4_client_t *c, uint8_t state,
@@ -158,8 +172,7 @@ static void enter_state(net_t *net, dhcpv4_client_t *c, uint8_t state,
   c->state = state;
   c->retries = 0;
   c->timer_ms = timer_ms;
-  if (state == DHCPV4_CLI_REQUESTING || state == DHCPV4_CLI_RENEWING ||
-      state == DHCPV4_CLI_REBINDING)
+  if (state == DHCPV4_CLI_RENEWING || state == DHCPV4_CLI_REBINDING)
     send_request(net, c);
 }
 
@@ -191,13 +204,9 @@ void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   switch (c->state) {
   case DHCPV4_CLI_SELECTING: /* the xid stays for the retransmissions */
   case DHCPV4_CLI_REQUESTING:
-    if (c->state == DHCPV4_CLI_SELECTING)
-      send_discover(net, c);
-    else
-      send_request(net, c);
-    c->timer_ms = retry_interval_ms(c->retries);
     if (c->retries < 255u)
       c->retries++;
+    transmit(net, c);
     break;
   case DHCPV4_CLI_BOUND: /* T1 */
     enter_state(net, c, DHCPV4_CLI_RENEWING, half_remaining_ms(c->t1, c->t2));
@@ -236,7 +245,7 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
       return;
     c->offered_ip = net_read32be(data + DHCP_OFF_YIADDR);
     c->server_ip = dhcp_option_u32(data, len, DHCP_OPT_SERVER_ID, c->server_ip);
-    enter_state(net, c, DHCPV4_CLI_REQUESTING, RETRY_INIT_MS);
+    begin_exchange(net, c, DHCPV4_CLI_REQUESTING);
     break;
   case DHCP_MSG_ACK:
     if (awaiting_ack(c)) {
