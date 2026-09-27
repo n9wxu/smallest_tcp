@@ -116,6 +116,13 @@ server that refuses the transfer answers with ERROR, which ends it:
                               ◄── ERROR 1 "File not found"   on_done(ok = 0, 1, "File not found")
 ```
 
+`on_done` receives the server's message only if its NUL lies within the
+datagram (`error_message()`, REQ-TFTP-017); otherwise it receives `""`.
+The message is a pointer into the receive buffer, so an unterminated one
+would send the application reading past the datagram — and the client
+cannot terminate it in place, because the receive buffer is read-only to
+parsers ([coding-rules.md §3](coding-rules.md#3-parsing-received-data)).
+
 ---
 
 ## 4. State Machine
@@ -283,21 +290,18 @@ as well: the client answers each duplicate block.
 
 | Item | Notes |
 |---|---|
-| The ERROR message passed to `on_done` is not checked for a terminating NUL | A malformed ERROR makes the callback read past the datagram |
 | Fixed local port for every transfer | RFC 1350 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
 | No tsize, timeout or windowsize options; no WRQ; no netascii | Scope (§1) |
 | IPv4 only | `tftp_client_input()` and the send path take IPv4 addresses |
-
-The header documents `msg` as `""` on timeout; the code passes
-`"Timeout"`.
 
 ---
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (20 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (21 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
-ends the transfer, duplicate block re-acknowledged, ERROR aborts, ERROR 5
+ends the transfer, duplicate block re-acknowledged, ERROR aborts with
+its message and an unterminated message is reported as `""`, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
 an OACK blksize above the one requested or below 8 draws ERROR 8 and

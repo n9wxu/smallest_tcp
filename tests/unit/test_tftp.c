@@ -11,7 +11,7 @@
  *   REQ-TFTP-012       Data delivered to application callback
  *   REQ-TFTP-013       Duplicate block re-ACK (no double delivery)
  *   REQ-TFTP-014,015   ACK format and destination port (server TID)
- *   REQ-TFTP-016,017   ERROR packet → abort + error callback
+ *   REQ-TFTP-016,017   ERROR → abort + error callback ("" if unterminated)
  *   REQ-TFTP-018       Wrong TID → ERROR(5) to its source
  *   REQ-TFTP-020,021   Tick retransmits last ACK / RRQ
  *   REQ-TFTP-023,024   Max retries → timeout reported
@@ -402,7 +402,27 @@ TEST(test_tftp_error_packet_aborts) {
   ASSERT_EQ(done_called, 1);
   ASSERT_EQ(done_ok, 0);
   ASSERT_EQ(done_err_code, (uint16_t)TFTP_ERR_FILE_NOT_FOUND);
+  ASSERT_EQ(strcmp(done_msg, "File not found"), 0);
   ASSERT_EQ(client.state, TFTP_STATE_ERROR);
+}
+
+/* REQ-TFTP-017 — an ERROR message without its NUL is reported as "" */
+TEST(test_tftp_error_unterminated_message) {
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+
+  uint8_t pkt[128];
+  memset(pkt, 'X', sizeof(pkt));
+  pkt[sizeof(pkt) - 1] = '\0'; /* bounds an over-read within pkt */
+  uint16_t plen = make_error(pkt, TFTP_ERR_FILE_NOT_FOUND, "File not found");
+  pkt[--plen] = 'X';
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+
+  ASSERT_EQ(done_called, 1);
+  ASSERT_EQ(done_ok, 0);
+  ASSERT_EQ(done_err_code, (uint16_t)TFTP_ERR_FILE_NOT_FOUND);
+  ASSERT_EQ(strcmp(done_msg, ""), 0);
 }
 
 /* REQ-TFTP-018 — wrong TID → ERROR(5) sent, transfer continues */
@@ -749,6 +769,7 @@ int main(void) {
   RUN_TEST(test_tftp_last_block_short);
   RUN_TEST(test_tftp_duplicate_block);
   RUN_TEST(test_tftp_error_packet_aborts);
+  RUN_TEST(test_tftp_error_unterminated_message);
   RUN_TEST(test_tftp_wrong_tid_sends_error5);
   RUN_TEST(test_tftp_stray_host_gets_error5);
   RUN_TEST(test_tftp_stray_error_not_answered);

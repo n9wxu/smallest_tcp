@@ -124,6 +124,17 @@ static const char *next_string(const uint8_t **p, const uint8_t *end) {
   return s;
 }
 
+/* REQ-TFTP-017: the ERROR's text, or "" if it does not end in the datagram */
+static const char *error_message(const uint8_t *data, uint16_t len) {
+  const uint8_t *p;
+  const char *msg;
+  if (len <= 4)
+    return "";
+  p = data + 4;
+  msg = next_string(&p, data + len);
+  return msg ? msg : "";
+}
+
 static uint32_t parse_decimal(const char *s) {
   uint32_t v = 0;
   while (*s >= '0' && *s <= '9' && v <= TFTP_MAX_BLKSIZE)
@@ -250,7 +261,7 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
   switch (opcode) {
   case TFTP_OP_ERROR:
     finish(c, 0, len >= 4 ? net_read16be(data + 2) : 0,
-           len > 4 ? (const char *)(data + 4) : "");
+           error_message(data, len));
     break;
   case TFTP_OP_OACK:
     if (c->state == TFTP_STATE_REQUESTING)

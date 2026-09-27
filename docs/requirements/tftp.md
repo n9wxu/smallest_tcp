@@ -86,7 +86,7 @@ OACK:
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-TFTP-016 | MUST | Process ERROR packets (opcode 5) and abort transfer | RFC 1350 §2 | TEST-TFTP-016 |
-| REQ-TFTP-017 | MUST | Report error code and message to application | RFC 1350 §2 | TEST-TFTP-017 |
+| REQ-TFTP-017 | MUST | Report error code and message to application; a message not NUL-terminated within the packet is reported as empty | RFC 1350 §2 | TEST-TFTP-017 |
 | REQ-TFTP-018 | MUST | Answer a packet from a wrong TID (IP or port) with ERROR 5 to its source, and continue the transfer | RFC 1350 §4 | TEST-TFTP-018 |
 | REQ-TFTP-019 | MUST | Support error codes: 0 (not defined), 1 (file not found), 2 (access violation), 3 (disk full), 4 (illegal op), 5 (unknown TID), 6 (file exists), 7 (no such user) | RFC 1350 §5 | TEST-TFTP-019 |
 
