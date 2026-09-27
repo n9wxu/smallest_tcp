@@ -1,284 +1,582 @@
-# DTLS 1.3 Design
+# DTLS 1.3 — Design
 
-**Protocol:** Datagram Transport Layer Security 1.3  
-**Files:** `include/dtls.h`, `src/dtls.c`  
-**Shared:** `include/tls_crypto.h` (same backend vtable as TLS)  
+**Protocol:** Datagram Transport Layer Security 1.3 (RFC 9147)  
+**Builds on:** [tls.md](tls.md) — the TLS 1.3 handshake, key schedule and crypto backend  
+**Files:**
+
+| File | Contents |
+|---|---|
+| `include/dtls.h`, `src/dtls.c` | The datagram record layer: `dtls_conn_t`, `dtls_init()`, datagrams in and out, epochs, record number encryption, replay protection, handshake fragmentation and reassembly, flights, the retransmission timer, ACKs, KeyUpdate, the API |
+| `src/tls_common.c` | What the TLS stream layer (`tls.c`) and the DTLS datagram layer share: handshake message framing, the record-layer interface, installing traffic keys, post-handshake messages, alerts received, failing a connection |
+| `src/tls_server.c`, `src/tls_client.c` | The handshake of each role, for both protocols |
+| `include/tls_crypto.h` | The crypto backend, with one addition for DTLS: `aes_block` |
+
+**Requirements:** [docs/requirements/dtls.md](../requirements/dtls.md) (REQ-DTLS-001..082)  
 **Milestone:** 14  
-**Last updated:** 2026-03-21  
-**Status:** Preliminary / Pre-implementation
+**Status:** design, revised after TLS 1.3 was built — implementation in progress  
+**Last updated:** 2026-09-27
 
 ---
 
-## 1. Scope and Philosophy
+## 1. Scope
 
-DTLS provides the same security guarantees as TLS — encryption, integrity,
-authentication — but over **unreliable, unordered UDP datagrams** rather than a
-TCP stream.  Use cases include:
+DTLS 1.3 is TLS 1.3 over datagrams: the same handshake messages, key
+schedule and cipher suite, with a record layer that survives loss,
+reordering and duplication.  Its uses here are the constrained-device ones —
+CoAP over DTLS (CoAPS, UDP port 5684), secure telemetry, device-to-device
+links — where a TCP connection per peer costs more than the device can give.
 
-- **CoAP over DTLS** — constrained device messaging (IoT sensors, actuators)
-- **RADIUS/EAP** — 802.1X network access authentication  
-- **SIP signalling** — VoIP setup over UDP  
-- **Secure UDP tunnels** between embedded devices
+| | |
+|---|---|
+| Version | DTLS 1.3 only (RFC 9147).  A DTLS 1.2 peer gets `protocol_version`, as a TLS 1.2 peer does |
+| Everything TLS 1.3 negotiates | As [tls.md §1](tls.md#1-scope): `TLS_AES_128_GCM_SHA256`, x25519 and secp256r1 with HelloRetryRequest, ECDSA P-256 and RSA-PSS certificates, pre-shared keys (psk_dhe_ke, psk_ke), max_fragment_length, KeyUpdate, close_notify |
+| Roles | Client and server; as with TLS, a build links only the roles it calls |
+| Records | DTLSPlaintext for epoch 0; DTLSCiphertext with the unified header and record number encryption for the rest; several records per datagram |
+| Reliability | Flights, a retransmission timer (1 s doubling to 60 s), ACKs, handshake fragmentation to the datagram size and reassembly of overlapping fragments |
+| DoS | The server's cookie exchange, on by default |
+| Transport | Anything that carries datagrams; the application moves them (`dtls_input()`, `dtls_pending()`), as it moves TLS ciphertext |
 
-The DTLS design follows the same principles as the rest of the stack:
-
-- **Zero `malloc()`** — all state in application-owned structs
-- **DTLS 1.3 only** (RFC 9147) — avoids the complexity of DTLS 1.2 cookie
-  exchange and epoch management while retaining full security
-- **Same `tls_crypto_t` backend** as TLS — one crypto library serves both;
-  link only `dtls.c` (not `tls.c`) if you only need DTLS
-- **Pluggable transport** — DTLS sits above `udp.c` but is not coupled to it;
-  the application wires sends and receives
-
----
-
-## 2. Architecture
-
-```
-┌──────────────────────────────────────────────┐
-│                Application                    │
-│  dtls_send(dtls, buf, len)                   │
-│  dtls_input(dtls, src_ip, src_port,          │
-│             data, len, plain_out, plen_out)  │
-├──────────────────────────────────────────────┤
-│  dtls.c — DTLS record layer + Handshake SM   │
-│  Adds: epoch, seq, retransmit, anti-replay   │
-│  (no crypto — pure protocol framing/state)   │
-├──────────────────────────────────────────────┤
-│  tls_crypto.h — shared crypto vtable         │
-│  (same backend as tls.c — link once)         │
-├──────────────────────────────────────────────┤
-│  udp.c — datagram transport                  │
-└──────────────────────────────────────────────┘
-```
-
-DTLS re-uses the `tls_crypto_t` vtable directly; both modules can reference the
-same statically-allocated backend instance.
+Not implemented: Connection IDs (RFC 9146, and the `connection_id`
+extension a client SHOULD offer), 0-RTT (epoch 1), DTLS 1.2, issuing
+session tickets, post-handshake client authentication, retransmitting only
+the part of a flight an ACK leaves unacknowledged (the timer resends the
+flight), and backing off to smaller records when the PMTU is unknown.
+Everything TLS 1.3 leaves out ([tls.md §1](tls.md#1-scope)) DTLS leaves
+out too.
 
 ---
 
-## 3. Key Differences from TLS
+## 2. What changes from TLS, and what does not
 
-| Concern | TLS (stream) | DTLS (datagram) |
+RFC 9147 §5: "With these exceptions, the DTLS message formats, flows, and
+logic are the same as those of TLS 1.3."  The exceptions, and where each
+lives:
+
+| Difference | RFC 9147 | Where |
 |---|---|---|
-| Transport | TCP (reliable, ordered) | UDP (unreliable, unordered) |
-| Record header | 5 bytes | 13 bytes (adds epoch + seq) |
-| Handshake retransmit | N/A (TCP handles it) | Flight-based retransmit timer |
-| Out-of-order records | Impossible | Anti-replay window |
-| Fragmentation | TCP stream | DTLS handshake fragmentation |
-| Max record size | 2^14 + 256 B | MTU − headers (typ. ~1200 B) |
-| RFC | 8446 | 9147 |
+| Record layer: epochs, explicit sequence numbers, the unified header, record number encryption, replay window, several records per datagram, invalid records silently dropped | §4 | `dtls.c` |
+| Handshake header: `message_seq`, `fragment_offset`, `fragment_length`; fragmentation and reassembly | §5.2, §5.5 | `dtls.c` — the transcript is over the TLS-style header, so the roles and the transcript do not change |
+| Flights, retransmission timer, ACK content type | §5.7, §5.8, §7 | `dtls.c` |
+| KeyUpdate: acknowledged, new keys only after the ACK | §8 | `dtls.c` |
+| HKDF label prefix `"dtls13"` instead of `"tls13 "` | §5.9 | `tls_keys.c`, a parameter |
+| ClientHello: `legacy_version` {254, 253}, a `legacy_cookie` field; version 0xfefc in supported_versions; ServerHello `legacy_version` 0xfefd; the server does not echo `legacy_session_id`; no change_cipher_spec | §5, §5.3, §5.4 | `tls_server.c`, `tls_client.c`, a few branches |
+| Cookie exchange in a HelloRetryRequest | §5.1 | `tls_server.c` (the client already echoes a cookie) |
+
+Everything else — parsing and refusing hellos, PSK binders, certificates,
+CertificateVerify, Finished, the key schedule, KeyUpdate's secrets — is the
+TLS code, unchanged.
 
 ---
 
-## 4. DTLS Record Header
+## 3. Structure
 
 ```
-Byte  0      : unified_hdr byte
-               Bit 7     : 1 (fixed)
-               Bit 6     : C = connection ID present
-               Bit 5     : S = sequence_number length (0=8-bit, 1=16-bit)
-               Bit 4     : L = length present
-               Bits 3–0  : epoch (low 4 bits)
-Bytes 1–2    : sequence_number (8 or 16 bits depending on S)
-Bytes 3–4    : length (present if L=1)
-Bytes 5+     : encrypted payload (AEAD ciphertext + 16-byte tag)
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Application                                                               │
+│   TLS: tls_rx_commit() / tls_tx_pending()    DTLS: dtls_input() /         │
+│        tls_read() / tls_write()                    dtls_pending() /       │
+│                                                    dtls_read() / _write() │
+├──────────────────────────────┬────────────────────────────────────────────┤
+│ tls.c — stream records       │ dtls.c — datagram records, epochs, flights,│
+│   (TCP)                      │   timer, ACKs, reassembly                  │
+├──────────────────────────────┴────────────────────────────────────────────┤
+│ tls_common.c — hs framing, keys, post-handshake messages, alerts, failing │
+│   → t->rl  (the record layer)          → t->role (the handshake)          │
+│ tls_server.c   tls_client.c            tls_keys.c                         │
+├───────────────────────────────────────────────────────────────────────────┤
+│ tls_crypto_t — SHA-256, HMAC, HKDF, AES-GCM, (EC)DHE, signatures,         │
+│                certificates, random; AES block (DTLS record numbers)      │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
-DTLS 1.3 uses a compact unified header (RFC 9147 §4.3).  The epoch number
-prevents replay of records from a previous handshake.  The sequence number is
-per-epoch and monotonically increasing within an epoch.
+### 3.1 The record-layer interface
+
+Today `tls.c` is both the TLS record layer and the helpers the roles call
+(`tls_hs_begin()`, `tls_hs_end()`, `tls_rec_close()`, `tls_fail()` …).  The
+helpers move to `tls_common.c`, and the few that depend on the record layer
+call it through a pointer in the connection, as the handshake is reached
+through `t->role`:
+
+```c
+typedef struct tls_rl_s {
+  uint8_t dtls;                                     /* 1: DTLS 1.3 */
+  uint8_t *(*hs_begin)(tls_conn_t *t, size_t max);  /* room for a message */
+  void (*hs_flush)(tls_conn_t *t);                  /* messages written so far may go */
+  int (*ccs)(tls_conn_t *t);                        /* TLS only: the dummy change_cipher_spec */
+  void (*alert)(tls_conn_t *t, uint8_t level, uint8_t desc); /* queue an alert */
+  void (*rekey)(tls_conn_t *t, int write);          /* new traffic keys are about to be installed */
+  void (*key_update)(tls_conn_t *t);                /* write the KeyUpdate we owe */
+} tls_rl_t;
+
+extern const tls_rl_t tls_stream_rl;  /* tls.c:  tls_init() sets it */
+extern const tls_rl_t dtls_rl;        /* dtls.c: dtls_init() sets it */
+```
+
+No shared code names either record layer, so a TLS-only device does not
+link `dtls.c` and a DTLS-only device does not link `tls.c` — the argument of
+[tls.md §2.1](tls.md#21-the-role-interface), one level down.  The cost to
+TLS is the pointer in `tls_conn_t` and an indirect call where there was a
+direct one (measured in section 12).
+
+`tls_common.c` holds:
+
+- the helpers the roles already share (`tls_next_extension()`, the group
+  helpers, `tls_cert_verify_content()`, `tls_hrr_random`, `tls_notify()`);
+- `tls_hs_begin()` → `rl->hs_begin`; `tls_hs_end()` (header, transcript —
+  the same for both); `tls_rec_close()` → `rl->hs_flush`;
+  `tls_queue_ccs()` → `rl->ccs`;
+- `tls_set_keys(t, write)`: `rl->rekey` if there is one, then the key and IV
+  of `t->wsec` or `t->rsec` — every place the roles installed keys directly
+  now calls this, so DTLS sees each epoch begin;
+- `tls_fail()`: `rl->alert`, then as today (state, alert, wipe, event);
+- `tls_on_handshake()`: whole messages to the role, or once connected
+  KeyUpdate (its keys through `tls_set_keys()`), NewSessionTicket
+  (ignored by a client) and `unexpected_message` for anything else;
+- `tls_alert_received()`: close_notify, user_canceled, fatal — what
+  `on_alert()` decides today, without `tls.c`'s buffer handling;
+- `tls_release()`'s wipe, `tls_psk_used()`.
+
+### 3.2 The label prefix
+
+RFC 9147 §5.9 replaces `"tls13 "` by `"dtls13"` in every HKDF-Expand-Label
+— both six bytes, so only the constant changes.  The key-schedule functions
+that expand labels (`tls_expand_label()`, `tls_derive_secret()`,
+`tls_next_secret()`, `tls_traffic_keys()`, `tls_finished_mac()`,
+`tls_psk_binder()`, `tls_update_secret()`) take a `dtls` flag after the
+backend; the roles pass `t->rl->dtls`.  They stay pure functions over a
+`tls_crypto_t`, and the RFC 8448 tests pass 0.
+
+### 3.3 The roles
+
+`tls_is_dtls(t)` (`t->rl->dtls`) selects:
+
+| | TLS | DTLS |
+|---|---|---|
+| Hello `legacy_version` | 0x0303 | 0xfefd |
+| supported_versions | 0x0304 | 0xfefc |
+| ClientHello after the session id | — | `legacy_cookie`, empty; a server refuses any other with `illegal_parameter` (REQ-DTLS-003) |
+| Server: the client's `legacy_session_id` | echoed; a non-empty one means compatibility mode and the dummy change_cipher_spec | not echoed, not kept — so no change_cipher_spec either (`sid_len` stays 0) |
+| Server: first ClientHello | — | HelloRetryRequest with a cookie, unless `cfg->dtls_no_cookie` (section 8) |
+
+`client_hello()`'s fixed part grows by the one `legacy_cookie` byte.
+`pump_client()` reserves its empty Certificate and Finished together, as
+today; the DTLS flight store keeps TLS-format messages, so reserving two at
+once is fine (section 6.1).
 
 ---
 
-## 5. Anti-Replay Window
-
-DTLS must discard duplicate or replayed records.  A 64-bit sliding window is
-maintained per epoch:
+## 4. The connection
 
 ```c
 typedef struct {
-    uint64_t top;       /* highest sequence number seen in this epoch */
-    uint64_t window;    /* bitmask: bit N = received seq (top - N)    */
-} dtls_replay_t;
-```
+  tls_keys_t k;          /* key, IV; seq: next to send, or highest received + 1 */
+  uint8_t sn[TLS_AEAD_KEY_LEN];  /* record number key, RFC 9147 §4.2.3 */
+  uint32_t window;       /* read keys: bit i set = record k.seq - 1 - i seen */
+} dtls_keys_t;
 
-A record with sequence number `seq` is accepted if:
-- `seq > top` (advance the window), OR
-- `seq` is within the window (`top - 63 ≤ seq ≤ top`) AND the corresponding
-  bit is clear (not already received)
-
-Records older than the window (i.e. `seq < top - 63`) are discarded silently.
-
----
-
-## 6. Handshake Retransmit Timer
-
-DTLS handshake messages are sent in **flights** (groups of messages that must
-all be received before the peer responds).  Because UDP can lose datagrams, DTLS
-retransmits entire flights on timeout.
-
-```c
-typedef struct {
-    uint8_t  *flight_buf;     /* application-provided buffer for saved flight */
-    uint16_t  flight_len;     /* bytes in flight_buf                           */
-    uint32_t  rto_ms;         /* current retransmit timeout (ms)               */
-    uint32_t  timer_ms;       /* countdown                                     */
-    uint8_t   retries;        /* retransmit count (abort after MAX_RETRIES)    */
-} dtls_flight_t;
-```
-
-The retransmit timer follows RFC 9147 §5.8: initial RTO = 1000 ms, doubling on
-each retransmit, maximum `NET_DTLS_MAX_RTO_MS` (configurable, default 60000 ms).
-After `NET_DTLS_MAX_RETRANSMITS` failures, the handshake aborts with
-`DTLS_EVT_ERROR`.
-
-`dtls_tick(dtls, elapsed_ms)` drives the retransmit timer and must be called
-from the application's main loop alongside `tcp_tick` and DHCP timers.
-
----
-
-## 7. DTLS Connection State Structure
-
-```c
-typedef struct {
-    uint8_t            state;          /* DTLS_IDLE … DTLS_ERROR        */
-    uint8_t            is_server;
-
-    /* Current epoch keys (write = encrypt outbound, read = decrypt inbound) */
-    tls_keys_t         write_keys;
-    tls_keys_t         read_keys;
-    uint16_t           write_epoch;
-    uint16_t           read_epoch;
-
-    /* Anti-replay window per epoch */
-    dtls_replay_t      replay;
-
-    /* Handshake flight retransmit */
-    dtls_flight_t      flight;
-
-    /* Peer address (for response routing) */
-    uint32_t           peer_ip;
-    uint16_t           peer_port;
-
-    /* Handshake transcript (SHA-256 running hash, same as TLS) */
-    uint8_t            transcript[32];
-
-    /* ECDH ephemeral state */
-    uint8_t            ecdh_priv[32];
-    uint8_t            ecdh_pub[32];
-
-    /* RX reassembly for fragmented handshake messages */
-    uint8_t           *hs_buf;         /* application-provided buffer   */
-    uint16_t           hs_buf_len;
-    uint16_t           hs_pending;
-
-    const tls_crypto_t *crypto;        /* shared with tls.c if both used */
-    const tls_cert_t   *cert;
-
-    dtls_event_fn_t    on_event;
-    void              *evt_ctx;
+typedef struct dtls_conn_s {
+  tls_conn_t tls;        /* first: the TLS connection the roles work on */
+  dtls_keys_t r, w;      /* the current read and write epochs */
+  dtls_keys_t r_prev, w_prev;  /* the epoch before each */
+  uint16_t repoch, wepoch;     /* 0, 2, 3, 4 ...; never wrap */
+  uint16_t pseq;         /* next epoch-0 record number we send */
+  uint16_t mtu;          /* largest datagram we send */
+  /* handshake reliability — section 6 */
+  uint16_t fl_seq;       /* message_seq of the first message in the flight */
+  uint16_t rx_seq;       /* next message_seq expected */
+  uint16_t fl_split;     /* flight offset where its second epoch starts */
+  uint16_t fl_ep[2];     /* the flight's epochs */
+  uint16_t fl_pos, fl_idx, fl_frag;  /* transmission cursor */
+  uint32_t rto_ms, timer_ms;
+  uint8_t retries, fl_state;
+  dtls_recno_t sent[DTLS_SENT_MAX];  /* records of the last transmission */
+  uint16_t sent_n, sent_acked;
+  dtls_recno_t acks[DTLS_ACK_MAX];   /* peer records to acknowledge */
+  uint8_t ack_n, ack_owed;
+  uint16_t hs_have;      /* bytes of the message being reassembled */
+  uint16_t dg_len;       /* the datagram waiting in tx */
+  uint32_t bad_records;  /* records that failed authentication */
 } dtls_conn_t;
 ```
 
----
-
-## 8. Handshake Fragmentation
-
-Handshake messages (especially Certificate) may exceed the UDP MTU.  DTLS
-handles this via message_seq, fragment_offset, and fragment_length fields in the
-DTLS handshake header.  The implementation reassembles fragments into the
-application-provided `hs_buf` before processing.  If `hs_buf` is too small, the
-handshake aborts with `DTLS_EVT_ERROR`.
+(The field list is the plan; section 12 gives the size as built.)
+`dtls_conn_t` starts with its `tls_conn_t`, so `dtls.c` gets from one to the
+other by a cast, and the roles and `tls_common.c` see an ordinary
+connection.  `tls.rkeys` / `tls.wkeys` are not used by DTLS, which needs the
+record-number key and window beside each key set; `tls_set_keys()` hands
+DTLS the secret through `rl->rekey`, which derives `r` or `w` itself.
 
 ---
 
-## 9. API
+## 5. Records
 
-```c
-/* Initialise. */
-void dtls_init(dtls_conn_t        *dtls,
-               const tls_crypto_t *crypto,
-               const tls_cert_t   *cert,
-               uint8_t            *hs_buf,    uint16_t hs_buf_len,
-               uint8_t            *flight_buf, uint16_t flight_buf_len,
-               dtls_event_fn_t     on_event,  void *evt_ctx);
+### 5.1 Formats (RFC 9147 §4)
 
-/* Begin client handshake to a specific peer. */
-net_err_t dtls_connect(dtls_conn_t *dtls,
-                       uint32_t peer_ip, uint16_t peer_port,
-                       uint8_t *tx_out, uint16_t *tx_len_out);
+```
+DTLSPlaintext (epoch 0):
+  type(1) | legacy_record_version {254,253} (2) | epoch = 0 (2) | sequence_number (6) | length (2) | fragment
 
-/* Begin server handshake (waits for ClientHello via dtls_input). */
-net_err_t dtls_accept(dtls_conn_t *dtls);
-
-/* Feed an incoming UDP datagram.
-   src_ip / src_port: sender's address (for response routing).
-   plain_out / plain_len_out: decrypted application data if CONNECTED.
-   tx_out / tx_len_out: any handshake response to send back. */
-net_err_t dtls_input(dtls_conn_t *dtls,
-                     uint32_t src_ip, uint16_t src_port,
-                     const uint8_t *data, uint16_t len,
-                     uint8_t *plain_out,  uint16_t *plain_len_out,
-                     uint8_t *tx_out,     uint16_t *tx_len_out);
-
-/* Encrypt one application datagram. */
-net_err_t dtls_send(dtls_conn_t *dtls,
-                    const uint8_t *data, uint16_t len,
-                    uint8_t *record_out, uint16_t *record_len_out);
-
-/* Drive retransmit timer — call with elapsed ms from main loop.
-   tx_out / tx_len_out: retransmitted flight to send if timer fired. */
-net_err_t dtls_tick(dtls_conn_t *dtls, uint32_t ms,
-                    uint8_t *tx_out, uint16_t *tx_len_out);
-
-/* Send close_notify and transition to CLOSED. */
-net_err_t dtls_close(dtls_conn_t *dtls,
-                     uint8_t *record_out, uint16_t *record_len_out);
+DTLSCiphertext (epochs 2, 3, ...):
+  0 0 1 C S L E E | [CID] | seq (1 or 2) | [length (2)] | encrypted_record
 ```
 
----
+We send DTLSCiphertext with C = 0, S = 1 (16-bit sequence number), L = 1
+(length present) — five header bytes — so a datagram may carry several
+records.  We receive any combination of S and L; a record without a length
+takes the rest of the datagram.  A record with C set is dropped: no CID was
+negotiated (REQ-DTLS-013).
 
-## 10. Integration Example
+**Demultiplexing** (§4.1): first byte 21, 22 or 26 → DTLSPlaintext;
+`001xxxxx` → DTLSCiphertext; anything else → the rest of the datagram is
+dropped (its length cannot be known).
+
+### 5.2 Protection
+
+Sealing a record of epoch *e* with keys *K*:
+
+1. Header `0x2C | (e & 3)`, `K.k.seq & 0xFFFF`, length = content + 1 + 16.
+2. AES-128-GCM over DTLSInnerPlaintext (content, type, no padding) with
+   the nonce `K.k.iv` XOR the 64-bit sequence number (the epoch is not in
+   the nonce) and the five header bytes as additional data — the header
+   *before* record number encryption (§4).
+3. Record number encryption (§4.2.3): mask = AES-ECB(`K.sn`,
+   ciphertext[0..15]); the two sequence-number bytes of the header XOR
+   mask[0..1].  The ciphertext is at least 17 bytes (type + tag), so no
+   padding is ever needed.
+4. `K.k.seq++`.
+
+Opening one:
+
+1. Epoch: the two E bits must match the current read epoch or the one
+   before (§4.2.2); during the handshake the bits are unambiguous.  No
+   keys for it (e.g. epoch 2 before the ServerHello) → dropped.
+2. Ciphertext shorter than 16 bytes → dropped (§4.2.3).
+3. Unmask the sequence bits; reconstruct the full number as the one
+   closest to `k.seq` (highest received + 1) with those low bits (§4.2.2).
+4. Open with the header as it was before masking; failure → dropped, and
+   `bad_records` counts it.
+5. Replay (§4.5.1), after deprotection so a discard is no timing channel:
+   a number at or below `k.seq - 33`, or one whose bit is set, is a
+   duplicate → dropped.  Otherwise the window moves or the bit is set.
+6. Strip padding; the inner content type decides (section 5.3).
+
+`aes_block` is the one primitive DTLS adds to `tls_crypto_t`:
 
 ```c
-/* UDP port handler — feed received datagrams into DTLS: */
-static void on_udp_coap(net_t *net, uint32_t src_ip, uint16_t src_port,
-                        const uint8_t *src_mac,
-                        const uint8_t *data, uint16_t len) {
-    uint8_t  plain[256], tx[512];
-    uint16_t plain_len, tx_len;
-
-    dtls_input(&dtls, src_ip, src_port, data, len,
-               plain, &plain_len, tx, &tx_len);
-
-    if (tx_len)
-        udp_send(net, src_ip, src_mac, COAP_PORT, src_port, tx, tx_len);
-    if (plain_len)
-        coap_handle(plain, plain_len);
-}
-
-/* In the main loop: */
-dtls_tick(&dtls, elapsed_ms, tx_buf, &tx_len);
-if (tx_len)
-    udp_send(&net, dtls.peer_ip, peer_mac, COAP_PORT, dtls.peer_port,
-             tx_buf, tx_len);
+  /** AES-128 of one block (DTLS record number encryption, RFC 9147 §4.2.3). */
+  void (*aes_block)(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);
 ```
 
+It goes last in the struct, so a TLS-only backend leaves it NULL, and
+`dtls_init()` refuses a configuration whose backend lacks it.
+`sn_key = HKDF-Expand-Label(secret, "sn", "", 16)` is derived with the
+traffic key and IV whenever an epoch begins.
+
+### 5.3 Receiving
+
+`dtls_input(d, datagram, len)` walks the records of one datagram, which
+stays in the caller's buffer (it may be the frame buffer the UDP handler
+was given):
+
+| Record | Accepted when | Then |
+|---|---|---|
+| Plaintext handshake | Always — but a message it completes is taken only while the peer's records are not yet protected (ClientHello, ServerHello, HelloRetryRequest); later, only as a duplicate (section 6.4) | Fragments copied straight from the datagram into the reassembly area |
+| Plaintext alert | While the peer's records are not yet protected | As TLS |
+| Plaintext ACK | Never (it would be unauthenticated) | Dropped |
+| Protected | Keys for its epoch, authentic, not replayed | Decrypted into rx: handshake fragments → reassembly; alert → as TLS; application data → the read queue, once `CONNECTED`; ACK → section 7; any other type → `unexpected_message` (it is authentic, so not spoofed) |
+
+Anything malformed — a header or length that does not fit, a fragment
+running past its message — is **dropped silently** (§4.5.2): an alert is
+what a forger would probe for.  Handshake failures of authentic messages
+(a bad Finished, a refused ClientHello) are still fatal alerts, as in TLS.
+
+`bad_records` ends the connection (without an alert) if it ever reaches
+2^32 − 1; RFC 9147 §4.5.3 allows 2^36 failed authentications for
+AES-128-GCM, so this is stricter (REQ-DTLS-023).
+
+### 5.4 The receive buffer
+
+```
+rx: 0         hs_off                  rx_len                         rx_cap
+    | kept msg | message being        | read queue: [len16|data]...  | free:
+    |          | reassembled (reserved|                              | scratch for a
+    |          | to its full length)  |                              | protected record
+```
+
+- A protected handshake, alert or ACK record is decrypted into scratch at
+  the end of rx, then its fragments are copied to the reassembly area.
+- Application data is decrypted straight into the read queue, behind a
+  two-byte length; `dtls_read()` copies out one record per call (the
+  datagram's boundary is the record's).
+- A new message is reassembled only while the read queue is empty — its
+  area is reserved to its full length in front of the queue.  A fragment
+  that cannot be placed now is dropped and not acknowledged; the peer sends
+  it again.
+- A message that cannot fit even in an empty rx ends the connection with
+  `record_overflow`, as in TLS.
+
 ---
 
-## 11. Shared Crypto Backend
+## 6. The handshake over datagrams
 
-DTLS uses exactly the same `tls_crypto_t` vtable as TLS.  If an application
-uses both TLS (for HTTPS) and DTLS (for CoAP), it links a single crypto backend
-instance and passes the same pointer to both `tls_init()` and `dtls_init()`.
-This keeps flash usage minimal.
+### 6.1 Sending: the flight store
+
+`tls_hs_begin()` reserves room for a message in the **flight store** — the
+front of tx — and `tls_hs_end()` finishes it exactly as for TLS: the
+four-byte TLS header, the transcript, the length.  The store therefore holds
+TLS-format messages, and the DTLS framing is added when they are sent:
+
+```
+tx: 0                         fl_split                    tx_len        tx_cap
+    | messages of fl_ep[0]    | messages of fl_ep[1]      | datagram   | free |
+      (e.g. ServerHello, 0)     (EE, Cert, CV, Fin — 2)     (dg_len)
+```
+
+- A flight has at most two epochs — the server's (0 then 2), the client's
+  last (2), a KeyUpdate (the current one) — so `fl_split` and `fl_ep[2]`
+  describe it; `hs_begin` records the write epoch of each message it
+  starts.
+- `message_seq` is not stored: the first message has `fl_seq` and the rest
+  follow on.
+- A new flight replaces the old one once the old one is acknowledged
+  (section 6.3): `hs_begin` then empties the store and moves `fl_seq` past
+  the old flight's messages.
+- The datagram being handed to the transport sits after the store; nothing
+  is written to the store while it waits (`hs_begin` returns NULL, and the
+  role tries again after `dtls_sent()`, as a TLS role waits for tx room).
+- A store too small for a flight even when empty fails the handshake with
+  `internal_error`, as a too-small TLS tx does.
+
+### 6.2 Transmissions
+
+A **transmission** walks the store from the start (or, for a flight just
+written, from its first message) and cuts it into datagrams of at most
+`mtu` bytes:
+
+- Consecutive messages of one epoch share a record; a new record starts at
+  `fl_split`, and a new datagram when the current one is full.
+- Each piece of a message is a DTLS handshake fragment: the TLS header's
+  type and length, `message_seq`, `fragment_offset`, `fragment_length`,
+  then the bytes.  A message that does not fit in the datagram's remaining
+  room is split there, unless the room is too small to be worth a
+  fragment, in which case the datagram ends.
+- A record is sealed with the keys of its epoch: plaintext for 0, `w` or
+  `w_prev` for the others (§4.2.1: retransmissions use the original
+  epoch).  Every record gets a new record number, so a retransmitted
+  message goes in new records (§5.2).
+- The record numbers of the transmission are kept in `sent[]` (up to
+  `DTLS_SENT_MAX`, 10 — also the most records one transmission should
+  carry, §5.8.3) for matching ACKs.
+- When the last piece has been handed to the transport the retransmission
+  timer starts.
+
+`dtls_pending(d, &buf)` builds the next datagram when none is waiting — an
+owed ACK first, then the transmission's next pieces — and returns it;
+`dtls_sent(d)` releases it.  `dtls_write()` seals one record of application
+data into the same slot.  One datagram waits at a time, so tx needs the
+flight plus one datagram.
+
+### 6.3 Flights and the timer (§5.7, §5.8)
+
+| Event | What happens |
+|---|---|
+| We write a flight | Its first transmission; `rto_ms` = `DTLS_RTO_INITIAL_MS` (1000); `retries` = 0 |
+| Timer expires | `retries++`; beyond `DTLS_MAX_RETRANSMITS` (6: about two minutes) the connection fails — `ERROR`, `alert` = `DTLS_TIMEOUT`, `TLS_EVT_ERROR`, no alert sent — else `rto_ms` doubles (at most `DTLS_RTO_MAX_MS`, 60 000) and the whole flight is sent again |
+| A whole message of the peer's next flight | Our flight is acknowledged implicitly (§7): the timer stops |
+| An ACK covering every record of our last transmission | Acknowledged explicitly: the timer stops (for our KeyUpdate, the new keys take over — section 9) |
+| A duplicate of the peer's previous flight while ours is unacknowledged | The peer has not seen ours: send it again now (§5.8.1) |
+
+`dtls_tick(d, elapsed_ms)` runs the timer; the application calls it from
+its main loop, as it calls `net_tick()`, and sends what `dtls_pending()`
+then returns.  The timer does not adapt to the round-trip time (§5.8.2
+SHOULD); each flight starts again from one second.
+
+The server keeps no timer before its first flight.  Its HelloRetryRequest
+is a flight like any other, so a client that stops answering after one is
+given up on like any other.
+
+### 6.4 Receiving: reassembly (§5.2, §5.5)
+
+For each handshake fragment in a record:
+
+| `message_seq` | |
+|---|---|
+| below `rx_seq` | A duplicate: nothing to process.  During the handshake it may mean the peer lost our flight (section 6.3); a server that has finished answers a duplicate of the client's last flight by acknowledging it again (§5.8.1, REQ-DTLS-039) |
+| above `rx_seq` | A later message: dropped (§5.2 MAY), and an ACK is owed for what has arrived of the flight so far (§7.1) |
+| `rx_seq` | Placed |
+
+The message being reassembled has its TLS header written at `rx + hs_off`
+from the first fragment seen, and its area reserved to the full length.
+Fragments may arrive in any order and overlap (§5.5 MUST): one that starts
+at or before `hs_have` extends it; one that starts beyond is dropped, and an
+ACK owed.  Bytes that overlap ones already placed must be identical, else
+`illegal_parameter` (§5.5 SHOULD).  A fragment whose type or total length
+differs from the message's is dropped.
+
+A message whose last byte arrives goes to `tls_on_handshake()` exactly as
+under TLS — `HS_KEYS`, `HS_KEEP` and `HS_RELEASE` mean the same, the client
+keeps the server's Certificate in rx for CertificateVerify — and `rx_seq`
+moves on.  If further fragments follow in the record after a message that
+changed keys, that is `unexpected_message`, as in TLS (a key change falls on
+a record boundary).
 
 ---
 
-## 12. Zero-Allocation Guarantee
+## 7. ACKs (§7)
 
-`dtls.c` calls no dynamic allocation functions.  All state is in the
-application-owned `dtls_conn_t`.  Reassembly and flight buffers are provided by
-the application at init time.  DTLS records are built in-place in the
-application's transmit buffer.
+```
+ACK: record_numbers<0..2^16-1>, each { uint64 epoch; uint64 sequence_number; }
+```
+
+**Sending.**  `acks[]` lists the records of the peer's current flight that
+carried fragments we placed (never one we dropped, §7 MUST NOT), and is
+cleared when we start a new flight (the peer's next records belong to its
+next flight).  An ACK is owed:
+
+- by a server when the client's last flight is complete (its Finished) —
+  mandatory, since nothing else answers that flight;
+- after a post-handshake message — KeyUpdate, NewSessionTicket — is
+  processed (§7.1: a client that ignores the ticket still acknowledges it);
+- again, by a finished server, for each duplicate of the client's last
+  flight (§5.8.1);
+- when a fragment is dropped for arriving out of order (§7.1 SHOULD); such
+  an ACK may be empty.
+
+ACKs go in a record of the highest write epoch (§7), and only once we have
+write keys — a client that has not processed the ServerHello does not send
+an empty plaintext ACK.  An ACK is sent once, not retransmitted.
+
+**Receiving.**  Only a protected ACK is believed.  Each record number that
+matches one in `sent[]` is marked; when every record of the last
+transmission is marked the flight is acknowledged.  A partial ACK changes
+nothing: the timer will resend the whole flight (§7.2 SHOULD resend only
+the rest — not implemented, a flight is a few datagrams).
+
+---
+
+## 8. The cookie (§5.1)
+
+A server that receives a first ClientHello answers with a HelloRetryRequest
+carrying a cookie — 16 random bytes kept in `tls.sid`, which DTLS does not
+otherwise use on a server — and selecting a group too if the client's share
+is not usable.  The second ClientHello must carry the same cookie
+(`illegal_parameter` otherwise, §5.1 MUST); only then does the server send
+its flight.  The cookie shows the client can receive at its address before
+the server sends a Certificate flight many times the size of a ClientHello
+— the amplification §5.1 is about.
+
+The cookie is kept in the connection, not packed statelessly into the HRR:
+a device already gives each peer its own `dtls_conn_t` when the first
+ClientHello arrives.  The resource side of the attack — ClientHellos from
+forged addresses tying up those connections — is the application's to
+bound, and it can: `dtls_peer_verified(d)` is 1 once the cookie has come
+back, so a server short of connections can reuse one still waiting for its
+cookie before refusing a verified peer.  `cfg->dtls_no_cookie` (a server
+setting in `tls_config_t`) skips the exchange where amplification is no
+concern (§5.1 MAY), e.g. PSK-only links on a private network.
+
+---
+
+## 9. KeyUpdate (§8)
+
+- **Sending.**  `dtls_key_update()`, or 2^24 records under one key, owes a
+  KeyUpdate; it is written as a one-message flight in the current epoch as
+  soon as no other flight is waiting for its ACK.  Records keep using the
+  current keys until the peer acknowledges it — then `wsec` moves on, `w`
+  becomes `w_prev` and the next epoch begins (REQ-DTLS-060).  No second
+  KeyUpdate is written before that.  Unlike TLS, `dtls_write()` is never
+  held back by an owed KeyUpdate.
+- **Receiving.**  The peer's next secret and keys go in `r`, the old ones
+  in `r_prev`: its records may arrive in either epoch until it has our ACK,
+  and the RFC requires the old keys to be kept until a record under the new
+  ones decrypts (REQ-DTLS-061).  The record is acknowledged; a request is
+  answered with our own KeyUpdate (not requesting).
+- The epoch is 16 bits here; a KeyUpdate that would take either side past
+  65 535 ends the connection instead (the RFC forbids wrapping, §6.1).
+
+---
+
+## 10. API
+
+```c
+int dtls_init(dtls_conn_t *d, const tls_config_t *cfg, uint8_t *rx,
+              size_t rx_cap, uint8_t *tx, size_t tx_cap, size_t mtu);
+int dtls_accept(dtls_conn_t *d);                     /* tls_accept() */
+int dtls_connect(dtls_conn_t *d, const char *host);  /* tls_connect() */
+int dtls_input(dtls_conn_t *d, const uint8_t *dgram, size_t len);
+size_t dtls_pending(dtls_conn_t *d, const uint8_t **dgram);
+void dtls_sent(dtls_conn_t *d);
+void dtls_tick(dtls_conn_t *d, uint32_t elapsed_ms);
+int dtls_write(dtls_conn_t *d, const uint8_t *data, size_t len);
+size_t dtls_read(dtls_conn_t *d, uint8_t *buf, size_t len);
+int dtls_key_update(dtls_conn_t *d, int request);
+int dtls_close(dtls_conn_t *d);
+void dtls_release(dtls_conn_t *d);
+int dtls_peer_verified(const dtls_conn_t *d);
+size_t dtls_max_data(const dtls_conn_t *d);          /* largest dtls_write() */
+tls_state_t dtls_state(const dtls_conn_t *d);
+```
+
+| Call | |
+|---|---|
+| `dtls_init()` | As `tls_init()`, plus `mtu`: the largest datagram to send — what the transport can carry without IP fragmentation (for UDP over Ethernet 1472 on IPv4, 1452 on IPv6; smaller if the frame buffers are).  At least 128.  −1 also if the backend has no `aes_block` |
+| `dtls_accept()`, `dtls_connect()` | As `tls_accept()`, `tls_connect()` |
+| `dtls_input()` | One received datagram, from the peer this connection belongs to (the application demultiplexes by address and port).  Returns 0, or the negated alert (or `DTLS_TIMEOUT`) that ended the connection.  Never alerts in answer to a bad datagram |
+| `dtls_pending()`, `dtls_sent()` | The next datagram to send, and "sent".  Call them until `dtls_pending()` returns 0 after `dtls_input()`, `dtls_tick()`, `dtls_write()`, `dtls_key_update()`, `dtls_close()` |
+| `dtls_tick()` | The retransmission timer |
+| `dtls_write()` | One record of application data, one datagram: `len`, 0 while the previous datagram has not been taken, −1 when not open for writing or `len` > `dtls_max_data()` — a datagram is never split |
+| `dtls_read()` | One record's data per call, as `tls_read()` |
+| `dtls_key_update()`, `dtls_close()`, `dtls_release()` | As the TLS calls (section 9 for KeyUpdate).  close_notify is sent once and not retransmitted (§5.10) |
+
+Events and states are TLS's.  After `CLOSED` (the peer's close_notify)
+received records are ignored, which covers §5.10's rule that data after a
+close_notify is ignored.
+
+**Over UDP** (the demos): the UDP handler looks the peer up by
+address and port, calls `dtls_input()`, then sends every `dtls_pending()`
+datagram with `udp_send()` to that peer's address and MAC.  A client
+resolves the server's MAC first, as `tls_client_demo` does for TCP
+([arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open)).
+
+---
+
+## 11. Sizing
+
+| Buffer | Must hold | Typical |
+|---|---|---|
+| tx | The largest flight this side sends, plus one datagram | Server with the 481-byte test certificate: about 750 bytes of flight + `mtu`.  Client: its ClientHello (about 200 bytes, more with a PSK) + `mtu` |
+| rx | The largest handshake message it receives, plus the largest record (scratch), plus unread application data | Client: the server's Certificate + CertificateVerify + one datagram; server: the ClientHello + one datagram |
+| `mtu` | ≤ the transport's datagram limit | 1200 is a safe default where the path is unknown |
+
+---
+
+## 12. Size and memory
+
+To be measured as it is built: `make arm-size-dtls` (server only, both
+roles), the change to TLS's figures from the record-layer interface, and
+`sizeof(dtls_conn_t)`.
+
+---
+
+## 13. Testing
+
+**Unit** (CMake with `SMALLEST_TCP_TLS`):
+
+- `test_tls_crypto`: `aes_block` against FIPS-197 C.1.
+- `test_tls_keys`: the `"dtls13"` label prefix against an independent
+  HKDF (`tests/tls/gen_dtls13.py`), and the `"sn"` key.
+- `test_dtls`: record formats (both sequence lengths, with and without
+  length, several records per datagram), record number encryption,
+  sequence reconstruction, the replay window, silently dropped records;
+  our client against our server over a memory "network" that loses,
+  duplicates and reorders datagrams — every flight lost once, fragments
+  out of order and overlapping, a lost last flight and its ACK, a lost
+  KeyUpdate ACK, timeouts; the cookie; HelloRetryRequest for a group;
+  PSK; max_fragment_length; small MTUs; a scripted peer for refusals.
+
+**Blackbox and interop** (Linux, TAP and raw socket): a `dtls_echo_demo`
+on UDP port 4433 against wolfSSL's example client (`-u -v 4`) and our
+`dtls_client_demo` against wolfSSL's example server — OpenSSL and Mbed TLS
+have no DTLS 1.3.  Scapy checks what needs no peer: the cookie
+HelloRetryRequest to a hand-built ClientHello, silence towards garbage,
+and no answer to a forged record.

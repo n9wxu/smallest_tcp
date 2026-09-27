@@ -267,8 +267,25 @@ state at all: every byte of RAM is application-owned.
 - `tls_tcp_carry()` moves records between a TLS and a TCP connection; HTTPS is the HTTP server with `http_conn_use_tls()`
 - Design: [docs/design/tls.md](docs/design/tls.md)
 
-### Task 14: DTLS 1.3 — planned
-- Design: [docs/design/dtls.md](docs/design/dtls.md); tracked in the README roadmap
+### Task 14: DTLS 1.3 — in progress
+DTLS 1.3 (RFC 9147) on the TLS 1.3 handshake: the roles, key schedule and
+crypto backend are shared; a datagram record layer (`dtls.c`) sits beside
+the TLS stream one.
+- [ ] Stage 1: the record-layer interface — `tls_common.c` (what both
+      record layers share), `tls_rl_t`, `tls_set_keys()`, the label-prefix
+      parameter; TLS unchanged on the wire, every TLS test passing
+- [ ] Stage 2: `aes_block` in the backend; "dtls13" labels and the "sn" key
+- [ ] Stage 3: records — DTLSPlaintext, the unified header, record number
+      encryption, sequence reconstruction, the replay window
+- [ ] Stage 4: the handshake over datagrams — the roles' DTLS formats,
+      flights, fragmentation and reassembly, the timer, ACKs, the cookie
+- [ ] Stage 5: after the handshake — application data, KeyUpdate with
+      ACKs, close_notify, `dtls_release()`
+- [ ] Stage 6: demos, blackbox and interop with wolfSSL (OpenSSL and Mbed
+      TLS have no DTLS 1.3), CI
+- [ ] Stage 7: sizes (`make arm-size-dtls`), documentation
+- Design: [docs/design/dtls.md](docs/design/dtls.md); requirements:
+  [docs/requirements/dtls.md](docs/requirements/dtls.md)
 
 ### ✅ Task 15: Open issues found in the 2026-09-27 review *(DONE)*
 Found while fixing the design review's bugs; all fixed.  Each fix started
