@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
   tcp_set_connections(&net, conn_table, 1);
 
   printf("[tls_echo] IP: ");
-  demo_print_ipv4(net.ipv4_addr);
+  demo_print_ip(&net);
   printf(", %u certificate(s), %s key%s%s\n", (unsigned)cfg.cert_count,
          cfg.sig_scheme == TLS_SIG_ECDSA_SECP256R1_SHA256 ? "ECDSA P-256"
                                                           : "RSA",

@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
   if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "frame_dump") != 0)
     return 1;
   printf("Listening on ");
-  demo_print_ipv4(net.ipv4_addr);
+  demo_print_ip(&net);
   printf(" (Ctrl+C to stop)\n\n");
 
   while (demo_running) {

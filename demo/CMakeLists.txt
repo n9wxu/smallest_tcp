@@ -28,8 +28,13 @@ endfunction()
 add_executable(frame_dump frame_dump/main.c)
 add_demo_with_driver(frame_dump)
 
-add_executable(echo_server echo_server/main.c)
-add_demo_with_driver(echo_server)
+# An IPv6-only build has frame_dump, tcp_echo_demo and tls_echo_demo; the
+# other demos use IPv4.
+
+if(SMALLEST_TCP_IPV4)
+    add_executable(echo_server echo_server/main.c)
+    add_demo_with_driver(echo_server)
+endif()
 
 # ── tcp_echo (TCP echo server on port 7) ──────────────────────────────
 
@@ -41,27 +46,35 @@ endif()
 
 # ── tftp_client (TFTP GET demo) ───────────────────────────────────────
 
-add_executable(tftp_client_demo tftp_client/main.c)
-add_demo_with_driver(tftp_client_demo)
-target_link_libraries(tftp_client_demo PRIVATE smallest_tcp_tftp)
+if(SMALLEST_TCP_IPV4)
+    add_executable(tftp_client_demo tftp_client/main.c)
+    add_demo_with_driver(tftp_client_demo)
+    target_link_libraries(tftp_client_demo PRIVATE smallest_tcp_tftp)
+endif()
 
 # ── dhcp_echo (DHCP client + TCP/UDP echo — blackbox SUT) ────────────
 
-add_executable(dhcp_echo_demo dhcp_echo/main.c)
-add_demo_with_driver(dhcp_echo_demo)
-target_link_libraries(dhcp_echo_demo PRIVATE smallest_tcp_dhcpv4_client)
+if(SMALLEST_TCP_IPV4)
+    add_executable(dhcp_echo_demo dhcp_echo/main.c)
+    add_demo_with_driver(dhcp_echo_demo)
+    target_link_libraries(dhcp_echo_demo PRIVATE smallest_tcp_dhcpv4_client)
+endif()
 
 # ── mdns_demo (mDNS + DNS-SD advertiser — blackbox SUT) ──────────────
 
-add_executable(mdns_demo mdns_demo/main.c)
-add_demo_with_driver(mdns_demo)
-target_link_libraries(mdns_demo PRIVATE smallest_tcp_mdns)
+if(SMALLEST_TCP_IPV4)
+    add_executable(mdns_demo mdns_demo/main.c)
+    add_demo_with_driver(mdns_demo)
+    target_link_libraries(mdns_demo PRIVATE smallest_tcp_mdns)
+endif()
 
 # ── http_demo (HTTP server + mDNS advertising — blackbox SUT) ────────
 
-add_executable(http_demo http_demo/main.c)
-add_demo_with_driver(http_demo)
-target_link_libraries(http_demo PRIVATE smallest_tcp_http smallest_tcp_mdns)
+if(SMALLEST_TCP_IPV4)
+    add_executable(http_demo http_demo/main.c)
+    add_demo_with_driver(http_demo)
+    target_link_libraries(http_demo PRIVATE smallest_tcp_http smallest_tcp_mdns)
+endif()
 
 # ── tls_echo, https_demo, tls_client (TLS 1.3 — blackbox SUTs) ────────
 
@@ -74,18 +87,20 @@ if(SMALLEST_TCP_TLS)
         TLS_ECHO_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
         TLS_ECHO_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
 
-    add_executable(https_demo https_demo/main.c)
-    add_demo_with_driver(https_demo)
-    target_link_libraries(https_demo PRIVATE
-        smallest_tcp_https smallest_tcp_tls_mbedtls)
-    target_compile_definitions(https_demo PRIVATE
-        HTTPS_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
-        HTTPS_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
+    if(SMALLEST_TCP_IPV4)
+        add_executable(https_demo https_demo/main.c)
+        add_demo_with_driver(https_demo)
+        target_link_libraries(https_demo PRIVATE
+            smallest_tcp_https smallest_tcp_tls_mbedtls)
+        target_compile_definitions(https_demo PRIVATE
+            HTTPS_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
+            HTTPS_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
 
-    add_executable(tls_client_demo tls_client/main.c)
-    add_demo_with_driver(tls_client_demo)
-    target_link_libraries(tls_client_demo PRIVATE
-        smallest_tcp_tls_tcp smallest_tcp_tls_mbedtls)
-    target_compile_definitions(tls_client_demo PRIVATE
-        TLS_CLIENT_DEFAULT_CA="${PROJECT_SOURCE_DIR}/tests/tls/ca.pem")
+        add_executable(tls_client_demo tls_client/main.c)
+        add_demo_with_driver(tls_client_demo)
+        target_link_libraries(tls_client_demo PRIVATE
+            smallest_tcp_tls_tcp smallest_tcp_tls_mbedtls)
+        target_compile_definitions(tls_client_demo PRIVATE
+            TLS_CLIENT_DEFAULT_CA="${PROJECT_SOURCE_DIR}/tests/tls/ca.pem")
+    endif()
 endif()

@@ -229,7 +229,23 @@ discovery, SLAAC with lifetimes) and MLDv2/v1.  No multicast groups to join
 The RAM is `net_t`'s IPv6 part: two address slots with their lifetimes,
 the default router, the MLD and router-solicitation timers, and the IPv6 port
 table pointer.  No divide routine is linked (lifetimes count seconds by
-subtraction).  An IPv6-only build (no ARP, IPv4, ICMPv4) is not offered yet.
+subtraction).
+
+## IPv6 only
+
+`make arm-size-ipv6-only` builds the same UDP echo over IPv6 alone
+(`-DNET_USE_IPV4=0`): no ARP, IPv4, ICMPv4, no IPv4 half of UDP, and none of
+`net_t`'s IPv4 fields ([configuration.md §5](configuration.md#5-compile-time-protocol-selection)).
+
+| Metric | UDP, dual stack | UDP, IPv6 only | Delta |
+|--------|----------------:|---------------:|------:|
+| **Flash (code + rodata)** | 7,805 B | **5,977 B** | −1,828 B |
+| **RAM (static state)** | 780 B | **752 B** | −28 B |
+| Stack-only code (.o, before gc) | 7,691 B | 5,865 B | −1,826 B |
+
+The IPv6 modules are the same objects as in the dual stack; what goes is
+`arp.c` (362 B), `ipv4.c` (598 B), `icmp.c` (320 B), UDP over IPv4 (476 B)
+and the IPv4 branches of `eth.c` and `net.c` (64 B).
 
 ## Adding TLS 1.3
 
@@ -277,6 +293,7 @@ make arm-size-tcp    # UDP + TCP
 make arm-size-mdns   # UDP + mDNS/DNS-SD responder
 make arm-size-http   # UDP + HTTP server (with TCP)
 make arm-size-ipv6   # UDP, dual stack IPv4 + IPv6 (ICMPv6, ND, SLAAC, MLD)
+make arm-size-ipv6-only  # UDP over IPv6 alone (no ARP, IPv4, ICMPv4)
 make arm-size-tls    # TLS 1.3 protocol: server only, client and server
 make arm-size-all    # all of the above, then arm-check-division
 make arm-check-division  # fail if any ARM object calls a library divide
@@ -297,7 +314,7 @@ Cortex-M0 has no divide instruction ([coding-rules.md](coding-rules.md)).
 | File | Purpose |
 |------|---------|
 | `Makefile` | The `arm-size*` and `arm-check-division` targets (the Makefile builds nothing for the host) |
-| `bench/size_measure.c` | Bare-metal app exercising all stack layers; `BENCH_MDNS`, `BENCH_HTTP`, `BENCH_IPV6` select the extra configurations |
+| `bench/size_measure.c` | Bare-metal app exercising all stack layers; `BENCH_MDNS`, `BENCH_HTTP`, `BENCH_IPV6` select the extra configurations, and `NET_USE_IPV4=0` with `BENCH_IPV6` the IPv6-only one |
 | `bench/cortex-m0.ld` | Minimal linker script (32KB flash, 6KB RAM) |
 | `src/driver/stub.c` | No-op MAC driver for cross-compilation |
 | `bench/lwip/lwipopts.h` | Minimal lwIP UDP-only config |
@@ -335,6 +352,7 @@ Cortex-M0 has no divide instruction ([coding-rules.md](coding-rules.md)).
 | 2026-09-27 | …+TCP+HTTP | 10,958 B (10,766 stack) | — | — |
 | 2026-09-27 | TLS 1.3 (owed KeyUpdate first, key share wiped on failure) | 7,059 B / 10,547 B | — | — |
 | 2026-09-27 | ETH+ARP+IPv4+ICMP+UDP, dual stack | 7,789 B (7,675 stack) | — | — |
+| 2026-09-27 | ETH+IPv6+ICMPv6+ND+MLD+UDP, IPv6 only | 5,977 B (5,865 stack) | — | — |
 
 > The UDP-only growth from 2026-03-19 to 2026-09-26 came from `net_poll()`
 > (Milestone 7), the peek-based UDP dispatch, IPv4 Protocol Unreachable, and

@@ -13,15 +13,20 @@
  *   make arm-size-http — UDP echo + HTTP server, one slot (-DBENCH_HTTP)
  *   make arm-size-ipv6 — UDP echo over IPv4 and IPv6: + IPv6, ICMPv6, ND,
  *                        DAD, router discovery, SLAAC, MLD (-DBENCH_IPV6)
+ *   make arm-size-ipv6-only — UDP echo over IPv6 alone (-DBENCH_IPV6,
+ *                        -DNET_USE_IPV4=0): no ARP, IPv4 or ICMP
  */
 
-#include "arp.h"
 #include "driver/stub.h"
 #include "eth.h"
-#include "icmp.h"
-#include "ipv4.h"
 #include "net.h"
 #include "udp.h"
+
+#if NET_USE_IPV4
+#include "arp.h"
+#include "icmp.h"
+#include "ipv4.h"
+#endif
 
 #if NET_USE_TCP
 #include "tcp.h"
@@ -45,11 +50,13 @@ static uint8_t rx_buf[300];
 static uint8_t tx_buf[300];
 static net_t net;
 
+#if NET_USE_IPV4
 static void echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
                          const uint8_t *src_mac, const uint8_t *payload,
                          uint16_t len) {
   udp_send(n, src_ip, src_mac, 7, src_port, payload, len);
 }
+#endif
 
 #ifdef BENCH_IPV6
 static void echo6_handler(net_t *n, const uint8_t *src_ip, uint16_t src_port,
@@ -92,7 +99,7 @@ static void mdns_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
 
 static const udp_port_entry_t ports[] = {{7, echo_handler},
                                          {MDNS_PORT, mdns_handler}};
-#else
+#elif NET_USE_IPV4
 static const udp_port_entry_t ports[] = {{7, echo_handler}};
 #endif
 
@@ -131,7 +138,9 @@ void app_main(void) {
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), mac,
            &stub_mac_ops, (void *)0);
 
+#if NET_USE_IPV4
   udp_set_ports(&net, ports, sizeof(ports) / sizeof(ports[0]));
+#endif
 
 #ifdef BENCH_IPV6
   udp6_set_ports(&net, ports6, 1);
@@ -175,6 +184,7 @@ void app_main(void) {
   }
 #endif
 
+#if NET_USE_IPV4
   /* Simulate sending a UDP packet */
   static const uint8_t dst_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
   static const uint8_t payload[] = "hello";
@@ -182,6 +192,7 @@ void app_main(void) {
 
   /* Force ARP request to be linked */
   arp_request(&net, 0x0A000001);
+#endif
 
 #ifdef BENCH_MDNS
   mdns_tick(&mdns, 10);

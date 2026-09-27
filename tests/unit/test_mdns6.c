@@ -2,7 +2,9 @@
  * @file test_mdns6.c
  * @brief Unit tests for mDNS over IPv6 (RFC 6762 §6.2, §20): ff02::fb,
  *        AAAA records, answering on the query's address family, probing
- *        and announcing on both.  Built with NET_USE_IPV6=1.
+ *        and announcing on both.  Built with NET_USE_IPV6=1; without IPv4
+ *        the responder has no A record and IPv6 is the only family (V4 is
+ *        0 in the expected counts).
  */
 
 #include "dns_wire.h"
@@ -18,6 +20,8 @@
 #if !NET_USE_IPV6
 #error "test_mdns6 needs NET_USE_IPV6=1"
 #endif
+
+#define V4 NET_USE_IPV4 /* 1 when IPv4 is a family too */
 
 /* ── Stub MAC driver (MLD frames are test_mld's business) ─────────── */
 
@@ -72,20 +76,28 @@ static const net_mac_t stub_drv = {
 #define INST "Pyro Unit 1._pyro._tcp.local"
 
 static const char *const txt[] = {"txtvers=1", NULL};
-enum { REC_A, REC_AAAA, REC_PTR, REC_SRV, REC_TXT, N_RECS };
-static const mdns_record_t records[N_RECS] = {
+static const mdns_record_t records[] = {
+#if NET_USE_IPV4
     {.type = DNS_TYPE_A, .ttl = MDNS_TTL_HOST, .name = HOST, .rdata.a = 0},
+#endif
     {.type = DNS_TYPE_AAAA,
      .ttl = MDNS_TTL_HOST,
      .name = HOST,
      .rdata.aaaa = NULL}, /* every usable IPv6 address */
-    {.type = DNS_TYPE_PTR, .ttl = MDNS_TTL_OTHER, .name = SVC, .rdata.ptr = INST},
+    {.type = DNS_TYPE_PTR,
+     .ttl = MDNS_TTL_OTHER,
+     .name = SVC,
+     .rdata.ptr = INST},
     {.type = DNS_TYPE_SRV,
      .ttl = MDNS_TTL_HOST,
      .name = INST,
      .rdata.srv = {0, 0, 80, HOST}},
-    {.type = DNS_TYPE_TXT, .ttl = MDNS_TTL_HOST, .name = INST, .rdata.txt = txt},
+    {.type = DNS_TYPE_TXT,
+     .ttl = MDNS_TTL_HOST,
+     .name = INST,
+     .rdata.txt = txt},
 };
+#define N_RECS (sizeof(records) / sizeof(records[0]))
 
 static const uint8_t our_ll[16] = {0xFE, 0x80, 0, 0,    0,    0,    0,    0,
                                    0,    0,    0, 0xFF, 0xFE, 0xDE, 0xAD, 0x01};
@@ -100,7 +112,9 @@ static const uint8_t group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                    0,    0,    0, 0, 0, 0, 0, 0xFB};
 static const uint8_t group6_mac[6] = {0x33, 0x33, 0, 0, 0, 0xFB};
 
+#if NET_USE_IPV4
 #define PEER_IP 0x0A000064u
+#endif
 
 /* ── Fixture ──────────────────────────────────────────────────────── */
 
@@ -116,7 +130,7 @@ static void on_conflict(mdns_t *mm, uint8_t idx, void *ctx) {
   conflicts++;
 }
 
-/** IPv4 + IPv6 up with a link-local and a global address. */
+/** IPv4 (if built) + IPv6 up with a link-local and a global address. */
 static void setup_recs(const mdns_record_t *recs, uint8_t n) {
   static int ctx;
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
@@ -132,7 +146,7 @@ static void setup_recs(const mdns_record_t *recs, uint8_t n) {
   mdns_init(&m, &net, recs, n, on_conflict, NULL);
 }
 
-static void setup(void) { setup_recs(records, N_RECS); }
+static void setup(void) { setup_recs(records, (uint8_t)N_RECS); }
 
 static void to_running(void) {
   mdns_start(&m);
@@ -153,7 +167,7 @@ static int is_v6(int i) {
          frames[i][14 + 6] == IPV6_NH_UDP;
 }
 static const uint8_t *msg_of(int i, uint16_t *len) {
-  uint16_t off = is_v6(i) ? UDP6_PAYLOAD_OFFSET : UDP_PAYLOAD_OFFSET;
+  uint16_t off = is_v6(i) ? UDP6_PAYLOAD_OFFSET : 14u + 20u + UDP_HDR_SIZE;
   *len = (uint16_t)(frame_lens[i] - off);
   return frames[i] + off;
 }
@@ -254,9 +268,9 @@ TEST(test_mdns6_probes_on_both_families) {
   setup();
   mdns_start(&m);
   mdns_tick(&m, MDNS_PROBE_WAIT_MS);
-  ASSERT_EQ(count_family(0), 1);
+  ASSERT_EQ(count_family(0), V4);
   ASSERT_EQ(count_family(1), 1);
-  int v6 = first_family(1), v4 = first_family(0);
+  int v6 = first_family(1);
   const uint8_t *ip = frames[v6] + 14;
   ASSERT_MEM_EQ(frames[v6], group6_mac, 6);
   ASSERT_MEM_EQ(ip + 24, group6, 16);
@@ -264,10 +278,13 @@ TEST(test_mdns6_probes_on_both_families) {
   ASSERT_EQ(ip[7], 255); /* RFC 6762 §11 */
   ASSERT_EQ(net_read16be(ip + 40), MDNS_PORT);
   ASSERT_EQ(net_read16be(ip + 42), MDNS_PORT);
+#if NET_USE_IPV4
+  int v4 = first_family(0);
   uint16_t l4, l6;
   const uint8_t *m4 = msg_of(v4, &l4), *m6 = msg_of(v6, &l6);
   ASSERT_EQ(l4, l6);
   ASSERT_MEM_EQ(m4, m6, l4); /* the same probe on both */
+#endif
   /* the probe proposes our AAAA records in Authority */
   uint8_t a[4][16];
   ASSERT_EQ(count_rr(v6, 1, DNS_TYPE_AAAA, a, NULL, NULL), 2);
@@ -290,7 +307,8 @@ TEST(test_mdns6_announcement_aaaa_for_each_usable_address) {
         v4 = i;
     }
   }
-  ASSERT_TRUE(v6 >= 0 && v4 >= 0);
+  ASSERT_TRUE(v6 >= 0);
+  ASSERT_EQ(v4 >= 0, V4);
   uint8_t a[4][16];
   uint16_t cls = 0;
   int n = count_rr(v6, 0, DNS_TYPE_AAAA, a, NULL, &cls);
@@ -298,21 +316,25 @@ TEST(test_mdns6_announcement_aaaa_for_each_usable_address) {
   ASSERT_TRUE(has_addr(a, n, our_ll));
   ASSERT_TRUE(has_addr(a, n, our_global));
   ASSERT_TRUE(cls & DNS_CLASS_TOPBIT); /* unique: cache-flush */
-  ASSERT_EQ(count_rr(v6, 0, DNS_TYPE_A, NULL, NULL, NULL), 1);
+  ASSERT_EQ(count_rr(v6, 0, DNS_TYPE_A, NULL, NULL, NULL), V4);
+#if NET_USE_IPV4
   /* RFC 6762 §6.2: all addresses valid on the interface, on IPv4 too */
   ASSERT_EQ(count_rr(v4, 0, DNS_TYPE_AAAA, NULL, NULL, NULL), 2);
+#endif
 }
 
 TEST(test_mdns6_tentative_address_not_advertised) {
   static const uint8_t extra[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 7, 0, 0,
                                     0,    0,    0,    0,    0, 0, 0, 7};
-  static const mdns_record_t recs[2] = {
+  static const mdns_record_t recs[] = {
+#if NET_USE_IPV4
       {.type = DNS_TYPE_A, .ttl = MDNS_TTL_HOST, .name = HOST, .rdata.a = 0},
+#endif
       {.type = DNS_TYPE_AAAA,
        .ttl = MDNS_TTL_HOST,
        .name = HOST,
        .rdata.aaaa = NULL}};
-  setup_recs(recs, 2);
+  setup_recs(recs, (uint8_t)(sizeof(recs) / sizeof(recs[0])));
   /* one global slot only: make the global tentative instead */
   ipv6_addr_remove(&net, our_global);
   ipv6_addr_add(&net, extra, NET_IP6_INFINITE, NET_IP6_INFINITE);
@@ -344,9 +366,10 @@ TEST(test_mdns6_aaaa_query_over_ipv6) {
   ASSERT_EQ(n, 2);
   ASSERT_TRUE(has_addr(a, n, our_global));
   /* RFC 6762 §6.2: the A record as an additional */
-  ASSERT_EQ(count_rr(r, 2, DNS_TYPE_A, NULL, NULL, NULL), 1);
+  ASSERT_EQ(count_rr(r, 2, DNS_TYPE_A, NULL, NULL, NULL), V4);
 }
 
+#if NET_USE_IPV4
 TEST(test_mdns6_a_query_adds_aaaa) {
   setup();
   to_running();
@@ -367,6 +390,7 @@ TEST(test_mdns6_aaaa_query_over_ipv4) {
   ASSERT_EQ(count_family(0), 1);
   ASSERT_EQ(count_rr(first_family(0), 0, DNS_TYPE_AAAA, NULL, NULL, NULL), 2);
 }
+#endif
 
 TEST(test_mdns6_srv_additionals_include_aaaa) {
   setup();
@@ -375,7 +399,7 @@ TEST(test_mdns6_srv_additionals_include_aaaa) {
   input6(MDNS_PORT, len);
   int r = first_family(1);
   ASSERT_TRUE(r >= 0);
-  ASSERT_EQ(count_rr(r, 2, DNS_TYPE_A, NULL, NULL, NULL), 1);
+  ASSERT_EQ(count_rr(r, 2, DNS_TYPE_A, NULL, NULL, NULL), V4);
   ASSERT_EQ(count_rr(r, 2, DNS_TYPE_AAAA, NULL, NULL, NULL), 2);
 }
 
@@ -437,7 +461,7 @@ TEST(test_mdns6_nsec_lists_aaaa) {
   const uint8_t *bm = msg + rr.rdata_off + 2;
   ASSERT_EQ(bm[0], 0);
   ASSERT_TRUE(bm[1] >= 4);
-  ASSERT_TRUE(bm[2] & 0x40);             /* type 1: A */
+  ASSERT_EQ((bm[2] & 0x40) != 0, V4);   /* type 1: A */
   ASSERT_TRUE(bm[2 + 3] & (0x80 >> 4)); /* type 28: AAAA */
 }
 
@@ -525,7 +549,7 @@ TEST(test_mdns6_readdress_while_announcing) {
   mdns_readdress6(&m);
   mdns_tick(&m, MDNS_ANNOUNCE_WAIT_MS);
   mdns_tick(&m, MDNS_ANNOUNCE_WAIT_MS);
-  ASSERT_EQ(count_family(0), 2);
+  ASSERT_EQ(count_family(0), 2 * V4);
   ASSERT_EQ(count_family(1), 2);
   ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
 }
@@ -534,7 +558,7 @@ TEST(test_mdns6_goodbye_on_both_families) {
   setup();
   to_running();
   mdns_stop(&m);
-  ASSERT_EQ(count_family(0), 1);
+  ASSERT_EQ(count_family(0), V4);
   ASSERT_EQ(count_family(1), 1);
   uint32_t ttl = 1;
   ASSERT_EQ(count_rr(first_family(1), 0, DNS_TYPE_AAAA, NULL, &ttl, NULL), 2);
@@ -549,8 +573,10 @@ int main(void) {
   RUN_TEST(test_mdns6_announcement_aaaa_for_each_usable_address);
   RUN_TEST(test_mdns6_tentative_address_not_advertised);
   RUN_TEST(test_mdns6_aaaa_query_over_ipv6);
+#if NET_USE_IPV4
   RUN_TEST(test_mdns6_a_query_adds_aaaa);
   RUN_TEST(test_mdns6_aaaa_query_over_ipv4);
+#endif
   RUN_TEST(test_mdns6_srv_additionals_include_aaaa);
   RUN_TEST(test_mdns6_qu_query_unicast_reply);
   RUN_TEST(test_mdns6_legacy_unicast_reply);

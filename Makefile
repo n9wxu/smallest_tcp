@@ -14,6 +14,7 @@
 #   arm-size-mdns   UDP echo + mDNS/DNS-SD responder
 #   arm-size-http   UDP echo + HTTP server (one connection slot)
 #   arm-size-ipv6   UDP echo, dual stack (IPv6, ICMPv6, ND, SLAAC, MLD)
+#   arm-size-ipv6-only  UDP echo over IPv6 alone: no ARP, IPv4 or ICMP
 #   arm-size-tls    the TLS 1.3 protocol code: server only, then client and
 #                   server (the crypto backend is extra and not measured)
 #   arm-check-division  fail if any ARM object calls a library divide
@@ -38,6 +39,9 @@ ARM_TCP_SRCS  := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
 ARM_MDNS_SRCS := $(ARM_UDP_SRCS) src/mdns.c src/dns_wire.c src/igmp.c
 ARM_HTTP_SRCS := $(ARM_TCP_SRCS) src/http.c src/net_text.c
 ARM_IPV6_SRCS := $(ARM_UDP_SRCS) src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c
+ARM_IPV6ONLY_SRCS := src/net.c src/net_cksum.c src/eth.c src/udp.c \
+                     src/driver/stub.c bench/size_measure.c src/ipv6.c \
+                     src/icmpv6.c src/ndp.c src/mld.c
 ARM_TLS_SERVER_SRCS := src/tls.c src/tls_keys.c src/tls_server.c
 ARM_TLS_SRCS  := $(ARM_TLS_SERVER_SRCS) src/tls_client.c
 
@@ -47,12 +51,13 @@ ARM_MDNS_FLAGS := -DNET_USE_TCP=0 -DBENCH_MDNS
 ARM_HTTP_FLAGS := $(ARM_NOMCAST) -DBENCH_HTTP
 ARM_IPV6_FLAGS := $(ARM_NOMCAST) -DNET_USE_TCP=0 -DNET_USE_IPV6=1 \
                   -DNET_MAX_MCAST6_GROUPS=0 -DBENCH_IPV6
+ARM_IPV6ONLY_FLAGS := $(ARM_IPV6_FLAGS) -DNET_USE_IPV4=0
 ARM_TLS_FLAGS  :=
 
-ARM_CONFIGS := udp tcp mdns http ipv6
+ARM_CONFIGS := udp tcp mdns http ipv6 ipv6only
 
 .PHONY: help arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 \
-        arm-size-tls arm-size-all arm-check-division clean
+        arm-size-ipv6-only arm-size-tls arm-size-all arm-check-division clean
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -74,6 +79,7 @@ $(eval $(call arm_config,tcp,$(ARM_TCP_SRCS),$(ARM_TCP_FLAGS)))
 $(eval $(call arm_config,mdns,$(ARM_MDNS_SRCS),$(ARM_MDNS_FLAGS)))
 $(eval $(call arm_config,http,$(ARM_HTTP_SRCS),$(ARM_HTTP_FLAGS)))
 $(eval $(call arm_config,ipv6,$(ARM_IPV6_SRCS),$(ARM_IPV6_FLAGS)))
+$(eval $(call arm_config,ipv6only,$(ARM_IPV6ONLY_SRCS),$(ARM_IPV6ONLY_FLAGS)))
 
 ARM_TLS_OBJS := $(patsubst %.c,$(BUILD)/arm/tls/%.o,$(ARM_TLS_SRCS))
 ARM_TLS_SERVER_OBJS := $(patsubst %.c,$(BUILD)/arm/tls/%.o,$(ARM_TLS_SERVER_SRCS))
@@ -109,6 +115,9 @@ arm-size-http: $(BUILD)/arm/http/size_measure.elf
 arm-size-ipv6: $(BUILD)/arm/ipv6/size_measure.elf
 	$(call report,UDP echo dual stack IPv4 + IPv6,$<,$(ARM_ipv6_OBJS))
 
+arm-size-ipv6-only: $(BUILD)/arm/ipv6only/size_measure.elf
+	$(call report,UDP echo IPv6 only,$<,$(ARM_ipv6only_OBJS))
+
 arm-size-tls: $(ARM_TLS_OBJS)
 	@echo ""
 	@echo "=== smallest_tcp ARM Cortex-M0 size: TLS 1.3 protocol (crypto backend extra) ==="
@@ -120,7 +129,7 @@ arm-size-tls: $(ARM_TLS_OBJS)
 	  awk '{print "client and server:                             " $$1 " bytes .text"}'
 
 arm-size-all: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 \
-              arm-size-tls arm-check-division
+              arm-size-ipv6-only arm-size-tls arm-check-division
 
 # Every stack source (dual stack), compiled only for the division check
 ARM_EVERY_SRCS := $(filter-out src/tls_crypto_mbedtls.c,$(wildcard src/*.c))

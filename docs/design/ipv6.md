@@ -27,10 +27,23 @@ state.  CMake has `SMALLEST_TCP_IPV6` (default ON): it adds `ipv6.c`,
 `icmpv6.c`, `ndp.c` and `mld.c` to the core library and defines
 `NET_USE_IPV6` publicly, so everything linked against the core agrees on
 the `net_t` layout; the DHCPv6 client is its own library
-(`smallest_tcp::dhcpv6_client`), built only then.  CI builds and tests both
-ways: the default CMake job is dual stack, `cmake-ipv4-only` sets
-`SMALLEST_TCP_IPV6=OFF`, and `make arm-size-ipv6` measures the dual-stack
-footprint.
+(`smallest_tcp::dhcpv6_client`), built only then.
+
+IPv4 can be left out the same way: `NET_USE_IPV4` 0 (CMake
+`SMALLEST_TCP_IPV4=OFF`) builds an IPv6-only stack with no ARP, IPv4, ICMP
+or IGMP, UDP and TCP over IPv6 alone, and mDNS with AAAA records only
+([configuration.md §5](configuration.md#5-compile-time-protocol-selection)).
+The IPv4 API is then not declared, and the headers of the protocols that
+run only over IPv4 (ARP, ICMP, IGMP, DHCPv4, TFTP) stop the build.  Demos
+that need no IPv4 — `tcp_echo_demo`, `tls_echo_demo`, `frame_dump` — build
+IPv6-only too.
+
+CI builds and tests all three ways: the default CMake job is dual stack,
+`cmake-ipv4-only` sets `SMALLEST_TCP_IPV6=OFF`, `cmake-ipv6-only` sets
+`SMALLEST_TCP_IPV4=OFF`, and the IPv6 blackbox suite runs against an
+IPv6-only `tcp_echo_demo` as well as the dual-stack one.
+`make arm-size-ipv6` measures the dual-stack footprint and
+`make arm-size-ipv6-only` a UDP echo over IPv6 alone.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -463,7 +476,11 @@ mixes that in with `net_random_seed()`.  The IPv6 code used to keep its own gene
   IPv6 address) replaces the IPv4 address everywhere a segment is built or
   matched: one segment builder, one input state machine, with thin
   `tcp_input()` / `tcp6_input()` entry points.  A listening connection
-  accepts either family.  `tcp6_connect()` mirrors `tcp_connect()`.
+  accepts either family.  `tcp6_connect()` mirrors `tcp_connect()`.  Where
+  the families differ, `BY_FAMILY(ep, v4, v6)` picks the expression for the
+  endpoint's family; a single-stack build keeps only its own, so the other
+  family's names need not exist (`mdns.c` does the same for its
+  destinations).
 - **MSS**: our MSS comes from the RX frame buffer and is 20 bytes smaller
   over IPv6: 1440 for a buffer of 1514 bytes or more, since it is capped at
   what one Ethernet frame carries; without an MSS option the peer's is 1220

@@ -78,6 +78,7 @@ TEST(test_net_init_null_mac_uses_default) {
   ASSERT_MEM_EQ(net.mac, expected, 6);
 }
 
+#if NET_USE_IPV4
 TEST(test_net_init_defaults_applied) {
   uint8_t rx[200], tx[200];
   net_t net;
@@ -90,6 +91,7 @@ TEST(test_net_init_defaults_applied) {
   ASSERT_EQ(net.gateway_ipv4, NET_DEFAULT_GATEWAY);
   ASSERT_EQ(net.gateway_mac_valid, 0);
 }
+#endif
 
 TEST(test_net_init_buf_too_small) {
   uint8_t rx[10], tx[200]; /* rx too small */
@@ -121,9 +123,9 @@ TEST(test_net_init_refuses_buffers_too_small_for_tcp) {
   ASSERT_EQ(net_init(&net, rx, sizeof(rx), tx, TCP_MIN_FRAME - 1, NULL,
                      &stub_mac, &dummy),
             NET_ERR_BUF_TOO_SMALL);
-  ASSERT_EQ(net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac,
-                     &dummy),
-            NET_OK);
+  ASSERT_EQ(
+      net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac, &dummy),
+      NET_OK);
 }
 
 /* Replies are built in tx while the request is still read from rx: the
@@ -254,7 +256,9 @@ int main(void) {
 
   RUN_TEST(test_net_init_success);
   RUN_TEST(test_net_init_null_mac_uses_default);
+#if NET_USE_IPV4
   RUN_TEST(test_net_init_defaults_applied);
+#endif
   RUN_TEST(test_net_init_buf_too_small);
   RUN_TEST(test_net_init_refuses_buffers_too_small_for_tcp);
   RUN_TEST(test_net_init_refuses_overlapping_buffers);

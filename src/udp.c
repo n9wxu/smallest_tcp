@@ -4,11 +4,13 @@
  */
 
 #include "udp.h"
-#include "icmp.h"
-#include "ipv4.h"
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_IPV4
+#include "icmp.h"
+#include "ipv4.h"
+#endif
 #if NET_USE_IPV6
 #include "icmpv6.h"
 #endif
@@ -34,6 +36,8 @@ static void write_header(uint8_t *udp, uint16_t src_port, uint16_t dst_port,
   net_write16be(udp + UDP_OFF_LEN, udp_len);
   net_write16be(udp + UDP_OFF_CKSUM, 0);
 }
+
+#if NET_USE_IPV4
 
 /* REQ-UDP-006..008, 016, 017, 020, 031, 037 */
 void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
@@ -99,6 +103,8 @@ net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
   ipv4_build_ttl(ip, udp_len, IPV4_PROTO_UDP, src_ip, dst_ip, ttl);
   return net_transmit(net, (uint16_t)(UDP_PAYLOAD_OFFSET + data_len));
 }
+
+#endif
 
 #if NET_USE_IPV6
 

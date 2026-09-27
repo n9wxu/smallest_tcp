@@ -92,6 +92,7 @@ typedef struct {
   uint32_t secret[2];    /**< net_hash() key */
   uint32_t random_count; /**< net_random() outputs so far */
 
+#if NET_USE_IPV4
   /* IPv4, host byte order; 0 = unconfigured */
   uint32_t ipv4_addr;
   uint32_t subnet_mask;
@@ -100,6 +101,7 @@ typedef struct {
   uint8_t gateway_mac_valid;
 #if NET_MAX_MCAST_GROUPS > 0
   uint32_t mcast_groups[NET_MAX_MCAST_GROUPS]; /**< Joined; 0 = free */
+#endif
 #endif
 
 #if NET_USE_IPV6
@@ -112,8 +114,10 @@ typedef struct {
   /* Where received segments and datagrams go (udp_set_ports(),
    * tcp_set_connections()) */
 #if NET_USE_UDP
+#if NET_USE_IPV4
   const struct udp_port_entry_s *udp_ports;
   uint8_t udp_port_count;
+#endif
 #if NET_USE_IPV6
   const struct udp6_port_entry_s *udp6_ports;
   uint8_t udp6_port_count;
@@ -128,7 +132,8 @@ typedef struct {
 
 /**
  * Initialise a network context: buffers, MAC address (NULL for
- * NET_DEFAULT_MAC), MAC driver, and the net_config.h identity defaults.
+ * NET_DEFAULT_MAC), MAC driver, and the net_config.h identity defaults
+ * (the IPv4 address, mask and gateway, with IPv4 compiled in).
  * The RX and TX buffers must not overlap.
  * @return NET_OK, NET_ERR_INVALID_PARAM (also: overlapping buffers), or
  *         NET_ERR_BUF_TOO_SMALL for a buffer smaller than TCP_MIN_FRAME

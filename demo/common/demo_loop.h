@@ -38,6 +38,17 @@ static inline void demo_print_ipv4(uint32_t ip) {
          (unsigned)((ip >> 8) & 0xFF), (unsigned)(ip & 0xFF));
 }
 
+/** Our IPv4 address, or "IPv6 only": the IPv6 addresses are reported as
+ *  they become usable (demo_ipv6.h). */
+static inline void demo_print_ip(const net_t *net) {
+#if NET_USE_IPV4
+  demo_print_ipv4(net->ipv4_addr);
+#else
+  (void)net;
+  printf("IPv6 only");
+#endif
+}
+
 /**
  * Open the interface named by @p spec and initialise @p net on it: frame
  * buffers of DEMO_FRAME_SIZE, the default MAC and addresses, random

@@ -1,7 +1,7 @@
 /**
  * @file demo/tcp_echo/main.c
  * @brief TCP and UDP echo on port 7; over IPv6 too, with DHCPv6 started
- *        when a Router Advertisement asks for it.
+ *        when a Router Advertisement asks for it.  Builds IPv6-only.
  *
  *   sudo ./tcp_echo_demo [tap0 | raw:<ifname> | feth1]
  *   nc 10.0.0.2 7
@@ -29,6 +29,7 @@ static net_t net;
 static demo_mac_t nic;
 static demo_echo_t echo;
 
+#if NET_USE_IPV4
 static void udp_echo(net_t *n, uint32_t src_ip, uint16_t src_port,
                      const uint8_t *src_mac, const uint8_t *payload,
                      uint16_t len) {
@@ -36,6 +37,7 @@ static void udp_echo(net_t *n, uint32_t src_ip, uint16_t src_port,
 }
 
 static const udp_port_entry_t udp_ports[] = {{ECHO_PORT, udp_echo}};
+#endif
 
 #if NET_USE_IPV6
 static dhcpv6_client_t dhcp6;
@@ -107,14 +109,16 @@ int main(int argc, char *argv[]) {
 
   if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "tcp_echo") != 0)
     return 1;
+#if NET_USE_IPV4
   udp_set_ports(&net, udp_ports, 1);
+#endif
 #if NET_USE_IPV6
   udp6_set_ports(&net, udp6_ports, 2);
   dhcpv6_client_init(&dhcp6, on_dhcp6_event, NULL, &dhcp6_opts);
   hooks.tick = dhcp6_tick;
 #endif
   printf("[tcp_echo] IP: ");
-  demo_print_ipv4(net.ipv4_addr);
+  demo_print_ip(&net);
   printf("\n");
   demo_echo_start(&net, &echo, ECHO_PORT, "tcp_echo");
 

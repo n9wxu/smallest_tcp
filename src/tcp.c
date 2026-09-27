@@ -7,12 +7,14 @@
 
 #include "tcp.h"
 #include "eth.h"
-#include "ipv4.h"
 #include "net_cksum.h"
 #include "net_endian.h"
 #include <stddef.h>
 #include <string.h>
 
+#if NET_USE_IPV4
+#include "ipv4.h"
+#endif
 #if NET_USE_IPV6
 #include "ipv6.h"
 #endif
@@ -32,46 +34,57 @@
 /* ── Endpoints: the other end of a segment, over IPv4 or IPv6 ── */
 
 typedef struct {
+  const uint8_t *mac; /* its MAC */
+#if NET_USE_IPV4
   uint32_t ip4;       /* IPv4 peer, host byte order */
   uint32_t local_ip4; /* our IPv4 address it uses */
-  const uint8_t *mac; /* its MAC */
+#endif
 #if NET_USE_IPV6
-  const uint8_t *ip6;    /* IPv6 peer, or NULL for IPv4 */
+  const uint8_t *ip6;    /* IPv6 peer; NULL for IPv4 in a dual stack */
   const uint8_t *local6; /* our IPv6 address it uses */
 #endif
 } tcp_ep_t;
 
-static int is_ipv6(const tcp_ep_t *ep) {
-#if NET_USE_IPV6
-  return ep->ip6 != NULL;
+/*
+ * @p v4 or @p v6, for @p ep's address family.  A single-stack build keeps
+ * only its own family's expression: the other's names need not exist.
+ */
+#if NET_USE_IPV4 && NET_USE_IPV6
+#define BY_FAMILY(ep, v4, v6) ((ep)->ip6 ? (v6) : (v4))
+#elif NET_USE_IPV6
+#define BY_FAMILY(ep, v4, v6) ((void)(ep), (v6))
 #else
-  (void)ep;
+#define BY_FAMILY(ep, v4, v6) ((void)(ep), (v4))
+#endif
+
+static int conn_is_ipv6(const tcp_conn_t *conn) {
+#if NET_USE_IPV6
+  return conn->ip_ver == 6;
+#else
+  (void)conn;
   return 0;
 #endif
 }
 
 static void conn_endpoint(const net_t *net, const tcp_conn_t *conn,
                           tcp_ep_t *ep) {
+  ep->mac = conn->remote_mac;
+#if NET_USE_IPV4
   ep->ip4 = conn->remote_ip;
   ep->local_ip4 = net->ipv4_addr;
-  ep->mac = conn->remote_mac;
+#endif
 #if NET_USE_IPV6
-  ep->ip6 = conn->ip_ver == 6 ? conn->remote_ip6 : NULL;
+  ep->ip6 = conn_is_ipv6(conn) ? conn->remote_ip6 : NULL;
   ep->local6 = net->ip6.addr[conn->local_slot].addr;
 #endif
 }
 
 static uint16_t ip_header_size(const tcp_ep_t *ep) {
-#if NET_USE_IPV6
-  if (is_ipv6(ep))
-    return IPV6_HDR_SIZE;
-#endif
-  (void)ep;
-  return IPV4_HDR_SIZE;
+  return BY_FAMILY(ep, IPV4_HDR_SIZE, IPV6_HDR_SIZE);
 }
 
 static uint16_t default_mss(const tcp_ep_t *ep) {
-  return is_ipv6(ep) ? TCP_DEFAULT_MSS_IPV6 : TCP_DEFAULT_MSS_IPV4;
+  return BY_FAMILY(ep, TCP_DEFAULT_MSS_IPV4, TCP_DEFAULT_MSS_IPV6);
 }
 
 /* REQ-TCP-077: the largest segment a frame buffer of @p capacity holds,
@@ -97,15 +110,16 @@ static uint16_t send_mss(const net_t *net, const tcp_ep_t *ep, uint16_t mss) {
  * sent us */
 static uint16_t checksum(const tcp_ep_t *peer, int from_peer,
                          const uint8_t *seg, uint16_t len) {
-#if NET_USE_IPV6
-  if (is_ipv6(peer))
-    return from_peer
-               ? ipv6_cksum(peer->ip6, peer->local6, IPV6_NH_TCP, seg, len)
-               : ipv6_cksum(peer->local6, peer->ip6, IPV6_NH_TCP, seg, len);
-#endif
-  return from_peer
-             ? ipv4_cksum(peer->ip4, peer->local_ip4, IPV4_PROTO_TCP, seg, len)
-             : ipv4_cksum(peer->local_ip4, peer->ip4, IPV4_PROTO_TCP, seg, len);
+  return from_peer ? BY_FAMILY(peer,
+                               ipv4_cksum(peer->ip4, peer->local_ip4,
+                                          IPV4_PROTO_TCP, seg, len),
+                               ipv6_cksum(peer->ip6, peer->local6, IPV6_NH_TCP,
+                                          seg, len))
+                   : BY_FAMILY(peer,
+                               ipv4_cksum(peer->local_ip4, peer->ip4,
+                                          IPV4_PROTO_TCP, seg, len),
+                               ipv6_cksum(peer->local6, peer->ip6, IPV6_NH_TCP,
+                                          seg, len));
 }
 
 /* ── Sending ── */
@@ -116,7 +130,7 @@ static uint8_t *frame_start(net_t *net, const tcp_ep_t *ep, uint16_t tcp_len) {
   if ((uint32_t)ETH_HDR_SIZE + ip_len + tcp_len > net->tx.capacity)
     return NULL;
   eth_build(net->tx.buf, net->tx.capacity, ep->mac, net->mac,
-            is_ipv6(ep) ? NET_ETHERTYPE_IPV6 : NET_ETHERTYPE_IPV4);
+            BY_FAMILY(ep, NET_ETHERTYPE_IPV4, NET_ETHERTYPE_IPV6));
   return net->tx.buf + ETH_HDR_SIZE + ip_len;
 }
 
@@ -126,13 +140,10 @@ static void frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
   uint8_t *ip_hdr = net->tx.buf + ETH_HDR_SIZE;
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, 0);
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, checksum(ep, 0, tcp_hdr, tcp_len));
-#if NET_USE_IPV6
-  if (is_ipv6(ep))
-    ipv6_build(ip_hdr, tcp_len, IPV6_NH_TCP, ep->local6, ep->ip6,
-               net->ip6.hop_limit);
-  else
-#endif
-    ipv4_build(ip_hdr, tcp_len, IPV4_PROTO_TCP, ep->local_ip4, ep->ip4);
+  BY_FAMILY(ep,
+            ipv4_build(ip_hdr, tcp_len, IPV4_PROTO_TCP, ep->local_ip4, ep->ip4),
+            ipv6_build(ip_hdr, tcp_len, IPV6_NH_TCP, ep->local6, ep->ip6,
+                       net->ip6.hop_limit));
   net_transmit(net, (uint16_t)(ETH_HDR_SIZE + ip_header_size(ep) + tcp_len));
 }
 
@@ -155,8 +166,7 @@ static void write_header(uint8_t *hdr, uint16_t src_port, uint16_t dst_port,
  * does not take is lost, as on the wire (docs/design/tcp.md §4.1).
  */
 static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
-                         uint32_t seq, const uint8_t *data,
-                         uint16_t data_len) {
+                         uint32_t seq, const uint8_t *data, uint16_t data_len) {
   uint16_t hdr_len =
       TCP_HDR_SIZE + ((flags & TCP_FLAG_SYN) ? TCP_MSS_OPTION_LEN : 0);
   uint16_t tcp_len = (uint16_t)(hdr_len + data_len);
@@ -421,13 +431,10 @@ static void send_reset_reply(net_t *net, const tcp_ep_t *to,
 }
 
 static int is_peer(const tcp_conn_t *c, const tcp_ep_t *from) {
-#if NET_USE_IPV6
-  if (is_ipv6(from))
-    return c->ip_ver == 6 && memcmp(c->remote_ip6, from->ip6, 16) == 0;
-  if (c->ip_ver != 4)
-    return 0;
-#endif
-  return c->remote_ip == from->ip4;
+  if (conn_is_ipv6(c) != BY_FAMILY(from, 0, 1))
+    return 0; /* the other family */
+  return BY_FAMILY(from, c->remote_ip == from->ip4,
+                   memcmp(c->remote_ip6, from->ip6, 16) == 0);
 }
 
 /* REQ-TCP-023, 148, 149: the connection, else a listener on the port */
@@ -452,13 +459,15 @@ static tcp_conn_t *find_conn(const net_t *net, const tcp_ep_t *from,
 
 static void remember_peer(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
                           uint16_t port) {
-  conn->remote_ip = from->ip4;
   conn->remote_port = port;
   memcpy(conn->remote_mac, from->mac, 6);
   conn->mac_valid = 1;
+#if NET_USE_IPV4
+  conn->remote_ip = from->ip4; /* 0 from an IPv6 peer */
+#endif
 #if NET_USE_IPV6
-  conn->ip_ver = is_ipv6(from) ? 6 : 4;
-  if (is_ipv6(from)) {
+  conn->ip_ver = BY_FAMILY(from, 4, 6);
+  if (conn_is_ipv6(conn)) {
     memcpy(conn->remote_ip6, from->ip6, 16);
     conn->local_slot = (uint8_t)ipv6_addr_slot(net, from->local6);
   }
@@ -481,20 +490,23 @@ static void take_peer_syn(tcp_conn_t *conn, const tcp_seg_t *s) {
 static uint32_t initial_sequence_number(const net_t *net,
                                         const tcp_conn_t *conn) {
   uint8_t id[16 + 16 + 2 + 2];
-  uint16_t n = 8;
+  uint16_t n = 0;
   tcp_ep_t ep;
   conn_endpoint(net, conn, &ep);
 #if NET_USE_IPV6
-  if (is_ipv6(&ep)) {
+  if (conn_is_ipv6(conn)) {
     memcpy(id, ep.local6, 16);
     memcpy(id + 16, ep.ip6, 16);
     n = 32;
-  } else
+  }
 #endif
-  {
+#if NET_USE_IPV4
+  if (!conn_is_ipv6(conn)) {
     net_write32be(id, ep.local_ip4);
     net_write32be(id + 4, ep.ip4);
+    n = 8;
   }
+#endif
   net_write16be(id + n, conn->local_port);
   net_write16be(id + n + 2, conn->remote_port);
   return net->tcp_clock + net_hash(net, id, (uint16_t)(n + 4u));
@@ -794,6 +806,7 @@ static void segment_input(net_t *net, const tcp_ep_t *from, const uint8_t *seg,
   }
 }
 
+#if NET_USE_IPV4
 void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   tcp_ep_t from;
   if (ip->dst_ip != net->ipv4_addr)
@@ -804,6 +817,7 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   from.mac = eth->src_mac;
   segment_input(net, &from, ip->payload, ip->payload_len);
 }
+#endif
 
 #if NET_USE_IPV6
 void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
@@ -924,7 +938,7 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
   conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
   conn->snd_mss = TCP_DEFAULT_MSS_IPV4;
 #if NET_USE_IPV6
-  conn->ip_ver = 4;
+  conn->ip_ver = NET_USE_IPV4 ? 4 : 6;
 #endif
   return NET_OK;
 }
@@ -934,7 +948,9 @@ net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port) {
     return NET_ERR_INVALID_PARAM;
   conn->state = TCP_LISTEN;
   conn->local_port = local_port;
+#if NET_USE_IPV4
   conn->remote_ip = 0;
+#endif
   conn->remote_port = 0;
   conn->timer_ms = 0;
   return NET_OK;
@@ -960,6 +976,7 @@ static void open_to(net_t *net, tcp_conn_t *conn, const uint8_t *remote_mac,
   retransmit_timer_start(conn);
 }
 
+#if NET_USE_IPV4
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
                       uint16_t local_port) {
@@ -972,6 +989,7 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
   open_to(net, conn, remote_mac, remote_port, local_port);
   return NET_OK;
 }
+#endif
 
 #if NET_USE_IPV6
 net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
@@ -985,7 +1003,9 @@ net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
     return NET_ERR_INVALID_PARAM;
   conn->ip_ver = 6;
   conn->local_slot = (uint8_t)ipv6_addr_slot(net, src);
+#if NET_USE_IPV4
   conn->remote_ip = 0;
+#endif
   memcpy(conn->remote_ip6, remote_ip, 16);
   open_to(net, conn, remote_mac, remote_port, local_port);
   return NET_OK;

@@ -210,7 +210,10 @@ Why "must be 0" and why `0xFFFF` also verifies: see
 
 ## 7. UDP over IPv6
 
-Enabled by `NET_USE_IPV6` (with `NET_USE_UDP`).
+Enabled by `NET_USE_IPV6` (with `NET_USE_UDP`).  In an IPv6-only build
+(`NET_USE_IPV4` 0) it is all there is: `udp_set_ports()`, `udp_send()` and
+the other IPv4 functions, `UDP_PAYLOAD_OFFSET` and the IPv4 port table are
+not declared.
 
 ```c
 typedef void (*udp6_handler_t)(net_t *net, const uint8_t *src_ip,

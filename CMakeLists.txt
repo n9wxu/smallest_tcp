@@ -17,13 +17,18 @@ endif()
 option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_BUILD_DRIVERS "Build platform MAC drivers" ${PROJECT_IS_TOP_LEVEL})
-option(SMALLEST_TCP_IPV6          "Dual stack: IPv6 + ICMPv6 + NDP in the core" ON)
+option(SMALLEST_TCP_IPV4          "IPv4 + ARP + ICMP in the core, and the applications that run only over IPv4" ON)
+option(SMALLEST_TCP_IPV6          "IPv6 + ICMPv6 + NDP + MLD in the core (with IPv4: dual stack)" ON)
 option(SMALLEST_TCP_UDP           "UDP in the core, and the applications over it" ON)
 option(SMALLEST_TCP_TCP           "TCP in the core, and the applications over it" ON)
 option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds)" OFF)
 set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
     "Application configuration header, included first by net_config.h")
+
+if(NOT SMALLEST_TCP_IPV4 AND NOT SMALLEST_TCP_IPV6)
+    message(FATAL_ERROR "SMALLEST_TCP_IPV4 and SMALLEST_TCP_IPV6 are both OFF: no network layer")
+endif()
 
 # ── Libraries ─────────────────────────────────────────────────────────
 #
@@ -54,9 +59,6 @@ smallest_tcp_library(core SOURCES
     src/net_cksum.c
     src/net_text.c
     src/eth.c
-    src/arp.c
-    src/ipv4.c
-    src/icmp.c
 )
 add_library(smallest_tcp::smallest_tcp ALIAS smallest_tcp_core)
 
@@ -71,6 +73,9 @@ endif()
 if(SMALLEST_TCP_DEBUG)
     target_compile_definitions(smallest_tcp_core PUBLIC NET_DEBUG=1)
 endif()
+if(SMALLEST_TCP_IPV4)
+    target_sources(smallest_tcp_core PRIVATE src/arp.c src/ipv4.c src/icmp.c)
+endif()
 if(SMALLEST_TCP_IPV6)
     target_sources(smallest_tcp_core PRIVATE
         src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c)
@@ -82,6 +87,7 @@ if(SMALLEST_TCP_TCP)
     target_sources(smallest_tcp_core PRIVATE src/tcp.c src/tcp_buf_saw.c)
 endif()
 target_compile_definitions(smallest_tcp_core PUBLIC
+    NET_USE_IPV4=$<BOOL:${SMALLEST_TCP_IPV4}>
     NET_USE_IPV6=$<BOOL:${SMALLEST_TCP_IPV6}>
     NET_USE_UDP=$<BOOL:${SMALLEST_TCP_UDP}>
     NET_USE_TCP=$<BOOL:${SMALLEST_TCP_TCP}>)
@@ -89,12 +95,17 @@ target_compile_definitions(smallest_tcp_core PUBLIC
 # ── Applications over UDP ─────────────────────────────────────────────
 
 if(SMALLEST_TCP_UDP)
-    smallest_tcp_library(dhcpv4_client SOURCES src/dhcpv4_client.c LINKS smallest_tcp_core)
-    smallest_tcp_library(dhcpv4_server SOURCES src/dhcpv4_server.c LINKS smallest_tcp_core)
-    smallest_tcp_library(tftp SOURCES src/tftp.c LINKS smallest_tcp_core)
+    if(SMALLEST_TCP_IPV4)
+        smallest_tcp_library(dhcpv4_client SOURCES src/dhcpv4_client.c LINKS smallest_tcp_core)
+        smallest_tcp_library(dhcpv4_server SOURCES src/dhcpv4_server.c LINKS smallest_tcp_core)
+        smallest_tcp_library(tftp SOURCES src/tftp.c LINKS smallest_tcp_core)
+    endif()
     smallest_tcp_library(mdns
-        SOURCES src/dns_wire.c src/igmp.c src/mdns.c
+        SOURCES src/dns_wire.c src/mdns.c
         LINKS smallest_tcp_core)
+    if(SMALLEST_TCP_IPV4)
+        target_sources(smallest_tcp_mdns PRIVATE src/igmp.c)
+    endif()
     if(SMALLEST_TCP_IPV6)
         smallest_tcp_library(dhcpv6_client SOURCES src/dhcpv6_client.c LINKS smallest_tcp_core)
     endif()

@@ -29,12 +29,34 @@ jobs:
           cmake -S . -B build-no-udp -DSMALLEST_TCP_UDP=OFF -DSMALLEST_TCP_TLS=OFF
           cmake --build build-no-udp
 
+  # IPv6 alone: no ARP, IPv4 or ICMP, and none of the IPv4 applications.
+  # The IPv6 suites, TLS and the demos that need no IPv4 build and run.
+  cmake-ipv6-only:
+    name: CMake — Linux, IPv6 only; no-TCP and no-UDP builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DSMALLEST_TCP_IPV4=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Build without TCP, and without UDP (libraries only)
+        run: |
+          cmake -S . -B build-no-tcp -DSMALLEST_TCP_IPV4=OFF \
+            -DSMALLEST_TCP_TCP=OFF -DSMALLEST_TCP_TLS=OFF
+          cmake --build build-no-tcp
+          cmake -S . -B build-no-udp -DSMALLEST_TCP_IPV4=OFF \
+            -DSMALLEST_TCP_UDP=OFF -DSMALLEST_TCP_TLS=OFF
+          cmake --build build-no-udp
+
   # ── ARM Cortex-M0 size benchmark (keeps bench/ building) ────────────
   # Ubuntu's newlib has speed-optimized memcpy/memset, so ELF totals run
   # ~310 B above docs/design/size-comparison.md (Arm GNU toolchain);
   # stack-only code is identical.
   arm-size:
-    name: ARM Size — Cortex-M0 (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, TLS; no divides)
+    name: ARM Size — Cortex-M0 (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS; no divides)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -201,8 +223,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { driver: tap, label: TAP }
-          - { driver: raw, label: raw socket }
+          - { driver: tap, label: TAP, ipv4: "ON" }
+          - { driver: raw, label: raw socket, ipv4: "ON" }
+          - { driver: tap, label: "TAP, IPv6-only build", ipv4: "OFF" }
     steps:
       - uses: actions/checkout@v4
 
@@ -218,9 +241,9 @@ jobs:
             -r tests/blackbox/requirements.txt \
             pytest-github-actions-annotate-failures
 
-      - name: Build tcp_echo_demo (dual stack)
+      - name: Build tcp_echo_demo (dual stack, or IPv6 only)
         run: |
-          cmake -S . -B build
+          cmake -S . -B build -DSMALLEST_TCP_IPV4=${{ matrix.ipv4 }}
           cmake --build build --target tcp_echo_demo
 
       - name: Set up the SUT link (${{ matrix.label }})

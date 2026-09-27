@@ -1126,9 +1126,9 @@ TEST(test_tcp_unsent_frame_is_retransmitted) {
 TEST(test_tcp_connect_with_busy_driver_resends_syn) {
   setup();
   busy_sends = 1;
-  ASSERT_EQ(tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT,
-                        LOCAL_PORT),
-            NET_OK);
+  ASSERT_EQ(
+      tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT),
+      NET_OK);
   ASSERT_EQ(conn.state, TCP_SYN_SENT);
   ASSERT_EQ(send_count, 0);
   tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
@@ -1140,9 +1140,9 @@ TEST(test_tcp_connect_with_busy_driver_resends_syn) {
 TEST(test_tcp_connect_with_failing_driver_resends_syn) {
   setup();
   failing_sends = 1;
-  ASSERT_EQ(tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT,
-                        LOCAL_PORT),
-            NET_OK);
+  ASSERT_EQ(
+      tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT),
+      NET_OK);
   ASSERT_EQ(conn.state, TCP_SYN_SENT);
   tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
   ASSERT_EQ(send_count, 1);

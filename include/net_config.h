@@ -29,6 +29,9 @@
 #ifndef NET_USE_TCP
 #define NET_USE_TCP 1
 #endif
+#if !NET_USE_IPV4 && !NET_USE_IPV6
+#error "NET_USE_IPV4 and NET_USE_IPV6 are both 0: no network layer"
+#endif
 
 /* Multicast groups joined at once (0 compiles multicast RX out) */
 #ifndef NET_MAX_MCAST_GROUPS

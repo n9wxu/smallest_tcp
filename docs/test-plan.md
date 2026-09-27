@@ -64,6 +64,10 @@ ctest --test-dir build --output-on-failure
 cmake -S . -B build-v4 -DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF
 cmake --build build-v4 && ctest --test-dir build-v4 --output-on-failure
 
+# IPv6 only (the cmake-ipv6-only CI job): the suites that need no IPv4
+cmake -S . -B build-v6 -DSMALLEST_TCP_IPV4=OFF
+cmake --build build-v6 && ctest --test-dir build-v6 --output-on-failure
+
 # The raw-socket driver's live tests (Linux, root)
 sudo ./build/tests/test_rawsock
 ```
@@ -420,12 +424,13 @@ s_client/s_server, curl — through the host's TCP to ours.
 | Job | Workflow | Runner | Tests | Trigger |
 |---|---|---|---|---|
 | `cmake-ipv4-only` | ci.yml | ubuntu-latest | ctest on an IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`); then library-only builds without TCP and without UDP | push/PR |
+| `cmake-ipv6-only` | ci.yml | ubuntu-latest | ctest on an IPv6-only build (`-DSMALLEST_TCP_IPV4=OFF`): the suites that need no IPv4, TLS, and the checks that the IPv4-only protocols refuse to compile; then library-only builds without TCP and without UDP | push/PR |
 | `cmake-linux` | ci.yml | ubuntu-latest | ctest (dual stack, TLS) | push/PR |
 | `cmake-macos` | ci.yml | macos-latest | ctest (dual stack, TLS) | push/PR |
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
-| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 suite against dual-stack `tcp_echo_demo`, then DHCPv6 interop with dnsmasq (TAP, raw socket) | push/PR |
+| `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 suite against dual-stack `tcp_echo_demo`, then DHCPv6 interop with dnsmasq (TAP, raw socket); and against an IPv6-only `tcp_echo_demo` (TAP) | push/PR |
 | `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |

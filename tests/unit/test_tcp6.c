@@ -8,7 +8,6 @@
  */
 
 #include "eth.h"
-#include "ipv4.h"
 #include "ipv6.h"
 #include "net.h"
 #include "net_endian.h"
@@ -19,6 +18,9 @@
 
 #if !NET_USE_IPV6
 #error "test_tcp6 needs NET_USE_IPV6=1"
+#endif
+#if NET_USE_IPV4
+#include "ipv4.h"
 #endif
 
 /* ── Stub MAC driver ──────────────────────────────────────────────── */
@@ -410,6 +412,7 @@ TEST(test_tcp6_reply_from_the_address_used) {
   ASSERT_TRUE(s_tcp6_ok(0, our_global, peer_global));
 }
 
+#if NET_USE_IPV4
 /** An IPv4 SYN from 10.0.0.1, with an MSS option if mss. */
 static uint16_t tcp4_syn(uint8_t *f, uint16_t mss) {
   uint16_t hlen = mss ? 24 : 20;
@@ -449,6 +452,7 @@ TEST(test_tcp6_listener_also_serves_ipv4) {
   ASSERT_EQ(conn.snd_mss, 536); /* IPv4 default without an MSS option */
   ASSERT_EQ(sent[0][34 + TCP_OFF_FLAGS], TCP_FLAG_SYN | TCP_FLAG_ACK);
 }
+#endif
 
 /* ══ Send MSS fits our TX frame buffer ════════════════════════════ */
 
@@ -473,6 +477,7 @@ TEST(test_tcp6_peer_mss_clamped_to_tx_buffer) {
   ASSERT_EQ(sent_len[0], 600);
 }
 
+#if NET_USE_IPV4
 TEST(test_tcp4_peer_mss_clamped_to_tx_buffer) {
   uint8_t f[256];
   setup_cap(600, 1);
@@ -480,6 +485,7 @@ TEST(test_tcp4_peer_mss_clamped_to_tx_buffer) {
   input(f, tcp4_syn(f, 1460));
   ASSERT_EQ(conn.snd_mss, 600 - 14 - 20 - 20);
 }
+#endif
 
 /* ══ Active open ══════════════════════════════════════════════════ */
 
@@ -528,9 +534,13 @@ int main(void) {
   RUN_TEST(test_tcp6_syn_ack_retransmitted_over_ipv6);
   RUN_TEST(test_tcp6_close_sends_fin);
   RUN_TEST(test_tcp6_reply_from_the_address_used);
+#if NET_USE_IPV4
   RUN_TEST(test_tcp6_listener_also_serves_ipv4);
+#endif
   RUN_TEST(test_tcp6_peer_mss_clamped_to_tx_buffer);
+#if NET_USE_IPV4
   RUN_TEST(test_tcp4_peer_mss_clamped_to_tx_buffer);
+#endif
   RUN_TEST(test_tcp6_connect);
   RUN_TEST(test_tcp6_connect_without_source_fails);
   TEST_REPORT();

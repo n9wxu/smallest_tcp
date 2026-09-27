@@ -8,10 +8,12 @@
 #define UDP_H
 
 #include "eth.h"
-#include "ipv4.h"
 #include "net.h"
 #include <stdint.h>
 
+#if NET_USE_IPV4
+#include "ipv4.h"
+#endif
 #if NET_USE_IPV6
 #include "ipv6.h"
 #endif
@@ -21,6 +23,9 @@
 #define UDP_OFF_LEN 4
 #define UDP_OFF_CKSUM 6
 #define UDP_HDR_SIZE 8
+
+#if NET_USE_IPV4
+/* UDP over IPv4 */
 
 /**
  * A datagram for a bound port.  @p payload points into the received frame
@@ -66,6 +71,7 @@ net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,
                                 uint16_t dst_port, uint16_t data_len,
                                 uint8_t ttl);
+#endif
 
 #if NET_USE_IPV6
 /* UDP over IPv6 */
@@ -80,7 +86,7 @@ typedef struct udp6_port_entry_s {
   udp6_handler_t handler;
 } udp6_port_entry_t;
 
-/** Bind the IPv6 port table, separate from the IPv4 one. */
+/** Bind the IPv6 port table, separate from the IPv4 one (if any). */
 static inline void udp6_set_ports(net_t *net, const udp6_port_entry_t *ports,
                                   uint8_t count) {
   net->udp6_ports = ports;

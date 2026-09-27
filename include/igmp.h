@@ -14,6 +14,7 @@
 #ifndef IGMP_H
 #define IGMP_H
 
+#include "ipv4.h" /* an IPv4 protocol: needs NET_USE_IPV4 */
 #include "net.h"
 #include <stdint.h>
 

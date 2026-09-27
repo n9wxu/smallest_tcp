@@ -817,7 +817,11 @@ TCP is unicast only: `tcp_input()` drops a segment not sent to our IPv4
 address (a broadcast or a joined group), and `tcp6_input()` one sent to a
 multicast address (RFC 1122 §4.2.3.10).
 
-With `NET_USE_IPV6` 0 the IPv6 members and branches compile out.
+With `NET_USE_IPV6` 0 the IPv6 members and branches compile out; with
+`NET_USE_IPV4` 0 the IPv4 ones do (`remote_ip`, `tcp_input()`,
+`tcp_connect()`), `ip_ver` is always 6, and every endpoint is IPv6.  The
+family-dependent expressions go through `BY_FAMILY(ep, v4, v6)`, which a
+single-stack build reduces to its own family's.
 
 ---
 

@@ -13,6 +13,10 @@
 #include "net_cksum.h"
 #include <stdint.h>
 
+#if !NET_USE_IPV4
+#error "IPv4 is not compiled in (NET_USE_IPV4 is 0)"
+#endif
+
 #define IPV4_OFF_VER_IHL 0
 #define IPV4_OFF_TOS 1
 #define IPV4_OFF_TOTLEN 2

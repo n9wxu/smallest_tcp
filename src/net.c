@@ -51,9 +51,11 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
   memcpy(net->mac, mac ? mac : default_mac, 6);
   net->mac_driver = driver;
   net->mac_ctx = driver_ctx;
+#if NET_USE_IPV4
   net->ipv4_addr = NET_DEFAULT_IPV4_ADDR;
   net->subnet_mask = NET_DEFAULT_SUBNET_MASK;
   net->gateway_ipv4 = NET_DEFAULT_GATEWAY;
+#endif
   net_random_seed(net, (uint32_t)net->mac[2] << 24 |
                            (uint32_t)net->mac[3] << 16 |
                            (uint32_t)net->mac[4] << 8 | net->mac[5]);

@@ -290,7 +290,10 @@ starts with a unit test that fails on the current code.
 [docs/design/configuration.md](docs/design/configuration.md))
 - [x] `net_init()` does not check that `rx.buf` and `tx.buf` do not overlap
       (replies are built in tx while rx is still read)
-- [ ] `NET_USE_IPV4=0` only gates the Ethernet dispatch and is untested
+- [x] `NET_USE_IPV4=0` only gates the Ethernet dispatch and is untested —
+      IPv6-only builds work: CMake `SMALLEST_TCP_IPV4`, CI job
+      `cmake-ipv6-only`, the IPv6 blackbox suite against an IPv6-only
+      `tcp_echo_demo`, `make arm-size-ipv6-only` (5,977 B)
 
 **TLS 1.3** ([docs/design/tls.md](docs/design/tls.md))
 - [ ] No API wipes a connection's secrets: one abandoned without an error,

@@ -12,6 +12,7 @@
 #ifndef DHCPV4_CLIENT_H
 #define DHCPV4_CLIENT_H
 
+#include "ipv4.h" /* an IPv4 protocol: needs NET_USE_IPV4 */
 #include "net.h"
 #include <stdint.h>
 

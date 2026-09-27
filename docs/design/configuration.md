@@ -46,12 +46,13 @@ overridden in either of two ways:
 
 Use one mechanism per macro: defining the same macro both with `-D` and in
 the header is a redefinition error under `-Werror` unless the values match.
-In particular, with CMake choose the protocols with the `SMALLEST_TCP_IPV6`,
-`SMALLEST_TCP_UDP` and `SMALLEST_TCP_TCP` options (which select the sources
-and define `NET_USE_IPV6`, `NET_USE_UDP` and `NET_USE_TCP`) and debug output
-with `SMALLEST_TCP_DEBUG` (`NET_DEBUG=1`), not in the header.  Turning UDP or
-TCP off also drops the libraries built on it and the tests and demos, which
-use the whole stack.
+In particular, with CMake choose the protocols with the `SMALLEST_TCP_IPV4`,
+`SMALLEST_TCP_IPV6`, `SMALLEST_TCP_UDP` and `SMALLEST_TCP_TCP` options (which
+select the sources and define `NET_USE_IPV4`, `NET_USE_IPV6`, `NET_USE_UDP`
+and `NET_USE_TCP`) and debug output with `SMALLEST_TCP_DEBUG` (`NET_DEBUG=1`),
+not in the header.  Turning UDP or TCP off also drops the libraries built on
+it and the tests and demos, which use the whole stack; turning IPv4 off drops
+the applications that run only over IPv4 and their tests (§5).
 
 Every header with a tunable includes `net_config.h` (directly or through
 `net.h`), so the module tunables of §4 can go in either place.
@@ -65,6 +66,7 @@ offsets and corrupt each other's memory.
 
 | Setting | Changes |
 |---|---|
+| `NET_USE_IPV4` | `net_t` (the IPv4 address, mask, gateway and its MAC, `mcast_groups`, the IPv4 port table), `tcp_conn_t` (`remote_ip`), `http_request_t` (`remote_ip`), and which functions exist |
 | `NET_USE_IPV6` | `net_t` (the `ip6` block, `mcast6_groups`, the IPv6 port table), `tcp_conn_t`, `http_request_t`, `http_conn_t`, and which functions exist |
 | `NET_USE_UDP`, `NET_USE_TCP` | `net_t` (port tables, connection table) |
 | `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS` | `net_t` (group arrays) |
@@ -82,8 +84,8 @@ to scattered `-D` flags: one file, included by every translation unit.
 
 | Macro | Default | Effect |
 |---|---|---|
-| `NET_USE_IPV4` | 1 | `eth_input()` dispatches ARP and IPv4 and accepts IPv4 multicast MACs.  That is all it gates: `net_t` keeps its IPv4 fields and IPv4 objects are still linked when something references them.  0 is untested. |
-| `NET_USE_IPV6` | 0 | IPv6, ICMPv6, NDP, SLAAC, MLD dispatch; `net->ip6`; IPv6 fields in TCP; the udp6 API.  The CMake option `SMALLEST_TCP_IPV6` (default ON) adds the IPv6 sources and sets it. |
+| `NET_USE_IPV4` | 1 | IPv4, ARP and ICMP: their dispatch in `eth_input()`, the IPv4 fields of `net_t`, the IPv4 halves of UDP, TCP, mDNS and HTTP.  0 builds an IPv6-only stack (§5): `udp_send()`, `tcp_connect()`, `mdns_input()` and the rest of the IPv4 API are not declared, and `ipv4.h` — so `arp.h`, `icmp.h`, `igmp.h`, `tftp.h` and the DHCPv4 headers with it — stops the build with "IPv4 is not compiled in".  The CMake option `SMALLEST_TCP_IPV4` (default ON) adds the IPv4 sources and sets it. |
+| `NET_USE_IPV6` | 0 | IPv6, ICMPv6, NDP, SLAAC, MLD dispatch; `net->ip6`; IPv6 fields in TCP; the udp6 API.  The CMake option `SMALLEST_TCP_IPV6` (default ON) adds the IPv6 sources and sets it.  With `NET_USE_IPV4` 0 as well, `net_config.h` stops the build: there would be no network layer. |
 | `NET_USE_UDP` | 1 | `ipv4_input()` / `ipv6_input()` dispatch to UDP; `net_t` has the port tables.  `udp.h` needs it.  CMake: `SMALLEST_TCP_UDP` (default ON). |
 | `NET_USE_TCP` | 1 | The same for TCP; `net_tick()` runs `tcp_tick()`.  `tcp.h` (and so `tcp.c`, `http.c`) needs it.  CMake: `SMALLEST_TCP_TCP` (default ON). |
 | `NET_MAX_MCAST_GROUPS` | 1 | IPv4 groups joinable at once (`ipv4_mcast_join()`, `igmp_join()`).  0 compiles multicast reception out; `mdns.c` refuses to compile with 0. |
@@ -152,7 +154,14 @@ sizing a build.
 
 **The core is composed at compile time.**  `eth.c` dispatches to ARP/IPv4
 and IPv6 under `NET_USE_IPV4` / `NET_USE_IPV6`; `ipv4.c` and `ipv6.c`
-dispatch to UDP and TCP under `NET_USE_UDP` / `NET_USE_TCP`.  Those calls are
+dispatch to UDP and TCP under `NET_USE_UDP` / `NET_USE_TCP`.  Either network
+layer can be left out, not both: an IPv6-only build (`NET_USE_IPV4` 0, CMake
+`-DSMALLEST_TCP_IPV4=OFF`) has no `arp.c`, `ipv4.c`, `icmp.c` or `igmp.c`,
+UDP and TCP keep only their IPv6 halves, and mDNS answers over IPv6 with
+AAAA records only (`mdns_init()` refuses an A record).  The DHCPv4 client
+and server and TFTP run only over IPv4 and are not built; DHCPv6, mDNS, HTTP
+and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 5,977 bytes, 1.8 KB
+less than the dual stack ([size-comparison.md](size-comparison.md)).  Those calls are
 references, so **linking IPv4 pulls in `udp.o` and `tcp.o`** unless the build
 compiles with `-DNET_USE_UDP=0` or `-DNET_USE_TCP=0`.  A transport that is
 switched off is not dispatched to, its fields leave `net_t`, and its header
@@ -173,11 +182,11 @@ unused module is simply not linked.  In CMake each is its own library:
 
 | Target | Sources |
 |---|---|
-| `smallest_tcp::smallest_tcp` | The core: `net`, `net_cksum`, `net_text`, `eth`, `arp`, `ipv4`, `icmp`, `udp`, `tcp`, `tcp_buf_saw`; with `SMALLEST_TCP_IPV6`, also `ipv6`, `icmpv6`, `ndp`, `mld` |
-| `smallest_tcp::dhcpv4_client`, `::dhcpv4_server` | `dhcpv4_client.c`, `dhcpv4_server.c` |
+| `smallest_tcp::smallest_tcp` | The core: `net`, `net_cksum`, `net_text`, `eth`, `udp`, `tcp`, `tcp_buf_saw`; with `SMALLEST_TCP_IPV4`, also `arp`, `ipv4`, `icmp`; with `SMALLEST_TCP_IPV6`, also `ipv6`, `icmpv6`, `ndp`, `mld` |
+| `smallest_tcp::dhcpv4_client`, `::dhcpv4_server` | `dhcpv4_client.c`, `dhcpv4_server.c` (IPv4 builds) |
 | `smallest_tcp::dhcpv6_client` | `dhcpv6_client.c` (IPv6 builds) |
-| `smallest_tcp::tftp` | `tftp.c` |
-| `smallest_tcp::mdns` | `mdns.c`, `dns_wire.c`, `igmp.c` |
+| `smallest_tcp::tftp` | `tftp.c` (IPv4 builds) |
+| `smallest_tcp::mdns` | `mdns.c`, `dns_wire.c`; `igmp.c` in IPv4 builds |
 | `smallest_tcp::http` | `http.c` |
 | `smallest_tcp::tls`, `::tls_tcp`, `::https`, `::tls_mbedtls` | TLS 1.3, its glue to a TCP connection, HTTPS (`http_tls.c`), and the Mbed TLS crypto backend ([tls.md](tls.md)) |
 | `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf` | Platform MAC drivers |

@@ -203,7 +203,9 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
   req->version = version;
   req->body = NULL;
   req->body_len = 0;
+#if NET_USE_IPV4
   req->remote_ip = 0;
+#endif
 #if NET_USE_IPV6
   req->remote_ip6 = NULL;
 #endif
@@ -510,7 +512,9 @@ static void dispatch(http_server_t *s, http_conn_t *c) {
 
   rq->body = c->content_length ? (const uint8_t *)c->req + c->hdr_len : NULL;
   rq->body_len = (uint16_t)c->content_length;
+#if NET_USE_IPV4
   rq->remote_ip = c->tcp.remote_ip;
+#endif
 #if NET_USE_IPV6
   rq->remote_ip6 = c->tcp.ip_ver == 6 ? c->tcp.remote_ip6 : NULL;
 #endif

@@ -34,60 +34,41 @@ target_link_libraries(test_eth PRIVATE smallest_tcp_core)
 add_unit_test(test_net)
 target_link_libraries(test_net PRIVATE smallest_tcp_core)
 
-# ── test_arp ──────────────────────────────────────────────────────────
-
-add_unit_test(test_arp)
-target_link_libraries(test_arp PRIVATE smallest_tcp_core)
-
-# ── test_ipv4 ─────────────────────────────────────────────────────────
-
-add_unit_test(test_ipv4)
-target_link_libraries(test_ipv4 PRIVATE smallest_tcp_core)
-
-# ── test_icmp ─────────────────────────────────────────────────────────
-
-add_unit_test(test_icmp)
-target_link_libraries(test_icmp PRIVATE smallest_tcp_core)
-
-# ── test_udp ──────────────────────────────────────────────────────────
-
-add_unit_test(test_udp)
-target_link_libraries(test_udp PRIVATE smallest_tcp_core)
-
 # ── test_tcp_buf ──────────────────────────────────────────────────────
 
 add_unit_test(test_tcp_buf)
 target_link_libraries(test_tcp_buf PRIVATE smallest_tcp_core)
 
-# ── test_tcp ──────────────────────────────────────────────────────────
-
-add_unit_test(test_tcp)
-target_link_libraries(test_tcp PRIVATE smallest_tcp_core)
-
-# ── test_tftp ─────────────────────────────────────────────────────────
-
-add_unit_test(test_tftp)
-target_link_libraries(test_tftp PRIVATE smallest_tcp_tftp)
-
-# ── test_dhcpv4 ───────────────────────────────────────────────────────
-
-add_unit_test(test_dhcpv4)
-target_link_libraries(test_dhcpv4 PRIVATE
-    smallest_tcp_dhcpv4_client
-    smallest_tcp_dhcpv4_server
-)
-
 add_unit_test(test_dns_wire)
 target_link_libraries(test_dns_wire PRIVATE smallest_tcp_mdns)
 
-add_unit_test(test_mcast)
-target_link_libraries(test_mcast PRIVATE smallest_tcp_mdns)
+# ── Over IPv4 ─────────────────────────────────────────────────────────
 
-add_unit_test(test_mdns)
-target_link_libraries(test_mdns PRIVATE smallest_tcp_mdns)
-
-add_unit_test(test_http)
-target_link_libraries(test_http PRIVATE smallest_tcp_http)
+if(SMALLEST_TCP_IPV4)
+    add_unit_test(test_arp)
+    target_link_libraries(test_arp PRIVATE smallest_tcp_core)
+    add_unit_test(test_ipv4)
+    target_link_libraries(test_ipv4 PRIVATE smallest_tcp_core)
+    add_unit_test(test_icmp)
+    target_link_libraries(test_icmp PRIVATE smallest_tcp_core)
+    add_unit_test(test_udp)
+    target_link_libraries(test_udp PRIVATE smallest_tcp_core)
+    add_unit_test(test_tcp)
+    target_link_libraries(test_tcp PRIVATE smallest_tcp_core)
+    add_unit_test(test_tftp)
+    target_link_libraries(test_tftp PRIVATE smallest_tcp_tftp)
+    add_unit_test(test_dhcpv4)
+    target_link_libraries(test_dhcpv4 PRIVATE
+        smallest_tcp_dhcpv4_client
+        smallest_tcp_dhcpv4_server
+    )
+    add_unit_test(test_mcast)
+    target_link_libraries(test_mcast PRIVATE smallest_tcp_mdns)
+    add_unit_test(test_mdns)
+    target_link_libraries(test_mdns PRIVATE smallest_tcp_mdns)
+    add_unit_test(test_http)
+    target_link_libraries(test_http PRIVATE smallest_tcp_http)
+endif()
 
 # The raw-socket driver's checksum completion is portable; its socket
 # tests run on Linux, and the live veth tests only as root.
@@ -126,11 +107,11 @@ if(SMALLEST_TCP_TLS)
         smallest_tcp_tls smallest_tcp_tls_mbedtls)
 endif()
 
-# ── Configurations mdns.c must refuse ─────────────────────────────────
+# ── Configurations that must not compile ─────────────────────────────
 #
-# Without a group slot mDNS cannot receive its queries: a build error,
-# not a responder that silently hears nothing.  Each test passes when the
-# compiler reports the configuration error.
+# Each test passes when the compiler reports the configuration error.
+# Without a group slot mDNS cannot receive its queries: a build error, not
+# a responder that silently hears nothing.
 
 function(add_config_rejected_test name source message)
     add_test(NAME ${name} COMMAND ${CMAKE_C_COMPILER} -std=c99 -fsyntax-only
@@ -143,3 +124,13 @@ add_config_rejected_test(mdns_needs_ipv4_group_slot src/mdns.c
 add_config_rejected_test(mdns_needs_ipv6_group_slot src/mdns.c
     "needs NET_MAX_MCAST6_GROUPS >= 1"
     -DNET_USE_IPV6=1 -DNET_MAX_MCAST6_GROUPS=0)
+
+# An IPv6-only build has no IPv4 API: the protocols that run only over
+# IPv4 fail to compile, and so does a build with no network layer at all.
+
+add_config_rejected_test(tftp_needs_ipv4 src/tftp.c
+    "IPv4 is not compiled in" -DNET_USE_IPV4=0 -DNET_USE_IPV6=1)
+add_config_rejected_test(dhcpv4_client_needs_ipv4 src/dhcpv4_client.c
+    "IPv4 is not compiled in" -DNET_USE_IPV4=0 -DNET_USE_IPV6=1)
+add_config_rejected_test(network_layer_needed src/net.c
+    "no network layer" -DNET_USE_IPV4=0 -DNET_USE_IPV6=0)

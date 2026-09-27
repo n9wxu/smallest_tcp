@@ -45,6 +45,7 @@ The stack itself has **no static state**: everything it keeps lives in `net_t` a
 | UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 9,188 B | 724 B |
 | UDP + HTTP server, with TCP (`arm-size-http`) | 10,958 B | 1,684 B |
 | UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 7,789 B | 780 B |
+| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 5,977 B | 752 B |
 | TLS 1.3 protocol, server only (`arm-size-tls`) | 7,059 B | 440 B per connection + record buffers |
 | TLS 1.3 protocol, client and server (`arm-size-tls`) | 10,547 B | 440 B per connection + record buffers |
 
@@ -79,7 +80,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | DNS wire format | `dns_wire.h` / `dns_wire.c` | 23 unit | RFC 1035 names with compression, bounds-checked readers |
 | **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | **68 unit + 21 blackbox + interop** | **RFC 6762 responder: probe, announce, answer (A/AAAA/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression, conflict rename, goodbye; RFC 6763 service advertising; dual stack: ff02::fb, AAAA for every usable IPv6 address, answers on the query's family** |
 | **HTTP server** | **`http.h` / `http.c`** `http_tls.h/.c` | **45 unit + 22 blackbox + 9 HTTPS + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts; over IPv4 and IPv6; plain TCP or TLS 1.3 through a transport interface** |
-| **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **127 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
+| **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **127 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged), or IPv6 alone with `NET_USE_IPV4` 0** |
 | **DHCPv6** (Milestone 12) | **`dhcpv6_client.h/.c`** | **20 unit + 2 blackbox + dnsmasq interop** | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
 | **TLS 1.3** (Milestone 13) | **`tls.h`** `tls.c` `tls_keys.h/.c` `tls_server.c` `tls_client.c` `tls_tcp.h/.c` `tls_crypto.h` `tls_crypto_mbedtls.h/.c` | **211 unit + 55 blackbox + OpenSSL/Python/curl interop** | **RFC 8446 client and server over the stack's TCP: `TLS_AES_128_GCM_SHA256`, x25519 / secp256r1 (HelloRetryRequest both ways), ECDSA P-256 and RSA-PSS certificates (chain + name + CertificateVerify checks), pre-shared keys (psk_dhe_ke, psk_ke) with binders, max_fragment_length for small buffers, KeyUpdate, close_notify; key schedule and records verified against RFC 8448; each role in its own file, so a server-only build does not link the client; all cryptography through a `tls_crypto_t` vtable (Mbed TLS 3.6 backend bundled); HTTPS demo** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
@@ -87,7 +88,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | Build | `CMakeLists.txt`, `Makefile` | — | CMake: libraries, tests, demos, FetchContent integration.  Makefile: Cortex-M0 size benchmarks and the no-division check |
-| CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds and unit tests, an IPv4-only build, full blackbox suites over TAP and raw socket, and the ARM size benchmark on every push |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds and unit tests, IPv4-only and IPv6-only builds, full blackbox suites over TAP and raw socket, and the ARM size benchmark on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
 | **Total** | **29 source + 4 drivers** | **729 unit + 182 blackbox + 5 fuzz** | |
 
@@ -139,6 +140,7 @@ ctest --test-dir build --output-on-failure
 | `SMALLEST_TCP_BUILD_TESTS` | ON at top level, OFF when cross-compiling | Unit tests (`ctest`) |
 | `SMALLEST_TCP_BUILD_DEMO` | ON at top level, OFF when cross-compiling | Demo applications |
 | `SMALLEST_TCP_BUILD_DRIVERS` | ON at top level | Platform MAC drivers (TAP and raw socket on Linux, BPF on macOS) |
+| `SMALLEST_TCP_IPV4` | ON | IPv4, ARP, ICMP in the core (`NET_USE_IPV4`), and the libraries that run only over IPv4 (DHCPv4, TFTP); OFF for IPv6 only |
 | `SMALLEST_TCP_IPV6` | ON | Dual stack: IPv6, ICMPv6, NDP, MLD in the core (`NET_USE_IPV6`); OFF for IPv4 only |
 | `SMALLEST_TCP_UDP` | ON | UDP in the core (`NET_USE_UDP`) and the libraries over it |
 | `SMALLEST_TCP_TCP` | ON | TCP in the core (`NET_USE_TCP`) and the libraries over it |
@@ -146,7 +148,7 @@ ctest --test-dir build --output-on-failure
 | `SMALLEST_TCP_DEBUG` | OFF | `NET_LOG()` output to `stderr` (`NET_DEBUG=1`) |
 | `SMALLEST_TCP_CONFIG_FILE` | empty | Your configuration header, included first by `net_config.h` (`NET_CONFIG_FILE`) |
 
-"At top level" means ON when smallest_tcp is the top-level project and OFF when it is pulled in with FetchContent.  With UDP or TCP off, the tests and demos (which use the whole stack) are not built.  The protocol options are `PUBLIC` compile definitions of the core, so everything linked against it is compiled with the same `net_t` layout ([configuration.md §3](docs/design/configuration.md#3-library-and-application-must-agree)).
+"At top level" means ON when smallest_tcp is the top-level project and OFF when it is pulled in with FetchContent.  With UDP or TCP off, the tests and demos (which use the whole stack) are not built; with IPv4 off, only the suites and demos that need no IPv4 are (`tcp_echo_demo`, `tls_echo_demo`, `frame_dump`).  The protocol options are `PUBLIC` compile definitions of the core, so everything linked against it is compiled with the same `net_t` layout ([configuration.md §3](docs/design/configuration.md#3-library-and-application-must-agree)).
 
 **Cross-compiling the libraries** for a Cortex-M: `cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake` (GNU Arm toolchain; Cortex-M4 unless `-DSMALLEST_TCP_ARM_CPU=` names another core).  The tests and demos are hosted programs and stay off, and so does the bundled Mbed TLS backend (`SMALLEST_TCP_TLS`), whose configuration needs a platform entropy source a bare-metal target does not have; the TLS protocol library itself is built.
 
@@ -189,6 +191,7 @@ make arm-size-tcp         # UDP + TCP echo
 make arm-size-mdns        # UDP + mDNS/DNS-SD responder
 make arm-size-http        # UDP + HTTP server (with TCP)
 make arm-size-ipv6        # UDP echo, dual stack
+make arm-size-ipv6-only   # UDP echo, IPv6 alone (NET_USE_IPV4=0)
 make arm-size-tls         # TLS 1.3 protocol: server only, then client and server
 make arm-size-all         # all of the above, then arm-check-division
 make arm-check-division   # fail if any ARM object calls __aeabi_uidiv or another library divide
@@ -329,7 +332,8 @@ promiscuous mode while it runs, since the stack uses its own MAC address.
 
 #### Option F — IPv6 suite
 
-The CMake build is dual stack (`-DSMALLEST_TCP_IPV6=OFF` for IPv4 only).  The
+The CMake build is dual stack (`-DSMALLEST_TCP_IPV6=OFF` for IPv4 only,
+`-DSMALLEST_TCP_IPV4=OFF` for IPv6 only; the suite runs against either).  The
 IPv6 tests launch a fresh `tcp_echo_demo` per test — Duplicate Address
 Detection at start-up is under test — so do not start a SUT yourself:
 
@@ -467,7 +471,7 @@ Each library is `smallest_tcp_<name>`, also available as `smallest_tcp::<name>`.
 
 | Target | Description |
 |---|---|
-| `smallest_tcp::core` (alias `smallest_tcp::smallest_tcp`) | The core: net, checksum, text helpers, Ethernet, ARP, IPv4, ICMP; UDP with `SMALLEST_TCP_UDP`, TCP and its buffers with `SMALLEST_TCP_TCP`, IPv6/ICMPv6/NDP/MLD with `SMALLEST_TCP_IPV6` |
+| `smallest_tcp::core` (alias `smallest_tcp::smallest_tcp`) | The core: net, checksum, text helpers, Ethernet; ARP, IPv4, ICMP with `SMALLEST_TCP_IPV4`; UDP with `SMALLEST_TCP_UDP`, TCP and its buffers with `SMALLEST_TCP_TCP`, IPv6/ICMPv6/NDP/MLD with `SMALLEST_TCP_IPV6` |
 | `smallest_tcp::dhcpv4_client` | DHCPv4 client (with UDP) |
 | `smallest_tcp::dhcpv4_server` | Minimal stateless DHCPv4 server (with UDP) |
 | `smallest_tcp::tftp` | TFTP client (with UDP) |

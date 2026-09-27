@@ -57,7 +57,8 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
  * labels may contain spaces but not dots.
  */
 typedef struct {
-  uint16_t type;    /**< DNS_TYPE_A, _AAAA (IPv6 builds), _PTR, _SRV, _TXT */
+  uint16_t type;    /**< DNS_TYPE_A (IPv4 builds), _AAAA (IPv6 builds), _PTR,
+                         _SRV, _TXT */
   uint32_t ttl;     /**< Seconds (MDNS_TTL_HOST / MDNS_TTL_OTHER) */
   const char *name; /**< Owner name */
   union {
@@ -136,12 +137,14 @@ void mdns_start(mdns_t *m);
 /** Advance timers: probes, announcements, delayed responses. */
 void mdns_tick(mdns_t *m, uint32_t elapsed_ms);
 
+#if NET_USE_IPV4
 /**
  * Process one mDNS message received on UDP port 5353.
  * @param src_port  Querier's source port; not 5353 = legacy unicast query.
  */
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
                 uint16_t src_port, const uint8_t *msg, uint16_t len);
+#endif
 
 #if NET_USE_IPV6
 /** As mdns_input(), for a message that arrived over IPv6 (ff02::fb or

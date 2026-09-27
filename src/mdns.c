@@ -11,12 +11,14 @@
  */
 
 #include "mdns.h"
-#include "igmp.h"
-#include "ipv4.h"
 #include "net_endian.h"
 #include "udp.h"
 #include <string.h>
 
+#if NET_USE_IPV4
+#include "igmp.h"
+#include "ipv4.h"
+#endif
 #if NET_USE_IPV6
 #include "ipv6.h"
 
@@ -24,17 +26,27 @@ const uint8_t mdns_group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                  0,    0,    0, 0, 0, 0, 0, 0xFB};
 #endif
 
-#if NET_USE_IPV6
-#define ALL_FAMILIES (MDNS_FAMILY_V4 | MDNS_FAMILY_V6)
-#else
-#define ALL_FAMILIES MDNS_FAMILY_V4
-#endif
+#define ALL_FAMILIES                                                           \
+  ((NET_USE_IPV4 ? MDNS_FAMILY_V4 : 0u) | (NET_USE_IPV6 ? MDNS_FAMILY_V6 : 0u))
 
-#if NET_MAX_MCAST_GROUPS < 1
+#if NET_USE_IPV4 && NET_MAX_MCAST_GROUPS < 1
 #error "mDNS needs NET_MAX_MCAST_GROUPS >= 1 to receive 224.0.0.251"
 #endif
 #if NET_USE_IPV6 && NET_MAX_MCAST6_GROUPS < 1
 #error "mDNS needs NET_MAX_MCAST6_GROUPS >= 1 to receive ff02::fb"
+#endif
+
+/*
+ * @p v4 or @p v6, for the address family of @p d (a dest_t).  A single-
+ * stack build keeps only its own family's expression: the other's names
+ * need not exist.
+ */
+#if NET_USE_IPV4 && NET_USE_IPV6
+#define BY_FAMILY(d, v4, v6) ((d)->ip6 ? (v6) : (v4))
+#elif NET_USE_IPV6
+#define BY_FAMILY(d, v4, v6) ((void)(d), (v6))
+#else
+#define BY_FAMILY(d, v4, v6) ((void)(d), (v4))
 #endif
 
 #define BIT(i) ((uint32_t)1u << (i))
@@ -48,9 +60,11 @@ static int is_service_type(const mdns_record_t *r) {
   return r->type == DNS_TYPE_PTR && r->name[0] == '_';
 }
 
+#if NET_USE_IPV4
 static uint32_t rec_addr(const mdns_t *m, const mdns_record_t *r) {
   return r->rdata.a ? r->rdata.a : m->net->ipv4_addr;
 }
+#endif
 
 #if NET_USE_IPV6
 /* The addresses an AAAA record stands for: its own, or every usable IPv6
@@ -122,8 +136,10 @@ static int rr_matches(const mdns_t *m, const mdns_record_t *r,
   if (rr->type != r->type || !dns_name_equals(msg, len, rr->name_off, r->name))
     return 0;
   switch (r->type) {
+#if NET_USE_IPV4
   case DNS_TYPE_A:
     return rr->rdlen == 4 && net_read32be(d) == rec_addr(m, r);
+#endif
   case DNS_TYPE_PTR:
     return dns_name_equals(msg, len, rr->rdata_off, r->rdata.ptr);
   case DNS_TYPE_SRV:
@@ -153,11 +169,13 @@ static int rr_matches(const mdns_t *m, const mdns_record_t *r,
 /* ── Message building ── */
 
 typedef struct {
-  uint32_t ip;        /* destination IPv4 */
+#if NET_USE_IPV4
+  uint32_t ip; /* destination IPv4 */
+#endif
   const uint8_t *mac; /* destination MAC, NULL = the group's MAC */
   uint16_t port;      /* destination port */
 #if NET_USE_IPV6
-  const uint8_t *ip6; /* destination IPv6, NULL = send over IPv4 */
+  const uint8_t *ip6; /* destination IPv6; NULL = IPv4 in a dual stack */
 #endif
 } dest_t;
 
@@ -175,29 +193,28 @@ typedef struct {
   uint16_t qtype;
 } resp_opts_t;
 
+#if NET_USE_IPV4
 static const dest_t mcast_dest = {.ip = MDNS_GROUP, .port = MDNS_PORT};
+#endif
 #if NET_USE_IPV6
 static const dest_t mcast6_dest = {.port = MDNS_PORT, .ip6 = mdns_group6};
 #endif
 
 static const dest_t *family_group(uint8_t family) {
-#if NET_USE_IPV6
-  if (family == MDNS_FAMILY_V6)
-    return &mcast6_dest;
-#endif
+#if NET_USE_IPV4 && NET_USE_IPV6
+  return family == MDNS_FAMILY_V6 ? &mcast6_dest : &mcast_dest;
+#elif NET_USE_IPV6
+  (void)family;
+  return &mcast6_dest;
+#else
   (void)family;
   return &mcast_dest;
+#endif
 }
 
 static int pkt_begin(mdns_t *m, pkt_t *p, const dest_t *d, uint16_t id,
                      uint16_t flags) {
-  uint16_t off = UDP_PAYLOAD_OFFSET;
-#if NET_USE_IPV6
-  if (d->ip6)
-    off = UDP6_PAYLOAD_OFFSET;
-#else
-  (void)d;
-#endif
+  uint16_t off = BY_FAMILY(d, UDP_PAYLOAD_OFFSET, UDP6_PAYLOAD_OFFSET);
   uint16_t cap =
       (m->net->tx.capacity > off) ? (uint16_t)(m->net->tx.capacity - off) : 0;
   dns_writer_init(&p->w, m->net->tx.buf + off, cap);
@@ -205,30 +222,21 @@ static int pkt_begin(mdns_t *m, pkt_t *p, const dest_t *d, uint16_t id,
   return dns_write_header(&p->w, id, flags, 0, 0, 0, 0);
 }
 
+/* REQ-MDNS-001, 006: from port 5353, IP TTL or Hop Limit 255 (RFC 6762
+ * §11) */
 static void pkt_send(mdns_t *m, pkt_t *p, const dest_t *d) {
   uint8_t mac[6];
   const uint8_t *dst_mac = d->mac;
-#if NET_USE_IPV6
-  if (d->ip6) {
-    if (!dst_mac) {
-      ipv6_mcast_mac(d->ip6, mac);
-      dst_mac = mac;
-    }
-    dns_set_counts(p->w.buf, p->qd, p->an, p->ns, p->ar);
-    /* RFC 6762 §11: Hop Limit 255 */
-    udp6_send_inplace(m->net, d->ip6, dst_mac, MDNS_PORT, d->port, p->w.len,
-                      MDNS_IP_TTL);
-    return;
-  }
-#endif
   if (!dst_mac) {
-    ipv4_mcast_mac(MDNS_GROUP, mac);
+    BY_FAMILY(d, ipv4_mcast_mac(MDNS_GROUP, mac), ipv6_mcast_mac(d->ip6, mac));
     dst_mac = mac;
   }
   dns_set_counts(p->w.buf, p->qd, p->an, p->ns, p->ar);
-  /* REQ-MDNS-001, 006: port 5353, IP TTL 255 */
-  udp_send_inplace(m->net, d->ip, dst_mac, MDNS_PORT, d->port, p->w.len,
-                   MDNS_IP_TTL);
+  (void)BY_FAMILY(d,
+                  udp_send_inplace(m->net, d->ip, dst_mac, MDNS_PORT, d->port,
+                                   p->w.len, MDNS_IP_TTL),
+                  udp6_send_inplace(m->net, d->ip6, dst_mac, MDNS_PORT, d->port,
+                                    p->w.len, MDNS_IP_TTL));
 }
 
 static int write_txt(dns_writer_t *w, const char *const *txt) {
@@ -254,6 +262,7 @@ static int write_one(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
                      uint32_t ttl, uint16_t class_, const uint8_t *a6) {
   dns_writer_mark_t mark = dns_writer_mark(w);
   int err;
+  (void)m; /* used by A records only */
   (void)a6;
   if (dns_write_name(w, r->name) < 0 || dns_write_u16(w, r->type) < 0 ||
       dns_write_u16(w, class_) < 0 || dns_write_u32(w, ttl) < 0)
@@ -262,9 +271,11 @@ static int write_one(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
   if (dns_write_u16(w, 0) < 0)
     goto fail;
   switch (r->type) {
+#if NET_USE_IPV4
   case DNS_TYPE_A:
     err = dns_write_u32(w, rec_addr(m, r));
     break;
+#endif
   case DNS_TYPE_PTR:
     err = dns_write_name(w, r->rdata.ptr);
     break;
@@ -513,7 +524,7 @@ static void send_to_groups(mdns_t *m, uint8_t families, uint32_t answers,
   resp_opts_t o;
   memset(&o, 0, sizeof(o));
   o.goodbye = goodbye;
-  for (family = MDNS_FAMILY_V4; family & ALL_FAMILIES; family <<= 1) {
+  for (family = MDNS_FAMILY_V4; family <= MDNS_FAMILY_V6; family <<= 1) {
     if (!(families & family))
       continue;
     o.dest = family_group(family);
@@ -587,8 +598,10 @@ static void send_probes_to(mdns_t *m, const dest_t *d) {
 /* RFC 6762 §8.1: probe on every family the host answers on */
 static void send_probes(mdns_t *m) {
   uint8_t family;
-  for (family = MDNS_FAMILY_V4; family & ALL_FAMILIES; family <<= 1)
-    send_probes_to(m, family_group(family));
+  for (family = MDNS_FAMILY_V4; family <= MDNS_FAMILY_V6; family <<= 1) {
+    if (ALL_FAMILIES & family)
+      send_probes_to(m, family_group(family));
+  }
 }
 
 /* ── State machine ── */
@@ -612,7 +625,9 @@ static void timer_fired(mdns_t *m) {
     /* REQ-MDNS-021: no conflict after three probes */
     m->state = MDNS_STATE_ANNOUNCING;
     m->step = 0;
+#if NET_USE_IPV4
     igmp_report(m->net, MDNS_GROUP); /* RFC 2236 §3: repeat the report */
+#endif
   }
   if (m->state == MDNS_STATE_ANNOUNCING) {
     announce(m, 0); /* REQ-MDNS-022, 023 */
@@ -707,7 +722,9 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
     if (!r->name || dns_name_wire_len(r->name) < 0)
       return NET_ERR_INVALID_PARAM;
     switch (r->type) {
+#if NET_USE_IPV4
     case DNS_TYPE_A:
+#endif
 #if NET_USE_IPV6
     case DNS_TYPE_AAAA:
 #endif
@@ -745,7 +762,9 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
 }
 
 void mdns_start(mdns_t *m) {
+#if NET_USE_IPV4
   igmp_join(m->net, MDNS_GROUP); /* REQ-MDNS-002 */
+#endif
 #if NET_USE_IPV6
   ipv6_mcast_join(m->net, mdns_group6); /* RFC 6762 §20, reported by MLD */
 #endif
@@ -781,12 +800,7 @@ typedef struct {
 } wanted_t;
 
 static uint8_t from_family(const dest_t *from) {
-#if NET_USE_IPV6
-  if (from->ip6)
-    return MDNS_FAMILY_V6;
-#endif
-  (void)from;
-  return MDNS_FAMILY_V4;
+  return BY_FAMILY(from, MDNS_FAMILY_V4, MDNS_FAMILY_V6);
 }
 
 static int is_in_class(uint16_t class_) {
@@ -874,11 +888,7 @@ static int wants_anything(const wanted_t *w) {
 }
 
 static int has_address(const dest_t *from) {
-#if NET_USE_IPV6
-  if (from->ip6)
-    return !ipv6_is_unspecified(from->ip6);
-#endif
-  return from->ip != 0;
+  return BY_FAMILY(from, from->ip != 0, !ipv6_is_unspecified(from->ip6));
 }
 
 /* RFC 6762 §6, §6.7: legacy unicast, unicast (QU), at once, or delayed */
@@ -943,6 +953,7 @@ static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
     query_input(m, from, msg, len);
 }
 
+#if NET_USE_IPV4
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
                 uint16_t src_port, const uint8_t *msg, uint16_t len) {
   dest_t from;
@@ -952,6 +963,7 @@ void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
   from.port = src_port;
   input(m, &from, msg, len);
 }
+#endif
 
 #if NET_USE_IPV6
 void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
@@ -986,7 +998,9 @@ void mdns_stop(mdns_t *m) {
   m->announce_families = ALL_FAMILIES;
   if (m->state == MDNS_STATE_ANNOUNCING || m->state == MDNS_STATE_RUNNING)
     announce(m, 1);
+#if NET_USE_IPV4
   igmp_leave(m->net, MDNS_GROUP);
+#endif
 #if NET_USE_IPV6
   ipv6_mcast_leave(m->net, mdns_group6);
 #endif

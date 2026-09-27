@@ -98,7 +98,7 @@ typedef struct {
   const char *query;       /* "a=1&b=2" or "" */
   const uint8_t *body;     /* POST body (in the request buffer), NULL if none */
   uint16_t body_len;
-  uint32_t remote_ip;      /* client IPv4, host order (0 over IPv6) */
+  uint32_t remote_ip;      /* NET_USE_IPV4 only: client IPv4, host order (0 over IPv6) */
   const uint8_t *remote_ip6; /* NET_USE_IPV6 only: client IPv6, NULL over IPv4 */
 } http_request_t;
 

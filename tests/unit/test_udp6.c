@@ -88,6 +88,7 @@ static uint8_t got_src[16], got_mac[6];
 static uint16_t got_sport, got_off, got_len;
 static uint8_t got_data[64];
 
+#if NET_USE_IPV4
 static void on_v4(net_t *n, uint32_t src_ip, uint16_t sport,
                   const uint8_t *src_mac, const uint8_t *payload,
                   uint16_t len) {
@@ -99,6 +100,7 @@ static void on_v4(net_t *n, uint32_t src_ip, uint16_t sport,
   (void)len;
   v4_calls++;
 }
+#endif
 
 static const uint8_t *input_frame;
 
@@ -115,7 +117,9 @@ static void on_v6(net_t *n, const uint8_t *src_ip, uint16_t sport,
   memcpy(got_data, payload, len < 64 ? len : 64);
 }
 
+#if NET_USE_IPV4
 static const udp_port_entry_t ports[] = {{7, on_v4}, {9, on_v4}};
+#endif
 static const udp6_port_entry_t ports6[] = {{7, on_v6}}; /* 9: IPv4 only */
 
 /* ── Fixture ──────────────────────────────────────────────────────── */
@@ -130,7 +134,9 @@ static void setup(void) {
   memset(got_src, 0, sizeof(got_src));
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
            &stub_drv, &ctx);
+#if NET_USE_IPV4
   udp_set_ports(&net, ports, 2);
+#endif
   udp6_set_ports(&net, ports6, 1);
   ipv6_start(&net);
   ipv6_tick(&net, 1000);

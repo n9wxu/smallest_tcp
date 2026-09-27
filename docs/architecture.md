@@ -28,7 +28,8 @@ The core — Ethernet, ARP, IPv4, ICMP, UDP, TCP, and optionally IPv6 with
 ICMPv6, NDP and MLD — is composed **at compile time**:
 
 - `eth.c` dispatches to ARP/IPv4 under `NET_USE_IPV4` and to IPv6 under
-  `NET_USE_IPV6`;
+  `NET_USE_IPV6` — either may be 0, for an IPv4-only or an IPv6-only stack
+  ([configuration.md §5](design/configuration.md#5-compile-time-protocol-selection));
 - `ipv4.c` and `ipv6.c` dispatch to UDP under `NET_USE_UDP` and to TCP under
   `NET_USE_TCP`.
 

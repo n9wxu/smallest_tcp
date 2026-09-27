@@ -13,11 +13,13 @@
 #define TCP_H
 
 #include "eth.h"
-#include "ipv4.h"
 #include "net.h"
 #include "tcp_buf.h"
 #include <stdint.h>
 
+#if NET_USE_IPV4
+#include "ipv4.h"
+#endif
 #if NET_USE_IPV6
 #include "ipv6.h"
 #endif
@@ -97,11 +99,13 @@ typedef struct tcp_conn_s {
   tcp_state_t state;
   uint16_t local_port;
   uint16_t remote_port; /**< 0 while listening */
-  uint32_t remote_ip;   /**< IPv4 peer, host byte order; 0 while listening */
+#if NET_USE_IPV4
+  uint32_t remote_ip; /**< IPv4 peer, host byte order; 0 while listening */
+#endif
   uint8_t remote_mac[6];
   uint8_t mac_valid;
 #if NET_USE_IPV6
-  uint8_t ip_ver;     /**< 4 or 6 */
+  uint8_t ip_ver;     /**< 4 or 6; always 6 without IPv4 */
   uint8_t local_slot; /**< IPv6: our address the peer used, in ip6.addr */
   uint8_t remote_ip6[16];
 #endif
@@ -164,6 +168,7 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
 /** Accept the first SYN to @p local_port. */
 net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port);
 
+#if NET_USE_IPV4
 /**
  * Active open over IPv4; TCP_EVT_CONNECTED follows.  A SYN the driver does
  * not take is resent by the retransmission timer, like any lost segment.
@@ -173,6 +178,7 @@ net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port);
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
                       uint16_t local_port);
+#endif
 
 #if NET_USE_IPV6
 /**
@@ -221,8 +227,10 @@ uint16_t tcp_recv(tcp_conn_t *conn, uint8_t *buf, uint16_t maxlen);
  */
 void tcp_window_update(net_t *net, tcp_conn_t *conn);
 
+#if NET_USE_IPV4
 /** A segment from IPv4. */
 void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
+#endif
 
 #if NET_USE_IPV6
 /** A segment from IPv6; a listener accepts peers of either family. */
