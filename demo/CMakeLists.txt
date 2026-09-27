@@ -59,3 +59,15 @@ target_link_libraries(mdns_demo PRIVATE smallest_tcp_mdns)
 add_executable(http_demo http_demo/main.c)
 add_demo_with_driver(http_demo)
 target_link_libraries(http_demo PRIVATE smallest_tcp_http smallest_tcp_mdns)
+
+# ── tls_echo (TLS 1.3 echo server — blackbox SUT) ────────────────────
+
+if(SMALLEST_TCP_TLS)
+    add_executable(tls_echo_demo tls_echo/main.c)
+    add_demo_with_driver(tls_echo_demo)
+    target_link_libraries(tls_echo_demo PRIVATE
+        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+    target_compile_definitions(tls_echo_demo PRIVATE
+        TLS_ECHO_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
+        TLS_ECHO_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
+endif()

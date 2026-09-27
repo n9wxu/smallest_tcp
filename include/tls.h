@@ -6,9 +6,19 @@
  * from the application's tls_crypto_t backend (REQ-TLS-006).  One cipher
  * suite, TLS_AES_128_GCM_SHA256, so every secret and hash is 32 bytes.
  *
- * This part of the API is the building blocks the handshake uses: the key
- * schedule of RFC 8446 §7 and the protected records of §5.2.  Both are pure
- * functions of their arguments and are tested against the RFC 8448 traces.
+ * The building blocks — the key schedule of RFC 8446 §7 and the protected
+ * records of §5.2 — are pure functions, tested against the RFC 8448 traces.
+ * On them sits the connection: a handshake state machine that consumes and
+ * produces ciphertext in application buffers, with no knowledge of the
+ * transport (the application moves the bytes, e.g. to and from TCP).
+ *
+ *   tls_init(&tls, &cfg, rx, sizeof rx, tx, sizeof tx);
+ *   tls_accept(&tls);
+ *   loop:
+ *     n = tcp_recv(&conn, p, tls_rx_space(&tls, &p));  tls_rx_commit(&tls, n);
+ *     while ((n = tls_tx_pending(&tls, &q)))  tls_tx_done(&tls,
+ *                                               tcp_send(net, &conn, q, n));
+ *     tls_read() / tls_write() once tls_state() is TLS_STATE_CONNECTED
  */
 
 #ifndef TLS_H
@@ -136,5 +146,151 @@ void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]);
 
 /** Constant-time comparison: 1 if equal. */
 int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
+
+/* ── Connections ─────────────────────────────────────────────────────── */
+
+/* HandshakeType (RFC 8446 §4) */
+#define TLS_HS_CLIENT_HELLO 1
+#define TLS_HS_SERVER_HELLO 2
+#define TLS_HS_NEW_SESSION_TICKET 4
+#define TLS_HS_ENCRYPTED_EXTENSIONS 8
+#define TLS_HS_CERTIFICATE 11
+#define TLS_HS_CERTIFICATE_REQUEST 13
+#define TLS_HS_CERTIFICATE_VERIFY 15
+#define TLS_HS_FINISHED 20
+#define TLS_HS_KEY_UPDATE 24
+
+/* ExtensionType */
+#define TLS_EXT_SERVER_NAME 0
+#define TLS_EXT_SUPPORTED_GROUPS 10
+#define TLS_EXT_SIGNATURE_ALGORITHMS 13
+#define TLS_EXT_PRE_SHARED_KEY 41
+#define TLS_EXT_SUPPORTED_VERSIONS 43
+#define TLS_EXT_PSK_KEY_EXCHANGE_MODES 45
+#define TLS_EXT_KEY_SHARE 51
+
+#define TLS_AES_128_GCM_SHA256 0x1301
+
+/** Connection state, tls_state(). */
+typedef enum {
+  TLS_STATE_IDLE = 0,  /**< Initialised; tls_accept() not yet called */
+  TLS_STATE_HANDSHAKE, /**< Handshake in progress */
+  TLS_STATE_CONNECTED, /**< Application data may flow */
+  TLS_STATE_CLOSED,    /**< The peer sent close_notify */
+  TLS_STATE_ERROR      /**< Fatal alert sent or received (tls->alert) */
+} tls_state_t;
+
+/* Events passed to tls_conn_t.on_event */
+#define TLS_EVT_CONNECTED 0x01u
+#define TLS_EVT_CLOSED 0x02u /**< close_notify received */
+#define TLS_EVT_ERROR 0x04u
+
+/**
+ * @brief What an endpoint presents and accepts; shared by any number of
+ * connections, application owned.
+ */
+typedef struct {
+  const tls_crypto_t *crypto;
+
+  /* Certificate authentication (a server's own chain) */
+  const uint8_t *const *cert; /**< DER certificates, leaf first */
+  const uint16_t *cert_len;
+  uint8_t cert_count;
+  const void *key;     /**< Private key, as the backend's sign() takes it */
+  uint16_t sig_scheme; /**< TLS_SIG_* that @ref key signs with */
+} tls_config_t;
+
+/**
+ * @brief One TLS connection.  The transport (TCP) is the application's:
+ * it moves ciphertext between the connection's buffers and the socket.
+ */
+typedef struct tls_conn_s {
+  const tls_config_t *cfg;
+  uint8_t state;  /**< tls_state_t */
+  uint8_t alert;  /**< The fatal alert sent or received */
+  uint8_t step;   /**< Handshake step (internal) */
+  uint8_t flags;  /**< TLS_F_* (internal) */
+  uint16_t group; /**< Negotiated key-exchange group */
+  uint8_t sid_len;
+  uint8_t sid[32]; /**< legacy_session_id (the ServerHello echoes it) */
+
+  /* Key schedule */
+  uint8_t secret[TLS_HASH_LEN]; /**< Handshake Secret, then the peer's
+                                     next traffic secret (internal) */
+  uint8_t rsec[TLS_HASH_LEN];   /**< The peer's traffic secret */
+  uint8_t wsec[TLS_HASH_LEN];   /**< Our traffic secret */
+  tls_hash_t transcript;
+  tls_keys_t rkeys, wkeys;
+
+  /* Receive buffer: [handshake bytes | records not yet processed] */
+  uint8_t *rx;
+  uint16_t rx_cap, rx_len;
+  uint16_t hs_len;   /**< Handshake bytes awaiting a whole message */
+  uint16_t app_off;  /**< Unread application data: offset .. */
+  uint16_t app_len;  /**< .. and length */
+  uint16_t app_rec;  /**< Length of the record holding it */
+
+  /* Transmit buffer: [sent | unsent records | record being built] */
+  uint8_t *tx;
+  uint16_t tx_cap, tx_len, tx_sent;
+  uint16_t rec_start; /**< Offset of the record being built (internal) */
+  uint8_t rec_type;   /**< Its content type (internal) */
+
+  void (*on_event)(struct tls_conn_s *tls, uint8_t events); /**< Optional */
+  void *user; /**< Application context */
+} tls_conn_t;
+
+/**
+ * Initialise a connection over application buffers.  @p rx must hold the
+ * largest record the peer sends plus any partial handshake message (a
+ * peer may send records of up to 16 KiB; ClientHellos reach 2 KiB);
+ * @p tx the largest message this side sends (the Certificate) plus
+ * TLS_RECORD_OVERHEAD.  Buffers of up to 64 KiB are used.
+ * @return 0, or -1 for a bad argument.
+ */
+int tls_init(tls_conn_t *tls, const tls_config_t *cfg, uint8_t *rx,
+             size_t rx_cap, uint8_t *tx, size_t tx_cap);
+
+/** Server: wait for a ClientHello. */
+int tls_accept(tls_conn_t *tls);
+
+/**
+ * Space for received ciphertext: copy up to the returned number of bytes
+ * to @p *buf (e.g. with tcp_recv()), then call tls_rx_commit().
+ */
+size_t tls_rx_space(tls_conn_t *tls, uint8_t **buf);
+
+/**
+ * Process @p n bytes placed by tls_rx_space().
+ * @return 0, or the negated alert that ended the connection.
+ */
+int tls_rx_commit(tls_conn_t *tls, size_t n);
+
+/** Copy-in form of tls_rx_space() + tls_rx_commit(); returns bytes taken
+ *  (fewer than @p len when the buffer is full or on error). */
+size_t tls_input(tls_conn_t *tls, const uint8_t *data, size_t len);
+
+/** Ciphertext waiting for the transport: returns its length, @p *buf. */
+size_t tls_tx_pending(tls_conn_t *tls, const uint8_t **buf);
+
+/** The transport took @p n bytes from tls_tx_pending(). */
+void tls_tx_done(tls_conn_t *tls, size_t n);
+
+/**
+ * Encrypt application data into one record.
+ * @return Bytes accepted (0 when the transmit buffer is full), or -1 if
+ *         the connection is not open for writing.
+ */
+int tls_write(tls_conn_t *tls, const uint8_t *data, size_t len);
+
+/** Copy out received application data; returns the byte count. */
+size_t tls_read(tls_conn_t *tls, uint8_t *buf, size_t len);
+
+/** Send close_notify; nothing more may be written. */
+int tls_close(tls_conn_t *tls);
+
+static inline tls_state_t tls_state(const tls_conn_t *tls) {
+  return (tls_state_t)tls->state;
+}
 
 #endif /* TLS_H */

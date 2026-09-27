@@ -92,6 +92,10 @@ def pytest_addoption(parser):
     parser.addoption("--http-sut-bin", default=None,
                      help="Path to http_demo; the HTTP tests launch it once for "
                           "the module (skipped when not given)")
+    # TLS 1.3 blackbox options (test_tls_conform.py starts the SUT)
+    parser.addoption("--tls-sut-bin", default=None,
+                     help="Path to tls_echo_demo; the TLS tests launch it once "
+                          "for the module (skipped when not given)")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────

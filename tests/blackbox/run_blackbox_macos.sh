@@ -126,6 +126,14 @@ else
   FAILED+=("http_interop_macos.sh")
 fi
 
+# ── TLS 1.3 server (launches tls_echo_demo; built with SMALLEST_TCP_TLS) ─────
+if [[ -x "$BUILD/demo/tls_echo_demo" ]]; then
+  run_suite "test_tls_conform.py" "$HERE/test_tls_conform.py" \
+    --iface "$IFACE" --sut-ip "$SUT_IP" --tls-sut-bin "$BUILD/demo/tls_echo_demo"
+else
+  echo "── test_tls_conform.py skipped: no $BUILD/demo/tls_echo_demo"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════════════════════════"
