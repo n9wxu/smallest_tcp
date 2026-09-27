@@ -108,7 +108,8 @@ static void run_option_handlers(const dhcpv4_client_t *c, uint8_t code,
   }
 }
 
-/* REQ-DHCPv4-028..036: the lease's parameters, applied to net_t */
+/* REQ-DHCPv4-028..036: the lease's parameters, applied to net_t.  It runs
+ * from the state's first REQUEST, not from the ACK (RFC 2131 §4.4.5). */
 static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
                        uint16_t len) {
   uint16_t pos = DHCP_OFF_OPTIONS;
@@ -149,8 +150,7 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
     c->t1 = c->lease_time / 2u;
   if (c->t2 == 0) /* REQ-DHCPv4-036: 0.875 × lease */
     c->t2 = c->lease_time - c->lease_time / 8u;
-  c->since_s = 0u;
-  c->sec_ms = 0u;
+  c->since_s -= c->request_s;
   c->next_request_s = c->t1;
 }
 
@@ -169,9 +169,12 @@ static void transmit(net_t *net, dhcpv4_client_t *c) {
   c->timer_ms = retransmit_wait_ms(net, c->retries);
 }
 
+/* The lease clock starts with the first REQUEST for an offer */
 static void begin_exchange(net_t *net, dhcpv4_client_t *c, uint8_t state) {
   c->state = state;
   c->retries = 0;
+  c->since_s = c->request_s = 0u;
+  c->sec_ms = 0u;
   transmit(net, c);
 }
 
@@ -223,16 +226,23 @@ static void request_extension(net_t *net, dhcpv4_client_t *c) {
   c->next_request_s = wait_s < left_s ? c->since_s + wait_s : deadline_s;
 }
 
+static void lease_clock_tick(dhcpv4_client_t *c, uint32_t ms) {
+  c->since_s += net_whole_seconds(&c->sec_ms, ms);
+}
+
 static void lease_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   uint8_t phase;
-  c->since_s += net_whole_seconds(&c->sec_ms, ms);
+  lease_clock_tick(c, ms);
   if (c->since_s >= c->lease_time) {
     lose_address(net, c, DHCPV4_EVT_EXPIRED);
     return;
   }
   phase = lease_phase(c);
-  if (phase != c->state || c->since_s >= c->next_request_s) {
+  if (phase != c->state) {
     c->state = phase;
+    c->request_s = c->since_s;
+    request_extension(net, c);
+  } else if (c->since_s >= c->next_request_s) {
     request_extension(net, c);
   }
 }
@@ -260,6 +270,8 @@ void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {
 /* REQ-DHCPv4-005..007, 045..047 */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   if (c->state == DHCPV4_CLI_SELECTING || c->state == DHCPV4_CLI_REQUESTING) {
+    if (c->state == DHCPV4_CLI_REQUESTING)
+      lease_clock_tick(c, ms);
     if (net_countdown(&c->timer_ms, ms))
       retransmit(net, c);
   } else if (holds_lease(c) && !lease_is_endless(c)) {

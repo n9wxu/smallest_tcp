@@ -95,7 +95,10 @@ typedef struct {
   uint32_t lease_time;     /**< Lease time, seconds; 0xFFFFFFFF = infinite */
   uint32_t t1;             /**< Renewal time, seconds into the lease */
   uint32_t t2;             /**< Rebinding time, seconds into the lease */
-  uint32_t since_s;        /**< Seconds since the lease was granted */
+  uint32_t since_s;        /**< The lease clock: seconds since the lease was
+                                requested (from the first REQUEST) */
+  uint32_t request_s;      /**< since_s when the first REQUEST of the state
+                                went: a lease its ACK grants starts then */
   uint32_t next_request_s; /**< since_s of the next REQUEST: T1, then the
                                 RENEWING and REBINDING retransmissions */
   uint32_t timer_ms;       /**< Until the next DISCOVER or REQUEST

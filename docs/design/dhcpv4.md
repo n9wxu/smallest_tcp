@@ -115,7 +115,7 @@ RFC 2131 §3.1 says the client SHOULD ("notify the user that the
 initialization process has failed and is restarting").
 
 **Renewing and rebinding** (RFC 2131 §4.4.5) run on the lease clock
-(§6): `since_s`, the seconds since the ACK.  `lease_phase()` names the
+(§6): `since_s`, the seconds since the lease was requested.  `lease_phase()` names the
 state the lease's age calls for — BOUND before T1, RENEWING before T2,
 REBINDING after — and `lease_tick()` enters it, sending its first
 REQUEST, or else sends the next REQUEST once `since_s` reaches
@@ -126,7 +126,7 @@ deadline comes first, it brings its own REQUEST (REBINDING's first) or
 none (expiry).  When `since_s` reaches `lease_time` the lease has
 expired.  A 3600 s lease with the default T1 and T2 (1800 s, 3150 s):
 
-| Seconds after the ACK | State | Sends | Time left | Next REQUEST |
+| Seconds into the lease | State | Sends | Time left | Next REQUEST |
 |---|---|---|---|---|
 | 1800 | RENEWING | REQUEST to the server | 1350 s to T2 | 2475 (+675) |
 | 2475 | RENEWING | REQUEST to the server | 675 s | 2812 (+337) |
@@ -160,7 +160,10 @@ typedef struct {
   uint32_t lease_time;     /* seconds; 0xFFFFFFFF = infinite */
   uint32_t t1;             /* option 58, or 0.5 × lease (seconds) */
   uint32_t t2;             /* option 59, or 0.875 × lease (seconds) */
-  uint32_t since_s;        /* the lease clock: seconds since the ACK */
+  uint32_t since_s;        /* the lease clock: seconds since the lease was
+                              requested (from the first REQUEST) */
+  uint32_t request_s;      /* since_s at the state's first REQUEST: a lease
+                              its ACK grants starts then */
   uint32_t next_request_s; /* since_s of the next REQUEST: T1, then the
                               RENEWING and REBINDING retransmissions */
   uint32_t timer_ms;       /* SELECTING, REQUESTING: until the next
@@ -256,8 +259,18 @@ first router); 51, 58, 59, 54 → the client's lease time, T1, T2 and
 server; each of these only when present with at least 4 bytes.  Every
 option, built-in or not, is then offered to the option handlers
 (`run_option_handlers()`).  T1 and T2 default to 0.5 and 0.875 of the
-lease (RFC 2131 §4.4.5).  The lease clock starts again at 0, with the
-first REQUEST due at T1.
+lease (RFC 2131 §4.4.5).  The first REQUEST is due at T1.
+
+**The lease starts with the REQUEST** (RFC 2131 §4.4.1, §4.4.5: "the time
+at which the original request was sent").  The lease clock runs from the
+first REQUEST for an offer, through REQUESTING; `request_s` marks where
+the current state's first REQUEST went — 0 in REQUESTING, T1 or T2 when
+renewing or rebinding — and `take_lease()` sets the clock to the time
+since then.  A REQUEST's retransmissions are the same request, so an ACK
+to one of them is timed from the first: a renewal answered after a lost
+REQUEST comes back sooner, never later than the server's lease allows.
+The lease used to be timed from the ACK, and so ended a round trip after
+the server's did — or a whole retransmission interval after it.
 
 ### 3.6 Option Handlers and the Parameter Request List
 
@@ -452,7 +465,7 @@ has two clocks, each used in its own states:
 | Clock | Fields | States | Counts | Compared with |
 |---|---|---|---|---|
 | Retransmission | `timer_ms` | SELECTING, REQUESTING | Milliseconds down to 0 (`net_countdown()`); at 0 the DISCOVER or REQUEST is sent again | — |
-| Lease | `since_s`, `sec_ms` | BOUND, RENEWING, REBINDING, unless the lease is infinite | Whole seconds up from the ACK, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
+| Lease | `since_s`, `sec_ms` | REQUESTING, BOUND, RENEWING, REBINDING, unless the lease is infinite | Whole seconds up from the first REQUEST for the lease, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
 
 The lease clock counts seconds because leases are long.  32-bit
 milliseconds wrap after 49.7 days (4,294,967 s), and a lease time may be
@@ -469,7 +482,6 @@ the halving is a shift: no multiplication and no division.
 |---|---|
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
-| The lease is timed from the ACK, not from the REQUEST it answers (RFC 2131 §4.4.5) | It ends later by the round-trip time |
 | Option Overload (52), `sname`/`file` options | Not parsed |
 | `secs` field always 0 | — |
 | Server: replies always set the broadcast flag and leave `giaddr` 0, where RFC 2131 Table 3 copies the client's `flags` and `giaddr` | No relay agent on a point-to-point link; the flag only allows a broadcast reply |

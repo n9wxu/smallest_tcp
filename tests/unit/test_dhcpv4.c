@@ -834,7 +834,41 @@ TEST(test_dhcp_client_ack_without_lease_time_dropped) {
   ASSERT_EQ(last_event, DHCPV4_EVT_EXPIRED);
 }
 
-/* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again */
+/* RFC 2131 §4.4.1, §4.4.5: the lease runs from when the original REQUEST
+   was sent — the first of REQUESTING, RENEWING or REBINDING — not from
+   the ACK, which comes a round trip or more later */
+TEST(test_dhcp_client_lease_timed_from_the_request) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  setup();
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  dhcpv4_client_tick(&net, &cli, 2000u); /* the ACK takes 2 s */
+  mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
+  send_count = 0;
+  clock_s = 2; /* since the REQUEST */
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u));
+
+  /* A renewal answered after a retransmission: from the first REQUEST */
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_TRUE(next_sent_is(2475, DHCPV4_CLI_RENEWING, SERVER_IP));
+  tick_seconds(5);
+  mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  ASSERT_EQ(last_event, DHCPV4_EVT_RENEWED);
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u + 1800u));
+}
+
+/* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again —
+   from the renewal's REQUEST at 1800 s, not from the ACK 100 s later */
 TEST(test_dhcp_client_renewal_restarts_lease) {
   uint8_t msg[DHCP_MIN_LEN + 64];
   uint16_t mlen;
@@ -847,7 +881,7 @@ TEST(test_dhcp_client_renewal_restarts_lease) {
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(last_event, DHCPV4_EVT_RENEWED);
-  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1900u + 1800u));
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u + 1800u));
   ASSERT_EQ(cli.state, DHCPV4_CLI_RENEWING);
 }
 
@@ -1189,6 +1223,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_server_id_only_when_selecting);
   RUN_TEST(test_dhcp_client_nak_from_the_server_asked);
   RUN_TEST(test_dhcp_client_ack_without_lease_time_dropped);
+  RUN_TEST(test_dhcp_client_lease_timed_from_the_request);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);
