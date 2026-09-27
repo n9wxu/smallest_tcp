@@ -338,7 +338,7 @@ starts with a unit test that fails on the current code.
 - [x] `parse_decimal()` accepts trailing junk: "512abc" reads as 512
 - [x] A truncated ERROR (2–3 bytes) still ends the transfer, with code 0;
       the coding rules' "reject, don't repair" says drop it
-- [ ] Options in an OACK we never requested, other than blksize, are ignored
+- [x] Options in an OACK we never requested, other than blksize, are ignored
       rather than refused (RFC 2347)
 - [ ] The retransmission timer restarts on any datagram from the server's
       TID, including ones that are ignored

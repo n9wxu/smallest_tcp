@@ -152,14 +152,16 @@ static int acceptable_blksize(uint16_t requested, uint32_t v) {
 }
 
 /* RFC 2347: ERROR 8 to the server, and the transfer ends */
-static void refuse_oack(net_t *net, tftp_client_t *c) {
-  uint16_t len = put_error(net, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize");
+static void refuse_oack(net_t *net, tftp_client_t *c, const char *why) {
+  uint16_t len = put_error(net, TFTP_ERR_OPTION_NEGOTIATION, why);
   if (len)
     send_payload(net, c, len);
-  finish(c, 0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize");
+  finish(c, 0, TFTP_ERR_OPTION_NEGOTIATION, why);
 }
 
-/* REQ-TFTP-027, 028, 038: the server's blksize, acknowledged with ACK(0) */
+/* REQ-TFTP-027, 028, 038: the server's blksize, acknowledged with ACK(0).
+ * RFC 2347 lets it acknowledge only options we requested — blksize is
+ * the only one — so any other is refused. */
 static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
   const uint8_t *p = data + 2, *end = data + len;
@@ -168,10 +170,12 @@ static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
   c->blksize = TFTP_DEFAULT_BLKSIZE; /* an OACK without blksize declines it */
   while ((name = next_string(&p, end)) && (value = next_string(&p, end))) {
     uint32_t v = parse_decimal(value);
-    if (!net_equal_nocase(name, "blksize"))
-      continue;
+    if (!net_equal_nocase(name, "blksize")) {
+      refuse_oack(net, c, "Option not requested");
+      return;
+    }
     if (!acceptable_blksize(requested, v)) {
-      refuse_oack(net, c);
+      refuse_oack(net, c, "Bad blksize");
       return;
     }
     c->blksize = (uint16_t)v;

@@ -674,6 +674,20 @@ TEST(test_tftp_oack_tiny_blksize_refused) {
   ASSERT_EQ(client.state, TFTP_STATE_ERROR);
 }
 
+/* RFC 2347: a server acknowledges only the options the client requested
+   (blksize is the only one it does); an OACK with any other is refused */
+TEST(test_tftp_oack_unrequested_option_refused) {
+  static const char *const strs[] = {"blksize", "1024", "tsize", "900"};
+  uint8_t oack[64];
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 1);
+  send_count = 0;
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    make_oack(oack, strs, 4));
+  ASSERT_TRUE(oack_refused());
+  ASSERT_EQ(done_err_code, (uint16_t)TFTP_ERR_OPTION_NEGOTIATION);
+}
+
 /* REQ-TFTP-028 — a blksize that is not all digits is refused, like any
    other bad value: "512abc" is not 512 */
 TEST(test_tftp_oack_blksize_not_a_number_refused) {
@@ -699,8 +713,7 @@ TEST(test_tftp_oack_without_blksize_means_512) {
   tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 1);
   ASSERT_TRUE(client.blksize > TFTP_DEFAULT_BLKSIZE);
 
-  static const uint8_t oack[] = {0, TFTP_OP_OACK, 't', 's', 'i', 'z', 'e',
-                                 0, '9',          '0', '0', 0};
+  static const uint8_t oack[] = {0, TFTP_OP_OACK}; /* no option taken */
   tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
                     sizeof(oack));
 
@@ -896,6 +909,7 @@ int main(void) {
   RUN_TEST(test_tftp_oack_without_blksize_means_512);
   RUN_TEST(test_tftp_oack_unrequested_blksize_refused);
   RUN_TEST(test_tftp_oack_blksize_not_a_number_refused);
+  RUN_TEST(test_tftp_oack_unrequested_option_refused);
   RUN_TEST(test_tftp_fallback_no_oack);
   RUN_TEST(test_tftp_rrq_contains_blksize_option);
   RUN_TEST(test_tftp_tick_retransmits_rrq);

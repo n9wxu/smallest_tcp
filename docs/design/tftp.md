@@ -190,7 +190,10 @@ at the first two letters — sets the block size if
 — "512abc", an empty string, a leading space — reads as 0 and is refused;
 it used to read the digits in front and ignore the rest, so "512abc" was
 512.  Digits past 65464 stop the reading, so a long string cannot
-overflow, and read as 0 too.  Other options are ignored.  The client then enters
+overflow, and read as 0 too.  Any other option is refused with ERROR 8
+"Option not requested": RFC 2347 lets a server acknowledge only the
+options the client requested, and this one requests blksize alone.  Such
+options used to be ignored.  The client then enters
 RECEIVING and sends ACK 0.
 
 Any other `blksize` — larger, below 8, empty or not a number (which
@@ -320,7 +323,7 @@ as well: the client answers each duplicate block.
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (25 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (26 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts with
 its message and an unterminated message is reported as `""`, a
@@ -328,7 +331,8 @@ truncated ERROR is dropped, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
 an OACK blksize above the one requested, below 8 or not requested at
-all, or not a number ("512abc"), draws ERROR 8 and ends the transfer, an OACK without blksize means
+all, or not a number ("512abc"), and an option never requested, draw
+ERROR 8 and end the transfer, an OACK without blksize means
 512-byte blocks, fallback when the server ignores the option, blksize
 option in the RRQ, RRQ and ACK retransmission, give-up after the maximum
 retries, timer restart on DATA.
