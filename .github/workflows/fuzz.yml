@@ -97,15 +97,19 @@ jobs:
 
   # ── Hardware DUT fuzz (self-hosted, conditional) ───────────────────
   # Runs only when a self-hosted runner with the `hw-dut` label is
-  # registered. The job is skipped gracefully otherwise.  It needs a board
-  # port that provides the tcp_echo_demo firmware target (start-up code,
-  # linker script, MAC driver); cmake/arm-none-eabi.cmake builds the
-  # libraries for it.
+  # registered and the variable HW_DUT_ENABLED is 'true'; skipped
+  # otherwise.  The DUT is a NUCLEO-F429ZI (boards/nucleo-f429zi) cabled to
+  # the runner's eth1 (10.0.0.100/24), its ST-LINK on USB: SWD for OpenOCD,
+  # and the virtual COM port (HW_DUT_SERIAL, default /dev/ttyACM0) for the
+  # firmware's "ready".  See docs/test-plan.md §4.
   fuzz-tcp-hw:
-    name: Fuzz — TCP on Hardware DUT
+    name: Fuzz — TCP on Hardware DUT (NUCLEO-F429ZI)
     runs-on: [self-hosted, hw-dut]
     timeout-minutes: 90
     if: ${{ vars.HW_DUT_ENABLED == 'true' }}
+    env:
+      SERIAL: ${{ vars.HW_DUT_SERIAL || '/dev/ttyACM0' }}
+      OPENOCD: openocd -f interface/stlink.cfg -f target/stm32f4x.cfg
 
     steps:
       - uses: actions/checkout@v4
@@ -113,22 +117,21 @@ jobs:
       - name: Install Python deps
         run: pip3 install -r tests/blackbox/requirements.txt
 
-      - name: Cross-compile firmware for STM32
+      - name: Cross-compile the NUCLEO-F429ZI firmware
         run: |
           cmake -S . -B build-arm         \
             -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+            -DSMALLEST_TCP_BOARD=nucleo-f429zi \
+            -DSMALLEST_TCP_TLS=OFF \
             -DCMAKE_BUILD_TYPE=Debug
           cmake --build build-arm --target tcp_echo_demo
 
-      - name: Flash DUT via OpenOCD
+      - name: Flash DUT via OpenOCD, and wait for its "ready"
         run: |
-          openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
-            -c "program build-arm/tcp_echo_demo.elf verify reset exit"
-
-      - name: Wait for DUT boot (UART ready signal)
-        run: |
-          timeout 10 bash -c \
-            'until grep -q "ready" <(stty -F /dev/ttyUSB0 115200 && cat /dev/ttyUSB0); do sleep 0.5; done'
+          stty -F "$SERIAL" 115200 raw -echo
+          ( timeout 20 grep -q -m1 ready "$SERIAL" ) & watcher=$!
+          $OPENOCD -c "program build-arm/tcp_echo_demo.elf verify reset exit"
+          wait $watcher
 
       - name: Run fuzz suite on hardware
         run: |
@@ -143,16 +146,14 @@ jobs:
             -v --tb=long                               \
             2>&1
 
-      - name: Power-cycle DUT and run conformance (regression)
+      - name: Reset DUT and run conformance (regression)
         if: always()
         run: |
-          # Toggle relay GPIO to hard-reset the DUT
-          python3 scripts/hw/relay_cycle.py --channel 1 --wait 3
-
-          # Re-flash and re-verify
-          openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
-            -c "program build-arm/tcp_echo_demo.elf verify reset exit"
-          sleep 2
+          # A reset over SWD starts the firmware afresh; a board that no
+          # longer answers SWD needs its power cycled by hand (or a relay)
+          ( timeout 20 grep -q -m1 ready "$SERIAL" ) & watcher=$!
+          $OPENOCD -c "init; reset run; exit"
+          wait $watcher
 
           cd tests/blackbox
           sudo python3 -m pytest                       \

@@ -435,10 +435,11 @@ s_client/s_server, curl — through the host's TCP to ours.
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
 | `blackbox-tls` | ci.yml | ubuntu-latest | TLS 1.3 server, client and HTTPS suites against `tls_echo_demo`, `tls_client_demo`, `https_demo` with Python ssl, OpenSSL 3 and curl (TAP, raw socket) | push/PR |
-| `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, TLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide | push/PR |
+| `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide | push/PR |
+| `board-nucleo-f429zi` | ci.yml | ubuntu-latest | Builds the NUCLEO-F429ZI `tcp_echo_demo.elf` of the hardware fuzz job (§4) — build only | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Builds and runs `examples/fetchcontent` against the checkout | push/PR |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
-| `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |
+| `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz and conformance on a NUCLEO-F429ZI (§4) | Nightly (when enabled) |
 
 The Linux blackbox jobs and the nightly fuzz run as a two-leg matrix,
 one leg per MAC driver.  `tests/blackbox/sut_net.sh up tap|raw` builds the
@@ -474,50 +475,64 @@ TAP-based software tests cannot detect:
 
 | Component | Recommendation | Role |
 |---|---|---|
-| **Runner host** | Raspberry Pi 5 (4 GB) or x86 mini-PC | Runs GH Actions self-hosted runner |
-| **DUT — Cortex-M4** | STM32F4-Discovery or Nucleo-F446RE | ARM M4 with hardware Ethernet (DP83848) |
-| **DUT — Cortex-M0+** | Raspberry Pi Pico W (RP2040) | Smallest MCU target; SPI Ethernet via CYW43 |
-| **Switch** | TP-Link TL-SG105 (5-port unmanaged) | Same L2 segment for runner + all DUTs |
-| **USB-Serial** | 2× FTDI FT232R or Nucleo on-board | UART flashing / debug output from DUT |
-| **SWD programmer** | ST-Link V2 or J-Link EDU Mini | Reliable OpenOCD firmware flashing |
-| **Power relay** | Sainsmart 4-ch USB relay board | Hard-reset DUT from runner (GPIO) |
+| **Runner host** | Raspberry Pi 5 (4 GB) or x86 mini-PC with a second Ethernet port | Runs the GitHub Actions self-hosted runner; `eth1` faces the DUT |
+| **DUT** | NUCLEO-F429ZI | STM32F429ZI (Cortex-M4) with the ETH MAC and a LAN8742A PHY on board, and an ST-LINK/V2-1 for SWD and a virtual COM port — the one board the port supports (`boards/nucleo-f429zi`) |
+| **Cabling** | Direct cable, or a small unmanaged switch | Runner `eth1` and the DUT on one link |
 
-**Estimated cost: ~$150–200 USD**
+**Estimated cost: about $30 for the DUT**, plus the runner.  An earlier
+version of this table recommended an STM32F4-Discovery or a
+NUCLEO-F446RE: the F446 has no Ethernet MAC, and the Discovery board has no
+PHY.  A USB relay to cut the DUT's power is optional: the job resets it over
+SWD.
 
 ### Wiring Topology
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│  Self-Hosted Runner (RPi 5 / mini-PC)                             │
-│                                                                    │
-│  eth0 ──── Office LAN ──── Internet (GitHub connectivity)         │
-│                                                                    │
-│  eth1 ──┬──── 5-port switch ──┬── STM32 Ethernet (SUT-A)         │
-│         │                     └── RP2040 SPI-Eth (SUT-B)          │
-│         │                                                          │
-│  USB ───┼──── ST-Link V2 ─────── SUT-A SWD                        │
-│         └──── FTDI FT232R ─────── SUT-A UART                      │
-│                                                                    │
-│  USB-relay ──────────────────── SUT power rails                   │
-└────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  Self-hosted runner                            │
+│  eth0 ─── LAN ─── GitHub                       │
+│  eth1 (10.0.0.100/24) ──── NUCLEO-F429ZI RJ45  │  the DUT at 10.0.0.2
+│  USB ───────────────────── NUCLEO ST-LINK      │  SWD + /dev/ttyACM0
+└───────────────────────────────────────────────┘
 ```
+
+### The firmware
+
+`boards/nucleo-f429zi` is the board port, with the MAC driver
+`src/driver/stm32f4_eth.c` ([mac-hal.md §6](design/mac-hal.md#6-bundled-drivers)):
+start-up code, linker script, the 168 MHz clock from the HSI, SysTick,
+USART3 on the ST-LINK's virtual COM port, the RMII pins, and
+`tcp_echo_demo` — TCP and UDP echo on port 7 at 10.0.0.2 (IPv6 too), the
+default MAC 02:00:00:de:ad:01, "ready" on the console (115200 8N1) once the
+link is up, LD1 lit with the link.
+
+```sh
+cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+      -DSMALLEST_TCP_BOARD=nucleo-f429zi
+cmake --build build-arm --target tcp_echo_demo     # build-arm/tcp_echo_demo.elf
+openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
+        -c "program build-arm/tcp_echo_demo.elf verify reset exit"
+```
+
+**Status: built, not yet run on hardware.**  CI builds it on every push
+(`board-nucleo-f429zi`); the register addresses and bits were checked
+against ST's CMSIS header and legacy HAL; no frame has gone through it.
+The first run on a board is the test.  MinSizeRel: 14.2 KB of flash and
+14.7 KB of RAM, 9 KB of it the DMA rings.
 
 ### GitHub Actions Integration
 
 Add the self-hosted runner with labels `[self-hosted, hw-dut]` to the
-repository. Enable hardware fuzz jobs by setting the Actions variable
-`HW_DUT_ENABLED = true` in repository settings.
+repository, and set the Actions variable `HW_DUT_ENABLED = true` (and
+`HW_DUT_SERIAL` if the virtual COM port is not `/dev/ttyACM0`).
 
-The `fuzz.yml` workflow includes the `fuzz-tcp-hw` job that:
-1. Cross-compiles firmware with `arm-none-eabi-gcc` through `cmake/arm-none-eabi.cmake`
-   (`SMALLEST_TCP_ARM_CPU`, Cortex-M4 by default).  The `tcp_echo_demo`
-   firmware target has to come from a board port — start-up code, linker
-   script, MAC driver — which the tree does not have yet; the toolchain file
-   builds only the libraries
-2. Flashes DUT via OpenOCD
-3. Waits for UART boot confirmation
-4. Runs full conformance + fuzz suite over `eth1`
-5. Power-cycles via USB relay and re-verifies
+The `fuzz.yml` workflow's `fuzz-tcp-hw` job then:
+1. Cross-compiles the firmware with `arm-none-eabi-gcc` through
+   `cmake/arm-none-eabi.cmake` and `-DSMALLEST_TCP_BOARD=nucleo-f429zi`
+2. Flashes it with OpenOCD and waits for "ready" on the serial port
+3. Runs the TCP fuzz suite over `eth1`
+4. Resets the DUT over SWD, waits for "ready" again, and runs the ARP,
+   IPv4, ICMP, UDP and TCP conformance suites
 
 ---
 

@@ -25,6 +25,8 @@ option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (dow
 option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds)" OFF)
 set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
     "Application configuration header, included first by net_config.h")
+set(SMALLEST_TCP_BOARD "" CACHE STRING
+    "Board port whose firmware to build (boards/<name>), cross-compiling")
 
 if(NOT SMALLEST_TCP_IPV4 AND NOT SMALLEST_TCP_IPV6)
     message(FATAL_ERROR "SMALLEST_TCP_IPV4 and SMALLEST_TCP_IPV6 are both OFF: no network layer")
@@ -165,7 +167,19 @@ if(SMALLEST_TCP_BUILD_DRIVERS)
         smallest_tcp_library(driver_rawsock SOURCES src/driver/rawsock.c LINKS smallest_tcp_core)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         smallest_tcp_library(driver_bpf SOURCES src/driver/bpf.c LINKS smallest_tcp_core)
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
+        smallest_tcp_library(driver_stm32f4_eth SOURCES src/driver/stm32f4_eth.c
+            LINKS smallest_tcp_core)
     endif()
+endif()
+
+# ── Board ports ───────────────────────────────────────────────────────
+
+if(SMALLEST_TCP_BOARD)
+    if(NOT CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "SMALLEST_TCP_BOARD needs a toolchain file, e.g. cmake/arm-none-eabi.cmake")
+    endif()
+    add_subdirectory(boards/${SMALLEST_TCP_BOARD})
 endif()
 
 # ── Unit tests ────────────────────────────────────────────────────────

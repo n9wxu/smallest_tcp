@@ -190,7 +190,7 @@ unused module is simply not linked.  In CMake each is its own library:
 | `smallest_tcp::mdns` | `mdns.c`, `dns_wire.c`; `igmp.c` in IPv4 builds |
 | `smallest_tcp::http` | `http.c` |
 | `smallest_tcp::tls`, `::tls_tcp`, `::https`, `::tls_mbedtls` | TLS 1.3, its glue to a TCP connection, HTTPS (`http_tls.c`), and the Mbed TLS crypto backend ([tls.md](tls.md)) |
-| `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf` | Platform MAC drivers |
+| `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf`, `::driver_stm32f4_eth` | Platform MAC drivers (the last when cross-compiling for ARM) |
 
 ## 6. Run-time values
 

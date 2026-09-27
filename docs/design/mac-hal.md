@@ -155,10 +155,12 @@ lost with no one told.
 | `tap.c` | Linux | caching | `/dev/net/tun`, `IFF_TAP \| IFF_NO_PI`, non-blocking; one frame per `read()`.  A TAP fd never reads back its own writes. |
 | `rawsock.c` | Linux | caching | `AF_PACKET` on an existing interface: a NIC or one end of a veth pair.  Needs root or `CAP_NET_RAW`. |
 | `bpf.c` | macOS | caching | `/dev/bpfN` bound to an interface, typically one end of a `feth` pair. |
+| `stm32f4_eth.c` | STM32F4 (bare metal) | DMA | The ETH peripheral over RMII, the PHY on MDIO; polled.  The NUCLEO-F429ZI port (`boards/nucleo-f429zi`) uses it.  **Not yet run on hardware.** |
 | `stub.c` | any | — | Does nothing; links the stack for ARM size measurement (`bench/`). |
 
-All three real drivers keep a 1514-byte frame buffer in their context (the
-largest Ethernet II frame without FCS).
+The three hosted drivers keep a 1514-byte frame buffer in their context (the
+largest Ethernet II frame without FCS); `stm32f4_eth.c` reads the frame
+where the DMA put it.
 
 ### Raw socket (`rawsock.c`)
 
@@ -211,6 +213,46 @@ sudo ifconfig feth0 create && sudo ifconfig feth1 create
 sudo ifconfig feth0 peer feth1
 sudo ifconfig feth0 inet 10.0.0.1/24 up && sudo ifconfig feth1 up
 ```
+
+### STM32F4 Ethernet (`stm32f4_eth.c`)
+
+A driver for the STM32F4's ETH peripheral (RM0090 §33), written for the
+hardware fuzz job's DUT, a NUCLEO-F429ZI, and **not yet run on
+hardware**: it builds in CI (`board-nucleo-f429zi`), and its register
+addresses and bits were checked against ST's CMSIS header and legacy HAL,
+but no frame has gone through it.
+
+- **Model.**  A DMA driver: chained rings of normal descriptors — four RX,
+  two TX — each with a 1524-byte buffer in the context
+  (`stm32f4_eth_ctx_t`), which must therefore be in SRAM, where the DMA
+  reaches (not the core-coupled RAM).  `poll()` returns the frame of the
+  current RX descriptor once the DMA has released it, without its CRC;
+  `peek()` copies from that buffer; `discard()` hands it back to the DMA
+  and resumes a DMA that had run out of buffers.  A buffer takes a whole
+  frame, so a frame is never split; a frame with an error is dropped.
+  `send()` copies the frame into the next TX buffer, or returns 0 (busy)
+  while the DMA still owns it.
+- **Bring-up** (`init`): the SYSCFG and MAC clocks, RMII selected while
+  the MAC is held in reset, the DMA's software reset — which completes
+  only with the PHY's 50 MHz reference clock, so its timeout means no PHY
+  or unset RMII pins — then the PHY reset and auto-negotiation over MDIO,
+  the MAC's address filter (our address, broadcast, all multicast: the
+  stack filters the rest), store-and-forward DMA, and the MAC's and DMA's
+  transmit and receive paths started.  Configuration registers are written
+  twice with a pause between, as ST's HAL does (RM0090: a second write
+  within four TX/RX clock cycles may be lost).
+- **Link.**  `init` does not wait for a link.  `stm32f4_eth_link_poll()`,
+  called from the main loop every half second, reads the PHY's status and,
+  when the link comes up, sets the MAC to the best mode both ends
+  advertised (the standard auto-negotiation registers, so any clause-22
+  PHY — the Nucleo's LAN8742A, a DP83848).
+- **Not done.**  Interrupts, checksum offload, the hardware multicast
+  filter, frames larger than one buffer.
+
+The board (`boards/nucleo-f429zi`) provides the rest: start-up code and
+linker script, the 168 MHz clock from the HSI, SysTick milliseconds, the
+RMII pins, the ST-LINK console, and the `tcp_echo_demo` firmware
+([test-plan.md §4](../test-plan.md#4-hardware-test-fixture-recommended)).
 
 ## 7. Writing a driver
 

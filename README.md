@@ -86,6 +86,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
+| MAC: STM32F4 Ethernet | `driver/stm32f4_eth.c` | — (built in CI; not yet run on hardware) | The STM32F4's ETH MAC and DMA over RMII; with the NUCLEO-F429ZI board port (`boards/nucleo-f429zi`), the firmware of the hardware fuzz job |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | Build | `CMakeLists.txt`, `Makefile` | — | CMake: libraries, tests, demos, FetchContent integration.  Makefile: Cortex-M0 size benchmarks and the no-division check |
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds and unit tests, IPv4-only and IPv6-only builds, full blackbox suites over TAP and raw socket, and the ARM size benchmark on every push |
@@ -146,6 +147,7 @@ ctest --test-dir build --output-on-failure
 | `SMALLEST_TCP_TCP` | ON | TCP in the core (`NET_USE_TCP`) and the libraries over it |
 | `SMALLEST_TCP_TLS` | ON at top level | The Mbed TLS crypto backend, the TLS demos and tests; CMake downloads Mbed TLS 3.6.7 (pinned by SHA-256) |
 | `SMALLEST_TCP_DEBUG` | OFF | `NET_LOG()` output to `stderr` (`NET_DEBUG=1`) |
+| `SMALLEST_TCP_BOARD` | empty | With a cross toolchain, a board port's firmware: `nucleo-f429zi` builds `tcp_echo_demo.elf` ([test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture-recommended)) |
 | `SMALLEST_TCP_CONFIG_FILE` | empty | Your configuration header, included first by `net_config.h` (`NET_CONFIG_FILE`) |
 
 "At top level" means ON when smallest_tcp is the top-level project and OFF when it is pulled in with FetchContent.  With UDP or TCP off, the tests and demos (which use the whole stack) are not built; with IPv4 off, only the suites and demos that need no IPv4 are (`tcp_echo_demo`, `tls_echo_demo`, `frame_dump`).  The protocol options are `PUBLIC` compile definitions of the core, so everything linked against it is compiled with the same `net_t` layout ([configuration.md §3](docs/design/configuration.md#3-library-and-application-must-agree)).
@@ -484,6 +486,7 @@ Each library is `smallest_tcp_<name>`, also available as `smallest_tcp::<name>`.
 | `smallest_tcp::tls_mbedtls` | The `tls_crypto_t` backend on Mbed TLS 3.6 (with `SMALLEST_TCP_TLS`) |
 | `smallest_tcp::driver_tap`, `::driver_rawsock` | Linux TAP and raw-socket (`AF_PACKET`) MAC drivers (with `SMALLEST_TCP_BUILD_DRIVERS`) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (with `SMALLEST_TCP_BUILD_DRIVERS`) |
+| `smallest_tcp::driver_stm32f4_eth` | STM32F4 Ethernet MAC driver (with `SMALLEST_TCP_BUILD_DRIVERS`, cross-compiling for ARM) |
 
 ### Manual Integration
 

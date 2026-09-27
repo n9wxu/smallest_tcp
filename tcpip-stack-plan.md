@@ -348,9 +348,11 @@ starts with a unit test that fails on the current code.
       every text is a short constant — and can go
 
 **CI** (`.github/workflows/fuzz.yml`)
-- [ ] The hardware fuzz job needs a board port — start-up code, linker
+- [x] The hardware fuzz job needs a board port — start-up code, linker
       script, MAC driver and a `tcp_echo_demo` firmware target;
-      `cmake/arm-none-eabi.cmake` builds the libraries for it
+      `cmake/arm-none-eabi.cmake` builds the libraries for it — the
+      NUCLEO-F429ZI port (`boards/nucleo-f429zi`, `src/driver/stm32f4_eth.c`),
+      built in CI; **not yet run on hardware**
 
 ## Language & Build
 
