@@ -178,13 +178,13 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | REQ-TCP-064 | MUST | In ESTABLISHED/FIN-WAIT-1/FIN-WAIT-2: deliver segment data to receive buffer | RFC 9293 §3.10.7.4 Step 7 | TEST-TCP-064 |
 | REQ-TCP-065 | MUST | Advance RCV.NXT by the amount of data accepted | RFC 9293 §3.10.7.4 Step 7 | TEST-TCP-065 |
 | REQ-TCP-066 | MUST | Send ACK after accepting data | RFC 9293 §3.10.7.4 Step 7 | TEST-TCP-066 |
-| REQ-TCP-067 | MUST | Trim segment data to fit receive window (discard data outside window) | RFC 9293 §3.10.7.4 Step 7 | TEST-TCP-067 |
+| REQ-TCP-067 | MUST | Trim segment data to fit receive window (discard data outside window); bytes before RCV.NXT were received already and are skipped; a segment starting after RCV.NXT (a gap) is not delivered (no reassembly queue) — its ACK asks for RCV.NXT again | RFC 9293 §3.10.7.4 Step 7 | TEST-TCP-067 |
 
 #### Step 8: FIN Processing
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-TCP-068 | MUST | If FIN received, advance RCV.NXT over the FIN, send ACK | RFC 9293 §3.10.7.4 Step 8 | TEST-TCP-068 |
+| REQ-TCP-068 | MUST | If FIN received in sequence (all data before it accepted), advance RCV.NXT over the FIN, send ACK; a FIN after missing data is not processed | RFC 9293 §3.10.7.4 Step 8 | TEST-TCP-068 |
 | REQ-TCP-069 | MUST | In SYN-RECEIVED or ESTABLISHED: transition to CLOSE-WAIT on FIN | RFC 9293 §3.10.7.4 Step 8 | TEST-TCP-069 |
 | REQ-TCP-070 | MUST | In FIN-WAIT-1: if our FIN also ACKed, transition to TIME-WAIT; else transition to CLOSING | RFC 9293 §3.10.7.4 Step 8 | TEST-TCP-070 |
 | REQ-TCP-071 | MUST | In FIN-WAIT-2: transition to TIME-WAIT on FIN | RFC 9293 §3.10.7.4 Step 8 | TEST-TCP-071 |

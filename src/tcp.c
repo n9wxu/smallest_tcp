@@ -1205,12 +1205,24 @@ static void tcp_input_seg(net_t *net, const tcp_ep_t *from, uint32_t dst4,
   /* ── Step 6: URG — ignore (REQ-TCP-063 MAY) ─────────────────── */
 
   /* ── Step 7: Segment data processing (REQ-TCP-064..067) ─────── */
+  /* The sequence number a FIN on this segment occupies */
+  uint32_t fin_seq = seg_seq + data_len;
+
   if (data_len > 0 &&
       (conn->state == TCP_ESTABLISHED || conn->state == TCP_FIN_WAIT_1 ||
        conn->state == TCP_FIN_WAIT_2)) {
 
+    /* Only in-order data is taken (there is no reassembly queue): a
+     * segment after a gap is dropped, and bytes before RCV.NXT — a
+     * retransmission with new boundaries — were taken already. */
+    uint32_t old = conn->rcv_nxt - seg_seq;
+    uint16_t trimmed = 0;
+    if (!SEQ_GT(seg_seq, conn->rcv_nxt) && old < data_len) {
+      data_ptr += old;
+      trimmed = (uint16_t)(data_len - old);
+    }
+
     /* REQ-TCP-067: trim data to receive window */
-    uint16_t trimmed = data_len;
     if ((uint32_t)trimmed > conn->rcv_wnd)
       trimmed = (uint16_t)conn->rcv_wnd;
 
@@ -1234,7 +1246,12 @@ static void tcp_input_seg(net_t *net, const tcp_ep_t *from, uint32_t dst4,
   }
 
   /* ── Step 8: FIN processing (REQ-TCP-068..071) ───────────────── */
-  if (seg_flags & TCP_FLAG_FIN) {
+  if ((seg_flags & TCP_FLAG_FIN) && fin_seq != conn->rcv_nxt) {
+    /* Data before the FIN is missing (lost, or beyond the window): the
+     * FIN is not ours yet.  Ask for RCV.NXT (step 7 did, with data). */
+    if (data_len == 0)
+      tcp_send_ack(net, conn);
+  } else if (seg_flags & TCP_FLAG_FIN) {
     /* FIN only meaningful in states that can receive data */
     switch (conn->state) {
     case TCP_CLOSED:

@@ -121,14 +121,14 @@ alongside the UDP echo server.
 
 | Metric | UDP only | UDP + TCP | Delta |
 |--------|---------:|----------:|------:|
-| **Flash (code + rodata)** | 2,902 B | **6,798 B** | +3,896 B |
+| **Flash (code + rodata)** | 2,902 B | **6,814 B** | +3,912 B |
 | **RAM (static state)** | 672 B | **1,080 B** | +408 B |
-| Stack-only code (.o, before gc) | 2,708 B | 6,886 B | +4,178 B |
+| Stack-only code (.o, before gc) | 2,708 B | 6,902 B | +4,194 B |
 | Stack-internal RAM | 10 B | 22 B | +12 B |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `tcp.c` | 3,700 | 4 | 8 | Full state machine, retransmit (data + FIN), persist timer, MSS/window, window updates |
+| `tcp.c` | 3,716 | 4 | 8 | Full state machine, in-order delivery, retransmit (data + FIN), persist timer, MSS/window, window updates |
 | `tcp_buf_saw.c` | 462 | 0 | 0 | Stop-and-wait TX/RX buffers |
 | `ipv4.c` | 614 | 0 | 2 | (+16 B for TCP dispatch) |
 
@@ -178,15 +178,15 @@ serving a static page.
 
 | Metric | UDP only | UDP + HTTP | Delta |
 |--------|---------:|-----------:|------:|
-| **Flash (code + rodata)** | 2,902 B | **11,014 B** | +8,112 B |
+| **Flash (code + rodata)** | 2,902 B | **11,030 B** | +8,128 B |
 | **RAM (static state)** | 672 B | **1,700 B** | +1,028 B |
-| Stack-only code (.o, before gc) | 2,708 B | 10,738 B | +8,030 B |
+| Stack-only code (.o, before gc) | 2,708 B | 10,754 B | +8,046 B |
 | Stack-internal RAM | 10 B | 22 B | +12 B |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
 | `http.c` | 3,852 | 0 | 0 | Request parser, header formatter, routes, streaming, slot recycling, timeouts |
-| `tcp.c` + `tcp_buf_saw.c` | 4,162 | 4 | 8 | As in "Adding TCP" |
+| `tcp.c` + `tcp_buf_saw.c` | 4,178 | 4 | 8 | As in "Adding TCP" |
 
 HTTP itself costs about 3.8 KB on top of TCP.  The extra RAM is all application
 owned: the three 256 B buffers and the `http_conn_t` (which embeds the
@@ -269,6 +269,8 @@ bash bench/build_lwip.sh
 | 2026-09-26 | …+TCP+HTTP (TCP refactored for IPv6; IPv4-only build) | 11,014 B (10,738 stack) | — | — |
 | 2026-09-26 | …+mDNS/DNS-SD (family-aware writer for IPv6; IPv4-only build) | 9,292 B | — | — |
 | 2026-09-26 | ETH+ARP+IPv4+ICMP+UDP, dual stack (+IPv6, ICMPv6, ND, SLAAC, MLD) | 8,021 B | — | — |
+| 2026-09-26 | …+TCP (in-order delivery: overlaps trimmed, segments after a gap dropped) | 6,814 B (6,902 stack) | — | — |
+| 2026-09-26 | …+TCP+HTTP (same) | 11,030 B (10,754 stack) | — | — |
 
 > The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
 > peek-based UDP dispatch, IPv4 Protocol Unreachable, and (Milestone 10, +80 B)

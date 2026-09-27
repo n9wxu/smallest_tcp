@@ -622,6 +622,96 @@ TEST(test_tcp_window_update_noop_without_read) {
  * REQ-TCP-005, REQ-TCP-059, REQ-TCP-071
  * ══════════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════════
+ * In-order delivery (RFC 9293 §3.10.7.4 steps 7-8): no reassembly
+ * queue, so only data at RCV.NXT is taken; bytes before it were taken
+ * already.  A peer that retransmits with new segment boundaries (or a
+ * lost segment followed by the next one) must not corrupt the stream.
+ * ══════════════════════════════════════════════════════════════════ */
+
+static void inject_data(uint32_t seq, const char *data, uint8_t flags) {
+  uint8_t frame[NET_BUF_CAP];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 seq, conn.snd_nxt, flags | TCP_FLAG_ACK, 8192,
+                                 (const uint8_t *)data,
+                                 (uint16_t)strlen(data), 0);
+  inject(frame, len);
+}
+
+TEST(test_tcp_segment_after_gap_dropped) {
+  uint8_t buf[32];
+  setup();
+  establish();
+  inject_data(PEER_SEQ + 5, "WORLD", TCP_FLAG_PSH); /* HELLO was lost */
+  ASSERT_EQ(evt_data, 0);
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 0);
+  ASSERT_EQ(send_count, 1); /* duplicate ACK: still wants PEER_SEQ */
+  ASSERT_EQ(sent_tcp_ack(0), PEER_SEQ);
+  inject_data(PEER_SEQ, "HELLO", TCP_FLAG_PSH);
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 5);
+  ASSERT_MEM_EQ(buf, "HELLO", 5);
+  ASSERT_EQ(sent_tcp_ack(send_count - 1), PEER_SEQ + 5);
+}
+
+TEST(test_tcp_overlapping_segment_trimmed) {
+  /* Bytes 2..4 again, then new ones: only the new ones are delivered */
+  uint8_t buf[32];
+  setup();
+  establish();
+  inject_data(PEER_SEQ, "HELLO", TCP_FLAG_PSH);
+  inject_data(PEER_SEQ + 2, "LLOWORLD", TCP_FLAG_PSH);
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 10);
+  ASSERT_MEM_EQ(buf, "HELLOWORLD", 10);
+  ASSERT_EQ(sent_tcp_ack(send_count - 1), PEER_SEQ + 10);
+}
+
+TEST(test_tcp_duplicate_segment_ignored) {
+  uint8_t buf[32];
+  setup();
+  establish();
+  inject_data(PEER_SEQ, "HELLO", TCP_FLAG_PSH);
+  inject_data(PEER_SEQ, "HELLO", TCP_FLAG_PSH);
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 5);
+  ASSERT_EQ(sent_tcp_ack(send_count - 1), PEER_SEQ + 5);
+}
+
+TEST(test_tcp_fin_after_gap_ignored) {
+  setup();
+  establish();
+  inject_data(PEER_SEQ + 5, "", TCP_FLAG_FIN); /* the data before it lost */
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  ASSERT_EQ(evt_closed, 0);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_ack(0), PEER_SEQ);
+  inject_data(PEER_SEQ, "HELLO", TCP_FLAG_FIN); /* all of it again */
+  ASSERT_EQ(conn.state, TCP_CLOSE_WAIT);
+  ASSERT_EQ(sent_tcp_ack(send_count - 1), PEER_SEQ + 6);
+}
+
+TEST(test_tcp_fin_on_overlapping_segment) {
+  uint8_t buf[32];
+  setup();
+  establish();
+  inject_data(PEER_SEQ, "HELLO", TCP_FLAG_PSH);
+  inject_data(PEER_SEQ, "HELLOWORLD", TCP_FLAG_FIN);
+  ASSERT_EQ(conn.state, TCP_CLOSE_WAIT);
+  ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 10);
+  ASSERT_MEM_EQ(buf, "HELLOWORLD", 10);
+  ASSERT_EQ(sent_tcp_ack(send_count - 1), PEER_SEQ + 11);
+}
+
+TEST(test_tcp_fin_beyond_window_ignored) {
+  /* The window takes only part of the data: the FIN after it waits */
+  static char data[RX_BUF_CAP + 11];
+  setup();
+  establish();
+  memset(data, 'd', RX_BUF_CAP + 10);
+  data[RX_BUF_CAP + 10] = 0;
+  inject_data(PEER_SEQ, data, TCP_FLAG_FIN);
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  ASSERT_EQ(sent_tcp_ack(send_count - 1), PEER_SEQ + RX_BUF_CAP);
+}
+
 TEST(test_tcp_active_close) {
   setup();
   /* Bring to ESTABLISHED (passive open) */
@@ -1278,6 +1368,12 @@ int main(void) {
   RUN_TEST(test_tcp_window_update_after_read);
   RUN_TEST(test_tcp_window_update_waits_for_worthwhile_growth);
   RUN_TEST(test_tcp_window_update_noop_without_read);
+  RUN_TEST(test_tcp_segment_after_gap_dropped);
+  RUN_TEST(test_tcp_overlapping_segment_trimmed);
+  RUN_TEST(test_tcp_duplicate_segment_ignored);
+  RUN_TEST(test_tcp_fin_after_gap_ignored);
+  RUN_TEST(test_tcp_fin_on_overlapping_segment);
+  RUN_TEST(test_tcp_fin_beyond_window_ignored);
   RUN_TEST(test_tcp_active_close);
   RUN_TEST(test_tcp_passive_close);
   RUN_TEST(test_tcp_rst_in_established_aborts);
