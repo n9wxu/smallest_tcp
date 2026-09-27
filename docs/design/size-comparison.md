@@ -1,6 +1,6 @@
 # Code Size Comparison — smallest_tcp vs lwIP
 
-**Last updated:** 2026-09-27 (every smallest_tcp configuration re-measured after the refactoring: no static state left in the stack, TLS split by role)
+**Last updated:** 2026-09-27 (the UDP, TCP, mDNS, HTTP and dual-stack configurations re-measured after the keyed-hash generator and the TCP send-path fixes)
 
 ## Methodology
 
@@ -30,35 +30,35 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 | Metric | smallest_tcp | lwIP | Ratio |
 |--------|-------------|------|-------|
-| **Flash (code + rodata)** | **2,574 B** | 10,089 B | **3.9× smaller** |
-| **RAM (static state)** | **668 B** | 2,619 B | **3.9× smaller** |
-| Stack-only code | **2,476 B** | 10,087 B | **4.1× smaller** |
+| **Flash (code + rodata)** | **2,786 B** | 10,089 B | **3.6× smaller** |
+| **RAM (static state)** | **676 B** | 2,619 B | **3.9× smaller** |
+| Stack-only code | **2,710 B** | 10,087 B | **3.7× smaller** |
 | Stack-internal RAM | **0 B** | ~2,619 B | — |
 | Source modules | 7 | 16 | — |
 
-> **Note:** smallest_tcp's 668 B of RAM is all declared by the application: the 600 bytes of
-> rx/tx frame buffers, the 64-byte `net_t`, and a 4-byte benchmark variable.  The stack's own
+> **Note:** smallest_tcp's 676 B of RAM is all declared by the application: the 600 bytes of
+> rx/tx frame buffers, the 72-byte `net_t`, and a 4-byte benchmark variable.  The stack's own
 > objects have no `.data` or `.bss` at all: the port table pointer lives in `net_t`, and IPv4
 > datagrams are sent with DF set and identification 0 (RFC 6864), so there is no ID counter.
 > lwIP's 2,619 B of BSS is internal memory pools (mem, memp, pbuf_pool, ARP table, etc.).
 
 ## Per-Module Breakdown
 
-### smallest_tcp — 7 modules, 2,476 bytes code
+### smallest_tcp — 7 modules, 2,710 bytes code
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `net.c` | 340 | 0 | 0 | `net_init()`, `net_poll()`, `net_tick()`, `net_transmit()`, random numbers |
+| `net.c` | 574 | 0 | 0 | `net_init()`, `net_poll()`, `net_tick()`, `net_transmit()`, random numbers (HalfSipHash-2-4) |
 | `net_cksum.c` | 158 | 0 | 0 | Internet checksum (RFC 1071) |
 | `eth.c` | 226 | 0 | 0 | Ethernet II parse/build/dispatch |
 | `arp.c` | 362 | 0 | 0 | ARP request/reply, gateway MAC |
 | `ipv4.c` | 598 | 0 | 0 | IPv4 parse/build (per-packet TTL), protocol dispatch, Protocol Unreachable |
 | `icmp.c` | 320 | 0 | 0 | ICMP echo reply, dest unreachable |
 | `udp.c` | 472 | 0 | 0 | UDP parse/send (copying + in-place), port dispatch |
-| **Total** | **2,476** | **0** | **0** | |
+| **Total** | **2,710** | **0** | **0** | |
 
 The benchmark's own `size_measure.c` (216 B) and the stub MAC driver (44 B) make up the rest
-of the 2,736 B of objects; the linked ELF is 2,574 B, since `--gc-sections` drops what the
+of the 2,970 B of objects; the linked ELF is 2,786 B, since `--gc-sections` drops what the
 benchmark never calls.
 
 ### lwIP 2.2.1 — 16 modules, 10,087 bytes code
@@ -127,24 +127,25 @@ alongside the UDP echo server.
 
 | Metric | UDP only | UDP + TCP | Delta |
 |--------|---------:|----------:|------:|
-| **Flash (code + rodata)** | 2,574 B | **6,130 B** | +3,556 B |
-| **RAM (static state)** | 668 B | **1,052 B** | +384 B |
-| Stack-only code (.o, before gc) | 2,476 B | 6,288 B | +3,812 B |
+| **Flash (code + rodata)** | 2,786 B | **6,610 B** | +3,824 B |
+| **RAM (static state)** | 676 B | **1,064 B** | +388 B |
+| Stack-only code (.o, before gc) | 2,710 B | 6,752 B | +4,042 B |
 | Stack-internal RAM | 0 B | 0 B | 0 |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `tcp.c` | 3,362 | 0 | 0 | Full state machine, in-order delivery, retransmit (data + FIN), persist timer, MSS/window, window updates |
-| `tcp_buf_saw.c` | 428 | 0 | 0 | Stop-and-wait TX/RX buffers |
+| `tcp.c` | 3,588 | 0 | 0 | Full state machine, in-order delivery, retransmit (data + FIN), persist timer, MSS/window, window updates, FIN queued behind unsent data, RFC 6528 initial sequence numbers |
+| `tcp_buf_saw.c` | 416 | 0 | 0 | Stop-and-wait TX/RX buffers |
 | `ipv4.c` | 614 | 0 | 0 | (+16 B for TCP dispatch) |
-| `net.c` | 346 | 0 | 0 | (+6 B: `net_tick()` runs `tcp_tick()`) |
+| `net.c` | 580 | 0 | 0 | (+6 B: `net_tick()` runs `tcp_tick()`) |
 
 TCP has no static state.  The application owns the connection table and binds
 it with `tcp_set_connections(net, table, n)` — its pointer and count live in
-`net_t` — and initial sequence numbers come from `net_t`'s random generator
-([tcp.md](tcp.md)).  The extra RAM is therefore all application-owned: the
+`net_t` — and initial sequence numbers are `net_t`'s TCP clock plus a hash
+under `net_t`'s secret key ([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)).  The extra RAM is therefore all application-owned: the
 256 B of TCP buffers, the 96-byte `tcp_conn_t`, the two 12-byte buffer
-contexts, and 8 more bytes of `net_t` (the table pointer and count).  The
+contexts, and 12 more bytes of `net_t` (the table pointer and count, and the
+TCP clock).  The
 table itself is `const` and sits in flash.  The `.o` totals include functions
 this benchmark never calls (`tcp_connect()`, `tcp_window_update()`, …), which
 link-time gc removes — hence stack-only code above the ELF's flash total.
@@ -157,9 +158,9 @@ a host name and one DNS-SD service (A, PTR, SRV, TXT), with one multicast group
 
 | Metric | UDP only | UDP + mDNS | Delta |
 |--------|---------:|-----------:|------:|
-| **Flash (code + rodata)** | 2,574 B | **8,956 B** | +6,382 B |
-| **RAM (static state)** | 668 B | **716 B** | +48 B |
-| Stack-only code (.o, before gc) | 2,476 B | 8,555 B | +6,079 B |
+| **Flash (code + rodata)** | 2,786 B | **9,188 B** | +6,402 B |
+| **RAM (static state)** | 676 B | **724 B** | +48 B |
+| Stack-only code (.o, before gc) | 2,710 B | 8,791 B | +6,081 B |
 | Stack-internal RAM | 0 B | 0 B | 0 |
 
 | Module | .text | .data | .bss | Function |
@@ -167,7 +168,7 @@ a host name and one DNS-SD service (A, PTR, SRV, TXT), with one multicast group
 | `mdns.c` | 4,445 | 0 | 0 | Probe/announce/answer state machine, DNS-SD additionals, NSEC negative answers, known-answer suppression, conflicts, goodbye |
 | `dns_wire.c` | 1,238 | 0 | 0 | RFC 1035 names with compression, bounds-checked readers |
 | `igmp.c` | 250 | 0 | 0 | IGMPv2 report / leave with Router Alert |
-| `ipv4.c` | 712 | 0 | 0 | (+114 B: multicast group table and acceptance) |
+| `ipv4.c` | 714 | 0 | 0 | (+116 B: multicast group table and acceptance) |
 | `eth.c`, `icmp.c`, `udp.c` | 1,050 | 0 | 0 | (+32 B: joined-group MAC filter, no ICMP errors for multicast) |
 
 The 48 B of extra RAM is the application-owned `mdns_t` (44 B) and the one-entry
@@ -185,16 +186,16 @@ serving a static page.
 
 | Metric | UDP only | UDP + HTTP | Delta |
 |--------|---------:|-----------:|------:|
-| **Flash (code + rodata)** | 2,574 B | **10,510 B** | +7,936 B |
-| **RAM (static state)** | 668 B | **1,672 B** | +1,004 B |
-| Stack-only code (.o, before gc) | 2,476 B | 10,302 B | +7,826 B |
+| **Flash (code + rodata)** | 2,786 B | **10,958 B** | +8,172 B |
+| **RAM (static state)** | 676 B | **1,684 B** | +1,008 B |
+| Stack-only code (.o, before gc) | 2,710 B | 10,766 B | +8,056 B |
 | Stack-internal RAM | 0 B | 0 B | 0 |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
 | `http.c` | 3,906 | 0 | 0 | Request parser, header formatter, routes, streaming, slot recycling, timeouts, the TCP transport |
 | `net_text.c` | 108 | 0 | 0 | Case-insensitive compare, decimal formatting (no division) |
-| `tcp.c` + `tcp_buf_saw.c` | 3,790 | 0 | 0 | As in "Adding TCP" |
+| `tcp.c` + `tcp_buf_saw.c` | 4,004 | 0 | 0 | As in "Adding TCP" |
 
 HTTP itself costs about 4 KB on top of TCP.  The extra RAM is all application
 owned: the three 256 B buffers, the 200-byte `http_conn_t` (which embeds the
@@ -212,9 +213,9 @@ discovery, SLAAC with lifetimes) and MLDv2/v1.  No multicast groups to join
 
 | Metric | UDP (IPv4) | UDP, dual stack | Delta |
 |--------|-----------:|----------------:|------:|
-| **Flash (code + rodata)** | 2,574 B | **7,549 B** | +4,975 B |
-| **RAM (static state)** | 668 B | **772 B** | +104 B |
-| Stack-only code (.o, before gc) | 2,476 B | 7,441 B | +4,965 B |
+| **Flash (code + rodata)** | 2,786 B | **7,789 B** | +5,003 B |
+| **RAM (static state)** | 676 B | **780 B** | +104 B |
+| Stack-only code (.o, before gc) | 2,710 B | 7,675 B | +4,965 B |
 
 | Module | .text | Function |
 |--------|------:|----------|
@@ -242,16 +243,16 @@ and is not measured here.
 
 | | .text | RAM |
 |---|---:|---:|
-| `tls.c` (records, alerts, KeyUpdate, API) | 2,910 B | — |
+| `tls.c` (records, alerts, KeyUpdate, API) | 2,946 B | — |
 | `tls_keys.c` (key schedule, record protection) | 1,043 B | — |
 | `tls_server.c` (`tls_accept()`, server handshake) | 3,070 B | — |
-| `tls_client.c` (`tls_connect()`, client handshake) | 3,480 B | — |
-| **Server only** | **7,023 B** | — |
-| **Client and server** | **10,503 B** | — |
+| `tls_client.c` (`tls_connect()`, client handshake) | 3,488 B | — |
+| **Server only** | **7,059 B** | — |
+| **Client and server** | **10,547 B** | — |
 | `tls_conn_t` (per connection) | — | 440 B (128 of them the backend's SHA-256 state) |
 | `tls_config_t` (shared) | — | 40 B |
 
-A server-only device links 7.0 KB: `tls.c` reaches the handshake only through
+A server-only device links 7.1 KB: `tls.c` reaches the handshake only through
 the role pointer that `tls_accept()` or `tls_connect()` sets, so the role an
 application never starts is never referenced and never linked
 ([tls.md §2.1](tls.md#21-the-role-interface)).  Plus the application's record
@@ -262,9 +263,9 @@ buffers ([tls.md §5](tls.md#5-buffers)).  The TLS objects have no `.data` or
 
 | Target | Flash | RAM | smallest_tcp UDP | lwIP UDP |
 |--------|-------|-----|-----------------|----------|
-| **PIC16F1454** | 14 KB | 1 KB | ✅ 2.6 KB + buffers | ❌ 10 KB code alone |
+| **PIC16F1454** | 14 KB | 1 KB | ✅ 2.8 KB + buffers | ❌ 10 KB code alone |
 | **CH32X033** | 62 KB | 20 KB | ✅ Plenty of room | ✅ Fits |
-| **STM32F042** | 32 KB | 6 KB | ✅ 2.6 KB; 6.1 KB with TCP; 9.0 KB with mDNS; 10.5 KB with HTTP; 7.5 KB dual stack | ⚠️ Tight with app |
+| **STM32F042** | 32 KB | 6 KB | ✅ 2.8 KB; 6.6 KB with TCP; 9.2 KB with mDNS; 10.9 KB with HTTP; 7.8 KB dual stack | ⚠️ Tight with app |
 | **CH32V203** | 256 KB | 10 KB | ✅ Plenty of room | ✅ Fits |
 
 ## How to Reproduce
@@ -328,13 +329,23 @@ Cortex-M0 has no divide instruction ([coding-rules.md](coding-rules.md)).
 | 2026-09-27 | …+TCP+HTTP (transport interface) | 10,510 B (10,302 stack) | — | — |
 | 2026-09-27 | ETH+ARP+IPv4+ICMP+UDP, dual stack | 7,549 B (7,441 stack) | — | — |
 | 2026-09-27 | TLS 1.3 protocol, split by role: server only / client and server | 7,023 B / 10,503 B | — | — |
+| 2026-09-27 | ETH+ARP+IPv4+ICMP+UDP (keyed-hash generator) | 2,786 B (2,710 stack) | 10,087 B (2.2.1) | 3.7× |
+| 2026-09-27 | …+TCP (RFC 6528 ISNs, FIN queued behind data, send-path fixes) | 6,610 B (6,752 stack) | — | — |
+| 2026-09-27 | …+mDNS/DNS-SD | 9,188 B (8,791 stack) | — | — |
+| 2026-09-27 | …+TCP+HTTP | 10,958 B (10,766 stack) | — | — |
+| 2026-09-27 | TLS 1.3 (owed KeyUpdate first, key share wiped on failure) | 7,059 B / 10,547 B | — | — |
+| 2026-09-27 | ETH+ARP+IPv4+ICMP+UDP, dual stack | 7,789 B (7,675 stack) | — | — |
 
 > The UDP-only growth from 2026-03-19 to 2026-09-26 came from `net_poll()`
 > (Milestone 7), the peek-based UDP dispatch, IPv4 Protocol Unreachable, and
 > (Milestone 10, +80 B) splitting `udp_send()` into a copy plus
 > `udp_send_inplace()` with a per-packet TTL, which lets mDNS build responses in
 > the TX buffer without a second buffer.  The 2026-09-27 refactoring removed the
-> stack's last static variables and reduced every configuration.  Multicast
+> stack's last static variables and reduced every configuration; later that day
+> the keyed-hash generator (HalfSipHash-2-4 in place of xorshift32) added
+> 234 B to `net.c` and 8 B to `net_t`, and TCP's send-path fixes and RFC 6528
+> initial sequence numbers 214 B to `tcp.c` and `tcp_buf_saw.c` and 4 B (the
+> clock) to `net_t`.  Multicast
 > receive compiles away when `NET_MAX_MCAST_GROUPS` is 0.  The ratio column
 > compares stack-only code.
 

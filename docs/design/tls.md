@@ -106,12 +106,12 @@ Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`):
 
 | Object | Bytes |
 |---|---:|
-| `tls.c` | 2,910 |
+| `tls.c` | 2,946 |
 | `tls_keys.c` | 1,043 |
 | `tls_server.c` | 3,070 |
-| `tls_client.c` | 3,480 |
-| **Server only** (`tls.c` + `tls_keys.c` + `tls_server.c`) | **7,023** |
-| **Client and server** | **10,503** |
+| `tls_client.c` | 3,488 |
+| **Server only** (`tls.c` + `tls_keys.c` + `tls_server.c`) | **7,059** |
+| **Client and server** | **10,547** |
 
 A client-only build is `tls.c` + `tls_keys.c` + `tls_client.c`, 7,433 bytes
 by the same objects.  These are object sizes; the crypto backend is extra
@@ -686,8 +686,8 @@ The Master Secret exists only on the stack for the moment it is used.
 |---|---:|---|
 | `test_tls_crypto` | 22 | The backend: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, chains (alerts, IP names, other anchors), random |
 | `test_tls_keys` | 34 | Key schedule and records against RFC 8448 §3 (every secret, key, IV, both Finished, all eight protected records byte for byte), §4 (resumption PSK binder, PSK + DHE schedule), §5 (HelloRetryRequest transcript); malformed records |
-| `test_tls_server` | 103 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts |
-| `test_tls_client` | 49 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate) and against a scripted server that gets each message wrong on purpose |
+| `test_tls_server` | 105 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts |
+| `test_tls_client` | 50 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate) and against a scripted server that gets each message wrong on purpose |
 
 `tests/tls/gen_rfc8448.py` extracts the RFC 8448 traces into
 `tests/unit/tls_rfc8448.h`, checking every value's stated length;

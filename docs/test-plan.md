@@ -21,21 +21,21 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **690 tests on macOS; on Linux 693, or 701 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17.
+**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **718 tests on macOS; on Linux 721, or 729 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
 | `test_endian` | tests/unit/test_endian.c | 10 | Byte-order utilities |
 | `test_checksum` | tests/unit/test_checksum.c | 12 | net_cksum (REQ-CKS-*) |
 | `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
-| `test_net` | tests/unit/test_net.c | 8 | net init/dispatch |
+| `test_net` | tests/unit/test_net.c | 11 | net init/dispatch, `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()` |
 | `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
 | `test_ipv4` | tests/unit/test_ipv4.c | 10 | IPv4 (REQ-IPV4-*) |
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
-| `test_tcp_buf` | tests/unit/test_tcp_buf.c | 20 | Stop-and-wait TX/RX buffers (incl. RX ring wrap) |
-| `test_tcp` | tests/unit/test_tcp.c | **46** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
-| `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
+| `test_tcp_buf` | tests/unit/test_tcp_buf.c | 22 | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
+| `test_tcp` | tests/unit/test_tcp.c | **57** | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
+| `test_tftp` | tests/unit/test_tftp.c | 23 | TFTP client (REQ-TFTP-*) |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 26 | DHCPv4 client + server (REQ-DHCPv4-*) |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
@@ -43,7 +43,7 @@ verified at both the unit and integration levels:
 | `test_http` | tests/unit/test_http.c | 45 | HTTP parser, formatter, server driven over the real TCP (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
 | `test_udp6` | tests/unit/test_udp6.c | 14 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` (REQ-IPv6-044,045, REQ-ICMPv6-016) |
-| `test_tcp6` | tests/unit/test_tcp6.c | 18 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
+| `test_tcp6` | tests/unit/test_tcp6.c | 19 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, advertised MSS from the RX frame buffer and within the Ethernet MTU (1440), send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
 | `test_slaac` | tests/unit/test_slaac.c | 26 | Router Solicitation (format, 3 × 4 s, stops at an RA), Router Advertisement (router + MAC, hop limit, M/O, lifetime 0/expiry, validation), SLAAC (A flag, /64, DAD, link-local prefix, duplicate), lifetimes (deprecate, remove, infinite, 2-hour rule, preferred again), `ipv6_addr_add`, on-link test, reply from the global address (REQ-NDP-034..048, REQ-SLAAC-014..031) |
 | `test_mld` | tests/unit/test_mld.c | 13 | MLDv2 report before the DAD probe (from ::), repeated once, one group per solicited-node address, `ipv6_mcast_join/leave` (report, frame filter, delivery), general / group queries (delay, validation), MLDv1 compatibility (v1 reports, Done, fallback timeout) — RFC 3810, RFC 2710 |
 | `test_mdns6` | tests/unit/test_mdns6.c | 19 | mDNS over IPv6: ff02::fb joined, probes / announcements / goodbyes on both families, AAAA per usable address (not tentative), answers on the query's family, A ↔ AAAA and SRV → AAAA additionals, QU and legacy unicast over IPv6, known-answer suppression, NSEC with AAAA, delayed shared answers, explicit AAAA, conflicts, re-announcing (RFC 6762 §6.2, §8.4, §20) |
@@ -51,8 +51,8 @@ verified at both the unit and integration levels:
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 on Linux (4 elsewhere) | Raw-socket driver: offloaded-checksum completion (portable); context and no-frame checks (Linux); live on a veth pair (Linux, root, 8): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 | `test_tls_crypto` | tests/unit/test_tls_crypto.c | 22 | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
 | `test_tls_keys` | tests/unit/test_tls_keys.c | 34 | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034) |
-| `test_tls_server` | tests/unit/test_tls_server.c | 103 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate, alerts (REQ-TLS-001, 018..025, 030, 031, 035..043) |
-| `test_tls_client` | tests/unit/test_tls_client.c | 49 | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate (REQ-TLS-010..017, 023, 031) |
+| `test_tls_server` | tests/unit/test_tls_server.c | 105 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate, alerts (REQ-TLS-001, 018..025, 030, 031, 035..043) |
+| `test_tls_client` | tests/unit/test_tls_client.c | 50 | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate (REQ-TLS-010..017, 023, 031) |
 
 ### Running Unit Tests
 
@@ -79,6 +79,7 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 002 | Passive open (LISTEN) | test_tcp_passive_open_syn_synack_ack | ✅ |
 | 003 | Active open (SYN_SENT) | test_tcp_active_open_syn_synack_ack | ✅ |
 | 005 | Active close (FIN_WAIT_1) | test_tcp_active_close | ✅ |
+| 015 | `tcp_close()`: FIN queued behind unsent data (RFC 9293 §3.10.4) | test_tcp_close_sends_unsent_data_first, test_tcp_close_fin_waits_for_the_last_segment | ✅ |
 | 006 | Passive close (CLOSE_WAIT) | test_tcp_passive_close | ✅ |
 | 008 | TIME_WAIT 2×MSL | test_tcp_timewait_expires | ✅ |
 | 014 | tcp_send() API | test_tcp_data_send | ✅ |
@@ -91,23 +92,25 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 051 | SYN in ESTABLISHED → error | test_tcp_syn_in_established_gets_rst | ✅ |
 | 053 | No ACK bit → discard | test_tcp_no_ack_bit_discarded | ✅ |
 | 054 | ESTABLISHED on ACK to SYN-ACK | test_tcp_passive_open | ✅ |
+| 058 | Window update from an ACK of nothing new | test_tcp_window_update_resumes_sending | ✅ |
 | 059/071 | FIN exchange | test_tcp_active_close, passive_close | ✅ |
 | 072 | Unknown port → RST | test_tcp_rst_sent_for_unknown_port | ✅ |
 | 073 | RST.SEQ = ACK from LISTEN | test_tcp_ack_in_listen_generates_rst | ✅ |
 | 075 | RST in LISTEN discarded | test_tcp_no_rst_in_listen_for_rst | ✅ |
 | 076 | MSS option in SYN-ACK | test_tcp_synack_contains_mss | ✅ |
-| 077 | MSS ≤ 1460 | test_tcp_synack_contains_mss | ✅ |
+| 077 | Advertised MSS ≤ 1460, from the RX frame buffer | test_tcp_synack_contains_mss, test_tcp_mss_advertised_from_rx_buffer, test_tcp6_our_mss_within_ethernet_mtu | ✅ |
 | 078 | Peer MSS stored | test_tcp_peer_mss_stored | ✅ |
 | 079 | Default MSS = 536 | test_tcp_default_peer_mss_536 | ✅ |
+| 081 | Segments fit the TX frame buffer | test_tcp_segments_fit_tx_buffer | ✅ |
 | 082/083 | Window advertised > 0 | test_tcp_window_advertised_nonzero | ✅ |
 | 090 | Retransmit on timeout | test_tcp_retransmit_on_timeout | ✅ |
-| 095 | RTO doubles on retry | test_tcp_retransmit_on_timeout | ✅ |
+| 095 | RTO doubles on retry; the rest of a partly ACKed segment and a frame the driver did not send are resent | test_tcp_retransmit_on_timeout, test_tcp_partial_ack_resends_rest_in_place, test_tcp_unsent_frame_is_retransmitted | ✅ |
 | 097/098 | RTO stops on ACK | test_tcp_rto_resets_on_ack | ✅ |
 | 109/111 | NOP/unknown option ignored | test_tcp_options_nop_unknown_ignored | ✅ |
 | 112 | MSS parsed from options | test_tcp_options_nop_unknown_ignored | ✅ |
 | 115 | Unknown option skipped | test_tcp_options_nop_unknown_ignored | ✅ |
 | 085–087 | Zero-window persist timer | `test_tcp_persist_starts_on_zero_window`, `test_tcp_persist_probe_sent_on_timeout`, `test_tcp_persist_stops_when_window_opens`, `test_tcp_085_persist_probe_on_zero_window` (blackbox) | ✅ pass |
-| 028/029/153 | ISS non-predictable | (blackbox only) | 🔲 Blackbox |
+| 028/029/153 | ISS = 4 µs clock + keyed hash (RFC 6528) | test_tcp_isn_is_clock_plus_keyed_hash, test_tcp_isn_depends_on_secret; `test_tcp_153` (blackbox) | ✅ |
 | 155 | RST rate limiting | (blackbox only) | 🔲 Blackbox |
 
 > ✅ REQ-TCP-085, 086, 087 (zero-window persist timer) are now implemented and covered by 3 unit tests and 1 blackbox test.
@@ -501,7 +504,11 @@ repository. Enable hardware fuzz jobs by setting the Actions variable
 `HW_DUT_ENABLED = true` in repository settings.
 
 The `fuzz.yml` workflow includes the `fuzz-tcp-hw` job that:
-1. Cross-compiles firmware with `arm-none-eabi-gcc`
+1. Cross-compiles firmware with `arm-none-eabi-gcc` through `cmake/arm-none-eabi.cmake`
+   (`SMALLEST_TCP_ARM_CPU`, Cortex-M4 by default).  The `tcp_echo_demo`
+   firmware target has to come from a board port — start-up code, linker
+   script, MAC driver — which the tree does not have yet; the toolchain file
+   builds only the libraries
 2. Flashes DUT via OpenOCD
 3. Waits for UART boot confirmation
 4. Runs full conformance + fuzz suite over `eth1`

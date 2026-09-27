@@ -847,7 +847,7 @@ With `NET_USE_IPV6` 0 the IPv6 members and branches compile out.
 
 ## 9. Tests and files
 
-- **Unit:** `tests/unit/test_tcp.c` (55 tests: handshakes, `tcp_write()` /
+- **Unit:** `tests/unit/test_tcp.c` (57 tests: handshakes, `tcp_write()` /
   `tcp_output()`, in-order delivery with gaps, overlaps, duplicates and FIN
   placement, window updates including pure ones, active and passive close,
   the FIN queued behind unsent data, RST, retransmission of SYN, data and FIN,

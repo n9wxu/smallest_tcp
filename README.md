@@ -8,7 +8,7 @@
 
 ## ✨ What Is This?
 
-**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — IPv4 and IPv6, TCP, UDP, DHCP, TFTP, mDNS + DNS-SD, HTTP, TLS 1.3 — using **zero dynamic memory allocation** and fitting in as little as **2.6 KB of flash**.
+**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — IPv4 and IPv6, TCP, UDP, DHCP, TFTP, mDNS + DNS-SD, HTTP, TLS 1.3 — using **zero dynamic memory allocation** and fitting in as little as **2.8 KB of flash**.
 
 Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding network connectivity to a $0.20 RISC-V MCU, or prototyping protocol logic on your laptop — this stack has you covered.
 
@@ -31,22 +31,22 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`, `arm-none-eabi-gcc` 13.2), UDP echo se
 
 | Metric | smallest_tcp | lwIP (same features) | Ratio |
 |---|---|---|---|
-| **Flash** | **2,574 B** | 10,089 B | **3.9× smaller** |
-| **RAM** | **668 B** (600 = app buffers) | 2,619 B | **3.9× smaller** |
-| Stack-only code | **2,476 B** | 10,087 B | **4.1× smaller** |
+| **Flash** | **2,786 B** | 10,089 B | **3.6× smaller** |
+| **RAM** | **676 B** (600 = app buffers) | 2,619 B | **3.9× smaller** |
+| Stack-only code | **2,710 B** | 10,087 B | **3.7× smaller** |
 | Stack-internal state | **0 B** | ~2,619 B | — |
 
 The stack itself has **no static state**: everything it keeps lives in `net_t` and in structures your application declares and sizes.
 
 | Configuration (`make` target) | Flash (.text) | RAM |
 |---|---:|---:|
-| UDP echo (`arm-size`) | 2,574 B | 668 B |
-| UDP + TCP echo (`arm-size-tcp`) | 6,130 B | 1,052 B |
-| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 8,956 B | 716 B |
-| UDP + HTTP server, with TCP (`arm-size-http`) | 10,510 B | 1,672 B |
-| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 7,549 B | 772 B |
-| TLS 1.3 protocol, server only (`arm-size-tls`) | 7,023 B | 440 B per connection + record buffers |
-| TLS 1.3 protocol, client and server (`arm-size-tls`) | 10,503 B | 440 B per connection + record buffers |
+| UDP echo (`arm-size`) | 2,786 B | 676 B |
+| UDP + TCP echo (`arm-size-tcp`) | 6,610 B | 1,064 B |
+| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 9,188 B | 724 B |
+| UDP + HTTP server, with TCP (`arm-size-http`) | 10,958 B | 1,684 B |
+| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 7,789 B | 780 B |
+| TLS 1.3 protocol, server only (`arm-size-tls`) | 7,059 B | 440 B per connection + record buffers |
+| TLS 1.3 protocol, client and server (`arm-size-tls`) | 10,547 B | 440 B per connection + record buffers |
 
 RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TLS takes its cryptography from a backend you choose (Mbed TLS is bundled), which is not included in these figures.
 
@@ -56,14 +56,14 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 
 ## 📊 Current Status
 
-**690 unit tests passing** across 28 test suites on macOS — 701 on Linux, where the raw-socket driver's suite adds 3 socket tests and, as root, 8 live tests — compiled with `-Wall -Wextra -Werror -pedantic`.  
+**718 unit tests passing** across 28 test suites on macOS — 729 on Linux, where the raw-socket driver's suite adds 3 socket tests and, as root, 8 live tests — compiled with `-Wall -Wextra -Werror -pedantic`; CTest adds two checks that `mdns.c` refuses to build without a multicast group slot.  
 **182 blackbox conformance tests** across 12 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×21, HTTP ×22, IPv6 ×29, TLS server ×29, TLS client ×17, HTTPS ×9), plus 5 fuzz tests and interop checks with Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`), dnsmasq (DHCPv6), and OpenSSL, Python ssl and curl (TLS 1.3) — run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
 
 ### ✅ Implemented (Milestones 1–13)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
-| Core context | `net.h` / `net.c` | 8 | `net_init()`, `net_poll()`, `net_tick()`, `net_transmit()`, random numbers, defaults from `net_config.h` |
+| Core context | `net.h` / `net.c` | 11 | `net_init()`, `net_poll()`, `net_tick()`, `net_transmit()`, random numbers (HalfSipHash-2-4 under a secret key), defaults from `net_config.h` |
 | Byte order | `net_endian.h` | 10 | Portable wire read/write + host/network conversion |
 | Checksum | `net_cksum.h` / `net_cksum.c` | 12 | RFC 1071 Internet checksum — incremental, one-shot, verify |
 | Ethernet | `eth.h` / `eth.c` | 11 | Ethernet II parse/build, protocol dispatch |
@@ -71,17 +71,17 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | IPv4 | `ipv4.h` / `ipv4.c` | 10 unit + **8 blackbox** | Parse/build/send, protocol dispatch, broadcast detection, ICMP Protocol Unreachable |
 | ICMPv4 | `icmp.h` / `icmp.c` | 4 unit + **7 blackbox** | Echo reply (ping), destination unreachable, checksum validation |
 | UDP | `udp.h` / `udp.c` | 7 unit + **7 blackbox** | Parse/send, port table dispatch, pseudo-header checksum, ICMP Port Unreachable |
-| **TCP** | **`tcp.h` / `tcp.c`** | **46 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit (data + FIN), MSS, window updates, persist timer, in-order delivery, close; application-owned connection table** |
-| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 20 | Stop-and-wait TX + RX buffers |
+| **TCP** | **`tcp.h` / `tcp.c`** | **57 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit (data + FIN), MSS, window updates, persist timer, in-order delivery, close with the FIN queued behind unsent data, RFC 6528 initial sequence numbers; application-owned connection table** |
+| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 22 | Stop-and-wait TX + RX buffers |
 | **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **26 unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
-| TFTP | `tftp.h` / `tftp.c` | 15 unit | RFC 1350 TFTP client — block-read, blksize option, retransmit, error handling |
+| TFTP | `tftp.h` / `tftp.c` | 23 unit | RFC 1350 TFTP client — block-read, blksize option, retransmit, error handling |
 | Multicast + IGMP | `ipv4.c` / `igmp.h` / `igmp.c` | 19 unit | Fixed-size group table, multicast RX, per-packet TTL, IGMPv2 join/leave (RFC 1112, 2236) |
 | DNS wire format | `dns_wire.h` / `dns_wire.c` | 23 unit | RFC 1035 names with compression, bounds-checked readers |
 | **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | **68 unit + 21 blackbox + interop** | **RFC 6762 responder: probe, announce, answer (A/AAAA/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression, conflict rename, goodbye; RFC 6763 service advertising; dual stack: ff02::fb, AAAA for every usable IPv6 address, answers on the query's family** |
 | **HTTP server** | **`http.h` / `http.c`** `http_tls.h/.c` | **45 unit + 22 blackbox + 9 HTTPS + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts; over IPv4 and IPv6; plain TCP or TLS 1.3 through a transport interface** |
-| **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **126 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
+| **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **127 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
 | **DHCPv6** (Milestone 12) | **`dhcpv6_client.h/.c`** | **20 unit + 2 blackbox + dnsmasq interop** | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
-| **TLS 1.3** (Milestone 13) | **`tls.h`** `tls.c` `tls_keys.h/.c` `tls_server.c` `tls_client.c` `tls_tcp.h/.c` `tls_crypto.h` `tls_crypto_mbedtls.h/.c` | **208 unit + 55 blackbox + OpenSSL/Python/curl interop** | **RFC 8446 client and server over the stack's TCP: `TLS_AES_128_GCM_SHA256`, x25519 / secp256r1 (HelloRetryRequest both ways), ECDSA P-256 and RSA-PSS certificates (chain + name + CertificateVerify checks), pre-shared keys (psk_dhe_ke, psk_ke) with binders, max_fragment_length for small buffers, KeyUpdate, close_notify; key schedule and records verified against RFC 8448; each role in its own file, so a server-only build does not link the client; all cryptography through a `tls_crypto_t` vtable (Mbed TLS 3.6 backend bundled); HTTPS demo** |
+| **TLS 1.3** (Milestone 13) | **`tls.h`** `tls.c` `tls_keys.h/.c` `tls_server.c` `tls_client.c` `tls_tcp.h/.c` `tls_crypto.h` `tls_crypto_mbedtls.h/.c` | **211 unit + 55 blackbox + OpenSSL/Python/curl interop** | **RFC 8446 client and server over the stack's TCP: `TLS_AES_128_GCM_SHA256`, x25519 / secp256r1 (HelloRetryRequest both ways), ECDSA P-256 and RSA-PSS certificates (chain + name + CertificateVerify checks), pre-shared keys (psk_dhe_ke, psk_ke) with binders, max_fragment_length for small buffers, KeyUpdate, close_notify; key schedule and records verified against RFC 8448; each role in its own file, so a server-only build does not link the client; all cryptography through a `tls_crypto_t` vtable (Mbed TLS 3.6 backend bundled); HTTPS demo** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
@@ -89,7 +89,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | Build | `CMakeLists.txt`, `Makefile` | — | CMake: libraries, tests, demos, FetchContent integration.  Makefile: Cortex-M0 size benchmarks and the no-division check |
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds and unit tests, an IPv4-only build, full blackbox suites over TAP and raw socket, and the ARM size benchmark on every push |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
-| **Total** | **29 source + 4 drivers** | **691 unit + 182 blackbox + 5 fuzz** | |
+| **Total** | **29 source + 4 drivers** | **729 unit + 182 blackbox + 5 fuzz** | |
 
 ### 🔜 Roadmap
 
@@ -106,17 +106,17 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | **9 — TFTP** | ✅ Done | Fetch files over the network — bootloader data path |
 | **10 — mDNS + DNS-SD** | ✅ Done | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
 | **11 — HTTP** | ✅ Done | HTTP/1.0 server — browse to your microcontroller at `http://pyro-dead01.local/` |
-| **12 — IPv6** | ✅ Done | Dual stack: IPv6 + ICMPv6, neighbor discovery + DAD, UDP and TCP over IPv6, router discovery + SLAAC, DHCPv6 (stateless + stateful), MLD, mDNS (AAAA, ff02::fb) and HTTP over IPv6 — 7.5 KB flash for a dual-stack UDP echo on Cortex-M0 |
-| **13 — TLS 1.3** | ✅ Done | Encrypted TCP, client and server: certificates (ECDSA, RSA-PSS) and pre-shared keys, x25519 / P-256 with HelloRetryRequest, `max_fragment_length` for small buffers, KeyUpdate — pluggable crypto backend (Mbed TLS bundled); `https://10.0.0.2/` from the HTTPS demo — 7.0 KB of protocol code on Cortex-M0 for a server, 10.5 KB for both roles |
+| **12 — IPv6** | ✅ Done | Dual stack: IPv6 + ICMPv6, neighbor discovery + DAD, UDP and TCP over IPv6, router discovery + SLAAC, DHCPv6 (stateless + stateful), MLD, mDNS (AAAA, ff02::fb) and HTTP over IPv6 — 7.8 KB flash for a dual-stack UDP echo on Cortex-M0 |
+| **13 — TLS 1.3** | ✅ Done | Encrypted TCP, client and server: certificates (ECDSA, RSA-PSS) and pre-shared keys, x25519 / P-256 with HelloRetryRequest, `max_fragment_length` for small buffers, KeyUpdate — pluggable crypto backend (Mbed TLS bundled); `https://10.0.0.2/` from the HTTPS demo — 7.1 KB of protocol code on Cortex-M0 for a server, 10.5 KB for both roles |
 | **14 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
 ### 📐 Target Platforms
 
 | Chip | Flash | RAM | Cost | smallest_tcp | lwIP UDP |
 |---|---|---|---|---|---|
-| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ UDP: 2.6 KB + buffers | ❌ 10 KB code alone |
+| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ UDP: 2.8 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (6.1 KB), mDNS (9.0 KB), HTTP (10.5 KB) or dual-stack UDP (7.5 KB) | ⚠️ Tight with app |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (6.6 KB), mDNS (9.2 KB), HTTP (10.9 KB) or dual-stack UDP (7.8 KB) | ⚠️ Tight with app |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 
@@ -136,8 +136,8 @@ ctest --test-dir build --output-on-failure
 
 | Option | Default | Effect |
 |---|---|---|
-| `SMALLEST_TCP_BUILD_TESTS` | ON at top level | Unit tests (`ctest`) |
-| `SMALLEST_TCP_BUILD_DEMO` | ON at top level | Demo applications |
+| `SMALLEST_TCP_BUILD_TESTS` | ON at top level, OFF when cross-compiling | Unit tests (`ctest`) |
+| `SMALLEST_TCP_BUILD_DEMO` | ON at top level, OFF when cross-compiling | Demo applications |
 | `SMALLEST_TCP_BUILD_DRIVERS` | ON at top level | Platform MAC drivers (TAP and raw socket on Linux, BPF on macOS) |
 | `SMALLEST_TCP_IPV6` | ON | Dual stack: IPv6, ICMPv6, NDP, MLD in the core (`NET_USE_IPV6`); OFF for IPv4 only |
 | `SMALLEST_TCP_UDP` | ON | UDP in the core (`NET_USE_UDP`) and the libraries over it |
@@ -147,6 +147,8 @@ ctest --test-dir build --output-on-failure
 | `SMALLEST_TCP_CONFIG_FILE` | empty | Your configuration header, included first by `net_config.h` (`NET_CONFIG_FILE`) |
 
 "At top level" means ON when smallest_tcp is the top-level project and OFF when it is pulled in with FetchContent.  With UDP or TCP off, the tests and demos (which use the whole stack) are not built.  The protocol options are `PUBLIC` compile definitions of the core, so everything linked against it is compiled with the same `net_t` layout ([configuration.md §3](docs/design/configuration.md#3-library-and-application-must-agree)).
+
+**Cross-compiling the libraries** for a Cortex-M: `cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake` (GNU Arm toolchain; Cortex-M4 unless `-DSMALLEST_TCP_ARM_CPU=` names another core).  The tests and demos are hosted programs and stay off, and so does the bundled Mbed TLS backend (`SMALLEST_TCP_TLS`), whose configuration needs a platform entropy source a bare-metal target does not have; the TLS protocol library itself is built.
 
 **CMake output directory layout** — binaries mirror the source tree:
 
@@ -530,7 +532,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
 
 - **[Architecture](docs/architecture.md)** — How the stack is composed, layers, receive and transmit paths, `net_t`
 - **[Integrating Protocol Modules](docs/integrating-modules.md)** — The one recipe for DHCP, TFTP, mDNS, HTTP and TLS, with a complete main loop
-- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (4.1× smaller stack code)
+- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (3.7× smaller stack code)
 - **Design Documents:**
   - [Coding Rules](docs/design/coding-rules.md) — C99, memory, parsing received data, no run-time division, comments
   - [MAC HAL](docs/design/mac-hal.md) — The driver interface: poll/peek/discard/send; `net_poll()` copies each frame once into the receive buffer
