@@ -93,7 +93,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-DHCPv4-022 | MUST | Include DHCP Message Type option (53) = 3 (REQUEST) | RFC 2132 §9.6 | TEST-DHCPv4-022 |
-| REQ-DHCPv4-023 | MUST | Include Server Identifier option (54) with selected server's IP | RFC 2131 §4.3.2 | TEST-DHCPv4-023 |
+| REQ-DHCPv4-023 | MUST | Include Server Identifier option (54) with selected server's IP in the REQUEST that selects an offer — and MUST NOT in RENEWING or REBINDING | RFC 2131 §4.3.2 | TEST-DHCPv4-023 |
 | REQ-DHCPv4-024 | MUST | Include Requested IP Address option (50) with offered IP | RFC 2131 §4.3.2 | TEST-DHCPv4-024 |
 | REQ-DHCPv4-025 | MUST | In SELECTING state: broadcast DHCPREQUEST (ciaddr=0) | RFC 2131 §4.3.2 | TEST-DHCPv4-025 |
 | REQ-DHCPv4-026 | MUST | In RENEWING state: unicast DHCPREQUEST to server (ciaddr=current IP) | RFC 2131 §4.3.2 | TEST-DHCPv4-026 |

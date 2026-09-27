@@ -71,8 +71,9 @@ static void send_discover(net_t *net, dhcpv4_client_t *c) {
                         NET_DEFAULT_TTL);
 }
 
-/* REQ-DHCPv4-022..027: selecting an offer (broadcast, Requested IP), or
- * extending the lease — to our server (RENEWING) or any (REBINDING) */
+/* REQ-DHCPv4-022..027: selecting an offer (broadcast, naming the server and
+ * the address), or extending the lease — to our server (RENEWING) or any
+ * (REBINDING), naming neither (RFC 2131 §4.3.2) */
 static void send_request(net_t *net, dhcpv4_client_t *c) {
   uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
   uint16_t pos = DHCP_OFF_OPTIONS;
@@ -83,9 +84,10 @@ static void send_request(net_t *net, dhcpv4_client_t *c) {
   net_write16be(msg + DHCP_OFF_FLAGS, DHCP_FLAG_BROADCAST);
   net_write32be(msg + DHCP_OFF_CIADDR, src);
   pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_REQUEST);
-  pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
-  if (c->state == DHCPV4_CLI_REQUESTING)
+  if (c->state == DHCPV4_CLI_REQUESTING) {
+    pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
     pos = dhcp_put_u32(msg, pos, DHCP_OPT_REQUESTED_IP, c->offered_ip);
+  }
   pos = put_param_request_list(msg, pos, c->opt_table);
   udp_send_inplace_from(net, src, to_server ? c->server_ip : IPV4_BROADCAST,
                         to_server ? c->server_mac : broadcast_mac,

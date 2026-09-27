@@ -710,6 +710,35 @@ TEST(test_dhcp_client_unicasts_to_the_server_mac) {
   ASSERT_MEM_EQ(sent_frame, server_mac, 6);
 }
 
+/* RFC 2131 §4.3.2: only a REQUEST selecting an offer names the server;
+   one extending the lease MUST NOT carry the Server Identifier */
+static uint32_t sent_server_id(void) {
+  return find_opt_u32(sent_dhcp() + DHCP_OFF_OPTIONS,
+                      sent_dhcp_len() - DHCP_OFF_OPTIONS, OPT_SERVER_ID);
+}
+
+TEST(test_dhcp_client_server_id_only_when_selecting) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  setup();
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_REQUEST);
+  ASSERT_EQ(sent_server_id(), SERVER_IP);
+
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_REQUEST);
+  ASSERT_EQ(sent_server_id(), 0u);
+  ASSERT_TRUE(is_u32(clock_at_state(DHCPV4_CLI_REBINDING, 1u, 4000u), 3150u));
+  ASSERT_EQ(sent_ip_dst(), BROADCAST_IP);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_REQUEST);
+  ASSERT_EQ(sent_server_id(), 0u);
+}
+
 /* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again */
 TEST(test_dhcp_client_renewal_restarts_lease) {
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -1062,6 +1091,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_renew_rebind_timing);
   RUN_TEST(test_dhcp_client_renewal_restarts_lease);
   RUN_TEST(test_dhcp_client_unicasts_to_the_server_mac);
+  RUN_TEST(test_dhcp_client_server_id_only_when_selecting);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);

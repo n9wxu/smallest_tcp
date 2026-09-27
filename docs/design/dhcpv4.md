@@ -199,9 +199,14 @@ whichever header came first.
 |---|---|---|---|---|---|---|
 | DISCOVER | `send_discover()` | broadcast | 0 | 53, 55 | 0.0.0.0 → 255.255.255.255 | broadcast |
 | REQUEST (REQUESTING) | `send_request()` | broadcast | 0 | 53, 54, 50, 55 | 0.0.0.0 → 255.255.255.255 | broadcast |
-| REQUEST (RENEWING) | `send_request()` | broadcast | our address | 53, 54, 55 | our address → server | the server's (`server_mac`) |
-| REQUEST (REBINDING) | `send_request()` | broadcast | our address | 53, 54, 55 | our address → 255.255.255.255 | broadcast |
+| REQUEST (RENEWING) | `send_request()` | broadcast | our address | 53, 55 | our address → server | the server's (`server_mac`) |
+| REQUEST (REBINDING) | `send_request()` | broadcast | our address | 53, 55 | our address → 255.255.255.255 | broadcast |
 | RELEASE | `dhcpv4_client_release()` | — | our address | 53, 54 | our address → server | the server's (`server_mac`) |
+
+Only a REQUEST that selects an offer names the server (54) and the
+address (50); one that extends a lease MUST NOT carry either (RFC 2131
+§4.3.2, Table 5) — the address is in `ciaddr`, and any server may answer a
+rebinding client.  The Server Identifier used to go in all three.
 
 The broadcast flag asks the server to broadcast its replies: before a
 lease the stack accepts only broadcast (and 0.0.0.0) IPv4 destinations,
@@ -448,7 +453,6 @@ the halving is a shift: no multiplication and no division.
 
 | Item | Notes |
 |---|---|
-| RENEWING/REBINDING REQUEST carries the Server Identifier | RFC 2131 §4.3.2 says it MUST NOT; known deviation, not fixed |
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
 | An ACK without a lease time (and none remembered) leaves the client BOUND for good, as an infinite lease does | Servers must send option 51 in an ACK |
