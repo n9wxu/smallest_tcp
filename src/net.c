@@ -16,6 +16,13 @@
 #include "ipv6.h"
 #endif
 
+/* The smallest frame buffers the protocols compiled in can work with */
+#if NET_USE_TCP
+#define NET_MIN_FRAME TCP_MIN_FRAME
+#else
+#define NET_MIN_FRAME ETH_HDR_SIZE
+#endif
+
 net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
                    uint8_t *tx_buf, uint16_t tx_size, const uint8_t mac[6],
                    const net_mac_t *driver, void *driver_ctx) {
@@ -23,7 +30,7 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
 
   if (!net || !rx_buf || !tx_buf || !driver)
     return NET_ERR_INVALID_PARAM;
-  if (rx_size < ETH_HDR_SIZE || tx_size < ETH_HDR_SIZE)
+  if (rx_size < NET_MIN_FRAME || tx_size < NET_MIN_FRAME)
     return NET_ERR_BUF_TOO_SMALL;
 
   memset(net, 0, sizeof(*net));

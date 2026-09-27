@@ -4,6 +4,7 @@
  */
 
 #include "net.h"
+#include "tcp.h"
 #include "test_main.h"
 #include <string.h>
 
@@ -98,6 +99,31 @@ TEST(test_net_init_buf_too_small) {
   net_err_t err =
       net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac, &dummy);
   ASSERT_EQ(err, NET_ERR_BUF_TOO_SMALL);
+}
+
+/* TCP needs room for a SYN with every option a peer may send.  A buffer
+ * that would leave it an MSS of 0 — 54 bytes, 74 with IPv6 — is refused
+ * at once. */
+TEST(test_net_init_refuses_buffers_too_small_for_tcp) {
+  uint8_t rx[TCP_MIN_FRAME], tx[TCP_MIN_FRAME];
+  uint16_t no_mss = NET_USE_IPV6 ? 74 : 54;
+  net_t net;
+  int dummy = 0;
+
+  ASSERT_EQ(TCP_MIN_FRAME, NET_USE_IPV6 ? 114 : 94);
+  ASSERT_EQ(net_init(&net, rx, no_mss, tx, sizeof(tx), NULL, &stub_mac, &dummy),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(net_init(&net, rx, sizeof(rx), tx, no_mss, NULL, &stub_mac, &dummy),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(net_init(&net, rx, TCP_MIN_FRAME - 1, tx, sizeof(tx), NULL,
+                     &stub_mac, &dummy),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(net_init(&net, rx, sizeof(rx), tx, TCP_MIN_FRAME - 1, NULL,
+                     &stub_mac, &dummy),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac,
+                     &dummy),
+            NET_OK);
 }
 
 TEST(test_net_init_null_params) {
@@ -206,6 +232,7 @@ int main(void) {
   RUN_TEST(test_net_init_null_mac_uses_default);
   RUN_TEST(test_net_init_defaults_applied);
   RUN_TEST(test_net_init_buf_too_small);
+  RUN_TEST(test_net_init_refuses_buffers_too_small_for_tcp);
   RUN_TEST(test_net_init_null_params);
   RUN_TEST(test_mac_equal);
   RUN_TEST(test_mac_is_broadcast);

@@ -92,6 +92,15 @@ sends a segment `net_poll()` would truncate; the largest segment we send comes f
 need not be equal: either can be the smaller
 ([tcp.md §4.4](tcp.md#44-segment-size)).
 
+**The smallest buffers.**  With TCP compiled in, `net_init()` refuses a
+buffer smaller than `TCP_MIN_FRAME` (`tcp.h`): 94 bytes, or 114 with IPv6 —
+an Ethernet and IP header and the longest TCP header, 60 bytes.  The RX
+buffer must take any peer's SYN, and a peer may fill its header with 40
+bytes of options (Linux's SYN carries 20); a TX buffer of that size carries
+40 bytes a segment.  A buffer of 54 bytes (74 with IPv6) used to be
+accepted and left TCP an MSS of 0, and `net_init()` took buffers as small
+as an Ethernet header.  Without TCP, that is still the minimum.
+
 ## 4. Per-module memory
 
 Each connection or module instance is an application structure plus any
@@ -125,7 +134,7 @@ For whole-build flash and RAM figures, see
 
 | Function | Validates | Sets |
 |---|---|---|
-| `net_init()` | Non-NULL `net`, buffers and driver; each buffer ≥ 14 bytes (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with MAC bytes 2..5 (`net_random_seed()`).  Does **not** call `driver->init()`. |
+| `net_init()` | Non-NULL `net`, buffers and driver; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with MAC bytes 2..5 (`net_random_seed()`).  Does **not** call `driver->init()`. |
 | `tcp_conn_init()` | Non-NULL connection and buffer tables/contexts | CLOSED, initial RTO, default MSS |
 | `tcp_saw_tx_init()`, `tcp_saw_rx_init()` | — | Buffer and capacity |
 | `http_conn_init()` | Buffers present; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |

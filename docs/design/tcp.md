@@ -527,6 +527,11 @@ segments `net_poll()` truncated, so the RX buffer had to be at least as large;
 and with a frame buffer larger than a frame, IPv6 advertised 1460, 20 bytes
 more than an Ethernet frame carries after the IPv6 header.
 
+Neither is ever 0: with TCP compiled in, `net_init()` refuses a buffer
+smaller than `TCP_MIN_FRAME` — room for a SYN with the longest header a peer
+may send, 60 bytes, over IPv6 when it is compiled in (94 bytes, or 114).  A
+buffer of 54 bytes over IPv4 used to leave an MSS of 0.
+
 ### 4.5 Receive window
 
 `rcv_wnd` is the RX buffer's free space.  It is advertised in every segment and

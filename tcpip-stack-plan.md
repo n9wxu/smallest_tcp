@@ -282,9 +282,9 @@ starts with a unit test that fails on the current code.
 - [ ] A busy driver fails `tcp_connect()` / `tcp6_connect()` with
       `NET_ERR_BUSY`, while every later segment treats it as a loss and
       retransmits
-- [ ] A frame buffer too small for a TCP header (< 54 B IPv4, < 74 B IPv6)
+- [x] A frame buffer too small for a TCP header (< 54 B IPv4, < 74 B IPv6)
       gives an MSS of 0 rather than refusing TCP at `net_init()`, which
-      accepts buffers of 14 B
+      accepts buffers of 14 B — `net_init()` requires `TCP_MIN_FRAME`
 
 **Core** ([docs/design/mac-hal.md](docs/design/mac-hal.md),
 [docs/design/configuration.md](docs/design/configuration.md))

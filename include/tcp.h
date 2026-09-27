@@ -33,6 +33,19 @@
 #define TCP_OFF_URG 18
 #define TCP_OFF_OPT 20
 #define TCP_HDR_SIZE 20 /**< Without options */
+#define TCP_HDR_MAX 60  /**< With the most options (data offset 15) */
+
+/**
+ * The smallest frame buffers TCP works with; net_init() refuses smaller
+ * ones.  The RX buffer must take any peer's SYN, whose header may carry 40
+ * bytes of options, over IPv6 when that is compiled in; a TX buffer the
+ * same size carries 40 bytes a segment.
+ */
+#if NET_USE_IPV6
+#define TCP_MIN_FRAME (ETH_HDR_SIZE + IPV6_HDR_SIZE + TCP_HDR_MAX)
+#else
+#define TCP_MIN_FRAME (ETH_HDR_SIZE + IPV4_HDR_SIZE + TCP_HDR_MAX)
+#endif
 
 #define TCP_FLAG_FIN 0x01u
 #define TCP_FLAG_SYN 0x02u

@@ -129,7 +129,9 @@ typedef struct {
 /**
  * Initialise a network context: buffers, MAC address (NULL for
  * NET_DEFAULT_MAC), MAC driver, and the net_config.h identity defaults.
- * @return NET_OK, NET_ERR_INVALID_PARAM, or NET_ERR_BUF_TOO_SMALL.
+ * @return NET_OK, NET_ERR_INVALID_PARAM, or NET_ERR_BUF_TOO_SMALL for a
+ *         buffer smaller than TCP_MIN_FRAME (tcp.h) with TCP compiled in,
+ *         else than an Ethernet header.
  */
 net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
                    uint8_t *tx_buf, uint16_t tx_size, const uint8_t mac[6],
