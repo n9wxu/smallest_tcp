@@ -156,8 +156,16 @@ compared in full and case-insensitively with `net_equal_nocase()`; the
 old parser looked only at the first two letters — with a value of
 8 … 65464 sets the block size; `parse_decimal()` stops accumulating past
 65464, so a long digit string cannot overflow.  Other options are
-ignored.  The client then enters RECEIVING and sends ACK 0.  An OACK
-that arrives in RECEIVING is ignored.
+ignored.  The client then enters RECEIVING and sends ACK 0.
+
+**Repeated OACK.**  If ACK 0 is lost, the server sends its OACK again.
+In RECEIVING, an OACK that arrives while `next_block` is still 1 — no
+DATA yet — is answered with ACK 0 again; its options are not parsed a
+second time.  Answering matters even though the retransmission timer
+would resend ACK 0 on its own: every datagram from the server restarts
+that timer (§8), so a server that repeats its OACK more often than
+every 3 s would otherwise never hear ACK 0, and the transfer would stall
+until the server gave up.  Once DATA 1 has arrived, an OACK is ignored.
 
 **Fallback.**  DATA in REQUESTING means the server ignored the option:
 the block size returns to 512 and the block is processed as usual.
@@ -253,7 +261,6 @@ as well: the client answers each duplicate block.
 
 | Item | Notes |
 |---|---|
-| A duplicate OACK (our ACK 0 was lost) is not answered, yet it restarts the retransmission timer | If the server retransmits its OACK more often than every 3 s, the client never resends ACK 0 and the transfer stalls until the server gives up |
 | An OACK `blksize` larger than the one requested is accepted | RFC 2348 lets the server only lower it; a larger block may not fit the RX buffer |
 | The ERROR message passed to `on_done` is not checked for a terminating NUL | A malformed ERROR makes the callback read past the datagram |
 | Fixed local port for every transfer | RFC 1350 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
@@ -267,11 +274,12 @@ The header documents `msg` as `""` on timeout; the code passes
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (17 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (18 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
-size and draws ACK 0, fallback when the server ignores the option,
+size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
+fallback when the server ignores the option,
 blksize option in the RRQ, RRQ and ACK retransmission, give-up after the
 maximum retries, timer restart on DATA.
 

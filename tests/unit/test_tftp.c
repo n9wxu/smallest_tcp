@@ -16,7 +16,7 @@
  *   REQ-TFTP-020,021   Tick retransmits last ACK / RRQ
  *   REQ-TFTP-023,024   Max retries → timeout reported
  *   REQ-TFTP-025,026   blksize option in RRQ
- *   REQ-TFTP-027,028   OACK: ACK(0) sent, blksize updated
+ *   REQ-TFTP-027,028   OACK: ACK(0) sent (again for a repeat), blksize updated
  *   REQ-TFTP-031       Server ignores blksize option (DATA(1) without OACK)
  */
 
@@ -526,6 +526,41 @@ TEST(test_tftp_oack_updates_blksize) {
   ASSERT_EQ(client.state, TFTP_STATE_RECEIVING);
 }
 
+/* REQ-TFTP-027 — a repeated OACK (our ACK 0 was lost) draws ACK(0) again */
+TEST(test_tftp_duplicate_oack_reacked) {
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 1);
+
+  uint8_t oack[64];
+  uint16_t olen = make_oack_blksize(oack, 256);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    olen);
+  send_count = 0;
+
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    olen);
+
+  ASSERT_EQ(send_count, 1);
+  uint16_t alen;
+  const uint8_t *a = get_tftp_payload(0, &alen);
+  ASSERT_EQ(net_read16be(a), (uint16_t)TFTP_OP_ACK);
+  ASSERT_EQ(net_read16be(a + 2), (uint16_t)0);
+  ASSERT_EQ(get_udp_dport(0), (uint16_t)SERVER_TID);
+  ASSERT_EQ(client.blksize, (uint16_t)256);
+
+  /* Once DATA 1 has arrived, a late OACK is not answered */
+  uint8_t full[256];
+  memset(full, 0x5A, 256);
+  uint8_t pkt[600];
+  uint16_t plen = make_data(pkt, 1, full, 256);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  send_count = 0;
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    olen);
+  ASSERT_EQ(send_count, 0);
+}
+
 /* REQ-TFTP-031 — server sends DATA(1) without OACK: fall back to 512 */
 TEST(test_tftp_fallback_no_oack) {
   setup();
@@ -673,6 +708,7 @@ int main(void) {
   RUN_TEST(test_tftp_stray_host_gets_error5);
   RUN_TEST(test_tftp_stray_error_not_answered);
   RUN_TEST(test_tftp_oack_updates_blksize);
+  RUN_TEST(test_tftp_duplicate_oack_reacked);
   RUN_TEST(test_tftp_fallback_no_oack);
   RUN_TEST(test_tftp_rrq_contains_blksize_option);
   RUN_TEST(test_tftp_tick_retransmits_rrq);

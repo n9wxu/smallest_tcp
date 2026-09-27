@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-27 (Tasks 1–13 complete: through Milestone 13, TLS 1.3, and the Linux raw-socket driver.  682 unit tests on macOS (693 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers.  Cortex-M0: 2.6 KB for a UDP echo, 7.5 KB dual stack, 7.0 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
+**Last updated:** 2026-09-27 (Tasks 1–13 complete: through Milestone 13, TLS 1.3, and the Linux raw-socket driver.  683 unit tests on macOS (694 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers.  Cortex-M0: 2.6 KB for a UDP echo, 7.5 KB dual stack, 7.0 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says

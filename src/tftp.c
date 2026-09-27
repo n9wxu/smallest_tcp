@@ -238,6 +238,8 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
   case TFTP_OP_OACK:
     if (c->state == TFTP_STATE_REQUESTING)
       oack_input(net, c, data, len);
+    else if (c->next_block == 1)
+      send_ack(net, c, 0); /* the server missed our ACK 0 */
     break;
   case TFTP_OP_DATA:
     data_input(net, c, data, len);
