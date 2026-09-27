@@ -3,7 +3,7 @@
 **Protocol:** Datagram Transport Layer Security 1.3  
 **Files:** `include/dtls.h`, `src/dtls.c`  
 **Shared:** `include/tls_crypto.h` (same backend vtable as TLS)  
-**Milestone:** 13  
+**Milestone:** 14  
 **Last updated:** 2026-03-21  
 **Status:** Preliminary / Pre-implementation
 

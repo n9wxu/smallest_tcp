@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**24 test suites, 476 tests total — all passing.** (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
+**28 test suites, 690 tests total — all passing** (CTest).  The four TLS suites need Mbed TLS and are built by CMake only; `make test` runs the other 24 (482 tests).  (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -34,7 +34,7 @@ verified at both the unit and integration levels:
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 20 | Stop-and-wait TX/RX buffers (incl. RX ring wrap) |
-| `test_tcp` | tests/unit/test_tcp.c | **39** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates |
+| `test_tcp` | tests/unit/test_tcp.c | **45** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken) |
 | `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 16 | DHCPv4 client + server (REQ-DHCPv4-*) |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
@@ -49,6 +49,10 @@ verified at both the unit and integration levels:
 | `test_mdns6` | tests/unit/test_mdns6.c | 19 | mDNS over IPv6: ff02::fb joined, probes / announcements / goodbyes on both families, AAAA per usable address (not tentative), answers on the query's family, A ↔ AAAA and SRV → AAAA additionals, QU and legacy unicast over IPv6, known-answer suppression, NSEC with AAAA, delayed shared answers, explicit AAAA, conflicts, re-announcing (RFC 6762 §6.2, §8.4, §20) |
 | `test_dhcpv6` | tests/unit/test_dhcpv6.c | 20 | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-*) |
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
+| `test_tls_crypto` | tests/unit/test_tls_crypto.c | 22 | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
+| `test_tls_keys` | tests/unit/test_tls_keys.c | 34 | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034) |
+| `test_tls_server` | tests/unit/test_tls_server.c | 103 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate, alerts (REQ-TLS-001, 018..025, 030, 031, 035..043) |
+| `test_tls_client` | tests/unit/test_tls_client.c | 49 | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate (REQ-TLS-010..017, 023, 031) |
 
 ### Running Unit Tests
 
@@ -373,6 +377,20 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | test_http_021 | — | Idle client reset after the 10 s request timeout (`sut_specific`) |
 | test_http_022 | RFC 9110 over IPv6 | The status page fetched from the demo's link-local address (Linux; skipped without host IPv6) |
 
+### Blackbox TLS 1.3 and HTTPS Coverage
+
+Run with `--tls-sut-bin ./build/demo/tls_echo_demo`, `--tls-client-bin
+./build/demo/tls_client_demo` and `--https-sut-bin ./build/demo/https_demo`
+(`--our-ip` is where the client demo finds its servers).  The peers are
+production TLS stacks on the test host — Python's ssl module, openssl
+s_client/s_server, curl — through the host's TCP to ours.
+
+| Suite | Tests | Checks |
+|---|---|---|
+| test_tls_conform.py (server) | 29 | Handshake with CA and name checks; 40 kB and full 16 kB-record echoes; close_notify; IP-address name; five in a row; TLS 1.2, plain HTTP and a tampered record refused (protocol_version, unexpected_message, bad_record_mac); half a ClientHello then RST; a ClientHello in 7-byte segments; coalesced records; x25519 and P-256; OpenSSL's default (post-quantum) ClientHello; no middlebox mode; no common group / suite / signature (handshake_failure); KeyUpdate; HelloRetryRequest; max_fragment_length 512; PSK (openssl, Python 3.13+), wrong PSK, unknown identity → certificate; IPv6 |
+| test_tls_client_conform.py (client) | 17 | SNI; 30 kB echo; RSA-PSS; no name check; max_fragment_length; KeyUpdate; wrong name (bad_certificate), untrusted chain (unknown_ca), TLS 1.2 server; optional and required client certificates; openssl s_server -rev; HRR from a P-256-only server; PSK against Python and certificate-less s_server (psk_dhe_ke, psk_ke), wrong PSK |
+| test_https_conform.py | 9 | GET / JSON / 20000-byte body / HEAD / 404 / 405 + Allow over TLS 1.3; by address; curl by name; five in a row |
+
 ### Fuzz Test Coverage
 
 | Test | REQ(s) | Description |
@@ -400,12 +418,13 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 | `blackbox-dhcp` | ci.yml | ubuntu-latest | DHCPv4 client suite against `dhcp_echo_demo` (TAP, raw socket) | push/PR |
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
+| `blackbox-tls` | ci.yml | ubuntu-latest | TLS 1.3 server, client and HTTPS suites against `tls_echo_demo`, `tls_client_demo`, `https_demo` with Python ssl, OpenSSL 3 and curl (TAP, raw socket) | push/PR |
 | `arm-size` | ci.yml | ubuntu-latest | Cortex-M0 size benchmark: UDP, UDP+TCP, UDP+mDNS, UDP+HTTP | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |
 
-The four Linux blackbox jobs and the nightly fuzz run as a two-leg matrix,
+The Linux blackbox jobs and the nightly fuzz run as a two-leg matrix,
 one leg per MAC driver.  `tests/blackbox/sut_net.sh up tap|raw` builds the
 link and exports `TEST_IF` (tap0 / veth-test, for Scapy and the host) and
 `SUT_IF` (tap0 / `raw:veth-sut`, the demos' interface argument).  A failure in
@@ -492,6 +511,8 @@ The `fuzz.yml` workflow includes the `fuzz-tcp-hw` job that:
 | 4 | REQ-TCP-130/132-134 | TCP_NODELAY, Keep-alive | Low (MAY) |
 | 5 | Blackbox ETH/ARP/IPv4/ICMPv4/UDP | Retroactive Scapy suites — **IMPLEMENTED** (5+8+7+7 tests, `run_blackbox.sh` runner) | ✅ Closed |
 | 6 | Hardware fixture | Procure BOM, set up self-hosted runner | Medium |
+| 7 | REQ-TLS-003 | TLS_CHACHA20_POLY1305_SHA256 (SHOULD) | Low |
+| 8 | TLS | Client certificates, session tickets / 0-RTT, record_size_limit (RFC 8449) | Low |
 
 ---
 

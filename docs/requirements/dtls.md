@@ -3,7 +3,7 @@
 **Protocol:** Datagram Transport Layer Security 1.3  
 **Primary RFC:** RFC 9147 — The Datagram Transport Layer Security (DTLS) Protocol Version 1.3  
 **Supporting:** RFC 8446 — TLS 1.3 (handshake and key derivation)  
-**Scope:** V1 (UDP security layer, Milestone 13)  
+**Scope:** V1 (UDP security layer, Milestone 14)  
 **Last updated:** 2026-03-21  
 **Status:** Preliminary — requirements captured pre-implementation
 

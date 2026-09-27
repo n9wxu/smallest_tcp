@@ -344,6 +344,28 @@ leftover SUT (e.g. the last `dhcp_echo_demo`) makes the next TAP suite fail
 to open `tap0` but goes unnoticed on the raw link.  `conftest.py` stops the
 DHCP SUT at session end for this reason.
 
+### 3.11 Raw-socket leg only: bulk transfers fail (TLS `bad_record_mac`)
+
+**Symptom:** small exchanges pass, but a large transfer from the host (the
+TLS suite's 40 kB echo or a full 16 kB record) fails in the `raw socket`
+leg: the SUT sends `bad_record_mac`, or an echo comes back altered.
+
+**Cause (fixed in tcp.c):** the kernel sends bulk data on a veth pair as
+GSO super-frames, which the raw-socket driver drops (they exceed one
+Ethernet frame).  The kernel then retransmits with different segment
+boundaries, so segments overlap data already received — and TCP used to
+append every acceptable segment at RCV.NXT without trimming it, repeating
+bytes.  TLS's record MAC caught what a plain TCP echo would have passed on
+silently.  tcp.c now skips the bytes before RCV.NXT, drops a segment that
+starts after a gap and processes a FIN only in sequence (`test_tcp`'s
+in-order delivery tests).  If this reappears, look at step 7 of
+`tcp_input_seg()` first.
+
+**Also on a persistent test host:** only one of `tap0` / `veth-test` may
+hold 10.0.0.100.  A downed `tap0` that keeps the address leaves a
+`linkdown` route the kernel still uses, and the raw leg cannot reach the
+SUT — `sut_net.sh down tap` before `up raw`.
+
 ---
 
 ## 4. Reading CI Failures Without a Browser

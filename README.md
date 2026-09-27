@@ -37,7 +37,7 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`), UDP echo server (ETH + ARP + IPv4 + I
 | Stack-internal state | **10 B** | ~2,619 B | **262× smaller** |
 
 The stack itself uses only **10 bytes** of static state. All other memory is application-owned buffers that you size to your needs.
-Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the mDNS + DNS-SD responder instead gives **9.3 KB flash / 0.7 KB RAM**; an HTTP server (with TCP) **11.0 KB flash / 1.7 KB RAM**. Dual stack — IPv6 with ICMPv6, neighbor discovery, SLAAC and MLD — makes the UDP echo **8.0 KB flash / 0.8 KB RAM**.
+Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the mDNS + DNS-SD responder instead gives **9.3 KB flash / 0.7 KB RAM**; an HTTP server (with TCP) **11.0 KB flash / 1.7 KB RAM**. Dual stack — IPv6 with ICMPv6, neighbor discovery, SLAAC and MLD — makes the UDP echo **8.0 KB flash / 0.8 KB RAM**. TLS 1.3 — client and server, certificates and pre-shared keys — is **10.3 KB** of protocol code plus a 440-byte connection, with the cryptography from a backend you choose (Mbed TLS is bundled).
 
 > 📐 See [docs/design/size-comparison.md](docs/design/size-comparison.md) for the full comparison methodology, per-module breakdowns, and analysis.
 
@@ -45,10 +45,10 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 
 ## 📊 Current Status
 
-**476 unit tests passing** across 24 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
-**127 blackbox conformance tests passing** across 9 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×21, HTTP ×22, IPv6 ×29), plus 5 fuzz tests and interop checks with Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`) and dnsmasq (DHCPv6) — all run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
+**690 unit tests passing** across 28 test suites, compiled with `-Wall -Wextra -Werror -pedantic`.  
+**182 blackbox conformance tests passing** across 12 suites (ARP ×5, IPv4 ×8, ICMPv4 ×7, UDP ×7, TCP ×20, DHCPv4 ×8, mDNS/DNS-SD ×21, HTTP ×22, IPv6 ×29, TLS server ×29, TLS client ×17, HTTPS ×9), plus 5 fuzz tests and interop checks with Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`), dnsmasq (DHCPv6), and OpenSSL, Python ssl and curl (TLS 1.3) — all run on every push/PR on Linux over both the TAP and the raw-socket driver, and locally on macOS (feth).
 
-### ✅ Implemented (Milestones 1–12)
+### ✅ Implemented (Milestones 1–13)
 
 | Component | File(s) | Tests | Description |
 |---|---|---|---|
@@ -60,7 +60,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | IPv4 | `ipv4.h` / `ipv4.c` | 10 unit + **8 blackbox** | Parse/build/send, protocol dispatch, broadcast detection, ICMP Protocol Unreachable |
 | ICMPv4 | `icmp.h` / `icmp.c` | 4 unit + **7 blackbox** | Echo reply (ping), destination unreachable, checksum validation |
 | UDP | `udp.h` / `udp.c` | 7 unit + **7 blackbox** | Parse/send, port dispatch, pseudo-header checksum, ICMP Port Unreachable |
-| **TCP** | **`tcp.h` / `tcp.c`** | **39 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit (data + FIN), MSS, window updates, persist timer, close** |
+| **TCP** | **`tcp.h` / `tcp.c`** | **45 unit + 20 blackbox + 5 fuzz** | **Full state machine, retransmit (data + FIN), MSS, window updates, persist timer, in-order delivery, close** |
 | TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | 20 | Stop-and-wait TX + RX buffers |
 | **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | **16 unit + 8 blackbox** | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), minimal stateless server, option callback API** |
 | TFTP | `tftp.h` / `tftp.c` | 15 unit | RFC 1350 TFTP client — block-read, retransmit, error handling |
@@ -70,6 +70,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | **HTTP server** | **`http.h` / `http.c`** | **45 unit + 22 blackbox + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts; over IPv4 and IPv6** |
 | **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **126 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged)** |
 | **DHCPv6** (Milestone 12) | **`dhcpv6_client.h/.c`** | **20 unit + 2 blackbox + dnsmasq interop** | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
+| **TLS 1.3** (Milestone 13) | **`tls.h/.c`** `tls_crypto.h` `tls_crypto_mbedtls.h/.c` | **208 unit + 55 blackbox + OpenSSL/Python/curl interop** | **RFC 8446 client and server over the stack's TCP: `TLS_AES_128_GCM_SHA256`, x25519 / secp256r1 (HelloRetryRequest both ways), ECDSA P-256 and RSA-PSS certificates (chain + name + CertificateVerify checks), pre-shared keys (psk_dhe_ke, psk_ke) with binders, max_fragment_length for small buffers, KeyUpdate, close_notify; key schedule and records verified against RFC 8448; all cryptography through a `tls_crypto_t` vtable (Mbed TLS 3.6 backend bundled); HTTPS demo** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
@@ -98,7 +99,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 | **10 — mDNS + DNS-SD** | ✅ Done | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
 | **11 — HTTP** | ✅ Done | HTTP/1.0 server — browse to your microcontroller at `http://pyro-dead01.local/` |
 | **12 — IPv6** | ✅ Done | Dual stack: IPv6 + ICMPv6, neighbor discovery + DAD, UDP and TCP over IPv6, router discovery + SLAAC, DHCPv6 (stateless + stateful), MLD, mDNS (AAAA, ff02::fb) and HTTP over IPv6 — 8.0 KB flash for a dual-stack UDP echo on Cortex-M0 |
-| **13 — TLS 1.3** | Planned | Encrypted TCP — pluggable crypto backend (mbedTLS/wolfSSL/BearSSL), PSK + cert modes, `max_fragment_length` for small buffers |
+| **13 — TLS 1.3** | ✅ Done | Encrypted TCP, client and server: certificates (ECDSA, RSA-PSS) and pre-shared keys, x25519 / P-256 with HelloRetryRequest, `max_fragment_length` for small buffers, KeyUpdate — pluggable crypto backend (Mbed TLS bundled); `https://10.0.0.2/` from the HTTPS demo — 10.3 KB of protocol code on Cortex-M0 |
 | **14 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
 ### 📐 Target Platforms
@@ -120,7 +121,7 @@ Adding a TCP echo server brings the total to **6.8 KB flash / 1.1 KB RAM**; the 
 ```bash
 make          # Build library + run tests + demo
 make lib      # Build static library only
-make test     # Build and run all 476 unit tests (24 suites; the raw-socket driver's live tests need root)
+make test     # Build and run 482 unit tests (24 suites; the raw-socket driver's live tests need root; the TLS suites are CMake-only)
 make demo     # Build the UDP echo server demo
 make clean    # Clean all build artifacts
 ```
@@ -132,6 +133,8 @@ make arm-size             # Cortex-M0 sizes, UDP only (the lwIP comparison)
 make arm-size-tcp         # Cortex-M0 sizes, UDP + TCP
 make arm-size-mdns        # Cortex-M0 sizes, UDP + mDNS/DNS-SD responder
 make arm-size-http        # Cortex-M0 sizes, UDP + HTTP server (with TCP)
+make arm-size-ipv6        # Cortex-M0 sizes, dual-stack UDP echo
+make arm-size-tls         # Cortex-M0 size of tls.c (TLS 1.3; the crypto backend is extra)
 bash bench/build_lwip.sh  # Build lwIP 2.2.1 for comparison (fetched on first run)
 ```
 
@@ -150,7 +153,10 @@ ctest --test-dir build --output-on-failure
 | What | Path after `cmake --build build` |
 |---|---|
 | Unit tests | `build/tests/test_tcp`, `build/tests/test_arp`, … |
-| Demo binaries | `build/demo/tcp_echo_demo`, `build/demo/frame_dump` |
+| Demo binaries | `build/demo/tcp_echo_demo`, `build/demo/frame_dump`, `build/demo/https_demo`, … |
+
+CMake fetches Mbed TLS 3.6 (pinned by SHA-256) for the TLS backend and the TLS
+demos and tests; `-DSMALLEST_TCP_TLS=OFF` builds without it.
 
 > ⚠️ **Do not** use `build/tcp_echo_demo` — that path does not exist.
 > Always use `build/demo/tcp_echo_demo`.  Getting this wrong is the most
@@ -241,6 +247,29 @@ sudo python3 -m pytest tests/blackbox/test_http_conform.py \
 sudo tests/blackbox/http_interop.sh ./build/demo/http_demo
 ```
 
+#### Option D2 — TLS 1.3 and HTTPS suites
+
+The TLS tests start their SUTs themselves (`tls_echo_demo` on port 4433,
+`https_demo` on 443, `tls_client_demo` per test, which connects to servers the
+tests run on `--our-ip`); the peers are Python ssl, openssl and curl.  No
+RST-drop rule:
+
+```bash
+cmake --build build --target tls_echo_demo tls_client_demo https_demo
+sudo python3 -m pytest tests/blackbox/test_tls_conform.py \
+    tests/blackbox/test_tls_client_conform.py tests/blackbox/test_https_conform.py \
+    --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \
+    --tls-sut-bin ./build/demo/tls_echo_demo \
+    --tls-client-bin ./build/demo/tls_client_demo \
+    --https-sut-bin ./build/demo/https_demo -v
+
+# By hand:
+sudo ./build/demo/https_demo &
+curl --cacert tests/tls/ca.pem https://10.0.0.2/
+```
+
+The certificates and keys in `tests/tls` are for testing only.
+
 #### Option E — any suite over the raw-socket driver (no TUN)
 
 Every demo takes its interface as the first argument: `tap0` (the default) or
@@ -256,7 +285,7 @@ sudo tests/blackbox/run_blackbox.sh --sut-bin ./build/demo/tcp_echo_demo \
 sudo tests/blackbox/sut_net.sh down raw
 ```
 
-The suites that launch their own SUT (DHCPv4, mDNS, HTTP) take
+The suites that launch their own SUT (DHCPv4, mDNS, HTTP, TLS) take
 `--sut-iface "$SUT_IF"`; the interop scripts take it as a second argument.  Leave
 out `--rst-drop` for the HTTP suite, as in Option D.  On a real network:
 `sudo ./build/demo/http_demo raw:eth0` — the driver keeps the interface in
@@ -282,7 +311,7 @@ ping -6 fe80::ff:fede:ad01%tap0
 ### Running Blackbox Conformance Tests (macOS)
 
 The same suites run on macOS over a `feth` pair: the tests use `feth0`, the demos
-open `feth1` through BPF.  All 127 tests plus the `dns-sd` and browse-by-name interop checks pass (the IPv6 suite's host ping, UDP and TCP checks need `sudo ifconfig feth0 inet6 -ifdisabled`; reaching the SLAAC address from the host is Linux-only).
+open `feth1` through BPF.  All 182 tests plus the `dns-sd` and browse-by-name interop checks pass — the TLS suites with Homebrew's `openssl` first in `PATH` (not the system LibreSSL), Python ≥ 3.13 for the PSK tests, and their IPv6 test Linux-only (the IPv6 suite's host ping, UDP and TCP checks need `sudo ifconfig feth0 inet6 -ifdisabled`; reaching the SLAAC address from the host is Linux-only).
 
 ```bash
 # Once per boot (root): create the pair.  10.0.0.100, the tests' source
@@ -294,7 +323,7 @@ sudo ifconfig feth0 inet 10.0.0.1/24 up && sudo ifconfig feth1 up
 # Once: Python deps in a venv (Homebrew Python refuses global pip installs)
 python3 -m venv .venv && .venv/bin/pip install -r tests/blackbox/requirements.txt
 
-# Build and run everything (ARP … TCP, DHCPv4, mDNS, HTTP, interop checks)
+# Build and run everything (ARP … TCP, DHCPv4, mDNS, HTTP, TLS, interop checks)
 cmake -S . -B build && cmake --build build
 tests/blackbox/run_blackbox_macos.sh build
 ```
@@ -340,6 +369,8 @@ That's it! Your app gets the headers and library automatically. When included vi
 | `smallest_tcp::mdns` | mDNS + DNS-SD responder, DNS wire helpers, IGMPv2 (optional) |
 | `smallest_tcp::http` | HTTP/1.0 server (optional) |
 | `smallest_tcp::dhcpv6_client` | DHCPv6 client (optional; with `SMALLEST_TCP_IPV6`) |
+| `smallest_tcp::tls` | TLS 1.3 protocol (optional; no dependencies — bring a `tls_crypto_t` backend) |
+| `smallest_tcp::tls_mbedtls` | The `tls_crypto_t` backend on Mbed TLS 3.6 (optional; `SMALLEST_TCP_TLS`, fetched by CMake) |
 | `smallest_tcp::driver_tap` | Linux TAP MAC driver (optional, top-level only) |
 | `smallest_tcp::driver_rawsock` | Linux raw-socket (`AF_PACKET`) MAC driver (optional, top-level only) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (optional, top-level only) |
@@ -364,6 +395,9 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 │  Owns all buffers and conn state    │
 ├─────────────────────────────────────┤
 │  L7: dhcp ✅ tftp ✅ mdns ✅ http ✅│  ← optional, link what you need
+├─────────────────────────────────────┤
+│  TLS 1.3: tls.c ✅ ── tls_crypto_t  │  ← optional; crypto backend
+│           (Mbed TLS backend ✅)     │    (vtable) is yours to pick
 ├─────────────────────────────────────┤
 │  L4: udp.c ✅       tcp.c ✅       │  ← optional independently
 ├─────────────────────────────────────┤
@@ -404,7 +438,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
   - [mDNS + DNS-SD](docs/design/mdns.md) — Zero-config hostname + service discovery design, probing/announcing state machine, DNS-SD PTR/SRV/TXT composition *(Milestone 10 — implemented)*
   - [HTTP](docs/design/http.md) — HTTP/1.0 server on the stop-and-wait TCP: connection slots, streaming, TIME_WAIT recycling, lingering close *(Milestone 11 — implemented)*
-  - [TLS 1.3](docs/design/tls.md) — Pluggable crypto backend, PSK + cert modes, record + handshake SM *(Milestone 13)*
+  - [TLS 1.3](docs/design/tls.md) — Client and server over the stack's TCP, pluggable crypto backend (Mbed TLS bundled), certificates + PSK, HelloRetryRequest, max_fragment_length, RFC 8448-verified key schedule *(Milestone 13 — implemented)*
   - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 14)*
 - **[RFC Requirements](docs/requirements/)** — RFC-traced requirements across 20 protocol specifications:
   - [mDNS](docs/requirements/mdns.md) — RFC 6762: probing, announcing, responding, goodbye, known-answer suppression

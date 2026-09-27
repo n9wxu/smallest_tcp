@@ -33,6 +33,7 @@ App links: eth.o + arp.o + ipv4.o + ipv6.o + icmpv4.o +     → Dual-stack full
 - IPv6 requires `ndp.c` + `icmpv6.c` for address resolution (NDP runs over ICMPv6).
 - `udp.c` and `tcp.c` work with either or both IP versions.
 - L7 protocols (`dhcpv4_client.c`, `dhcpv4_server.c`, `dhcpv6.c`, `dns.c`, `tftp.c`, `mdns.c`, `http.c`) are independently optional.
+- TLS 1.3 (`tls.c`, [design](design/tls.md)) is optional and independent of the transport: the application moves ciphertext between TCP and the TLS connection's buffers.  All its cryptography comes through a `tls_crypto_t` vtable (a Mbed TLS backend is bundled as its own library).
 
 ## 3. Layer Architecture
 
@@ -43,6 +44,8 @@ App links: eth.o + arp.o + ipv4.o + ipv6.o + icmpv4.o +     → Dual-stack full
 │  Uses factory methods to create structures    │
 ├──────────────────────────────────────────────┤
 │  L7: dhcpv4  dhcpv6  dns  tftp  mdns  http   │  ← optional, link what you need
+├──────────────────────────────────────────────┤
+│  TLS 1.3: tls ── tls_crypto_t (Mbed TLS …)   │  ← optional, over tcp
 ├──────────────────────────────────────────────┤
 │  L4: udp               tcp                    │  ← optional independently
 ├──────────┬───────────────────────┬───────────┤
@@ -372,6 +375,10 @@ smallest_tcp/
 ```
 
 **Implementation status (as of 2026-03-19):** 8 source files, 8 test files, **70 unit tests all passing** with `-Wall -Wextra -Werror -pedantic`. Layers through UDP (Tasks 1–5) are complete. TCP (Task 6) is next.
+
+> The tree above is from that date.  Since then TCP, DHCPv4/v6, TFTP, mDNS +
+> DNS-SD, HTTP, IPv6 and TLS 1.3 have been added (Milestones 6–13); see the
+> README for the current modules, tests and sizes.
 
 ## References
 

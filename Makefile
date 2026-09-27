@@ -259,6 +259,8 @@ ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=
 #                  igmp.c; one multicast group)
 #   arm-size-http  UDP echo + HTTP server, one connection slot (adds tcp.c,
 #                  tcp_buf_saw.c, http.c)
+#   arm-size-ipv6  UDP echo, dual stack
+#   arm-size-tls   tls.c alone (TLS 1.3 client + server protocol code)
 # The first two compile multicast RX out (NET_MAX_MCAST_GROUPS=0): neither
 # app joins a group, and the lwIP build has IGMP off.
 ARM_NOMCAST := -DNET_MAX_MCAST_GROUPS=0
@@ -279,7 +281,7 @@ ARM_MDNS_OBJS := $(patsubst %.c,$(BUILD)/arm/mdns/%.o,$(ARM_MDNS_SRCS))
 ARM_HTTP_OBJS := $(patsubst %.c,$(BUILD)/arm/http/%.o,$(ARM_HTTP_SRCS))
 ARM_IPV6_OBJS := $(patsubst %.c,$(BUILD)/arm/ipv6/%.o,$(ARM_IPV6_SRCS))
 
-.PHONY: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6
+.PHONY: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 arm-size-tls
 
 arm-size: $(BUILD)/arm/udp/size_measure.elf
 	@echo ""
@@ -370,6 +372,17 @@ $(BUILD)/arm/ipv6/size_measure.elf: $(ARM_IPV6_OBJS)
 $(BUILD)/arm/ipv6/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(ARM_CC) $(ARM_CFLAGS) $(ARM_IPV6_FLAGS) -c -o $@ $<
+
+# TLS 1.3 protocol code alone (client + server).  It needs a crypto backend
+# (tls_crypto_t) for anything to link against; that is not measured here.
+arm-size-tls: $(BUILD)/arm/tls/src/tls.o
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 Size (TLS 1.3 protocol, tls.c; the crypto backend is extra) ==="
+	@$(ARM_SIZE) $<
+
+$(BUILD)/arm/tls/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -c -o $@ $<
 
 # ── Clean ─────────────────────────────────────────────────────────────
 

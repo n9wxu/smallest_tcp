@@ -3,9 +3,9 @@
 **Protocol:** Transport Layer Security 1.3  
 **Primary RFC:** RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3  
 **Supporting:** RFC 6066 — TLS Extensions (SNI, max_fragment_length)  
-**Scope:** V1 (TCP security layer, Milestone 12)  
-**Last updated:** 2026-03-21  
-**Status:** Preliminary — requirements captured pre-implementation
+**Scope:** V1 (TCP security layer, Milestone 13)  
+**Last updated:** 2026-09-26  
+**Status:** Implemented (Milestone 13) — every MUST, and REQ-TLS-005 and -013; REQ-TLS-003 (ChaCha20-Poly1305, SHOULD) is not.  See the traceability table at the end.
 
 ## Overview
 
@@ -122,6 +122,44 @@ See [docs/design/tls.md](../design/tls.md) for the full design.
 
 - **No TLS 1.2 downgrade.** TLS 1.3 removes the version negotiation vulnerability. Rejecting 1.2 avoids the complexity of supporting two different key derivation paths and cipher suites.
 - **PSK preferred for IoT.** Certificate-based authentication requires parsing ASN.1 DER and verifying an asymmetric signature. PSK reduces flash footprint by ~10–20 KB depending on the crypto library.
-- **The crypto backend is not part of smallest_tcp.** The project does not depend on any specific crypto library. Tested backends: mbedTLS 3.x, wolfSSL, BearSSL.
+- **The crypto backend is not part of smallest_tcp's protocol code.** `tls.c` depends on no crypto library; the project ships one backend, on Mbed TLS 3.6 (`tls_crypto_mbedtls.c`).  Another (wolfSSL, BearSSL, a hardware engine) needs only the `tls_crypto_t` functions.
 - **SNI is optional** — useful when connecting to cloud services, not needed for direct MCU-to-MCU connections.
-- **No session tickets** in the initial implementation — they would require storing session state across reboots (e.g., in flash). May be added in a future revision.
+- **No session tickets** — they would require storing session state across reboots (e.g., in flash).  The server issues none; the client ignores NewSessionTicket, but can use a resumption PSK obtained elsewhere (`psk_resumption`).
+- **As implemented:** the configuration struct is `tls_config_t` (crypto backend, certificate chain and key, PSK, groups, max_fragment_length) rather than `tls_cert_t`, and it carries the `tls_crypto_t` pointer (REQ-TLS-007, -025).  `tls_init()` refuses buffers under 256 bytes; since a record's size is only known when it arrives, a record too large for the receive buffer ends the connection with `record_overflow` (REQ-TLS-041/042).
+
+## Traceability
+
+Unit tests are in `tests/unit/test_tls_{crypto,keys,server,client}.c`, blackbox tests in `tests/blackbox/test_tls{,_client}_conform.py` and `test_https_conform.py`.
+
+| Requirement | Status | Tests |
+|---|---|---|
+| REQ-TLS-001 | ✅ | `test_refuse_no_supported_versions`, `test_refuse_tls12_only`; client: scripted `no_versions`; `test_tls_010_tls12_refused`, `test_tls_c12_tls12_server` |
+| REQ-TLS-002 | ✅ | RFC 8448 records (`test_seal_*`); `test_refuse_no_common_suite`; `test_tls_033_nothing_in_common[chacha20,aes256]` |
+| REQ-TLS-003 | — | not implemented (SHOULD) |
+| REQ-TLS-004 | ✅ | `test_ecdhe_shared_secret`, `test_handshake_ecdsa`; `test_tls_030_groups[X25519]` |
+| REQ-TLS-005 | ✅ | `test_p256_shared_secret`, `test_handshake_p256`, `test_hrr_p256_only_server`, `test_p256_client`; `test_tls_030_groups[P-256]`, `test_tls_c31_hello_retry` |
+| REQ-TLS-006 | ✅ | tls.c contains no cryptography (its Cortex-M0 object references only `mem*`/`strlen`); the fixed-randomness backends in `test_tls_server` show every random value comes through the vtable |
+| REQ-TLS-007 | ✅ | `tls_config_t.crypto`; `test_init_and_accept_checks` |
+| REQ-TLS-008 | ✅ | no allocator calls in tls.c (same object check) |
+| REQ-TLS-009 | ✅ | all state in `tls_conn_t`; client and server connections run side by side in `test_tls_client` |
+| REQ-TLS-010..012 | ✅ | `test_client_hello_contents` |
+| REQ-TLS-013 | ✅ | `test_client_hello_contents` (DNS names only); `test_tls_c01_echo` (the server sees it) |
+| REQ-TLS-014 | ✅ | `test_refuse_wrong_name`, `test_refuse_wrong_address`, `test_refuse_untrusted_chain`, `test_refuse_without_trust_anchors`; `test_tls_c10_wrong_name`, `test_tls_c11_untrusted` |
+| REQ-TLS-015 | ✅ | `test_scripted_refusals_certificate_verify` |
+| REQ-TLS-016 | ✅ | `test_scripted_refusals_finished` |
+| REQ-TLS-017 | ✅ | `client_flight_ok()` in `test_scripted_handshake` |
+| REQ-TLS-018..021 | ✅ | the scripted client's checks in every server handshake test (`peer_read_sh`, `peer_read_flight`); `test_rfc8448_server_hello` |
+| REQ-TLS-022 | ✅ | `test_bad_client_finished`, `test_refuse_long_finished` |
+| REQ-TLS-023 | ✅ | `test_psk_dhe`, `test_psk_ke`, `test_psk_*` (server and client), `test_rfc8448_psk_server_hello`; `test_tls_050..053`, `test_tls_c40..c43` |
+| REQ-TLS-024 | ✅ | PSK flights without Certificate (`peer_read_flight`); scripted `psk_cert` refused |
+| REQ-TLS-025 | ✅ | `tls_config_t.psk`, `psk_id` |
+| REQ-TLS-026..029 | ✅ | `test_seal_*`, `test_open_*`, `test_nonce_uses_all_sequence_bytes`, `test_open_wrong_sequence` |
+| REQ-TLS-030 | ✅ | `test_open_tampered`, `test_bad_record_mac`; `test_tls_012_tampered_record` |
+| REQ-TLS-031 | ✅ | `test_mfl_*`, `test_mfl_small_rx_buffer`, `test_scripted_mfl`; `test_tls_036_max_fragment_length`, `test_tls_c05_max_fragment_length` |
+| REQ-TLS-032..034 | ✅ | `test_tls_keys` against RFC 8448 §3–§5 |
+| REQ-TLS-035 | ✅ | `test_close_notify_both_ways`, `test_close_notify_from_client`; `test_tls_005_close_notify` |
+| REQ-TLS-036 | ✅ | `test_fatal_alert_from_client`, `test_client_alert_in_handshake` |
+| REQ-TLS-037 | ✅ | every refusal test checks the alert sent |
+| REQ-TLS-038..040 | ✅ | event checks in `handshake()`, `refused()`, `test_close_notify_both_ways` |
+| REQ-TLS-041..042 | ✅ (as noted) | `test_init_and_accept_checks`, `test_refuse_record_larger_than_buffer` |
+| REQ-TLS-043 | ✅ | `test_write_partial_when_tx_full`, `test_write_needs_room_for_a_byte` |

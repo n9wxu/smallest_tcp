@@ -219,6 +219,24 @@ the default router, and the MLD and router-solicitation timers.  No divide
 routine is linked (lifetimes count seconds by subtraction).  An IPv6-only
 build (no ARP, IPv4, ICMPv4) is not offered yet.
 
+## Adding TLS 1.3
+
+`make arm-size-tls` compiles `tls.c` — the TLS 1.3 protocol for both
+roles: records, key schedule, handshake with certificates and pre-shared
+keys, HelloRetryRequest, max_fragment_length, KeyUpdate — with the
+benchmark flags.  It is not linked into a benchmark: every cryptographic
+primitive comes from a `tls_crypto_t` backend (Mbed TLS in this project),
+whose size depends entirely on its configuration and is not measured here.
+
+| | .text | RAM |
+|---|---:|---:|
+| `tls.c` | **10,323 B** | — |
+| `tls_conn_t` (per connection) | — | 440 B (128 of them the backend's SHA-256 state) |
+| `tls_config_t` (shared) | — | 40 B |
+
+Plus the application's record buffers (see [tls.md §9](tls.md#9-buffers-and-memory)).
+No divide routine is linked.
+
 ## Target Fit Analysis
 
 | Target | Flash | RAM | smallest_tcp UDP | lwIP UDP |
@@ -271,6 +289,7 @@ bash bench/build_lwip.sh
 | 2026-09-26 | ETH+ARP+IPv4+ICMP+UDP, dual stack (+IPv6, ICMPv6, ND, SLAAC, MLD) | 8,021 B | — | — |
 | 2026-09-26 | …+TCP (in-order delivery: overlaps trimmed, segments after a gap dropped) | 6,814 B (6,902 stack) | — | — |
 | 2026-09-26 | …+TCP+HTTP (same) | 11,030 B (10,754 stack) | — | — |
+| 2026-09-26 | TLS 1.3 protocol, `tls.c` alone (client + server) | 10,323 B | — | — |
 
 > The UDP-only growth since 2026-03-19 comes from `net_poll()` (Milestone 7), the
 > peek-based UDP dispatch, IPv4 Protocol Unreachable, and (Milestone 10, +80 B)
