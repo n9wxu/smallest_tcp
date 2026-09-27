@@ -92,8 +92,8 @@ server from its configured address.  The old code temporarily overwrote
 | State | Entered | Sends | Timer | Next |
 |---|---|---|---|---|
 | INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()` | — | none | `dhcpv4_client_start()` → SELECTING |
-| SELECTING | start, NAK, lease expiry (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER → REQUESTING |
-| REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`) |
+| SELECTING | start, NAK, lease expiry, REQUESTING's give-up (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER → REQUESTING |
+| REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING |
 | BOUND | ACK | — | T1 | timer → RENEWING |
 | RENEWING | T1 | one REQUEST to the server's IP | (T2 − T1) / 2 | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; timer → REBINDING |
 | REBINDING | RENEWING's timer | one REQUEST, broadcast | (lease − T2) / 2 | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; timer → `DHCPV4_EVT_EXPIRED`, SELECTING |
@@ -108,7 +108,11 @@ clears `net->ipv4_addr`, `subnet_mask` and `gateway_ipv4`
 `transmit()`): the first wait is 4 s, then 8, 16, 32 and 64 s, then every
 64 s, each randomized by a uniform ±1 s (`retransmit_wait_ms()`, in
 milliseconds from `net_random_below()`), with the same transaction ID
-(RFC 2131 §4.1).  REQUESTING retransmits until a reply arrives.
+(RFC 2131 §4.1).  SELECTING retransmits until an offer arrives.
+REQUESTING gives up after four retransmissions — RFC 2131 §3.1's example,
+60 s: when the 64 s wait after the fourth runs out with no ACK or NAK,
+discovery starts again with a new transaction ID (`retransmit()`,
+RFC 2131 §4.4.1).  No event fires; the client had no address yet.
 
 **Timing of RENEWING and REBINDING.**  `half_remaining_ms()` is the
 RFC 2131 §4.4.5 retransmission wait, but when it ends the client moves on
@@ -374,7 +378,6 @@ main loop that calls `net_tick()`; the server has no timers.  Timers are
 | RENEWING/REBINDING REQUEST carries the Server Identifier | RFC 2131 §4.3.2 says it MUST NOT; known deviation, not fixed |
 | Unicast renewals are sent to the broadcast MAC | The client never learns the server's MAC.  Works with a server on the link; a router will normally not forward it, so behind a relay agent only the REBINDING broadcast can succeed |
 | RENEWING and REBINDING last half their RFC duration, one REQUEST each; the lease is abandoned at T1 + (T2 − T1)/2 + (lease − T2)/2 | §3.1 |
-| REQUESTING never falls back to INIT | §3.1 |
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
 | Timers are seconds × 1000 in 32 bits: a T1 above 4,294,967 s (49.7 days) — an infinite lease gives T1 = 2³¹ − 1 s — wraps, as do half-intervals that large | The renewal then fires early |
@@ -399,5 +402,5 @@ place from `net->rx.buf`.
 
 | Suite | Tests | Covers |
 |---|---|---|
-| `tests/unit/test_dhcpv4.c` | 18 | Client: init, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2, NAK, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization.  Server: OFFER, ACK, NAK, RELEASE, bad `op`, bad magic |
+| `tests/unit/test_dhcpv4.c` | 19 | Client: init, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2, NAK, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization, REQUESTING giving up.  Server: OFFER, ACK, NAK, RELEASE, bad `op`, bad magic |
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 | `dhcp_echo_demo` against a Scapy server: DISCOVER, OFFER → REQUEST, ACK binds, NAK → DISCOVER, wrong-xid OFFER ignored, `ciaddr` 0, retransmission, Server ID in REQUEST |

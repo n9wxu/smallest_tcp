@@ -540,6 +540,37 @@ TEST(test_dhcp_client_backoff_randomised) {
   ASSERT_TRUE(differs);
 }
 
+static uint8_t sent_msg_type(void) {
+  return find_opt_byte(sent_dhcp() + DHCP_OFF_OPTIONS,
+                       sent_dhcp_len() - DHCP_OFF_OPTIONS, OPT_MSG_TYPE);
+}
+
+/* RFC 2131 §3.1, §4.4.1: four REQUEST retransmissions unanswered —
+   discovery starts again, with a new xid */
+TEST(test_dhcp_client_requesting_gives_up) {
+  static const uint32_t base_ms[] = {4000, 8000, 16000, 32000};
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  uint32_t xid;
+  uint8_t i;
+  setup();
+  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  xid = cli.xid;
+  mlen = make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
+                         NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+
+  for (i = 0; i < 4; i++) {
+    ASSERT_TRUE(within_a_second(ms_until_sent(70000u), base_ms[i]));
+    ASSERT_EQ(sent_msg_type(), DHCP_MSG_REQUEST);
+  }
+  ASSERT_TRUE(within_a_second(ms_until_sent(70000u), 64000u));
+  ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_DISCOVER);
+  ASSERT_NE(cli.xid, xid);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * SERVER TESTS
  * ══════════════════════════════════════════════════════════════════ */
@@ -721,6 +752,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_retransmit_discover);
   RUN_TEST(test_dhcp_client_discover_backoff);
   RUN_TEST(test_dhcp_client_backoff_randomised);
+  RUN_TEST(test_dhcp_client_requesting_gives_up);
   RUN_TEST(test_dhcp_server_offer_on_discover);
   RUN_TEST(test_dhcp_server_ack_on_correct_request);
   RUN_TEST(test_dhcp_server_nak_on_wrong_request);

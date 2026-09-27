@@ -4,7 +4,7 @@
 **Primary RFC:** RFC 2131 — Dynamic Host Configuration Protocol  
 **Supporting:** RFC 2132 — DHCP Options and BOOTP Vendor Extensions  
 **Scope:** V1 (IPv4)  
-**Last updated:** 2026-03-19
+**Last updated:** 2026-09-27
 
 ## Overview
 
@@ -139,7 +139,7 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-045 | MUST | Retransmit DHCPDISCOVER with exponential backoff (initial 4s, max 64s) | RFC 2131 §4.1 | TEST-DHCPv4-045 |
+| REQ-DHCPv4-045 | MUST | Retransmit DHCPDISCOVER and DHCPREQUEST with exponential backoff (initial 4s, max 64s); after four unanswered DHCPREQUEST retransmissions, restart discovery | RFC 2131 §4.1, §4.4.1 | TEST-DHCPv4-045 |
 | REQ-DHCPv4-046 | SHOULD | Add random jitter (±1 second) to retransmission timer | RFC 2131 §4.1 | TEST-DHCPv4-046 |
 | REQ-DHCPv4-047 | MUST | Track lease timer, T1 timer, T2 timer | RFC 2131 §4.4.5 | TEST-DHCPv4-047 |
 

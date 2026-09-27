@@ -11,6 +11,8 @@
 #define RETRANSMIT_FIRST_MS 4000u
 #define RETRANSMIT_MAX_MS 64000u
 #define RETRANSMIT_JITTER_MS 1000u
+/* RFC 2131 §3.1, §4.4.1: then discovery starts again */
+#define REQUEST_RETRANSMITS 4u
 
 #define PARAM_REQUEST_MAX 35
 
@@ -167,6 +169,17 @@ static void start_selecting(net_t *net, dhcpv4_client_t *c) {
   begin_exchange(net, c, DHCPV4_CLI_SELECTING);
 }
 
+/* REQ-DHCPv4-045 */
+static void retransmit(net_t *net, dhcpv4_client_t *c) {
+  if (c->state == DHCPV4_CLI_REQUESTING && c->retries == REQUEST_RETRANSMITS) {
+    start_selecting(net, c);
+    return;
+  }
+  if (c->retries < 255u)
+    c->retries++;
+  transmit(net, c);
+}
+
 static void enter_state(net_t *net, dhcpv4_client_t *c, uint8_t state,
                         uint32_t timer_ms) {
   c->state = state;
@@ -204,9 +217,7 @@ void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   switch (c->state) {
   case DHCPV4_CLI_SELECTING: /* the xid stays for the retransmissions */
   case DHCPV4_CLI_REQUESTING:
-    if (c->retries < 255u)
-      c->retries++;
-    transmit(net, c);
+    retransmit(net, c);
     break;
   case DHCPV4_CLI_BOUND: /* T1 */
     enter_state(net, c, DHCPV4_CLI_RENEWING, half_remaining_ms(c->t1, c->t2));
