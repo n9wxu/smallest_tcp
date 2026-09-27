@@ -28,7 +28,7 @@ static const uint8_t *const rsa_chain[1] = {rsa_der};
 static const uint16_t rsa_chain_len[1] = {sizeof(rsa_der)};
 
 static tls_config_t cfg_ec, cfg_rsa, cfg_fixed;
-static tls_config_t cfg_psk, cfg_psk_only, cfg_psk4;
+static tls_config_t cfg_psk, cfg_psk_only, cfg_psk4, cfg_p256;
 static tls_crypto_t fixed4; /* .. with the RFC 8448 §4 server's */
 
 static uint8_t srv_rx[4096], srv_tx[4096];
@@ -358,7 +358,7 @@ static size_t build_ch(peer_t *p, const ch_opt_t *o, uint8_t *m) {
     if (b1)
       memset(b1, 0x5b, 32);
     tls_early_secret(&c, test_psk, sizeof(test_psk), early);
-    c.hash_init(&th);
+    th = p->th; /* the transcript so far: nothing, or up to an HRR */
     c.hash_update(&th, m, trunc);
     c.hash_peek(&th, h);
     if (mine == 0)
@@ -1538,6 +1538,8 @@ TEST(test_write_needs_room_for_a_byte) {
   ASSERT_EQ(tls_tx_pending(&s, &p), sizeof(srv_tx) - 20);
 }
 
+static int peer_read_hrr(peer_t *p, uint16_t *group);
+
 /* ══ Pre-shared keys (REQ-TLS-023/024) ════════════════════════════ */
 
 TEST(test_rfc8448_psk_server_hello) {
@@ -1718,11 +1720,30 @@ TEST(test_psk_more_refusals) {
   o.psk = 1;
   o.psk_empty_id = 1;
   ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_DECODE_ERROR), 0);
-  /* psk_dhe_ke offered, but no share we can use: not psk_ke instead;
-   * and no certificate handshake without a share either */
+  /* psk_dhe_ke offered, but no share we can use: not psk_ke instead,
+   * a HelloRetryRequest for a share */
+  {
+    static uint8_t m[2048];
+    tls_conn_t s;
+    uint16_t g = 0;
+    size_t n;
+    ch_default(&o);
+    o.psk = 1;
+    o.shares[0] = 0x0018;
+    ASSERT_EQ(server_start(&s, &cfg_psk, sizeof(srv_tx)), 0);
+    peer_init(&peer, &cfg_psk);
+    n = build_ch(&peer, &o, m);
+    send_ch(&s, &peer, m, n);
+    drain(&s);
+    ASSERT_EQ(peer_read_hrr(&peer, &g), 0);
+    ASSERT_EQ(g, TLS_GROUP_X25519);
+  }
+  /* .. and none when no group is in common */
   ch_default(&o);
   o.psk = 1;
   o.shares[0] = 0x0018;
+  o.groups[0] = 0x0018;
+  o.ngroups = 1;
   ASSERT_EQ(refused_by(&cfg_psk, &o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
   /* a server allowing psk_dhe_ke only (the default): no psk_ke */
   dhe_only.psk_modes = 0;
@@ -1789,6 +1810,238 @@ TEST(test_psk_ignored_without_configured_psk) {
   o.psk = 1;
   o.psk_not_last = 1;
   ASSERT_EQ(refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+}
+
+/* ══ HelloRetryRequest (RFC 8446 §4.1.4) ══════════════════════════ */
+
+static const uint8_t hrr_random[32] = {
+    0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c,
+    0x02, 0x1e, 0x65, 0xb8, 0x91, 0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb,
+    0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c};
+
+/* The HelloRetryRequest (and a dummy CCS) that is all of out[]: its
+ * selected group; the peer's transcript takes it in */
+static int peer_read_hrr(peer_t *p, uint16_t *group) {
+  const uint8_t *hr, *q;
+  size_t rl, len;
+  CHECK(out_len >= 5 && out[0] == TLS_CT_HANDSHAKE);
+  rl = 5 + be16(out + 3);
+  hr = out + 5;
+  len = rl - 5;
+  CHECK(hr[0] == TLS_HS_SERVER_HELLO && be24(hr + 1) == len - 4);
+  CHECK(be16(hr + 4) == 0x0303 && memcmp(hr + 6, hrr_random, 32) == 0);
+  q = hr + 38;
+  CHECK(q[0] == p->sid_len && memcmp(q + 1, p->sid, p->sid_len) == 0);
+  q += 1 + p->sid_len;
+  CHECK(be16(q) == TLS_AES_128_GCM_SHA256 && q[2] == 0);
+  q += 3;
+  /* key_share (the selected group), supported_versions */
+  CHECK(be16(q) == 12 && be16(q + 2) == TLS_EXT_KEY_SHARE &&
+        be16(q + 4) == 2);
+  *group = (uint16_t)be16(q + 6);
+  CHECK(memcmp(q + 8, "\x00\x2b\x00\x02\x03\x04", 6) == 0);
+  CHECK(q + 14 == hr + len);
+  tls_transcript_hrr(&c, &p->th);
+  c.hash_update(&p->th, hr, len);
+  p->ccs_seen = 0;
+  if (rl < out_len) {
+    CHECK(rl + 6 == out_len &&
+          memcmp(out + rl, "\x14\x03\x03\x00\x01\x01", 6) == 0);
+    p->ccs_seen = 1;
+  } else {
+    CHECK(rl == out_len);
+  }
+  out_len = 0;
+  return 0;
+}
+
+/* ClientHello @p o1 draws a HelloRetryRequest for @p want; @p o2 then
+ * completes the handshake */
+static int hrr_handshake(tls_conn_t *s, const tls_config_t *cfg,
+                         const ch_opt_t *o1, const ch_opt_t *o2,
+                         uint16_t want) {
+  static uint8_t m[2048], rec[256];
+  uint16_t g = 0;
+  size_t n;
+  int r;
+  CHECK(server_start(s, cfg, sizeof(srv_tx)) == 0);
+  peer_init(&peer, cfg);
+  n = build_ch(&peer, o1, m);
+  CHECK(send_ch(s, &peer, m, n) == n + 5);
+  CHECK(tls_state(s) == TLS_STATE_HANDSHAKE);
+  drain(s);
+  if ((r = peer_read_hrr(&peer, &g)) != 0)
+    return 10000 + r;
+  CHECK(g == want);
+  n = build_ch(&peer, o2, m);
+  CHECK(send_ch(s, &peer, m, n) == n + 5);
+  CHECK(tls_state(s) == TLS_STATE_HANDSHAKE);
+  drain(s);
+  if ((r = peer_read_flight(&peer)) != 0)
+    return 20000 + r;
+  n = peer_finished(&peer, rec);
+  CHECK(tls_input(s, rec, n) == n);
+  CHECK(tls_state(s) == TLS_STATE_CONNECTED);
+  return 0;
+}
+
+TEST(test_hrr_for_a_share) {
+  /* Only a secp384r1 share: ask for x25519 */
+  tls_conn_t s;
+  ch_opt_t o1, o2;
+  ch_default(&o1);
+  o1.shares[0] = 0x0018;
+  ch_default(&o2);
+  ASSERT_EQ(hrr_handshake(&s, &cfg_ec, &o1, &o2, TLS_GROUP_X25519), 0);
+  ASSERT_EQ(peer.group, TLS_GROUP_X25519);
+}
+
+TEST(test_hrr_empty_key_share) {
+  tls_conn_t s;
+  ch_opt_t o1, o2;
+  ch_default(&o1);
+  o1.nshares = 0;
+  ch_default(&o2);
+  ASSERT_EQ(hrr_handshake(&s, &cfg_ec, &o1, &o2, TLS_GROUP_X25519), 0);
+}
+
+TEST(test_hrr_p256_only_server) {
+  /* A server that uses secp256r1 only: an x25519 share draws an HRR */
+  tls_conn_t s;
+  ch_opt_t o1, o2;
+  ch_default(&o1);
+  ch_default(&o2);
+  o2.shares[0] = TLS_GROUP_SECP256R1;
+  ASSERT_EQ(hrr_handshake(&s, &cfg_p256, &o1, &o2, TLS_GROUP_SECP256R1), 0);
+  ASSERT_EQ(peer.group, TLS_GROUP_SECP256R1);
+  ASSERT_EQ(s.group, TLS_GROUP_SECP256R1);
+}
+
+TEST(test_hrr_compat_mode) {
+  /* The dummy change_cipher_spec follows the HRR, not the ServerHello */
+  tls_conn_t s;
+  ch_opt_t o1, o2;
+  ch_default(&o1);
+  o1.shares[0] = 0x0018;
+  o1.sid_len = 32;
+  memset(o1.sid, 0x33, 32);
+  o2 = o1;
+  o2.shares[0] = TLS_GROUP_X25519;
+  ASSERT_EQ(server_start(&s, &cfg_ec, sizeof(srv_tx)), 0);
+  {
+    static uint8_t m[2048];
+    uint16_t g;
+    size_t n;
+    peer_init(&peer, &cfg_ec);
+    n = build_ch(&peer, &o1, m);
+    send_ch(&s, &peer, m, n);
+    drain(&s);
+    ASSERT_EQ(peer_read_hrr(&peer, &g), 0);
+    ASSERT_EQ(peer.ccs_seen, 1);
+    ASSERT_EQ(tls_input(&s, (const uint8_t *)"\x14\x03\x03\x00\x01\x01", 6),
+              6);
+    n = build_ch(&peer, &o2, m);
+    send_ch(&s, &peer, m, n);
+    drain(&s);
+    peer.ccs_seen = 0;
+    ASSERT_EQ(peer_read_flight(&peer), 0);
+    ASSERT_EQ(peer.ccs_seen, 0);
+  }
+}
+
+TEST(test_hrr_with_psk) {
+  /* The binder of the second ClientHello covers the HRR */
+  tls_conn_t s;
+  ch_opt_t o1, o2;
+  ch_default(&o1);
+  o1.psk = 1;
+  o1.shares[0] = 0x0018;
+  ch_default(&o2);
+  o2.psk = 1;
+  ASSERT_EQ(hrr_handshake(&s, &cfg_psk, &o1, &o2, TLS_GROUP_X25519), 0);
+  ASSERT_EQ(peer.selected, 0);
+}
+
+TEST(test_hrr_refusals) {
+  /* The second ClientHello must bring the share asked for */
+  static uint8_t m[2048];
+  tls_conn_t s;
+  ch_opt_t o1, o2;
+  uint16_t g;
+  size_t n;
+  int i;
+  for (i = 0; i < 2; i++) {
+    ch_default(&o1);
+    o1.shares[0] = 0x0018;
+    o2 = o1;
+    if (i == 1)
+      o2.shares[0] = TLS_GROUP_SECP256R1; /* x25519 was asked for */
+    ASSERT_EQ(server_start(&s, &cfg_ec, sizeof(srv_tx)), 0);
+    peer_init(&peer, &cfg_ec);
+    n = build_ch(&peer, &o1, m);
+    send_ch(&s, &peer, m, n);
+    drain(&s);
+    ASSERT_EQ(peer_read_hrr(&peer, &g), 0);
+    n = build_ch(&peer, &o2, m);
+    send_ch(&s, &peer, m, n);
+    ASSERT_EQ(tls_state(&s), TLS_STATE_ERROR);
+    ASSERT_EQ(s.alert, TLS_ALERT_ILLEGAL_PARAMETER);
+  }
+}
+
+TEST(test_hrr_not_when_pointless) {
+  /* No usable share, but the handshake would fail anyway: no HRR */
+  tls_config_t x = cfg_ec;
+  ch_opt_t o;
+  /* a PSK-only server, no PSK or an unknown one offered */
+  ch_default(&o);
+  o.shares[0] = 0x0018;
+  ASSERT_EQ(refused_by(&cfg_psk_only, &o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
+  ch_default(&o);
+  o.shares[0] = 0x0018;
+  o.psk = 1;
+  o.psk_stranger = 1;
+  ASSERT_EQ(refused_by(&cfg_psk_only, &o, TLS_ALERT_UNKNOWN_PSK_IDENTITY), 0);
+  /* no signature_algorithms / none in common */
+  ch_default(&o);
+  o.shares[0] = 0x0018;
+  o.nsigs = 0;
+  ASSERT_EQ(refused(&o, TLS_ALERT_MISSING_EXTENSION), 0);
+  ch_default(&o);
+  o.shares[0] = 0x0018;
+  o.sigs[0] = TLS_SIG_RSA_PSS_RSAE_SHA256;
+  o.nsigs = 1;
+  ASSERT_EQ(refused(&o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
+  /* an x25519-only server does not take a secp256r1 share */
+  x.groups = TLS_GROUPS_X25519;
+  {
+    static uint8_t m[2048];
+    tls_conn_t s;
+    uint16_t g = 0;
+    size_t n;
+    ch_default(&o);
+    o.shares[0] = TLS_GROUP_SECP256R1;
+    ASSERT_EQ(server_start(&s, &x, sizeof(srv_tx)), 0);
+    peer_init(&peer, &x);
+    n = build_ch(&peer, &o, m);
+    send_ch(&s, &peer, m, n);
+    drain(&s);
+    ASSERT_EQ(peer_read_hrr(&peer, &g), 0);
+    ASSERT_EQ(g, TLS_GROUP_X25519);
+  }
+}
+
+TEST(test_p256_only_server) {
+  /* A secp256r1 share: no HRR; only x25519 in common: none at all */
+  tls_conn_t s;
+  ch_opt_t o;
+  ch_default(&o);
+  o.shares[0] = TLS_GROUP_SECP256R1;
+  ASSERT_EQ(handshake(&s, &cfg_p256, &o, sizeof(srv_tx)), 0);
+  ASSERT_EQ(peer.group, TLS_GROUP_SECP256R1);
+  ch_default(&o);
+  o.ngroups = 1; /* x25519 */
+  ASSERT_EQ(refused_by(&cfg_p256, &o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
 }
 
 /* ══ API ══════════════════════════════════════════════════════════ */
@@ -1874,6 +2127,8 @@ int main(void) {
   }
   cfg_psk4.psk_modes = TLS_PSK_DHE_KE;
   cfg_psk4.psk_resumption = 1;
+  cfg_p256 = cfg_ec;
+  cfg_p256.groups = TLS_GROUPS_SECP256R1;
 
   RUN_TEST(test_rfc8448_server_hello);
   RUN_TEST(test_rfc8448_client_hello_full_handshake);
@@ -1965,6 +2220,15 @@ int main(void) {
   RUN_TEST(test_psk_ke_server_ignores_share);
   RUN_TEST(test_psk_accept_checks);
   RUN_TEST(test_psk_ignored_without_configured_psk);
+
+  RUN_TEST(test_hrr_for_a_share);
+  RUN_TEST(test_hrr_empty_key_share);
+  RUN_TEST(test_hrr_p256_only_server);
+  RUN_TEST(test_hrr_compat_mode);
+  RUN_TEST(test_hrr_with_psk);
+  RUN_TEST(test_hrr_refusals);
+  RUN_TEST(test_hrr_not_when_pointless);
+  RUN_TEST(test_p256_only_server);
 
   RUN_TEST(test_init_and_accept_checks);
 

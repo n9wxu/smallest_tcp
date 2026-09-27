@@ -27,6 +27,7 @@ static tls_config_t srv_ec, srv_rsa;       /* our server */
 static tls_config_t cli, cli_noca, cli_other; /* the client */
 static tls_config_t srv_psk, srv_psk_only;    /* .. with a PSK */
 static tls_config_t cli_psk, cli_psk_ke, cli_psk_both, cli_psk_other;
+static tls_config_t srv_p256, srv_psk_p256, cli_p256; /* secp256r1 only */
 
 static const uint8_t test_psk[32] = {
     0x70, 0x73, 0x6b, 0x21, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
@@ -242,6 +243,13 @@ typedef struct {
   int psk_index;            /* selected_identity sent */
   int psk_ke;               /* .. without a key share */
   int psk_cert;             /* .. and send certificates anyway */
+  /* A HelloRetryRequest first */
+  uint16_t hrr_group;       /* asking for a share of this group */
+  int hrr_cookie;           /* .. with a cookie */
+  int hrr_twice;            /* two of them */
+  uint16_t hrr_version;     /* in its supported_versions (0: 0x0304) */
+  int hrr_no_versions, hrr_empty_cookie, hrr_empty, hrr_bad_sid;
+  uint16_t hrr_ext;         /* an unknown extension in it */
 } script_t;
 
 typedef struct {
@@ -250,6 +258,12 @@ typedef struct {
   tls_keys_t rd, wr; /* reading the client, writing to it */
   int sni;           /* the ClientHello carried server_name */
   uint8_t ch_sid_len;
+  uint8_t random[32];      /* ClientHello1's */
+  const uint8_t *share;    /* the client's last share .. */
+  uint16_t share_group;    /* .. of this group */
+  size_t share_len;
+  int cookie_echoed;       /* ClientHello2 carried our cookie */
+  int shares;              /* entries in its key_share */
 } peer_t;
 
 static peer_t sp;
@@ -265,26 +279,20 @@ static void add_msg(uint8_t *msgs, size_t *n, uint8_t type, const uint8_t *b,
   *n += 4 + blen;
 }
 
-/* Answer the client's ClientHello (its pending output) per @p o */
-static int script(tls_conn_t *t, const script_t *o) {
-  static uint8_t msgs[8192], body[4096];
-  const uint8_t *out, *ch, *q, *share = NULL;
-  size_t n, len, elen, mn = 0, bn;
-  uint8_t priv[32], pub[65], z[32], h[32], ms[32];
-  size_t pub_len;
-  int k;
+static const uint8_t cookie[16] = "smallest cookie";
 
-  memset(&sp, 0, sizeof(sp));
-  c.hash_init(&sp.th);
-  resp_len = 0;
-
-  /* The ClientHello: its record, its x25519 share, its server_name */
+/* The client's pending ClientHello: into the transcript, its facts into
+ * sp; taken from tx */
+static int read_ch(tls_conn_t *t) {
+  const uint8_t *out, *ch, *q;
+  size_t n, len, elen;
   n = tls_tx_pending(t, &out);
   CHECK(n > 9 && out[0] == TLS_CT_HANDSHAKE && out[5] == 1);
   len = be16(out + 3);
   CHECK(n == 5 + len && be24(out + 6) == len - 4);
   ch = out + 5;
   c.hash_update(&sp.th, ch, len);
+  memcpy(sp.random, ch + 6, 32);
   q = ch + 4 + 2 + 32;
   sp.ch_sid_len = q[0];
   q += 1 + q[0];
@@ -292,22 +300,119 @@ static int script(tls_conn_t *t, const script_t *o) {
   q += 1 + q[0];    /* compression */
   elen = be16(q);
   q += 2;
+  sp.share = NULL;
+  sp.shares = 0;
   while (elen) {
     size_t type = be16(q), l = be16(q + 2);
     if (type == TLS_EXT_SERVER_NAME)
       sp.sni = 1;
-    if (type == TLS_EXT_KEY_SHARE && be16(q + 6) == TLS_GROUP_X25519)
-      share = q + 10;
+    if (type == 44 && l == 2 + sizeof(cookie) &&
+        memcmp(q + 6, cookie, sizeof(cookie)) == 0)
+      sp.cookie_echoed = 1;
+    if (type == TLS_EXT_KEY_SHARE) {
+      const uint8_t *e = q + 6, *end = q + 4 + l;
+      while (e < end) {
+        sp.share_group = (uint16_t)be16(e);
+        sp.share_len = be16(e + 2);
+        sp.share = e + 4;
+        sp.shares++;
+        e += 4 + sp.share_len;
+      }
+    }
     q += 4 + l;
     elen -= 4 + l;
   }
-  CHECK(share || o->psk_ke);
   tls_tx_done(t, n);
+  return 0;
+}
+
+/* A HelloRetryRequest to the client, per @p o */
+static void send_hrr(tls_conn_t *t, const script_t *o) {
+  uint8_t rec[128], *b = rec + 5 + 4;
+  size_t bn = 0, n = 0;
+  put16(b, 0x0303);
+  memcpy(b + 2,
+         "\xcf\x21\xad\x74\xe5\x9a\x61\x11\xbe\x1d\x8c\x02\x1e\x65\xb8\x91"
+         "\xc2\xa2\x11\x16\x7a\xbb\x8c\x5e\x07\x9e\x09\xe2\xc8\xa8\x33\x9c",
+         32);
+  bn = 34;
+  b[bn++] = o->hrr_bad_sid ? 1 : 0; /* legacy_session_id_echo */
+  if (o->hrr_bad_sid)
+    b[bn++] = 0x77;
+  put16(b + bn, TLS_AES_128_GCM_SHA256);
+  b[bn + 2] = 0;
+  bn += 5;
+  if (o->hrr_group) {
+    put16(b + bn, TLS_EXT_KEY_SHARE);
+    put16(b + bn + 2, 2);
+    put16(b + bn + 4, o->hrr_group);
+    bn += 6;
+  }
+  if (o->hrr_cookie) {
+    size_t cl = o->hrr_empty_cookie ? 0 : sizeof(cookie);
+    put16(b + bn, 44);
+    put16(b + bn + 2, 2 + cl);
+    put16(b + bn + 4, cl);
+    memcpy(b + bn + 6, cookie, cl);
+    bn += 6 + cl;
+  }
+  if (o->hrr_ext) {
+    put16(b + bn, o->hrr_ext);
+    put16(b + bn + 2, 0);
+    bn += 4;
+  }
+  if (!o->hrr_no_versions) {
+    put16(b + bn, TLS_EXT_SUPPORTED_VERSIONS);
+    put16(b + bn + 2, 2);
+    put16(b + bn + 4, o->hrr_version ? o->hrr_version : 0x0304);
+    bn += 6;
+  }
+  put16(b + 38 + (o->hrr_bad_sid ? 1 : 0),
+        bn - 40 - (o->hrr_bad_sid ? 1u : 0u));
+  tls_transcript_hrr(&c, &sp.th);
+  rec[0] = TLS_CT_HANDSHAKE;
+  rec[1] = 3;
+  rec[2] = 3;
+  put16(rec + 3, 4 + bn);
+  add_msg(rec + 5, &n, TLS_HS_SERVER_HELLO, b, bn);
+  tls_input(t, rec, 5 + n);
+}
+
+/* Answer the client's ClientHello (its pending output) per @p o */
+static int script(tls_conn_t *t, const script_t *o) {
+  static uint8_t msgs[8192], body[4096];
+  size_t mn = 0, bn;
+  uint8_t priv[32], pub[65], z[32], h[32], ms[32];
+  size_t pub_len;
+  uint16_t grp;
+  int k;
+
+  memset(&sp, 0, sizeof(sp));
+  c.hash_init(&sp.th);
+  resp_len = 0;
+
+  /* The ClientHello; a HelloRetryRequest and the second ClientHello */
+  CHECK(read_ch(t) == 0);
+  if (o->hrr_group || o->hrr_cookie || o->hrr_empty) {
+    uint8_t random1[32];
+    memcpy(random1, sp.random, 32);
+    send_hrr(t, o);
+    if (o->hrr_twice)
+      send_hrr(t, o);
+    if (tls_state(t) != TLS_STATE_HANDSHAKE)
+      return 0; /* refused: the caller looks */
+    CHECK(read_ch(t) == 0);
+    CHECK(memcmp(random1, sp.random, 32) == 0); /* the same ClientHello */
+    CHECK(sp.shares == 1);
+    CHECK(!o->hrr_cookie || sp.cookie_echoed);
+  }
+  grp = sp.share ? sp.share_group : TLS_GROUP_X25519;
+  CHECK(sp.share || o->psk_ke);
 
   /* ServerHello */
-  CHECK(c.kx_keygen(c.ctx, TLS_GROUP_X25519, priv, pub, &pub_len) == 0);
-  if (share)
-    CHECK(c.kx_shared(c.ctx, TLS_GROUP_X25519, priv, share, 32, z) == 0);
+  CHECK(c.kx_keygen(c.ctx, grp, priv, pub, &pub_len) == 0);
+  if (sp.share)
+    CHECK(c.kx_shared(c.ctx, grp, priv, sp.share, sp.share_len, z) == 0);
   bn = 0;
   put16(body, 0x0303);
   memset(body + 2, 0x33, 32);
@@ -338,11 +443,11 @@ static int script(tls_conn_t *t, const script_t *o) {
     }
     if (!o->no_key_share && !o->psk_ke) {
       put16(body + bn, TLS_EXT_KEY_SHARE);
-      put16(body + bn + 2, 4 + 32);
-      put16(body + bn + 4, o->group ? o->group : TLS_GROUP_X25519);
-      put16(body + bn + 6, 32);
-      memcpy(body + bn + 8, pub, 32);
-      bn += 8 + 32;
+      put16(body + bn + 2, 4 + pub_len);
+      put16(body + bn + 4, o->group ? o->group : grp);
+      put16(body + bn + 6, pub_len);
+      memcpy(body + bn + 8, pub, pub_len);
+      bn += 8 + pub_len;
     }
     for (i = 0; i < (o->dup_versions ? 2 : 1) && !o->no_versions; i++) {
       put16(body + bn, TLS_EXT_SUPPORTED_VERSIONS);
@@ -650,8 +755,9 @@ TEST(test_scripted_refusals_server_hello) {
   o.sh_ext = TLS_EXT_SIGNATURE_ALGORITHMS; /* not for a ServerHello */
   ASSERT_EQ(script_refused(&o, TLS_ALERT_UNSUPPORTED_EXTENSION), 0);
   memset(&o, 0, sizeof(o));
-  o.hrr = 1; /* HelloRetryRequest: not yet */
-  ASSERT_EQ(script_refused(&o, TLS_ALERT_HANDSHAKE_FAILURE), 0);
+  o.hrr = 1; /* the HRR random on a full ServerHello: its key_share is
+                not a selected_group */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_DECODE_ERROR), 0);
 }
 
 TEST(test_scripted_refusals_more) {
@@ -999,6 +1105,126 @@ TEST(test_psk_connect_checks) {
   ASSERT_EQ(tls_connect(&t, HOST), -1);
 }
 
+/* ══ HelloRetryRequest (RFC 8446 §4.1.4) ══════════════════════════ */
+
+TEST(test_hrr_from_our_server) {
+  /* A secp256r1-only server: our x25519 share draws an HRR */
+  ASSERT_EQ(pair(&cli, &srv_p256, HOST, 65536), 0);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CONNECTED);
+  ASSERT_EQ(cl.group, TLS_GROUP_SECP256R1);
+  ASSERT_EQ(sv.group, TLS_GROUP_SECP256R1);
+}
+
+TEST(test_hrr_with_psk_from_our_server) {
+  /* The second ClientHello's binder covers the HRR */
+  ASSERT_EQ(pair(&cli_psk, &srv_psk_p256, HOST, 65536), 0);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CONNECTED);
+  ASSERT_EQ(tls_psk_used(&cl), 1);
+  ASSERT_EQ(cl.group, TLS_GROUP_SECP256R1);
+}
+
+TEST(test_p256_client) {
+  /* A secp256r1-only client offers that share first: no HRR */
+  const uint8_t *e;
+  size_t n;
+  tls_conn_t t;
+  ASSERT_EQ(client_start(&t, &cli_p256, sizeof(cli_rx), sizeof(cli_tx), HOST),
+            0);
+  e = ch_ext(&t, TLS_EXT_SUPPORTED_GROUPS, &n);
+  ASSERT_TRUE(e && n == 4 && memcmp(e, "\x00\x02\x00\x17", 4) == 0);
+  e = ch_ext(&t, TLS_EXT_KEY_SHARE, &n);
+  ASSERT_TRUE(e && n == 2 + 4 + 65 && be16(e + 2) == TLS_GROUP_SECP256R1);
+  ASSERT_EQ(pair(&cli_p256, &srv_ec, HOST, 65536), 0);
+  ASSERT_EQ(tls_state(&cl), TLS_STATE_CONNECTED);
+  ASSERT_EQ(cl.group, TLS_GROUP_SECP256R1);
+}
+
+TEST(test_scripted_hrr) {
+  tls_conn_t t;
+  script_t o;
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  ASSERT_EQ(scripted(&t, &o), 0);
+  ASSERT_EQ(sp.share_group, TLS_GROUP_SECP256R1);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_CONNECTED);
+  ASSERT_EQ(client_flight_ok(&t, 0), 0);
+  /* a cookie is echoed; with no group asked for, the share stays x25519 */
+  memset(&o, 0, sizeof(o));
+  o.hrr_cookie = 1;
+  ASSERT_EQ(scripted(&t, &o), 0);
+  ASSERT_EQ(sp.cookie_echoed, 1);
+  ASSERT_EQ(sp.share_group, TLS_GROUP_X25519);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_CONNECTED);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.hrr_cookie = 1;
+  ASSERT_EQ(scripted(&t, &o), 0);
+  ASSERT_EQ(sp.cookie_echoed, 1);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_CONNECTED);
+  /* with a PSK */
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.psk = 1;
+  ASSERT_EQ(scripted_as(&cli_psk, &t, &o), 0);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_CONNECTED);
+}
+
+TEST(test_scripted_hrr_refusals) {
+  script_t o;
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_X25519; /* the share it already has */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = 0x0018; /* not offered */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.hrr_twice = 1;
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_UNEXPECTED_MESSAGE), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_X25519; /* a secp256r1-only client */
+  ASSERT_EQ(script_refused_as(&cli_p256, &o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1; /* a client that sent no share */
+  ASSERT_EQ(script_refused_as(&cli_psk_ke, &o, TLS_ALERT_ILLEGAL_PARAMETER),
+            0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.hrr_bad_sid = 1;
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_empty = 1; /* asks for nothing */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.hrr_version = 0x0303;
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.hrr_no_versions = 1;
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_PROTOCOL_VERSION), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_cookie = 1;
+  o.hrr_empty_cookie = 1;
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_DECODE_ERROR), 0);
+  memset(&o, 0, sizeof(o));
+  o.hrr_group = TLS_GROUP_SECP256R1;
+  o.hrr_ext = TLS_EXT_SERVER_NAME + 16; /* ALPN: not for an HRR */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_UNSUPPORTED_EXTENSION), 0);
+}
+
+TEST(test_client_random_differs) {
+  tls_conn_t t;
+  uint8_t r1[32];
+  const uint8_t *out;
+  ASSERT_EQ(client_start(&t, &cli, sizeof(cli_rx), sizeof(cli_tx), HOST), 0);
+  tls_tx_pending(&t, &out);
+  memcpy(r1, out + 5 + 4 + 2, 32);
+  ASSERT_EQ(client_start(&t, &cli, sizeof(cli_rx), sizeof(cli_tx), HOST), 0);
+  tls_tx_pending(&t, &out);
+  ASSERT_TRUE(memcmp(r1, out + 5 + 4 + 2, 32) != 0);
+}
+
 int main(void) {
   fprintf(stderr, "=== TLS client handshake tests ===\n");
   if (tls_mbedtls_init(&be, &c) != 0 || tls_mbedtls_init(&be_noca, &c_noca) ||
@@ -1050,6 +1276,12 @@ int main(void) {
   cli_psk_both.psk_modes = TLS_PSK_KE | TLS_PSK_DHE_KE;
   cli_psk_other = cli_psk_both;
   cli_psk_other.psk_id = (const uint8_t *)"device-2";
+  srv_p256 = srv_ec;
+  srv_p256.groups = TLS_GROUPS_SECP256R1;
+  srv_psk_p256 = srv_psk;
+  srv_psk_p256.groups = TLS_GROUPS_SECP256R1;
+  cli_p256 = cli;
+  cli_p256.groups = TLS_GROUPS_SECP256R1;
 
   RUN_TEST(test_handshake_with_our_server);
   RUN_TEST(test_data_both_ways);
@@ -1092,6 +1324,13 @@ int main(void) {
   RUN_TEST(test_scripted_psk);
   RUN_TEST(test_scripted_psk_refusals);
   RUN_TEST(test_psk_connect_checks);
+
+  RUN_TEST(test_hrr_from_our_server);
+  RUN_TEST(test_hrr_with_psk_from_our_server);
+  RUN_TEST(test_p256_client);
+  RUN_TEST(test_scripted_hrr);
+  RUN_TEST(test_scripted_hrr_refusals);
+  RUN_TEST(test_client_random_differs);
 
   mbedtls_pk_free(&ec_key);
   mbedtls_pk_free(&rsa_key);

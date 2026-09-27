@@ -250,6 +250,28 @@ def test_tls_c30_openssl_s_server(client):
     assert "Protocol version: TLSv1.3" in srv_out
 
 
+def test_tls_c31_hello_retry(client):
+    """A secp256r1-only s_server answers the x25519 share with a
+    HelloRetryRequest; the second ClientHello has a secp256r1 share."""
+    if not OPENSSL:
+        pytest.skip("no openssl CLI")
+    p = subprocess.Popen(
+        [OPENSSL, "s_server", "-accept", f"{client.our_ip}:{PORT}",
+         "-cert", cred("server.pem"), "-key", cred("server.key"),
+         "-tls1_3", "-rev", "-groups", "P-256", "-naccept", "1"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT)
+    try:
+        time.sleep(1.0)
+        rc, out = client(TLS_MESSAGE="hrr\n")
+    finally:
+        p.kill()
+        srv_out = p.communicate()[0].decode(errors="replace")
+    assert rc == 0, out + srv_out
+    assert "secp256r1, certificate" in out
+    assert "received: rrh" in out
+
+
 # ── Pre-shared keys (REQ-TLS-023/024) ──────────────────────────────────────────
 
 PSK_ENV = {"TLS_PSK": PSK.hex(), "TLS_PSK_ID": PSK_ID,

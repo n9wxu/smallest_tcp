@@ -228,6 +228,40 @@ TEST(test_psk_dhe_handshake_secrets) {
   ASSERT_MEM_EQ(s, r4_master_secret, 32);
 }
 
+/* ══ RFC 8448 §5: a HelloRetryRequest ════════════════════════════ */
+
+TEST(test_p256_shared_secret) {
+  uint8_t z[32];
+  ASSERT_EQ(c.kx_shared(c.ctx, TLS_GROUP_SECP256R1, r5_s_p256_priv,
+                        r5_c_p256_pub, 65, z),
+            0);
+  ASSERT_MEM_EQ(z, r5_ecdhe_shared, 32);
+  ASSERT_EQ(c.kx_shared(c.ctx, TLS_GROUP_SECP256R1, r5_c_p256_priv,
+                        r5_s_p256_pub, 65, z),
+            0);
+  ASSERT_MEM_EQ(z, r5_ecdhe_shared, 32);
+}
+
+TEST(test_hrr_transcript) {
+  /* ClientHello1 becomes message_hash (RFC 8446 §4.4.1); then the
+   * HelloRetryRequest, ClientHello2 and ServerHello */
+  tls_hash_t th;
+  uint8_t h[32], s[32];
+  c.hash_init(&th);
+  c.hash_update(&th, r5_client_hello1, sizeof(r5_client_hello1));
+  tls_transcript_hrr(&c, &th);
+  c.hash_update(&th, r5_hrr, sizeof(r5_hrr));
+  c.hash_update(&th, r5_client_hello2, sizeof(r5_client_hello2));
+  c.hash_update(&th, r5_server_hello, sizeof(r5_server_hello));
+  c.hash_peek(&th, h);
+  ASSERT_MEM_EQ(h, r5_hash_hs, 32);
+  tls_early_secret(&c, NULL, 0, s);
+  tls_next_secret(&c, s, r5_ecdhe_shared, 32);
+  ASSERT_MEM_EQ(s, r5_handshake_secret, 32);
+  tls_derive_secret(&c, s, "c hs traffic", h, h);
+  ASSERT_MEM_EQ(h, r5_c_hs_traffic, 32);
+}
+
 TEST(test_equal) {
   static const uint8_t a[4] = {1, 2, 3, 4}, b[4] = {1, 2, 3, 5},
                        d[4] = {0, 2, 3, 4};
@@ -513,6 +547,8 @@ int main(void) {
   RUN_TEST(test_psk_early_secret);
   RUN_TEST(test_psk_binder);
   RUN_TEST(test_psk_dhe_handshake_secrets);
+  RUN_TEST(test_p256_shared_secret);
+  RUN_TEST(test_hrr_transcript);
   RUN_TEST(test_equal);
 
   RUN_TEST(test_seal_server_handshake_flight);

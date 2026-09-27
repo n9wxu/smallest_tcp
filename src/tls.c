@@ -119,6 +119,13 @@ void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early,
   wipe(bk, sizeof(bk));
 }
 
+void tls_transcript_hrr(const tls_crypto_t *c, tls_hash_t *transcript) {
+  uint8_t mh[4 + TLS_HASH_LEN] = {254, 0, 0, TLS_HASH_LEN}; /* message_hash */
+  c->hash_peek(transcript, mh + 4);
+  c->hash_init(transcript);
+  c->hash_update(transcript, mh, sizeof(mh));
+}
+
 void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]) {
   uint8_t next[TLS_HASH_LEN];
   tls_expand_label(c, secret, "traffic upd", NULL, 0, next, TLS_HASH_LEN);
@@ -205,6 +212,7 @@ int tls_record_open(const tls_crypto_t *c, tls_keys_t *k, uint8_t *rec,
 #define F_KU_OWED 0x20u  /* the peer asked for a KeyUpdate */
 #define F_CERT_REQ 0x40u /* client: the server asked for our certificate */
 #define F_PSK 0x80u      /* a PSK authenticates the handshake */
+#define F_HRR 0x100u     /* a HelloRetryRequest was sent (received) */
 
 /* step: where the handshake is */
 enum {
@@ -422,6 +430,53 @@ static int ext_seen(uint32_t seen[2], uint16_t type) {
   return 0;
 }
 
+/* A key-exchange group this configuration uses */
+static int group_ok(const tls_config_t *cfg, uint32_t g) {
+  uint8_t mask = cfg->groups ? cfg->groups : TLS_GROUPS_X25519 |
+                                                 TLS_GROUPS_SECP256R1;
+  return (g == TLS_GROUP_X25519 && (mask & TLS_GROUPS_X25519)) ||
+         (g == TLS_GROUP_SECP256R1 && (mask & TLS_GROUPS_SECP256R1));
+}
+
+/* RFC 8446 §4.1.4: no share we can use, but a group we both support —
+ * ask for a share of it.  ClientHello1 gives way to message_hash. */
+static int send_hrr(tls_conn_t *t, const uint8_t *m, size_t mlen,
+                    uint16_t group) {
+  const tls_crypto_t *c = t->cfg->crypto;
+  uint8_t *hr = hs_begin(t, 4 + 2 + 32 + 1 + 32 + 3 + 2 + 6 + 6), *p;
+  if (!hr)
+    return fail(t, TLS_ALERT_INTERNAL_ERROR);
+  c->hash_update(&t->transcript, m, mlen);
+  tls_transcript_hrr(c, &t->transcript);
+  p = hr + 4;
+  put16(p, 0x0303);
+  memcpy(p + 2, hrr_random, 32);
+  p += 34;
+  *p++ = t->sid_len;
+  memcpy(p, t->sid, t->sid_len);
+  p += t->sid_len;
+  put16(p, TLS_AES_128_GCM_SHA256);
+  p[2] = 0;
+  put16(p + 3, 12);
+  put16(p + 5, TLS_EXT_KEY_SHARE); /* selected_group */
+  put16(p + 7, 2);
+  put16(p + 9, group);
+  memcpy(p + 11, "\x00\x2b\x00\x02\x03\x04", 6); /* supported_versions */
+  p += 17;
+  hs_end(t, hr, TLS_HS_SERVER_HELLO, (size_t)(p - hr - 4));
+  rec_close(t);
+  if (t->sid_len) { /* compatibility mode: the dummy CCS goes here */
+    tx_compact(t);
+    if (t->tx_len + 6u <= t->tx_cap) {
+      memcpy(t->tx + t->tx_len, "\x14\x03\x03\x00\x01\x01", 6);
+      t->tx_len = (uint16_t)(t->tx_len + 6);
+    }
+  }
+  t->group = group;
+  t->flags |= F_HRR | F_CCS_OK;
+  return 0;
+}
+
 /* A pre-shared key offer (RFC 8446 §4.2.11): the index of the identity
  * that is our PSK, or -1 (none, or no PSK configured). */
 static int psk_pick(const tls_config_t *cfg, rd_t ids) {
@@ -449,7 +504,7 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   rd_t r, v, ext, ids = {NULL, 0, 0}, binders = {NULL, 0, 0};
   const uint8_t *share = NULL;
   size_t share_len = 0, pub_len = 0, trunc = 0;
-  uint16_t group = 0;
+  uint16_t group = 0, want = 0;
   uint32_t seen[2] = {0, 0};
   int tls13 = 0, suite = 0, sig = 0, have_ks = 0, have_sa = 0;
   int psk_ext = 0, have_modes = 0, pick = -1;
@@ -501,6 +556,14 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         if (rd_uint(&v, 2) == cfg->sig_scheme)
           sig = 1;
       break;
+    case TLS_EXT_SUPPORTED_GROUPS: /* what an HRR could ask for */
+      v = rd_vec(&d, 2);
+      while (v.n >= 2) {
+        uint16_t g = (uint16_t)rd_uint(&v, 2);
+        if (group_ok(cfg, g) && (g == TLS_GROUP_X25519 || !want))
+          want = g;
+      }
+      break;
     case TLS_EXT_KEY_SHARE:
       have_ks = 1;
       v = rd_vec(&d, 2);
@@ -509,9 +572,10 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         rd_t k = rd_vec(&v, 2);
         if (v.bad)
           return fail(t, TLS_ALERT_DECODE_ERROR);
-        /* x25519 preferred over secp256r1 */
-        if ((g == TLS_GROUP_X25519 ||
-             (g == TLS_GROUP_SECP256R1 && group != TLS_GROUP_X25519))) {
+        /* x25519 preferred over secp256r1; after an HRR, its group */
+        if (group_ok(cfg, g) &&
+            (!(t->flags & F_HRR) || g == t->group) &&
+            (g == TLS_GROUP_X25519 || group != TLS_GROUP_X25519)) {
           group = g;
           share = k.p;
           share_len = k.n;
@@ -561,6 +625,23 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
       mode = TLS_PSK_DHE_KE;
     else if (cmodes & smodes & TLS_PSK_KE)
       mode = TLS_PSK_KE;
+  }
+
+  /* No share we can use but a group in common: ask for a share, if this
+   * handshake needs (EC)DHE — once (RFC 8446 §4.1.4) */
+  if (!mode && !group) {
+    int psk_dhe = pick >= 0 && (cmodes & smodes & TLS_PSK_DHE_KE);
+    if (t->flags & F_HRR)
+      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+    if (want && have_ks && (psk_dhe || cfg->cert_count)) {
+      if (!psk_dhe) {
+        if (!have_sa)
+          return fail(t, TLS_ALERT_MISSING_EXTENSION);
+        if (!sig)
+          return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
+      }
+      return send_hrr(t, m, mlen, want);
+    }
   }
 
   if (!mode) { /* certificates */
@@ -667,7 +748,7 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   t->flags |= F_RPROT | F_WPROT | F_CCS_OK;
   /* A client in middlebox compatibility mode (a session id) gets the
    * dummy change_cipher_spec (RFC 8446 D.4) */
-  t->step = t->sid_len ? ST_SEND_CCS : ST_SEND_EE;
+  t->step = (t->sid_len && !(t->flags & F_HRR)) ? ST_SEND_CCS : ST_SEND_EE;
   return HS_KEYS;
 }
 
@@ -805,6 +886,79 @@ static int pump_client(tls_conn_t *t) {
   return 0;
 }
 
+static int client_hello(tls_conn_t *t, const uint8_t *cookie,
+                        size_t cookie_len, const uint8_t *mh,
+                        const uint8_t *hrr, size_t hrr_len);
+
+/* RFC 8446 §4.1.4: the server wants another share (or a cookie back):
+ * a second ClientHello, once. */
+static int on_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen) {
+  const tls_crypto_t *c = t->cfg->crypto;
+  uint8_t mh[4 + TLS_HASH_LEN] = {254, 0, 0, TLS_HASH_LEN}; /* message_hash */
+  rd_t r, v, ext, cookie = {NULL, 0, 0};
+  uint32_t seen[2] = {0, 0}, sel = 0;
+  int tls13 = 0;
+
+  if (t->flags & F_HRR)
+    return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+  r.p = m + 4 + 2 + 32;
+  r.n = mlen - (4 + 2 + 32);
+  r.bad = 0;
+  v = rd_vec(&r, 1);
+  if (r.bad)
+    return fail(t, TLS_ALERT_DECODE_ERROR);
+  if (v.n != 0 || rd_uint(&r, 2) != TLS_AES_128_GCM_SHA256 ||
+      rd_uint(&r, 1) != 0)
+    return fail(t, r.bad ? TLS_ALERT_DECODE_ERROR
+                         : TLS_ALERT_ILLEGAL_PARAMETER);
+  ext = rd_vec(&r, 2);
+  if (r.bad || r.n)
+    return fail(t, TLS_ALERT_DECODE_ERROR);
+  while (ext.n) {
+    uint16_t type = (uint16_t)rd_uint(&ext, 2);
+    rd_t d = rd_vec(&ext, 2);
+    if (ext.bad)
+      return fail(t, TLS_ALERT_DECODE_ERROR);
+    if (ext_seen(seen, type))
+      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+    switch (type) {
+    case TLS_EXT_SUPPORTED_VERSIONS:
+      if (rd_uint(&d, 2) != 0x0304)
+        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+      tls13 = 1;
+      break;
+    case TLS_EXT_KEY_SHARE: /* selected_group */
+      sel = rd_uint(&d, 2);
+      break;
+    case 44: /* cookie */
+      cookie = rd_vec(&d, 2);
+      if (!cookie.n)
+        return fail(t, TLS_ALERT_DECODE_ERROR);
+      break;
+    default:
+      return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
+    }
+    if (d.bad || d.n)
+      return fail(t, TLS_ALERT_DECODE_ERROR);
+  }
+  if (!tls13)
+    return fail(t, TLS_ALERT_PROTOCOL_VERSION);
+  /* it must change something: a group we have, other than our share's */
+  if ((!sel && !cookie.p) ||
+      (sel && (!t->group || sel == t->group || !group_ok(t->cfg, sel))))
+    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+
+  c->hash_peek(&t->transcript, mh + 4);
+  tls_transcript_hrr(c, &t->transcript);
+  c->hash_update(&t->transcript, m, mlen);
+  if (sel)
+    t->group = (uint16_t)sel;
+  t->flags |= F_HRR;
+  if (client_hello(t, cookie.p, cookie.n, mh, m, mlen) != 0)
+    return fail(t, TLS_ALERT_INTERNAL_ERROR);
+  return 0;
+}
+
 /* RFC 8446 §4.1.3: the server's parameters; enter the handshake keys. */
 static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   const tls_crypto_t *c = t->cfg->crypto;
@@ -823,7 +977,7 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   if (r.bad)
     return fail(t, TLS_ALERT_DECODE_ERROR);
   if (memcmp(random, hrr_random, 32) == 0) /* a HelloRetryRequest */
-    return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
+    return on_hello_retry(t, m, mlen);
   if (v.n != t->sid_len || memcmp(v.p, t->sid, v.n) != 0)
     return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   if (rd_uint(&r, 2) != TLS_AES_128_GCM_SHA256 || rd_uint(&r, 1) != 0)
@@ -1313,41 +1467,40 @@ int tls_accept(tls_conn_t *t) {
   return 0;
 }
 
-int tls_connect(tls_conn_t *t, const char *host) {
+/* A ClientHello into tx (RFC 8446 §4.1.2): the first, or after an HRR
+ * (@p mh its message_hash, @p hrr the HelloRetryRequest) the second — the
+ * same random, a share of t->group, the server's cookie, a new binder. */
+static int client_hello(tls_conn_t *t, const uint8_t *cookie,
+                        size_t cookie_len, const uint8_t *mh,
+                        const uint8_t *hrr, size_t hrr_len) {
   const tls_config_t *cfg = t->cfg;
   const tls_crypto_t *c = cfg->crypto;
   uint8_t pub[TLS_KX_PUB_MAX], *m, *p, *ext;
   size_t pub_len = 0, hl = 0, idl = cfg->psk_id_len, trunc = 0;
-  int sni = host && !ip_literal(host);
+  uint8_t mask = cfg->groups ? cfg->groups
+                             : TLS_GROUPS_X25519 | TLS_GROUPS_SECP256R1;
+  uint8_t ng = (uint8_t)(((mask & TLS_GROUPS_X25519) ? 1 : 0) +
+                         ((mask & TLS_GROUPS_SECP256R1) ? 1 : 0));
   uint8_t modes = cfg->psk ? (cfg->psk_modes ? cfg->psk_modes
                                              : TLS_PSK_DHE_KE)
                            : 0;
-  int dhe = !cfg->psk || (modes & TLS_PSK_DHE_KE);
+  int sni = t->host && !ip_literal(t->host);
 
-  if (t->state != TLS_STATE_IDLE)
-    return -1;
-  if (sni && (hl = strlen(host)) > 255)
-    return -1;
-  if (cfg->psk && (!cfg->psk_len || !cfg->psk_id || !idl))
-    return -1;
-  t->host = host;
-  t->group = dhe ? TLS_GROUP_X25519 : 0;
-  c->hash_init(&t->transcript);
-  if (dhe && c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
+  if (sni)
+    hl = strlen(t->host);
+  if (t->group &&
+      c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
     return -1;
   m = hs_begin(t, 4 + 2 + 32 + 1 + 4 + 2 + 2 + (sni ? 9 + hl : 0) + 7 + 10 +
-                      (dhe ? 10 + 10 + pub_len : 0) +
+                      (t->group ? 6 + 2u * ng + 10 + pub_len : 0) +
+                      (cookie_len ? 6 + cookie_len : 0) +
                       (cfg->psk ? 7 + 4 + 2 + 2 + idl + 4 + 2 + 33 : 0));
   if (!m)
     return -1;
 
   p = m + 4;
-  put16(p, 0x0303); /* legacy_version */
-  if (c->random(c->ctx, p + 2, 32) != 0) {
-    t->tx_len = t->rec_start;
-    t->rec_start = NO_REC;
-    return -1;
-  }
+  put16(p, 0x0303);         /* legacy_version */
+  memcpy(p + 2, t->sid, 32); /* random (kept in sid by a client) */
   p += 34;
   *p++ = 0; /* legacy_session_id: none (no middlebox compatibility mode) */
   put16(p, 2);
@@ -1363,7 +1516,7 @@ int tls_connect(tls_conn_t *t, const char *host) {
     put16(p + 4, 3 + hl);
     p[6] = 0;
     put16(p + 7, hl);
-    memcpy(p + 9, host, hl);
+    memcpy(p + 9, t->host, hl);
     p += 9 + hl;
   }
   memcpy(p, "\x00\x2b\x00\x03\x02\x03\x04", 7); /* supported_versions */
@@ -1374,20 +1527,33 @@ int tls_connect(tls_conn_t *t, const char *host) {
   put16(p + 6, TLS_SIG_ECDSA_SECP256R1_SHA256);
   put16(p + 8, TLS_SIG_RSA_PSS_RSAE_SHA256);
   p += 10;
-  if (dhe) {
+  if (t->group) {
     put16(p, TLS_EXT_SUPPORTED_GROUPS);
-    put16(p + 2, 6);
-    put16(p + 4, 4);
-    put16(p + 6, TLS_GROUP_X25519);
-    put16(p + 8, TLS_GROUP_SECP256R1);
-    p += 10;
-    put16(p, TLS_EXT_KEY_SHARE); /* one share: x25519 */
+    put16(p + 2, 2u + 2u * ng);
+    put16(p + 4, 2u * ng);
+    p += 6;
+    if (mask & TLS_GROUPS_X25519) {
+      put16(p, TLS_GROUP_X25519);
+      p += 2;
+    }
+    if (mask & TLS_GROUPS_SECP256R1) {
+      put16(p, TLS_GROUP_SECP256R1);
+      p += 2;
+    }
+    put16(p, TLS_EXT_KEY_SHARE); /* one share */
     put16(p + 2, 6 + pub_len);
     put16(p + 4, 4 + pub_len);
     put16(p + 6, t->group);
     put16(p + 8, pub_len);
     memcpy(p + 10, pub, pub_len);
     p += 10 + pub_len;
+  }
+  if (cookie_len) { /* the HRR's cookie, back */
+    put16(p, 44);
+    put16(p + 2, 2 + cookie_len);
+    put16(p + 4, cookie_len);
+    memcpy(p + 6, cookie, cookie_len);
+    p += 6 + cookie_len;
   }
   if (cfg->psk) {
     uint8_t n = (uint8_t)(((modes & TLS_PSK_DHE_KE) ? 1 : 0) +
@@ -1414,20 +1580,48 @@ int tls_connect(tls_conn_t *t, const char *host) {
     p += 3 + TLS_HASH_LEN;
   }
   put16(ext, (size_t)(p - ext - 2));
-  if (cfg->psk) { /* the binder, over the ClientHello up to the binders */
+  if (cfg->psk) { /* the binder, over the transcript up to the binders */
     uint8_t h[TLS_HASH_LEN];
     tls_hash_t th;
     m[0] = TLS_HS_CLIENT_HELLO;
     put24(m + 1, (size_t)(p - m - 4));
     tls_early_secret(c, cfg->psk, cfg->psk_len, t->secret);
     c->hash_init(&th);
+    if (mh) {
+      c->hash_update(&th, mh, 4 + TLS_HASH_LEN);
+      c->hash_update(&th, hrr, hrr_len);
+    }
     c->hash_update(&th, m, trunc);
     c->hash_peek(&th, h);
     tls_psk_binder(c, t->secret, cfg->psk_resumption, h, m + trunc + 3);
   }
   hs_end(t, m, TLS_HS_CLIENT_HELLO, (size_t)(p - m - 4));
   rec_close(t);
+  return 0;
+}
 
+int tls_connect(tls_conn_t *t, const char *host) {
+  const tls_config_t *cfg = t->cfg;
+  const tls_crypto_t *c = cfg->crypto;
+  uint8_t mask = cfg->groups ? cfg->groups
+                             : TLS_GROUPS_X25519 | TLS_GROUPS_SECP256R1;
+  int dhe = !cfg->psk || !cfg->psk_modes ||
+            (cfg->psk_modes & TLS_PSK_DHE_KE);
+
+  if (t->state != TLS_STATE_IDLE)
+    return -1;
+  if (host && !ip_literal(host) && strlen(host) > 255)
+    return -1;
+  if (cfg->psk && (!cfg->psk_len || !cfg->psk_id || !cfg->psk_id_len))
+    return -1;
+  t->host = host;
+  t->group = !dhe ? 0
+             : (mask & TLS_GROUPS_X25519) ? TLS_GROUP_X25519
+                                          : TLS_GROUP_SECP256R1;
+  c->hash_init(&t->transcript);
+  if (c->random(c->ctx, t->sid, 32) != 0 ||
+      client_hello(t, NULL, 0, NULL, NULL, 0) != 0)
+    return -1;
   t->state = TLS_STATE_HANDSHAKE;
   t->step = ST_C_WAIT_SH;
   t->flags = F_CCS_OK; /* a server may send the dummy one anyway */

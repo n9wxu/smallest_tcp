@@ -444,6 +444,18 @@ def test_tls_033_nothing_in_common(sut, args):
     assert "alert handshake failure" in out, out
 
 
+def test_tls_035_hello_retry(sut):
+    """A secp384r1 key share only: the server asks for x25519 with a
+    HelloRetryRequest, and the second ClientHello brings it."""
+    rc, out = s_client(sut, "-groups", "P-384:X25519", "-msg", "-brief")
+    assert rc is None, out
+    assert out.count(">>> TLS 1.3, Handshake") >= 2
+    assert len([l for l in out.splitlines()
+                if l.startswith(">>>") and l.endswith("ClientHello")]) == 2, out
+    assert "Peer Temp Key: X25519" in out
+    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+
+
 def test_tls_034_key_update(sut):
     """s_client 'K': KeyUpdate(update_requested); the SUT answers with its
     own and data flows under the new keys both ways."""

@@ -253,7 +253,9 @@ int main(int argc, char *argv[]) {
         announced = 1;
         printf("[tls_client] TLS 1.3 established (TLS_AES_128_GCM_SHA256, "
                "%s, %s)\n",
-               tls.group == TLS_GROUP_X25519 ? "x25519" : "no (EC)DHE",
+               tls.group == TLS_GROUP_X25519      ? "x25519"
+               : tls.group == TLS_GROUP_SECP256R1 ? "secp256r1"
+                                                  : "no (EC)DHE",
                tls_psk_used(&tls) ? "PSK" : "certificate");
         fflush(stdout);
       }

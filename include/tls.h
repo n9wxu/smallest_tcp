@@ -153,6 +153,13 @@ void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early,
                     int resumption, const uint8_t hash[TLS_HASH_LEN],
                     uint8_t out[TLS_HASH_LEN]);
 
+/**
+ * After a HelloRetryRequest (RFC 8446 §4.4.1): @p transcript, so far the
+ * hash of ClientHello1, restarts as the hash of the message_hash message
+ * that stands for it.
+ */
+void tls_transcript_hrr(const tls_crypto_t *c, tls_hash_t *transcript);
+
 /** KeyUpdate (RFC 8446 §7.2): the next generation of a traffic secret. */
 void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]);
 
@@ -182,6 +189,10 @@ int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
 #define TLS_EXT_KEY_SHARE 51
 
 #define TLS_AES_128_GCM_SHA256 0x1301
+
+/* Key-exchange groups to use, tls_config_t.groups (0: both) */
+#define TLS_GROUPS_X25519 0x01
+#define TLS_GROUPS_SECP256R1 0x02
 
 /* PSK key-exchange modes, tls_config_t.psk_modes (RFC 8446 §4.2.9) */
 #define TLS_PSK_KE 0x01     /**< psk_ke: the PSK alone, no (EC)DHE */
@@ -214,6 +225,8 @@ typedef struct {
   uint8_t cert_count;
   const void *key;     /**< Private key, as the backend's sign() takes it */
   uint16_t sig_scheme; /**< TLS_SIG_* that @ref key signs with */
+  uint8_t groups;      /**< TLS_GROUPS_* for (EC)DHE; 0: both (x25519
+                            preferred) */
 
   /* A pre-shared key (RFC 8446 §2.2; SHA-256).  A client offers it, a
    * server takes it when the identity matches and the binder checks out,
@@ -238,7 +251,8 @@ typedef struct tls_conn_s {
   uint16_t flags; /**< (internal) */
   uint16_t group; /**< Negotiated key-exchange group */
   uint8_t sid_len;
-  uint8_t sid[32]; /**< legacy_session_id (the ServerHello echoes it) */
+  uint8_t sid[32]; /**< Server: the client's legacy_session_id, echoed;
+                        client: its random, for a second ClientHello */
   uint8_t kx_priv[TLS_KX_PRIV_MAX]; /**< Client: our key share, until the
                                          ServerHello */
   const char *host; /**< Client: the name the certificate must carry */
