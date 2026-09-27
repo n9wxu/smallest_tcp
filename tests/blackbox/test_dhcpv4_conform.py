@@ -41,9 +41,12 @@ MSG_REQUEST  = 3
 MSG_ACK      = 5
 MSG_NAK      = 6
 
+# The first DISCOVER waits a random 1-10 s after start-up (RFC 2131 §4.4.1)
+FIRST_DISCOVER_TIMEOUT = 15
+
 # ── Shared DHCP exchange helper ────────────────────────────────────────────────
 
-def _wait_for_discover(dctx, timeout=8):
+def _wait_for_discover(dctx, timeout=FIRST_DISCOVER_TIMEOUT):
     """
     Sniff on the TAP interface for a DHCP DISCOVER from the SUT.
     Returns the packet or raises AssertionError.
@@ -112,7 +115,7 @@ def _complete_handshake(dctx, discover_pkt, timeout=5):
 # Test cases
 # ══════════════════════════════════════════════════════════════════════════════
 
-# REQ-DHCPv4-002: SUT sends DISCOVER on startup
+# REQ-DHCPv4-002: SUT sends DISCOVER on startup, after 1-10 s
 # REQ-DHCPv4-008: op=1 (BOOTREQUEST)
 # REQ-DHCPv4-012: magic cookie present
 # REQ-DHCPv4-013: message-type option = 1 (DISCOVER)
@@ -266,7 +269,7 @@ def test_discover_ciaddr_is_zero(dhcp_ctx, dhcp_sut_fresh):
 def test_discover_retransmit(dhcp_ctx, dhcp_sut_fresh):
     """SUT retransmits DISCOVER if no server responds (REQ-DHCPv4-045)."""
     # Capture first DISCOVER but DON'T reply
-    d1 = _wait_for_discover(dhcp_ctx, timeout=8)
+    d1 = _wait_for_discover(dhcp_ctx)
     xid1 = d1[BOOTP].xid
 
     # Wait for retransmit (SUT retransmits after ~4s)

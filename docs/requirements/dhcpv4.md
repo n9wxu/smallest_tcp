@@ -57,7 +57,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-DHCPv4-001 | MUST | Implement DHCP client state machine: INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING | RFC 2131 §4.4 | TEST-DHCPv4-001 |
-| REQ-DHCPv4-002 | MUST | INIT → SELECTING: broadcast DHCPDISCOVER | RFC 2131 §4.4.1 | TEST-DHCPv4-002 |
+| REQ-DHCPv4-002 | MUST | INIT → SELECTING: broadcast DHCPDISCOVER — at start-up after a random wait of 1 to 10 s (SHOULD) | RFC 2131 §4.4.1 | TEST-DHCPv4-002 |
 | REQ-DHCPv4-003 | MUST | SELECTING → REQUESTING: after receiving DHCPOFFER, broadcast DHCPREQUEST | RFC 2131 §4.4.1 | TEST-DHCPv4-003 |
 | REQ-DHCPv4-004 | MUST | REQUESTING → BOUND: after receiving DHCPACK, configure IP address | RFC 2131 §4.4.1 | TEST-DHCPv4-004 |
 | REQ-DHCPv4-005 | MUST | BOUND → RENEWING: at T1 (50% of lease), unicast DHCPREQUEST to server; unanswered, retransmit it after half the time left until T2, at least 60 s later | RFC 2131 §4.4.5 | TEST-DHCPv4-005 |

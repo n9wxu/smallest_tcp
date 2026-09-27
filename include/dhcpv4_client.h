@@ -27,8 +27,17 @@ extern "C" {
 #define DHCPV4_CLIENT_TX_MIN 342
 #define DHCPV4_CLIENT_RX_MIN 590
 
+/** The first DISCOVER after dhcpv4_client_start() waits a random time of
+ *  one second to this many milliseconds — RFC 2131 §4.4.1's one to ten
+ *  seconds, so devices powered up together do not all ask at once.  0
+ *  sends it at once; otherwise 1000..65535. */
+#ifndef DHCPV4_START_DELAY_MAX_MS
+#define DHCPV4_START_DELAY_MAX_MS 10000
+#endif
+
 /* DHCP client states */
-#define DHCPV4_CLI_INIT 0       /**< No address; will send DISCOVER */
+#define DHCPV4_CLI_INIT 0       /**< No address; after dhcpv4_client_start(),
+                                     waiting to send the first DISCOVER */
 #define DHCPV4_CLI_SELECTING 1  /**< DISCOVER sent, waiting for OFFER */
 #define DHCPV4_CLI_REQUESTING 2 /**< OFFER received, REQUEST sent */
 #define DHCPV4_CLI_BOUND 3      /**< ACK received, IP configured */
@@ -101,8 +110,9 @@ typedef struct {
                                 went: a lease its ACK grants starts then */
   uint32_t next_request_s; /**< since_s of the next REQUEST: T1, then the
                                 RENEWING and REBINDING retransmissions */
-  uint32_t timer_ms;       /**< Until the next DISCOVER or REQUEST
-                                retransmission (SELECTING, REQUESTING) */
+  uint32_t timer_ms;       /**< Until the first DISCOVER (INIT), or the next
+                                DISCOVER or REQUEST retransmission
+                                (SELECTING, REQUESTING) */
 
   const dhcpv4_opt_table_t *opt_table; /**< Application option handlers */
   dhcpv4_client_event_fn_t on_event;   /**< State change callback */
@@ -125,7 +135,8 @@ net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
                              const dhcpv4_opt_table_t *opts);
 
 /**
- * Begin DHCP discovery.  Sends DHCPDISCOVER and starts the retransmit timer.
+ * Begin DHCP discovery: the first DHCPDISCOVER goes after a random wait
+ * (DHCPV4_START_DELAY_MAX_MS), counted by dhcpv4_client_tick().
  * net->ipv4_addr should be 0 (will be overwritten on BOUND).
  */
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);

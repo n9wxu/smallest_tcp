@@ -15,6 +15,13 @@
 #define REQUEST_RETRANSMITS 4u
 /* RFC 2131 §4.4.5: the least wait between renewing or rebinding REQUESTs */
 #define EXTEND_WAIT_MIN_S 60u
+/* RFC 2131 §4.4.1: the first DISCOVER waits one to ten seconds */
+#define START_DELAY_MIN_MS 1000u
+
+#if DHCPV4_START_DELAY_MAX_MS != 0 &&                                          \
+    (DHCPV4_START_DELAY_MAX_MS < 1000 || DHCPV4_START_DELAY_MAX_MS > 65535)
+#error "DHCPV4_START_DELAY_MAX_MS must be 0 or 1000..65535"
+#endif
 
 #define PARAM_REQUEST_MAX 35
 
@@ -279,13 +286,27 @@ net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
   return NET_OK;
 }
 
+/* RFC 2131 §4.4.1: a random wait before the first DISCOVER, to
+ * desynchronize devices started together; discovery restarted later (a
+ * NAK, a lease lost) does not wait */
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {
-  start_selecting(net, c);
+  if (DHCPV4_START_DELAY_MAX_MS == 0) {
+    start_selecting(net, c);
+    return;
+  }
+  c->state = DHCPV4_CLI_INIT;
+  c->timer_ms = START_DELAY_MIN_MS +
+                net_random_below(net, DHCPV4_START_DELAY_MAX_MS -
+                                          START_DELAY_MIN_MS + 1u);
 }
 
 /* REQ-DHCPv4-005..007, 045..047 */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
-  if (c->state == DHCPV4_CLI_SELECTING || c->state == DHCPV4_CLI_REQUESTING) {
+  if (c->state == DHCPV4_CLI_INIT) {
+    if (c->timer_ms && net_countdown(&c->timer_ms, ms))
+      start_selecting(net, c);
+  } else if (c->state == DHCPV4_CLI_SELECTING ||
+             c->state == DHCPV4_CLI_REQUESTING) {
     if (c->state == DHCPV4_CLI_REQUESTING)
       lease_clock_tick(c, ms);
     if (net_countdown(&c->timer_ms, ms))
@@ -367,4 +388,5 @@ void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
   }
   clear_address(net);
   c->state = DHCPV4_CLI_INIT;
+  c->timer_ms = 0; /* not to start again */
 }

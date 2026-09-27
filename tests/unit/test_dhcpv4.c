@@ -225,6 +225,16 @@ static void setup(void) {
   udp_set_ports(&net, NULL, 0);
 }
 
+/* Start the client and wait out the start-up delay: the first DISCOVER has
+   just gone */
+static void start_discovery(void) {
+  int before = send_count;
+  uint32_t ms;
+  dhcpv4_client_start(&net, &cli);
+  for (ms = 0; send_count == before && ms <= DHCPV4_START_DELAY_MAX_MS; ms++)
+    dhcpv4_client_tick(&net, &cli, 1u);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * CLIENT TESTS
  * ══════════════════════════════════════════════════════════════════ */
@@ -264,7 +274,7 @@ TEST(test_dhcp_client_init_checks_buffers) {
 TEST(test_dhcp_client_start_sends_discover) {
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
 
   ASSERT_TRUE(send_count >= 1);
   ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
@@ -288,7 +298,7 @@ TEST(test_dhcp_client_start_sends_discover) {
 TEST(test_dhcp_client_discover_to_broadcast) {
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
 
   ASSERT_TRUE(send_count >= 1);
   /* Parse IPv4 dest from sent frame (offset 30 = ETH(14) + IP dst(16)) */
@@ -306,7 +316,7 @@ TEST(test_dhcp_client_discover_to_broadcast) {
 TEST(test_dhcp_client_offer_triggers_request) {
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
 
   int discovers = send_count;
   uint32_t xid = cli.xid;
@@ -336,7 +346,7 @@ TEST(test_dhcp_client_offer_triggers_request) {
 TEST(test_dhcp_client_ack_enters_bound) {
   setup();
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
 
   uint32_t xid = cli.xid;
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -367,7 +377,7 @@ TEST(test_dhcp_client_ack_enters_bound) {
 TEST(test_dhcp_client_default_t1_t2) {
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
 
   uint32_t xid = cli.xid;
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -391,7 +401,7 @@ TEST(test_dhcp_client_default_t1_t2) {
 TEST(test_dhcp_client_nak_restarts_init) {
   setup();
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
 
   uint32_t xid = cli.xid;
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -436,7 +446,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
   static const dhcpv4_opt_table_t tbl = {entries, 1};
 
   dhcpv4_client_init(&cli, &net, NULL, NULL, &tbl);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   uint32_t xid = cli.xid;
 
   /* OFFER */
@@ -485,7 +495,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
 TEST(test_dhcp_client_null_opt_table) {
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL); /* NULL opt_table */
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   uint32_t xid = cli.xid;
 
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -508,7 +518,7 @@ TEST(test_dhcp_client_null_opt_table) {
 TEST(test_dhcp_client_retransmit_discover) {
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   int first = send_count;
 
   /* Tick past the 4000ms retransmit timer */
@@ -547,7 +557,7 @@ TEST(test_dhcp_client_discover_backoff) {
   uint8_t i;
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   for (i = 0; i < 6; i++)
     ASSERT_TRUE(within_a_second(ms_until_sent(70000u), base_ms[i]));
   ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
@@ -561,7 +571,7 @@ TEST(test_dhcp_client_backoff_randomised) {
     setup();
     net_random_seed(&net, seed * 0x9E3779B9u);
     dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-    dhcpv4_client_start(&net, &cli);
+    start_discovery();
     waited = ms_until_sent(10000u);
     ASSERT_TRUE(within_a_second(waited, 4000u));
     if (seed == 1)
@@ -577,6 +587,32 @@ static uint8_t sent_msg_type(void) {
                        sent_dhcp_len() - DHCP_OFF_OPTIONS, OPT_MSG_TYPE);
 }
 
+/* RFC 2131 §4.4.1: the first DISCOVER waits a random one to ten seconds,
+   so devices powered up together do not all ask at once; the client is in
+   INIT meanwhile */
+TEST(test_dhcp_client_start_waits_one_to_ten_seconds) {
+  uint32_t seed, first = 0, waited;
+  int differs = 0;
+  ASSERT_EQ(DHCPV4_START_DELAY_MAX_MS, 10000);
+  for (seed = 1; seed <= 8; seed++) {
+    setup();
+    net_random_seed(&net, seed * 0x9E3779B9u);
+    dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
+    dhcpv4_client_start(&net, &cli);
+    ASSERT_EQ(send_count, 0);
+    ASSERT_EQ(cli.state, DHCPV4_CLI_INIT);
+    waited = ms_until_sent(11000u);
+    ASSERT_TRUE(waited >= 1000u && waited <= 10000u);
+    ASSERT_EQ(sent_msg_type(), DHCP_MSG_DISCOVER);
+    ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
+    if (seed == 1)
+      first = waited;
+    else if (waited != first)
+      differs = 1;
+  }
+  ASSERT_TRUE(differs);
+}
+
 /* RFC 2131 §3.1, §4.4.1: four REQUEST retransmissions unanswered —
    discovery starts again, with a new xid, and the application is told */
 TEST(test_dhcp_client_requesting_gives_up) {
@@ -587,7 +623,7 @@ TEST(test_dhcp_client_requesting_gives_up) {
   uint8_t i;
   setup();
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   xid = cli.xid;
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                          NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
@@ -620,7 +656,7 @@ static void bind_lease_fuzzed(uint32_t lease, uint32_t t1, uint32_t t2) {
   uint8_t msg[DHCP_MIN_LEN + 64];
   uint16_t mlen;
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, lease, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
@@ -740,7 +776,7 @@ TEST(test_dhcp_client_server_id_only_when_selecting) {
   uint16_t mlen;
   setup();
   dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, 3600, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
@@ -777,7 +813,7 @@ TEST(test_dhcp_client_nak_from_the_server_asked) {
   uint16_t mlen;
   setup();
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, 3600, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
@@ -830,7 +866,7 @@ TEST(test_dhcp_client_ack_without_lease_time_dropped) {
   uint16_t mlen;
   setup();
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, 3600, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
@@ -857,7 +893,7 @@ TEST(test_dhcp_client_lease_timed_from_the_request) {
   uint16_t mlen;
   setup();
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
-  dhcpv4_client_start(&net, &cli);
+  start_discovery();
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, 3600, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
@@ -1259,6 +1295,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_discover_backoff);
   RUN_TEST(test_dhcp_client_backoff_randomised);
   RUN_TEST(test_dhcp_client_requesting_gives_up);
+  RUN_TEST(test_dhcp_client_start_waits_one_to_ten_seconds);
   RUN_TEST(test_dhcp_client_renew_rebind_timing);
   RUN_TEST(test_dhcp_client_renewal_restarts_lease);
   RUN_TEST(test_dhcp_client_unicasts_to_the_server_mac);

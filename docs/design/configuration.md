@@ -117,6 +117,7 @@ it is a helper, not a setting.
 | `HTTP_REQUEST_TIMEOUT_MS` | `http.h` | 10000 | Time a connection slot may take to receive a complete request. |
 | `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and close. |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client.h` | 20 | Largest server DUID kept (layout-affecting). |
+| `DHCPV4_START_DELAY_MAX_MS` | `dhcpv4_client.h` | 10000 | The first DISCOVER waits a random 1 s up to this (RFC 2131 §4.4.1); 0 sends it at once, else 1000..65535. |
 
 Other protocol constants are plain `#define`s — fixed by their RFCs or by the
 implementation, and not meant to be overridden: for example

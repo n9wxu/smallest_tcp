@@ -91,7 +91,7 @@ server from its configured address.  The old code temporarily overwrote
 
 | State | Entered | Sends | Timer | Next |
 |---|---|---|---|---|
-| INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()` | — | none | `dhcpv4_client_start()` → SELECTING |
+| INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()`, `dhcpv4_client_start()` | — | after start, the start-up wait | its end → SELECTING |
 | SELECTING | start, NAK, lease expiry, REQUESTING's give-up (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER → REQUESTING |
 | REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING (`DHCPV4_EVT_TIMEOUT`) |
 | BOUND | ACK | — | lease clock | T1 → RENEWING |
@@ -101,6 +101,16 @@ server from its configured address.  The old code temporarily overwrote
 A NAK or an expired lease clears `net->ipv4_addr`, `subnet_mask` and
 `gateway_ipv4` and restarts discovery with a new transaction ID
 (`lose_address()`).
+
+**The start-up wait.**  `dhcpv4_client_start()` does not send the first
+DISCOVER at once: it waits in INIT a random time of one to ten seconds
+(`timer_ms`, counted down by `dhcpv4_client_tick()`), as RFC 2131 §4.4.1
+says the client SHOULD, "to desynchronize the use of DHCP at startup" —
+devices powered up together would otherwise all ask at once.
+`DHCPV4_START_DELAY_MAX_MS` (`dhcpv4_client.h`, default 10000) sets the
+upper end; 0 sends the DISCOVER at once, as the client used to.  Discovery
+restarted later — after a NAK, an unanswered REQUEST or a lost lease —
+does not wait.
 
 **Retransmission** in SELECTING and REQUESTING (`begin_exchange()`,
 `transmit()`): the first wait is 4 s, then 8, 16, 32 and 64 s, then every
@@ -197,7 +207,7 @@ The application owns the struct (static, or wherever it fits);
 net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
                              dhcpv4_client_event_fn_t on_event, void *evt_ctx,
                              const dhcpv4_opt_table_t *opts); /* opts may be NULL */
-void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);   /* DISCOVER now */
+void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);   /* DISCOVER in 1-10 s */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms);
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
                          const uint8_t *src_mac, const uint8_t *data,

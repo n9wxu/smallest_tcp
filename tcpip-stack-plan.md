@@ -310,7 +310,8 @@ starts with a unit test that fails on the current code.
       §4.6.3, but costs the peer an extra KeyUpdate
 
 **DHCPv4** ([docs/design/dhcpv4.md](docs/design/dhcpv4.md) §7)
-- [ ] No random 1–10 s delay before the first DISCOVER (RFC 2131 §4.4.1 SHOULD)
+- [x] No random 1–10 s delay before the first DISCOVER (RFC 2131 §4.4.1 SHOULD)
+      — `DHCPV4_START_DELAY_MAX_MS` (0: none)
 - [x] T1 and T2 are not randomized ("fuzzed", RFC 2131 §4.4.5)
 - [x] The lease is timed from the ACK, not from the REQUEST it answers
       (§4.4.5), so it ends later by a round-trip time

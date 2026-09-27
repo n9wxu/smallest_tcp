@@ -93,7 +93,7 @@ one iteration per second.
 | IPv6 router discovery | `router_solicit_ms`, `router_solicits_left` | random 0–1 s, then 4 s; up to 3 | Next Router Solicitation |
 | MLD | `query_reply_ms`, `report_repeat_ms`, `v1_querier_left_s` | random within the query's maximum response delay; 1 s; 260 s | Report; repeat a change report; leave MLDv1 mode |
 | IPv6 lifetimes | `valid_s`, `preferred_s`, `router.lifetime_s` | seconds from RAs / DHCPv6 | Address deprecated or removed; router forgotten |
-| DHCPv4 client | `timer_ms` | retransmit 4 s doubling to 64 s; T1, T2, lease | Retransmit; RENEWING; REBINDING; lease expired (address cleared) |
+| DHCPv4 client | `timer_ms`, `since_s` | start-up wait 1–10 s; retransmit 4 s doubling to 64 s; T1, T2, lease | First DISCOVER; retransmit; RENEWING; REBINDING; lease expired (address cleared) |
 | DHCPv6 client | `timer_ms`, `rt_ms`, `since_s` | RFC 8415 §15 back-off with ±10 % jitter; T1, T2, lifetimes | Retransmit; Renew; Rebind; expired |
 | TFTP client | `timer_ms` | 3 s, 5 retries | Resend the RRQ or the last ACK; give up |
 | mDNS | `timer_ms`, `pending.timer_ms` | probes 250 ms apart, announcements 1 s apart; shared-record answers delayed 20–120 ms | Next probe or announcement; send the aggregated answers |
