@@ -375,9 +375,9 @@ static size_t build_ch(peer_t *p, const ch_opt_t *o, uint8_t *m) {
     c.hash_update(&th, m, trunc);
     c.hash_peek(&th, h);
     if (mine == 0)
-      tls_psk_binder(&c, early, 0, h, b0);
+      tls_psk_binder(&c, 0, early, 0, h, b0);
     else if (mine == 1 && b1)
-      tls_psk_binder(&c, early, 0, h, b1);
+      tls_psk_binder(&c, 0, early, 0, h, b1);
     if (o->psk_twice && b1)
       memset(b1, 0x5c, 32); /* only the first is looked at */
     if (o->bad_binder)
@@ -487,12 +487,12 @@ static int peer_read_sh(peer_t *p, size_t *off) {
     tls_early_secret(&c, p->psk, p->psk_len, p->hs);
   else
     tls_early_secret(&c, NULL, 0, p->hs);
-  tls_next_secret(&c, p->hs, key ? z : NULL, 32);
+  tls_next_secret(&c, 0, p->hs, key ? z : NULL, 32);
   c.hash_peek(&p->th, h);
-  tls_derive_secret(&c, p->hs, "c hs traffic", h, p->c_hs);
-  tls_derive_secret(&c, p->hs, "s hs traffic", h, p->s_hs);
-  tls_traffic_keys(&c, p->s_hs, &p->rd);
-  tls_traffic_keys(&c, p->c_hs, &p->wr);
+  tls_derive_secret(&c, 0, p->hs, "c hs traffic", h, p->c_hs);
+  tls_derive_secret(&c, 0, p->hs, "s hs traffic", h, p->s_hs);
+  tls_traffic_keys(&c, 0, p->s_hs, &p->rd);
+  tls_traffic_keys(&c, 0, p->c_hs, &p->wr);
   *off = rl;
 
   /* The dummy change_cipher_spec, for a client with a session id */
@@ -577,7 +577,7 @@ static int peer_read_flight(peer_t *p) {
 finished: /* Finished */
   CHECK(memcmp(q, "\x14\x00\x00\x20", 4) == 0);
   c.hash_peek(&p->th, h);
-  tls_finished_mac(&c, p->s_hs, h, z);
+  tls_finished_mac(&c, 0, p->s_hs, h, z);
   CHECK(memcmp(q + 4, z, 32) == 0);
   c.hash_update(&p->th, q, 36);
   q += 36;
@@ -586,10 +586,10 @@ finished: /* Finished */
   /* Application secrets */
   c.hash_peek(&p->th, h);
   memcpy(ms, p->hs, 32);
-  tls_next_secret(&c, ms, NULL, 0);
-  tls_derive_secret(&c, ms, "c ap traffic", h, p->c_ap);
-  tls_derive_secret(&c, ms, "s ap traffic", h, p->s_ap);
-  tls_traffic_keys(&c, p->s_ap, &p->rd);
+  tls_next_secret(&c, 0, ms, NULL, 0);
+  tls_derive_secret(&c, 0, ms, "c ap traffic", h, p->c_ap);
+  tls_derive_secret(&c, 0, ms, "s ap traffic", h, p->s_ap);
+  tls_traffic_keys(&c, 0, p->s_ap, &p->rd);
   out_len = 0;
   return 0;
 }
@@ -600,10 +600,10 @@ static size_t peer_finished(peer_t *p, uint8_t *rec) {
   size_t n;
   c.hash_peek(&p->th, h);
   memcpy(rec + 5, "\x14\x00\x00\x20", 4);
-  tls_finished_mac(&c, p->c_hs, h, rec + 9);
+  tls_finished_mac(&c, 0, p->c_hs, h, rec + 9);
   c.hash_update(&p->th, rec + 5, 36);
   n = tls_record_seal(&c, &p->wr, TLS_CT_HANDSHAKE, rec, 36);
-  tls_traffic_keys(&c, p->c_ap, &p->wr);
+  tls_traffic_keys(&c, 0, p->c_ap, &p->wr);
   return n;
 }
 
@@ -1199,7 +1199,7 @@ TEST(test_bad_client_finished) {
   ASSERT_EQ(to_client_finished(&s), 0);
   c.hash_peek(&peer.th, h);
   memcpy(rec + 5, "\x14\x00\x00\x20", 4);
-  tls_finished_mac(&c, peer.c_hs, h, rec + 9);
+  tls_finished_mac(&c, 0, peer.c_hs, h, rec + 9);
   rec[9 + 31] ^= 0x80;
   n = tls_record_seal(&c, &peer.wr, TLS_CT_HANDSHAKE, rec, 36);
   tls_input(&s, rec, n);
@@ -1360,8 +1360,8 @@ TEST(test_key_update_requested) {
   size_t n, off = 0;
   ASSERT_EQ(connected(&s), 0);
   n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x01", 5, rec);
-  tls_update_secret(&c, peer.c_ap);
-  tls_traffic_keys(&c, peer.c_ap, &peer.wr);
+  tls_update_secret(&c, 0, peer.c_ap);
+  tls_traffic_keys(&c, 0, peer.c_ap, &peer.wr);
   n += peer_seal(&peer, TLS_CT_APPLICATION_DATA, "new", 3, rec + n);
   ASSERT_EQ(tls_input(&s, rec, n), n);
   ASSERT_EQ(tls_read(&s, buf, sizeof(buf)), 3);
@@ -1372,8 +1372,8 @@ TEST(test_key_update_requested) {
   ASSERT_EQ(type, TLS_CT_HANDSHAKE);
   ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
   /* .. then its new ones */
-  tls_update_secret(&c, peer.s_ap);
-  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  tls_update_secret(&c, 0, peer.s_ap);
+  tls_traffic_keys(&c, 0, peer.s_ap, &peer.rd);
   ASSERT_EQ(tls_write(&s, (const uint8_t *)"ok", 2), 2);
   drain(&s);
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 2);
@@ -1386,8 +1386,8 @@ TEST(test_key_update_not_requested) {
   size_t n;
   ASSERT_EQ(connected(&s), 0);
   n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x00", 5, rec);
-  tls_update_secret(&c, peer.c_ap);
-  tls_traffic_keys(&c, peer.c_ap, &peer.wr);
+  tls_update_secret(&c, 0, peer.c_ap);
+  tls_traffic_keys(&c, 0, peer.c_ap, &peer.wr);
   n += peer_seal(&peer, TLS_CT_APPLICATION_DATA, "a", 1, rec + n);
   ASSERT_EQ(tls_input(&s, rec, n), n);
   ASSERT_EQ(tls_read(&s, buf, sizeof(buf)), 1);
@@ -1536,7 +1536,7 @@ TEST(test_refuse_long_finished) {
   ASSERT_EQ(to_client_finished(&s), 0);
   c.hash_peek(&peer.th, h);
   memcpy(rec + 5, "\x14\x00\x00\x21", 4);
-  tls_finished_mac(&c, peer.c_hs, h, rec + 9);
+  tls_finished_mac(&c, 0, peer.c_hs, h, rec + 9);
   rec[9 + 32] = 0;
   n = tls_record_seal(&c, &peer.wr, TLS_CT_HANDSHAKE, rec, 37);
   tls_input(&s, rec, n);
@@ -1671,7 +1671,7 @@ TEST(test_rfc8448_psk_server_hello) {
   c.hash_update(&th, r4_server_hello, sizeof(r4_server_hello));
   c.hash_update(&th, buf + 5, 6);
   c.hash_peek(&th, h);
-  tls_finished_mac(&c, r4_s_hs_traffic, h, mac);
+  tls_finished_mac(&c, 0, r4_s_hs_traffic, h, mac);
   ASSERT_MEM_EQ(buf + 5 + 10, mac, 32);
 }
 
@@ -2272,8 +2272,8 @@ TEST(test_key_update_api) {
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
   ASSERT_EQ(type, TLS_CT_HANDSHAKE);
   ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x01", 5);
-  tls_update_secret(&c, peer.s_ap);
-  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  tls_update_secret(&c, 0, peer.s_ap);
+  tls_traffic_keys(&c, 0, peer.s_ap, &peer.rd);
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 3);
   ASSERT_MEM_EQ(buf + 5, "new", 3);
   ASSERT_EQ(tls_key_update(&s, 0), 0);
@@ -2295,8 +2295,8 @@ TEST(test_key_update_by_itself) {
   drain(&s);
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
   ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
-  tls_update_secret(&c, peer.s_ap);
-  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  tls_update_secret(&c, 0, peer.s_ap);
+  tls_traffic_keys(&c, 0, peer.s_ap, &peer.rd);
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 1);
 }
 
@@ -2336,8 +2336,8 @@ TEST(test_no_data_before_owed_key_update) {
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), (int)first);
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
   ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
-  tls_update_secret(&c, peer.s_ap);
-  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  tls_update_secret(&c, 0, peer.s_ap);
+  tls_traffic_keys(&c, 0, peer.s_ap, &peer.rd);
   ASSERT_EQ(peer_open(&peer, &off, &type, buf), 3);
   ASSERT_MEM_EQ(buf + 5, "abc", 3);
 }
@@ -2353,8 +2353,8 @@ static int crossed_key_updates(tls_conn_t *s, int ours_first) {
   if (ours_first)
     CHECK(tls_key_update(s, 1) == 0);
   n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x01", 5, rec);
-  tls_update_secret(&c, peer.c_ap);
-  tls_traffic_keys(&c, peer.c_ap, &peer.wr);
+  tls_update_secret(&c, 0, peer.c_ap);
+  tls_traffic_keys(&c, 0, peer.c_ap, &peer.wr);
   CHECK(tls_input(s, rec, n) == n);
   if (!ours_first)
     CHECK(tls_key_update(s, 1) == 0);
@@ -2363,8 +2363,8 @@ static int crossed_key_updates(tls_conn_t *s, int ours_first) {
   CHECK(peer_open(&peer, &off, &type, buf) == 5);
   CHECK(memcmp(buf + 5, "\x18\x00\x00\x01\x00", 5) == 0);
   CHECK(off == out_len);
-  tls_update_secret(&c, peer.s_ap);
-  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  tls_update_secret(&c, 0, peer.s_ap);
+  tls_traffic_keys(&c, 0, peer.s_ap, &peer.rd);
   return 0;
 }
 
@@ -2396,8 +2396,8 @@ TEST(test_key_update_request_met_by_the_peers_own) {
   ASSERT_TRUE(tls_write(&s, big, sizeof(big)) > 0); /* tx full */
   ASSERT_EQ(tls_key_update(&s, 1), 0);
   n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x00", 5, rec);
-  tls_update_secret(&c, peer.c_ap);
-  tls_traffic_keys(&c, peer.c_ap, &peer.wr);
+  tls_update_secret(&c, 0, peer.c_ap);
+  tls_traffic_keys(&c, 0, peer.c_ap, &peer.wr);
   ASSERT_EQ(tls_input(&s, rec, n), n);
   drain(&s);
   ASSERT_TRUE(peer_open(&peer, &off, &type, buf) > 0); /* the data */

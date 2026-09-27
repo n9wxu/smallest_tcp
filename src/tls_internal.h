@@ -1,7 +1,8 @@
 /**
  * @file tls_internal.h
- * @brief What tls.c shares with the handshake of each role, tls_server.c
- *        and tls_client.c.  Private to the library.
+ * @brief What the record layers (tls.c, dtls.c) share with the handshake
+ *        of each role, tls_server.c and tls_client.c.  Private to the
+ *        library.
  */
 
 #ifndef TLS_INTERNAL_H
@@ -131,17 +132,38 @@ static inline rd_t rd_body(const uint8_t *m, size_t mlen) {
 int tls_next_extension(rd_t *exts, uint32_t seen[2], uint16_t *type,
                        rd_t *data);
 
-/* Building records and handshake messages (tls.c) */
+/* The record layer (tls.c for TLS, dtls.c for DTLS) */
 
-/** Room for @p need content bytes of @p type in the record being built
- *  (or a new one); NULL when tx cannot take them yet. */
-uint8_t *tls_rec_room(tls_conn_t *t, uint8_t type, size_t need);
+/**
+ * What the shared code (tls_common.c, the roles) needs of the record
+ * layer a connection runs over.  Reached only through tls_conn_t.rl, so a
+ * build links only the record layers it initialises connections with.
+ */
+typedef struct tls_rl_s {
+  uint8_t dtls; /**< 1: DTLS 1.3 (RFC 9147) */
+  /** Room for a handshake message of at most @p max bytes, header
+   *  included; NULL when there is none yet. */
+  uint8_t *(*hs_begin)(tls_conn_t *t, size_t max);
+  /** The messages written so far may go (TLS: close the record). */
+  void (*hs_flush)(tls_conn_t *t);
+  /** TLS: the dummy change_cipher_spec; 0, or -1 if tx has no room. */
+  int (*ccs)(tls_conn_t *t);
+  /** Queue an alert if there is room, dropping any half-built record. */
+  void (*alert)(tls_conn_t *t, uint8_t level, uint8_t desc);
+  /** New traffic keys from t->wsec (@p write) or t->rsec. */
+  void (*set_keys)(tls_conn_t *t, int write);
+  /** Wipe key material the record layer keeps itself (may be NULL). */
+  void (*wipe)(tls_conn_t *t);
+} tls_rl_t;
 
-/** Finish the record being built: header, protection. */
-void tls_rec_close(tls_conn_t *t);
+extern const tls_rl_t tls_stream_rl;
 
-/** Drop the bytes the transport has taken from the front of tx. */
-void tls_tx_compact(tls_conn_t *t);
+static inline int tls_is_dtls(const tls_conn_t *t) { return t->rl->dtls; }
+
+#define ALERT_WARNING 1
+#define ALERT_FATAL 2
+
+/* Shared by both record layers and both roles (tls_common.c) */
 
 /** A handshake message of at most @p max bytes, header included. */
 uint8_t *tls_hs_begin(tls_conn_t *t, size_t max);
@@ -149,12 +171,32 @@ uint8_t *tls_hs_begin(tls_conn_t *t, size_t max);
 /** Finish the message at @p m: header, transcript. */
 void tls_hs_end(tls_conn_t *t, uint8_t *m, uint8_t type, size_t body);
 
+/** The messages written so far may be sent. */
+void tls_hs_flush(tls_conn_t *t);
+
 /** A dummy change_cipher_spec record (middlebox compatibility, RFC 8446
- *  D.4); 0, or -1 if tx has no room. */
+ *  D.4); 0, or -1 if tx has no room.  TLS only. */
 int tls_queue_ccs(tls_conn_t *t);
+
+/** Install the traffic keys of t->wsec (@p write) or of t->rsec. */
+void tls_set_keys(tls_conn_t *t, int write);
 
 /** End the connection with a fatal alert; returns -alert. */
 int tls_fail(tls_conn_t *t, int alert);
+
+/** Wipe every secret, key and key share. */
+void tls_wipe_keys(tls_conn_t *t);
+
+/** Wipe the keys if close_notify has gone both ways: none is used again. */
+void tls_wipe_keys_if_closed(tls_conn_t *t);
+
+/** A whole handshake message: to the role during the handshake, else a
+ *  post-handshake message.  HS_*, 0, or < 0 (the connection failed). */
+int tls_on_handshake(tls_conn_t *t, const uint8_t *m, size_t mlen);
+
+/** An alert from the peer: 0 (close_notify, user_canceled), or the
+ *  negated fatal alert that ended the connection. */
+int tls_alert_received(tls_conn_t *t, uint8_t desc);
 
 void tls_notify(tls_conn_t *t, uint8_t events);
 

@@ -35,11 +35,12 @@ int tls_equal(const uint8_t *a, const uint8_t *b, size_t len) {
   return d == 0;
 }
 
-void tls_expand_label(const tls_crypto_t *c, const uint8_t *secret,
+void tls_expand_label(const tls_crypto_t *c, int dtls, const uint8_t *secret,
                       const char *label, const uint8_t *context,
                       size_t context_len, uint8_t *out, size_t out_len) {
   /* struct { uint16 length; opaque label<7..255>; opaque context<0..255>; }
-   * HkdfLabel, with label = "tls13 " + Label */
+   * HkdfLabel, with label = "tls13 " + Label — or "dtls13" + Label (RFC
+   * 9147 §5.9), the same length */
   uint8_t info[2 + 1 + 6 + LABEL_MAX + 1 + TLS_HASH_LEN];
   size_t ll = strlen(label), n;
   if (ll > LABEL_MAX)
@@ -48,7 +49,7 @@ void tls_expand_label(const tls_crypto_t *c, const uint8_t *secret,
     context_len = TLS_HASH_LEN;
   net_write16be(info, out_len);
   info[2] = (uint8_t)(6 + ll);
-  memcpy(info + 3, "tls13 ", 6);
+  memcpy(info + 3, dtls ? "dtls13" : "tls13 ", 6);
   memcpy(info + 9, label, ll);
   n = 9 + ll;
   info[n++] = (uint8_t)context_len;
@@ -59,11 +60,11 @@ void tls_expand_label(const tls_crypto_t *c, const uint8_t *secret,
   c->hkdf_expand(secret, info, n, out, out_len);
 }
 
-void tls_derive_secret(const tls_crypto_t *c, const uint8_t *secret,
+void tls_derive_secret(const tls_crypto_t *c, int dtls, const uint8_t *secret,
                        const char *label, const uint8_t *hash,
                        uint8_t out[TLS_HASH_LEN]) {
-  tls_expand_label(c, secret, label, hash ? hash : empty_hash, TLS_HASH_LEN,
-                   out, TLS_HASH_LEN);
+  tls_expand_label(c, dtls, secret, label, hash ? hash : empty_hash,
+                   TLS_HASH_LEN, out, TLS_HASH_LEN);
 }
 
 void tls_early_secret(const tls_crypto_t *c, const uint8_t *psk, size_t psk_len,
@@ -75,41 +76,42 @@ void tls_early_secret(const tls_crypto_t *c, const uint8_t *psk, size_t psk_len,
   c->hkdf_extract(zeros, TLS_HASH_LEN, psk, psk_len, out);
 }
 
-void tls_next_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN],
-                     const uint8_t *ikm, size_t ikm_len) {
+void tls_next_secret(const tls_crypto_t *c, int dtls,
+                     uint8_t secret[TLS_HASH_LEN], const uint8_t *ikm,
+                     size_t ikm_len) {
   uint8_t salt[TLS_HASH_LEN];
   if (!ikm) {
     ikm = zeros;
     ikm_len = TLS_HASH_LEN;
   }
-  tls_derive_secret(c, secret, "derived", NULL, salt);
+  tls_derive_secret(c, dtls, secret, "derived", NULL, salt);
   c->hkdf_extract(salt, TLS_HASH_LEN, ikm, ikm_len, secret);
   tls_wipe(salt, sizeof(salt));
 }
 
-void tls_traffic_keys(const tls_crypto_t *c, const uint8_t *secret,
+void tls_traffic_keys(const tls_crypto_t *c, int dtls, const uint8_t *secret,
                       tls_keys_t *k) {
-  tls_expand_label(c, secret, "key", NULL, 0, k->key, TLS_AEAD_KEY_LEN);
-  tls_expand_label(c, secret, "iv", NULL, 0, k->iv, TLS_AEAD_IV_LEN);
+  tls_expand_label(c, dtls, secret, "key", NULL, 0, k->key, TLS_AEAD_KEY_LEN);
+  tls_expand_label(c, dtls, secret, "iv", NULL, 0, k->iv, TLS_AEAD_IV_LEN);
   k->seq = 0;
 }
 
-void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
+void tls_finished_mac(const tls_crypto_t *c, int dtls, const uint8_t *base,
                       const uint8_t hash[TLS_HASH_LEN],
                       uint8_t out[TLS_HASH_LEN]) {
   uint8_t fk[TLS_HASH_LEN];
-  tls_expand_label(c, base, "finished", NULL, 0, fk, TLS_HASH_LEN);
+  tls_expand_label(c, dtls, base, "finished", NULL, 0, fk, TLS_HASH_LEN);
   c->hmac(fk, TLS_HASH_LEN, hash, TLS_HASH_LEN, out);
   tls_wipe(fk, sizeof(fk));
 }
 
-void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early, int resumption,
-                    const uint8_t hash[TLS_HASH_LEN],
+void tls_psk_binder(const tls_crypto_t *c, int dtls, const uint8_t *early,
+                    int resumption, const uint8_t hash[TLS_HASH_LEN],
                     uint8_t out[TLS_HASH_LEN]) {
   uint8_t bk[TLS_HASH_LEN];
-  tls_derive_secret(c, early, resumption ? "res binder" : "ext binder", NULL,
-                    bk);
-  tls_finished_mac(c, bk, hash, out);
+  tls_derive_secret(c, dtls, early, resumption ? "res binder" : "ext binder",
+                    NULL, bk);
+  tls_finished_mac(c, dtls, bk, hash, out);
   tls_wipe(bk, sizeof(bk));
 }
 
@@ -120,9 +122,10 @@ void tls_transcript_hrr(const tls_crypto_t *c, tls_hash_t *transcript) {
   c->hash_update(transcript, mh, sizeof(mh));
 }
 
-void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]) {
+void tls_update_secret(const tls_crypto_t *c, int dtls,
+                       uint8_t secret[TLS_HASH_LEN]) {
   uint8_t next[TLS_HASH_LEN];
-  tls_expand_label(c, secret, "traffic upd", NULL, 0, next, TLS_HASH_LEN);
+  tls_expand_label(c, dtls, secret, "traffic upd", NULL, 0, next, TLS_HASH_LEN);
   memcpy(secret, next, TLS_HASH_LEN);
   tls_wipe(next, sizeof(next));
 }

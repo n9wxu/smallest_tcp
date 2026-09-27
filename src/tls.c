@@ -1,8 +1,9 @@
 /**
  * @file tls.c
- * @brief TLS 1.3 (RFC 8446) connections: records in and out, handshake
- *        message framing, alerts, KeyUpdate and the API.  The handshake
- *        of each role is in tls_server.c and tls_client.c.
+ * @brief TLS 1.3 (RFC 8446) over a byte stream: records in and out, the
+ *        KeyUpdate we owe, and the API.  What the DTLS record layer
+ *        shares is in tls_common.c; the handshake of each role is in
+ *        tls_server.c and tls_client.c.
  *
  * No division: this builds for Cortex-M0.
  */
@@ -12,83 +13,10 @@
 #define NO_REC 0xFFFFu
 #define BUF_MIN 256u
 #define BUF_MAX 0xFFFEu
-#define ALERT_WARNING 1
-#define ALERT_FATAL 2
-
-/* SHA-256("HelloRetryRequest") */
-const uint8_t tls_hrr_random[TLS_RANDOM_LEN] = {
-    0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c,
-    0x02, 0x1e, 0x65, 0xb8, 0x91, 0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb,
-    0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c};
-
-static const uint8_t cv_server_context[] = "TLS 1.3, server CertificateVerify";
-
-void tls_notify(tls_conn_t *t, uint8_t events) {
-  if (t->on_event)
-    t->on_event(t, events);
-}
-
-static void wipe_keys(tls_conn_t *t) {
-  tls_wipe(t->secret, sizeof(t->secret));
-  tls_wipe(t->rsec, sizeof(t->rsec));
-  tls_wipe(t->wsec, sizeof(t->wsec));
-  tls_wipe(&t->rkeys, sizeof(t->rkeys));
-  tls_wipe(&t->wkeys, sizeof(t->wkeys));
-  tls_wipe(t->kx_priv, sizeof(t->kx_priv));
-}
-
-/* Once close_notify has gone both ways no key is used again */
-static void wipe_keys_if_closed_both_ways(tls_conn_t *t) {
-  if (t->state == TLS_STATE_CLOSED && (t->flags & F_WCLOSED))
-    wipe_keys(t);
-}
-
-/* ── Shared by both roles ── */
-
-/* Extension types seen so far (below 64), to refuse duplicates */
-static int already_seen(uint32_t seen[2], uint16_t type) {
-  uint32_t bit;
-  if (type >= 64)
-    return 0;
-  bit = 1ul << (type & 31u);
-  if (seen[type >> 5] & bit)
-    return 1;
-  seen[type >> 5] |= bit;
-  return 0;
-}
-
-int tls_next_extension(rd_t *exts, uint32_t seen[2], uint16_t *type,
-                       rd_t *data) {
-  *type = (uint16_t)rd_uint(exts, 2);
-  *data = rd_vec(exts, 2);
-  if (exts->bad)
-    return TLS_ALERT_DECODE_ERROR;
-  if (already_seen(seen, *type))
-    return TLS_ALERT_ILLEGAL_PARAMETER;
-  return 0;
-}
-
-uint8_t tls_groups(const tls_config_t *cfg) {
-  return cfg->groups ? cfg->groups : TLS_GROUPS_X25519 | TLS_GROUPS_SECP256R1;
-}
-
-int tls_group_allowed(const tls_config_t *cfg, uint32_t group) {
-  uint8_t mask = tls_groups(cfg);
-  return (group == TLS_GROUP_X25519 && (mask & TLS_GROUPS_X25519)) ||
-         (group == TLS_GROUP_SECP256R1 && (mask & TLS_GROUPS_SECP256R1));
-}
-
-void tls_cert_verify_content(const tls_conn_t *t,
-                             uint8_t out[TLS_CV_CONTENT_LEN]) {
-  memset(out, 0x20, 64);
-  memcpy(out + 64, cv_server_context, sizeof(cv_server_context)); /* + 0 */
-  t->cfg->crypto->hash_peek(&t->transcript,
-                            out + 64 + sizeof(cv_server_context));
-}
 
 /* ── Building records ── */
 
-void tls_tx_compact(tls_conn_t *t) {
+static void tx_compact(tls_conn_t *t) {
   if (!t->tx_sent)
     return;
   memmove(t->tx, t->tx + t->tx_sent, (size_t)(t->tx_len - t->tx_sent));
@@ -116,10 +44,10 @@ static void seal_record(tls_conn_t *t, uint8_t *rec, size_t len) {
   }
 }
 
-/* A message longer than the fragment limit leaves as several records:
- * the pieces are spread out, last first, to their record's place
- * (tls_rec_room() reserved the room) */
-void tls_rec_close(tls_conn_t *t) {
+/* Finish the record being built.  A message longer than the fragment
+ * limit leaves as several records: the pieces are spread out, last first,
+ * to their record's place (rec_room() reserved the room) */
+static void rec_close(tls_conn_t *t) {
   size_t limit = fragment_limit(t), stride = limit + record_overhead(t);
   size_t len, piece, off, n = 1, i;
   if (t->rec_start == NO_REC)
@@ -142,7 +70,9 @@ void tls_rec_close(tls_conn_t *t) {
   t->rec_start = NO_REC;
 }
 
-uint8_t *tls_rec_room(tls_conn_t *t, uint8_t type, size_t need) {
+/* Room for @p need content bytes of @p type in the record being built (or
+ * a new one); NULL when tx cannot take them yet */
+static uint8_t *rec_room(tls_conn_t *t, uint8_t type, size_t need) {
   size_t over = (t->flags & F_WPROT) ? 1 + TLS_AEAD_TAG_LEN : 0;
   size_t limit = fragment_limit(t), n, extra = over;
   if (t->rec_start != NO_REC) {
@@ -150,9 +80,9 @@ uint8_t *tls_rec_room(tls_conn_t *t, uint8_t type, size_t need) {
     if (t->rec_type == type && used + need <= limit &&
         t->tx_len + need + over <= t->tx_cap)
       return t->tx + t->tx_len;
-    tls_rec_close(t);
+    rec_close(t);
   }
-  tls_tx_compact(t);
+  tx_compact(t);
   for (n = need; n > limit; n -= limit)
     extra += TLS_RECORD_HDR + over;
   if (t->tx_len + TLS_RECORD_HDR + need + extra > t->tx_cap)
@@ -163,21 +93,14 @@ uint8_t *tls_rec_room(tls_conn_t *t, uint8_t type, size_t need) {
   return t->tx + t->tx_len;
 }
 
-uint8_t *tls_hs_begin(tls_conn_t *t, size_t max) {
-  return tls_rec_room(t, TLS_CT_HANDSHAKE, max);
+static uint8_t *hs_begin(tls_conn_t *t, size_t max) {
+  return rec_room(t, TLS_CT_HANDSHAKE, max);
 }
 
-void tls_hs_end(tls_conn_t *t, uint8_t *m, uint8_t type, size_t body) {
-  m[0] = type;
-  net_write24be(m + 1, (uint32_t)body);
-  t->cfg->crypto->hash_update(&t->transcript, m, HS_HDR + body);
-  t->tx_len = (uint16_t)(t->tx_len + HS_HDR + body);
-}
-
-int tls_queue_ccs(tls_conn_t *t) {
+static int queue_ccs(tls_conn_t *t) {
   static const uint8_t ccs_record[6] = {
       TLS_CT_CHANGE_CIPHER_SPEC, 3, 3, 0, 1, 1};
-  tls_tx_compact(t);
+  tx_compact(t);
   if (t->tx_len + sizeof(ccs_record) > t->tx_cap)
     return -1;
   memcpy(t->tx + t->tx_len, ccs_record, sizeof(ccs_record));
@@ -186,58 +109,34 @@ int tls_queue_ccs(tls_conn_t *t) {
 }
 
 static int send_alert(tls_conn_t *t, uint8_t level, uint8_t desc) {
-  uint8_t *p = tls_rec_room(t, TLS_CT_ALERT, 2);
+  uint8_t *p = rec_room(t, TLS_CT_ALERT, 2);
   if (!p)
     return -1;
   p[0] = level;
   p[1] = desc;
   t->tx_len = (uint16_t)(t->tx_len + 2);
-  tls_rec_close(t);
+  rec_close(t);
   return 0;
 }
 
-int tls_fail(tls_conn_t *t, int alert) {
-  if (t->rec_start != NO_REC) { /* drop a half-built record */
+/* tls_fail()'s alert: any half-built record goes first */
+static void fail_alert(tls_conn_t *t, uint8_t level, uint8_t desc) {
+  if (t->rec_start != NO_REC) {
     t->tx_len = t->rec_start;
     t->rec_start = NO_REC;
   }
-  (void)send_alert(t, ALERT_FATAL, (uint8_t)alert); /* if tx has room */
-  t->state = TLS_STATE_ERROR;
-  t->alert = (uint8_t)alert;
-  wipe_keys(t);
-  tls_notify(t, TLS_EVT_ERROR);
-  return -alert;
+  (void)send_alert(t, level, desc);
 }
 
-/* ── Handshake messages ── */
-
-/* RFC 8446 §4.6.3: the peer's next keys; answer if asked.  Its sending
- * keys have now changed, which is all a request of ours still waiting to
- * go would ask for: ours no longer asks. */
-static int on_key_update(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  if (mlen != HS_HDR + 1)
-    return tls_fail(t, TLS_ALERT_DECODE_ERROR);
-  if (m[HS_HDR] > 1)
-    return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  tls_update_secret(t->cfg->crypto, t->rsec);
-  tls_traffic_keys(t->cfg->crypto, t->rsec, &t->rkeys);
-  t->flags &= (uint16_t)~F_KU_REQ;
-  if (m[HS_HDR])
-    t->flags |= F_KU_OWED | F_KU_ANS;
-  return HS_KEYS;
+static void set_keys(tls_conn_t *t, int write) {
+  tls_traffic_keys(t->cfg->crypto, 0, write ? t->wsec : t->rsec,
+                   write ? &t->wkeys : &t->rkeys);
 }
 
-/* One whole handshake message: HS_*, 0, or < 0 */
-static int on_handshake(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  if (t->state != TLS_STATE_CONNECTED)
-    return t->role->on_message(t, m, mlen);
-  if (m[0] == TLS_HS_KEY_UPDATE)
-    return on_key_update(t, m, mlen);
-  /* tickets are for resumption, which a client here does not do */
-  if (m[0] == TLS_HS_NEW_SESSION_TICKET && !(t->flags & F_SERVER))
-    return 0;
-  return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-}
+const tls_rl_t tls_stream_rl = {0,          hs_begin, rec_close, queue_ccs,
+                                fail_alert, set_keys, NULL};
+
+/* ── The KeyUpdate we owe ── */
 
 /* Our KeyUpdate's request_update: never set in an answer (RFC 8446 §4.6.3) */
 static int request_update(const tls_conn_t *t) {
@@ -250,9 +149,9 @@ static void send_owed_key_update(tls_conn_t *t) {
     return; /* once tx has room */
   m[HS_HDR] = request_update(t);
   tls_hs_end(t, m, TLS_HS_KEY_UPDATE, 1);
-  tls_rec_close(t);
-  tls_update_secret(t->cfg->crypto, t->wsec);
-  tls_traffic_keys(t->cfg->crypto, t->wsec, &t->wkeys);
+  rec_close(t);
+  tls_update_secret(t->cfg->crypto, 0, t->wsec);
+  set_keys(t, 1);
   t->flags &= (uint16_t) ~(F_KU_OWED | F_KU_REQ | F_KU_ANS);
 }
 
@@ -263,7 +162,7 @@ static int pump(tls_conn_t *t) {
     r = t->role->pump(t);
   if (r == 0 && (t->flags & F_KU_OWED) && !(t->flags & F_WCLOSED))
     send_owed_key_update(t);
-  tls_rec_close(t);
+  rec_close(t);
   if (r == 0 && t->state == TLS_STATE_HANDSHAKE && SENDING(t->step) &&
       t->tx_len == t->tx_sent)
     return tls_fail(t, TLS_ALERT_INTERNAL_ERROR); /* tx too small */
@@ -290,19 +189,7 @@ static int on_alert(tls_conn_t *t, const uint8_t *a, size_t n, size_t rlen) {
     return tls_fail(t, TLS_ALERT_DECODE_ERROR);
   desc = a[1];
   rx_keep(t, 0, 0, rlen);
-  if (desc == TLS_ALERT_USER_CANCELED) /* close_notify follows */
-    return 0;
-  if (desc == TLS_ALERT_CLOSE_NOTIFY) {
-    t->state = TLS_STATE_CLOSED;
-    wipe_keys_if_closed_both_ways(t);
-    tls_notify(t, TLS_EVT_CLOSED);
-    return 0;
-  }
-  t->state = TLS_STATE_ERROR;
-  t->alert = desc;
-  wipe_keys(t);
-  tls_notify(t, TLS_EVT_ERROR);
-  return -(int)desc;
+  return tls_alert_received(t, desc);
 }
 
 /* A protected record: handshake bytes, an alert, or application data */
@@ -368,7 +255,7 @@ static int process_handshake_messages(tls_conn_t *t) {
       return tls_fail(t, TLS_ALERT_RECORD_OVERFLOW);
     if ((size_t)(t->hs_len - t->hs_off) < mlen)
       return 0;
-    if ((r = on_handshake(t, m, mlen)) < 0)
+    if ((r = tls_on_handshake(t, m, mlen)) < 0)
       return r;
     if (r == HS_KEEP) {
       t->hs_off = (uint16_t)(t->hs_off + mlen);
@@ -425,6 +312,8 @@ static int process(tls_conn_t *t) {
   }
 }
 
+/* ── The API ── */
+
 int tls_init(tls_conn_t *t, const tls_config_t *cfg, uint8_t *rx, size_t rx_cap,
              uint8_t *tx, size_t tx_cap) {
   if (!t || !cfg || !cfg->crypto || !rx || !tx || rx_cap < BUF_MIN ||
@@ -432,6 +321,7 @@ int tls_init(tls_conn_t *t, const tls_config_t *cfg, uint8_t *rx, size_t rx_cap,
     return -1;
   memset(t, 0, sizeof(*t));
   t->cfg = cfg;
+  t->rl = &tls_stream_rl;
   t->rx = rx;
   t->rx_cap = (uint16_t)(rx_cap > BUF_MAX ? BUF_MAX : rx_cap);
   t->tx = tx;
@@ -513,7 +403,7 @@ int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
     return -1;
   if (key_update_still_owed(t))
     return 0;
-  tls_tx_compact(t);
+  tx_compact(t);
   room = (size_t)(t->tx_cap - t->tx_len);
   if (room <= TLS_RECORD_OVERHEAD)
     return 0;
@@ -522,10 +412,10 @@ int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
     len = room;
   if (len > fragment_limit(t))
     len = fragment_limit(t);
-  p = tls_rec_room(t, TLS_CT_APPLICATION_DATA, len);
+  p = rec_room(t, TLS_CT_APPLICATION_DATA, len);
   memcpy(p, data, len);
   t->tx_len = (uint16_t)(t->tx_len + len);
-  tls_rec_close(t);
+  rec_close(t);
   return (int)len;
 }
 
@@ -546,8 +436,6 @@ size_t tls_read(tls_conn_t *t, uint8_t *buf, size_t len) {
   return len;
 }
 
-int tls_psk_used(const tls_conn_t *t) { return (t->flags & F_PSK) != 0; }
-
 int tls_key_update(tls_conn_t *t, int request) {
   if (!writable(t))
     return -1;
@@ -564,7 +452,7 @@ int tls_close(tls_conn_t *t) {
   if (send_alert(t, ALERT_WARNING, TLS_ALERT_CLOSE_NOTIFY) != 0)
     return -1;
   t->flags |= F_WCLOSED;
-  wipe_keys_if_closed_both_ways(t);
+  tls_wipe_keys_if_closed(t);
   return 0;
 }
 
@@ -580,6 +468,7 @@ void tls_release(tls_conn_t *t) {
     tls_wipe(tx, tx_cap);
   tls_wipe(t, sizeof(*t));
   t->cfg = cfg;
+  t->rl = &tls_stream_rl;
   t->rx = rx;
   t->rx_cap = rx_cap;
   t->tx = tx;

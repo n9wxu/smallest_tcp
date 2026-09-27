@@ -119,6 +119,7 @@ endif()
 # backend (tls_crypto_t).
 
 smallest_tcp_library(tls SOURCES
+    src/tls_common.c
     src/tls.c
     src/tls_keys.c
     src/tls_server.c

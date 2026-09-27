@@ -482,12 +482,12 @@ static int script(tls_conn_t *t, const script_t *o) {
     tls_early_secret(&c, test_psk, sizeof(test_psk), sp.hs);
   else
     tls_early_secret(&c, NULL, 0, sp.hs);
-  tls_next_secret(&c, sp.hs, o->psk_ke ? NULL : z, 32);
+  tls_next_secret(&c, 0, sp.hs, o->psk_ke ? NULL : z, 32);
   c.hash_peek(&sp.th, h);
-  tls_derive_secret(&c, sp.hs, "c hs traffic", h, sp.c_hs);
-  tls_derive_secret(&c, sp.hs, "s hs traffic", h, sp.s_hs);
-  tls_traffic_keys(&c, sp.s_hs, &sp.wr);
-  tls_traffic_keys(&c, sp.c_hs, &sp.rd);
+  tls_derive_secret(&c, 0, sp.hs, "c hs traffic", h, sp.c_hs);
+  tls_derive_secret(&c, 0, sp.hs, "s hs traffic", h, sp.s_hs);
+  tls_traffic_keys(&c, 0, sp.s_hs, &sp.wr);
+  tls_traffic_keys(&c, 0, sp.c_hs, &sp.rd);
 
   /* EncryptedExtensions */
   bn = 2;
@@ -578,7 +578,7 @@ static int script(tls_conn_t *t, const script_t *o) {
 
   /* Finished */
   c.hash_peek(&sp.th, h);
-  tls_finished_mac(&c, sp.s_hs, h, body);
+  tls_finished_mac(&c, 0, sp.s_hs, h, body);
   if (o->bad_fin)
     body[0] ^= 1;
   add_msg(msgs, &mn, TLS_HS_FINISHED, body, 32);
@@ -590,10 +590,10 @@ static int script(tls_conn_t *t, const script_t *o) {
   /* Application secrets */
   c.hash_peek(&sp.th, h);
   memcpy(ms, sp.hs, 32);
-  tls_next_secret(&c, ms, NULL, 0);
-  tls_derive_secret(&c, ms, "c ap traffic", h, sp.c_ap);
-  tls_derive_secret(&c, ms, "s ap traffic", h, sp.s_ap);
-  tls_traffic_keys(&c, sp.s_ap, &sp.wr);
+  tls_next_secret(&c, 0, ms, NULL, 0);
+  tls_derive_secret(&c, 0, ms, "c ap traffic", h, sp.c_ap);
+  tls_derive_secret(&c, 0, ms, "s ap traffic", h, sp.s_ap);
+  tls_traffic_keys(&c, 0, sp.s_ap, &sp.wr);
   return 0;
 }
 
@@ -631,10 +631,10 @@ static int client_flight_ok(tls_conn_t *t, int cert_expected) {
   CHECK((size_t)r == off + 36);
   CHECK(memcmp(rec + 5 + off, "\x14\x00\x00\x20", 4) == 0);
   c.hash_peek(&sp.th, h);
-  tls_finished_mac(&c, sp.c_hs, h, mac);
+  tls_finished_mac(&c, 0, sp.c_hs, h, mac);
   CHECK(memcmp(rec + 9 + off, mac, 32) == 0);
   tls_tx_done(t, n);
-  tls_traffic_keys(&c, sp.c_ap, &sp.rd);
+  tls_traffic_keys(&c, 0, sp.c_ap, &sp.rd);
   return 0;
 }
 
@@ -1104,7 +1104,7 @@ TEST(test_psk_client_hello) {
   c.hash_init(&th);
   c.hash_update(&th, out + 5, trunc);
   c.hash_peek(&th, h);
-  tls_psk_binder(&c, early, 0, h, b);
+  tls_psk_binder(&c, 0, early, 0, h, b);
   ASSERT_MEM_EQ(e + 19, b, 32);
   ASSERT_NOT_NULL(ch_ext(&t, TLS_EXT_KEY_SHARE, &n));
   ASSERT_EQ(client_start(&t, &cli_psk_ke, sizeof(cli_rx), sizeof(cli_tx),

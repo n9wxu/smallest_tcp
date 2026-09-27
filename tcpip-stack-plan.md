@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-27 (Tasks 1–13 and 15 complete: through Milestone 13, TLS 1.3, the Linux raw-socket driver, and the issues found in the review.  749 unit tests on macOS (760 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.2 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
+**Last updated:** 2026-09-27 (Tasks 1–13 and 15 complete: through Milestone 13, TLS 1.3, the Linux raw-socket driver, and the issues found in the review.  749 unit tests on macOS (760 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.4 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says
@@ -271,7 +271,7 @@ state at all: every byte of RAM is application-owned.
 DTLS 1.3 (RFC 9147) on the TLS 1.3 handshake: the roles, key schedule and
 crypto backend are shared; a datagram record layer (`dtls.c`) sits beside
 the TLS stream one.
-- [ ] Stage 1: the record-layer interface — `tls_common.c` (what both
+- [x] Stage 1: the record-layer interface — `tls_common.c` (what both
       record layers share), `tls_rl_t`, `tls_set_keys()`, the label-prefix
       parameter; TLS unchanged on the wire, every TLS test passing
 - [ ] Stage 2: `aes_block` in the backend; "dtls13" labels and the "sn" key

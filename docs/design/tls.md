@@ -8,8 +8,9 @@
 |---|---|
 | `include/tls.h` | The connection API: `tls_config_t`, `tls_conn_t`, `tls_init()`, `tls_accept()`, `tls_connect()`, records in and out, `tls_read()` / `tls_write()`, `tls_key_update()`, `tls_close()` |
 | `include/tls_keys.h`, `src/tls_keys.c` | Key schedule (RFC 8446 §7) and record protection (§5.2): pure functions over a `tls_crypto_t`, checked against RFC 8448 |
-| `src/tls_internal.h` | Private to the library: the `F_*` flags, the handshake steps `ST_*`, the `HS_*` results, the `rd_t` reader, `tls_next_extension()`, the role interface `tls_role_t`, the record and handshake-message builders |
-| `src/tls.c` | Record layer, receive processing, alerts, KeyUpdate, the public API |
+| `src/tls_internal.h` | Private to the library: the `F_*` flags, the handshake steps `ST_*`, the `HS_*` results, the `rd_t` reader, `tls_next_extension()`, the role interface `tls_role_t`, the record-layer interface `tls_rl_t`, the handshake-message builders |
+| `src/tls_common.c` | What the TLS record layer shares with DTLS's ([dtls.md](dtls.md)) and with the roles: handshake message framing, installing traffic keys, post-handshake messages, alerts received, `tls_fail()` |
+| `src/tls.c` | The stream record layer: records in and out, receive processing, the KeyUpdate we owe, the public API |
 | `src/tls_server.c` | `tls_accept()` and the server handshake (`tls_server_role`) |
 | `src/tls_client.c` | `tls_connect()` and the client handshake (`tls_client_role`) |
 | `include/tls_tcp.h`, `src/tls_tcp.c` | `tls_tcp_carry()`, `tls_tcp_idle()`: moving records between a `tls_conn_t` and a `tcp_conn_t` |
@@ -56,8 +57,8 @@ compression.
 ┌────────────────────────────────────────────────────────────────────┐
 │ Application: tls_read() / tls_write() / tls_close() / tls_state()  │
 ├────────────────────────────────────────────────────────────────────┤
-│ tls.c — records in and out, handshake framing, alerts, KeyUpdate   │
-│         calls the handshake through tls->role:                     │
+│ tls.c — records in and out; tls_common.c — handshake framing,      │
+│   alerts, KeyUpdate; the handshake through tls->role:              │
 │           tls_server.c (tls_accept)   tls_client.c (tls_connect)   │
 │ tls_keys.c — key schedule and record protection                    │
 ├─────────────────────────────────┬──────────────────────────────────┤
@@ -106,29 +107,44 @@ Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`):
 
 | Object | Bytes |
 |---|---:|
-| `tls.c` | 3,108 |
-| `tls_keys.c` | 1,043 |
-| `tls_server.c` | 3,066 |
-| `tls_client.c` | 3,484 |
-| **Server only** (`tls.c` + `tls_keys.c` + `tls_server.c`) | **7,217** |
-| **Client and server** | **10,701** |
+| `tls_common.c` | 766 |
+| `tls.c` | 2,490 |
+| `tls_keys.c` | 1,086 |
+| `tls_server.c` | 3,094 |
+| `tls_client.c` | 3,522 |
+| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,436** |
+| **Client and server** | **10,958** |
 
-A client-only build is `tls.c` + `tls_keys.c` + `tls_client.c`, 7,635 bytes
+A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,864 bytes
 by the same objects.  These are object sizes; the crypto backend is extra
 (section 3).  No object calls a library divide (`make arm-check-division`).
 
-What the two role files share is in `tls_internal.h`: the builders
-(`tls_rec_room()`, `tls_rec_close()`, `tls_hs_begin()`, `tls_hs_end()`,
-`tls_queue_ccs()`), `tls_fail()`, `tls_notify()`, the reader and
-`tls_next_extension()`, the group helpers, `tls_cert_verify_content()`, and
-`tls_hrr_random` (the HelloRetryRequest marker, defined in `tls.c` because
-the server writes it and the client looks for it).
+What the two role files share is in `tls_internal.h` and `tls_common.c`:
+the builders (`tls_hs_begin()`, `tls_hs_end()`, `tls_hs_flush()`,
+`tls_queue_ccs()`), `tls_set_keys()`, `tls_fail()`, `tls_notify()`, the
+reader and `tls_next_extension()`, the group helpers,
+`tls_cert_verify_content()`, and `tls_hrr_random` (the HelloRetryRequest
+marker, defined once because the server writes it and the client looks for
+it).
 
-### 2.2 CMake targets
+### 2.2 The record-layer interface
+
+The roles and `tls_common.c` reach the record layer the way `tls.c` reaches
+the handshake: through a pointer in the connection, `tls->rl`, which
+`tls_init()` sets to `tls_stream_rl` (`tls.c`) and `dtls_init()` to DTLS's
+datagram layer.  Its operations are the few that differ — room for a
+handshake message, letting written messages go, the dummy
+change_cipher_spec, queueing an alert, installing traffic keys — so a
+TLS-only build does not link DTLS's record layer, nor a DTLS-only build
+this one ([dtls.md §3.1](dtls.md#31-the-record-layer-interface)).  The
+indirection and the key schedule's label-prefix parameter (section 11) cost
+the TLS server 219 bytes of Cortex-M0 code.
+
+### 2.3 CMake targets
 
 | Target | Sources | Links |
 |---|---|---|
-| `smallest_tcp::tls` | `tls.c`, `tls_keys.c`, `tls_server.c`, `tls_client.c` | nothing — bring a `tls_crypto_t` |
+| `smallest_tcp::tls` | `tls_common.c`, `tls.c`, `tls_keys.c`, `tls_server.c`, `tls_client.c` | nothing — bring a `tls_crypto_t` |
 | `smallest_tcp::tls_tcp` | `tls_tcp.c` | `tls`, the core (needs `SMALLEST_TCP_TCP`) |
 | `smallest_tcp::https` | `http_tls.c` | `http`, `tls_tcp` ([http.md](http.md)) |
 | `smallest_tcp::tls_mbedtls` | `tls_crypto_mbedtls.c` | Mbed TLS (`SMALLEST_TCP_TLS`) |
@@ -649,7 +665,9 @@ another transport uses the same four calls.
 
 ## 11. Key schedule (`tls_keys.c`)
 
-Pure functions over a `tls_crypto_t`, tested against RFC 8448:
+Pure functions over a `tls_crypto_t`, tested against RFC 8448.  Those that
+expand labels take a `dtls` flag: 0 for TLS's prefix `"tls13 "`, 1 for
+DTLS 1.3's `"dtls13"` (RFC 9147 §5.9):
 `tls_expand_label()` (HKDF-Expand-Label), `tls_derive_secret()`,
 `tls_early_secret()` (with a PSK, or with zeros), `tls_next_secret()` (Early →
 Handshake with the (EC)DHE secret, Handshake → Master with none),

@@ -108,10 +108,12 @@ typedef struct {
  * it moves ciphertext between the connection's buffers and the socket.
  */
 struct tls_role_s;
+struct tls_rl_s;
 
 typedef struct tls_conn_s {
   const tls_config_t *cfg;
   const struct tls_role_s *role; /**< Server or client (internal) */
+  const struct tls_rl_s *rl;     /**< Record layer: TLS or DTLS (internal) */
   uint8_t state;                 /**< tls_state_t */
   uint8_t alert;                 /**< The fatal alert sent or received */
   uint8_t step;                  /**< Handshake step (internal) */

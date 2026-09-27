@@ -46,8 +46,8 @@ The stack itself has **no static state**: everything it keeps lives in `net_t` a
 | UDP + HTTP server, with TCP (`arm-size-http`) | 10,990 B | 1,684 B |
 | UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 7,805 B | 780 B |
 | UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 5,977 B | 752 B |
-| TLS 1.3 protocol, server only (`arm-size-tls`) | 7,217 B | 440 B per connection + record buffers |
-| TLS 1.3 protocol, client and server (`arm-size-tls`) | 10,701 B | 440 B per connection + record buffers |
+| TLS 1.3 protocol, server only (`arm-size-tls`) | 7,436 B | 440 B per connection + record buffers |
+| TLS 1.3 protocol, client and server (`arm-size-tls`) | 10,958 B | 440 B per connection + record buffers |
 
 RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TLS takes its cryptography from a backend you choose (Mbed TLS is bundled), which is not included in these figures.
 
@@ -82,7 +82,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | **HTTP server** | **`http.h` / `http.c`** `http_tls.h/.c` | **46 unit + 22 blackbox + 9 HTTPS + interop** | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/413/414/431/501/505, connection slots recycled at once, timeouts; over IPv4 and IPv6; plain TCP or TLS 1.3 through a transport interface** |
 | **IPv6** (Milestone 12) | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | **127 unit + 27 blackbox** | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo + errors, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6` (IPv4-only builds unchanged), or IPv6 alone with `NET_USE_IPV4` 0** |
 | **DHCPv6** (Milestone 12) | **`dhcpv6_client.h/.c`** | **20 unit + 2 blackbox + dnsmasq interop** | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
-| **TLS 1.3** (Milestone 13) | **`tls.h`** `tls.c` `tls_keys.h/.c` `tls_server.c` `tls_client.c` `tls_tcp.h/.c` `tls_crypto.h` `tls_crypto_mbedtls.h/.c` | **216 unit + 55 blackbox + OpenSSL/Python/curl interop** | **RFC 8446 client and server over the stack's TCP: `TLS_AES_128_GCM_SHA256`, x25519 / secp256r1 (HelloRetryRequest both ways), ECDSA P-256 and RSA-PSS certificates (chain + name + CertificateVerify checks), pre-shared keys (psk_dhe_ke, psk_ke) with binders, max_fragment_length for small buffers, KeyUpdate, close_notify; key schedule and records verified against RFC 8448; each role in its own file, so a server-only build does not link the client; all cryptography through a `tls_crypto_t` vtable (Mbed TLS 3.6 backend bundled); HTTPS demo** |
+| **TLS 1.3** (Milestone 13) | **`tls.h`** `tls_common.c` `tls.c` `tls_keys.h/.c` `tls_server.c` `tls_client.c` `tls_tcp.h/.c` `tls_crypto.h` `tls_crypto_mbedtls.h/.c` | **216 unit + 55 blackbox + OpenSSL/Python/curl interop** | **RFC 8446 client and server over the stack's TCP: `TLS_AES_128_GCM_SHA256`, x25519 / secp256r1 (HelloRetryRequest both ways), ECDSA P-256 and RSA-PSS certificates (chain + name + CertificateVerify checks), pre-shared keys (psk_dhe_ke, psk_ke) with binders, max_fragment_length for small buffers, KeyUpdate, close_notify; key schedule and records verified against RFC 8448; each role in its own file, so a server-only build does not link the client; all cryptography through a `tls_crypto_t` vtable (Mbed TLS 3.6 backend bundled); HTTPS demo** |
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | 15 unit (8 live, as root) | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
@@ -109,7 +109,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | **10 — mDNS + DNS-SD** | ✅ Done | Multicast DNS (RFC 6762) + DNS-Based Service Discovery (RFC 6763) — zero-config hostname resolution (`<name>.local`) + service announcement (`_service._tcp.local.`) with PTR/SRV/TXT records; required for pyro_fw device discovery |
 | **11 — HTTP** | ✅ Done | HTTP/1.0 server — browse to your microcontroller at `http://pyro-dead01.local/` |
 | **12 — IPv6** | ✅ Done | Dual stack: IPv6 + ICMPv6, neighbor discovery + DAD, UDP and TCP over IPv6, router discovery + SLAAC, DHCPv6 (stateless + stateful), MLD, mDNS (AAAA, ff02::fb) and HTTP over IPv6 — 7.8 KB flash for a dual-stack UDP echo on Cortex-M0 |
-| **13 — TLS 1.3** | ✅ Done | Encrypted TCP, client and server: certificates (ECDSA, RSA-PSS) and pre-shared keys, x25519 / P-256 with HelloRetryRequest, `max_fragment_length` for small buffers, KeyUpdate — pluggable crypto backend (Mbed TLS bundled); `https://10.0.0.2/` from the HTTPS demo — 7.2 KB of protocol code on Cortex-M0 for a server, 10.7 KB for both roles |
+| **13 — TLS 1.3** | ✅ Done | Encrypted TCP, client and server: certificates (ECDSA, RSA-PSS) and pre-shared keys, x25519 / P-256 with HelloRetryRequest, `max_fragment_length` for small buffers, KeyUpdate — pluggable crypto backend (Mbed TLS bundled); `https://10.0.0.2/` from the HTTPS demo — 7.4 KB of protocol code on Cortex-M0 for a server, 11.0 KB for both roles |
 | **14 — DTLS 1.3** | Planned | Encrypted UDP — shares TLS crypto backend; adds anti-replay window, flight retransmit, handshake fragmentation (CoAP/RADIUS/SIP) |
 
 ### 📐 Target Platforms
@@ -511,8 +511,9 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 │   dhcpv4_client  dhcpv4_server  dhcpv6_client  tftp  │
 │   mdns  http (+ http_tls)                            │
 ├──────────────────────────────────────────────────────┤
-│ TLS 1.3 (link time): tls.c + tls_server.c /          │
-│   tls_client.c, over a tcp_conn_t via tls_tcp.c;     │
+│ TLS 1.3 (link time): tls_common.c + tls.c +          │
+│   tls_server.c / tls_client.c, over a tcp_conn_t     │
+│   via tls_tcp.c;                                     │
 │   crypto through tls_crypto_t (Mbed TLS backend)     │
 ├───────────────────────────┬──────────────────────────┤
 │ udp.c                     │ tcp.c + tcp_buf_saw.c    │  ← compile time

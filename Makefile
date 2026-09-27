@@ -42,7 +42,7 @@ ARM_IPV6_SRCS := $(ARM_UDP_SRCS) src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c
 ARM_IPV6ONLY_SRCS := src/net.c src/net_cksum.c src/eth.c src/udp.c \
                      src/driver/stub.c bench/size_measure.c src/ipv6.c \
                      src/icmpv6.c src/ndp.c src/mld.c
-ARM_TLS_SERVER_SRCS := src/tls.c src/tls_keys.c src/tls_server.c
+ARM_TLS_SERVER_SRCS := src/tls_common.c src/tls.c src/tls_keys.c src/tls_server.c
 ARM_TLS_SRCS  := $(ARM_TLS_SERVER_SRCS) src/tls_client.c
 
 ARM_UDP_FLAGS  := $(ARM_NOMCAST) -DNET_USE_TCP=0
@@ -124,9 +124,9 @@ arm-size-tls: $(ARM_TLS_OBJS)
 	@$(ARM_SIZE) $(ARM_TLS_OBJS)
 	@echo ""
 	@$(ARM_SIZE) -t $(ARM_TLS_SERVER_OBJS) | tail -1 | \
-	  awk '{print "server only (tls.c, tls_keys.c, tls_server.c): " $$1 " bytes .text"}'
+	  awk '{print "server only (tls_common.c, tls.c, tls_keys.c, tls_server.c): " $$1 " bytes .text"}'
 	@$(ARM_SIZE) -t $(ARM_TLS_OBJS) | tail -1 | \
-	  awk '{print "client and server:                             " $$1 " bytes .text"}'
+	  awk '{print "client and server:                                           " $$1 " bytes .text"}'
 
 arm-size-all: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 \
               arm-size-ipv6-only arm-size-tls arm-check-division

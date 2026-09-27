@@ -57,7 +57,7 @@ TEST(test_derive_secret_empty_hash) {
   /* Derive-Secret(early, "derived", "") — the salt of the Handshake
    * Secret; exercises HkdfLabel encoding and the hash of no messages */
   uint8_t d[32];
-  tls_derive_secret(&c, r3_early_secret, "derived", NULL, d);
+  tls_derive_secret(&c, 0, r3_early_secret, "derived", NULL, d);
   ASSERT_MEM_EQ(d, r3_derived_hs, 32);
 }
 
@@ -76,16 +76,16 @@ TEST(test_ecdhe_shared_secret) {
 TEST(test_handshake_secret) {
   uint8_t s[32];
   memcpy(s, r3_early_secret, 32);
-  tls_next_secret(&c, s, r3_ecdhe_shared, 32);
+  tls_next_secret(&c, 0, s, r3_ecdhe_shared, 32);
   ASSERT_MEM_EQ(s, r3_handshake_secret, 32);
 }
 
 TEST(test_master_secret) {
   uint8_t s[32], d[32];
-  tls_derive_secret(&c, r3_handshake_secret, "derived", NULL, d);
+  tls_derive_secret(&c, 0, r3_handshake_secret, "derived", NULL, d);
   ASSERT_MEM_EQ(d, r3_derived_ms, 32);
   memcpy(s, r3_handshake_secret, 32);
-  tls_next_secret(&c, s, NULL, 0);
+  tls_next_secret(&c, 0, s, NULL, 0);
   ASSERT_MEM_EQ(s, r3_master_secret, 32);
 }
 
@@ -94,9 +94,9 @@ TEST(test_handshake_traffic_secrets) {
   hash2(r3_client_hello, sizeof(r3_client_hello), r3_server_hello,
         sizeof(r3_server_hello), th);
   ASSERT_MEM_EQ(th, r3_hash_ch_sh, 32);
-  tls_derive_secret(&c, r3_handshake_secret, "c hs traffic", th, s);
+  tls_derive_secret(&c, 0, r3_handshake_secret, "c hs traffic", th, s);
   ASSERT_MEM_EQ(s, r3_c_hs_traffic, 32);
-  tls_derive_secret(&c, r3_handshake_secret, "s hs traffic", th, s);
+  tls_derive_secret(&c, 0, r3_handshake_secret, "s hs traffic", th, s);
   ASSERT_MEM_EQ(s, r3_s_hs_traffic, 32);
 }
 
@@ -104,11 +104,11 @@ TEST(test_application_traffic_secrets) {
   uint8_t th[32], s[32];
   transcript(6, th); /* ClientHello .. server Finished */
   ASSERT_MEM_EQ(th, r3_hash_ch_sfin, 32);
-  tls_derive_secret(&c, r3_master_secret, "c ap traffic", th, s);
+  tls_derive_secret(&c, 0, r3_master_secret, "c ap traffic", th, s);
   ASSERT_MEM_EQ(s, r3_c_ap_traffic, 32);
-  tls_derive_secret(&c, r3_master_secret, "s ap traffic", th, s);
+  tls_derive_secret(&c, 0, r3_master_secret, "s ap traffic", th, s);
   ASSERT_MEM_EQ(s, r3_s_ap_traffic, 32);
-  tls_derive_secret(&c, r3_master_secret, "exp master", th, s);
+  tls_derive_secret(&c, 0, r3_master_secret, "exp master", th, s);
   ASSERT_MEM_EQ(s, r3_exp_master, 32);
 }
 
@@ -116,10 +116,10 @@ TEST(test_resumption_secrets) {
   uint8_t th[32], s[32];
   transcript(7, th); /* .. client Finished */
   ASSERT_MEM_EQ(th, r3_hash_ch_cfin, 32);
-  tls_derive_secret(&c, r3_master_secret, "res master", th, s);
+  tls_derive_secret(&c, 0, r3_master_secret, "res master", th, s);
   ASSERT_MEM_EQ(s, r3_res_master, 32);
   /* the ticket's PSK: HKDF-Expand-Label(res master, "resumption", nonce) */
-  tls_expand_label(&c, r3_res_master, "resumption", r3_ticket_nonce,
+  tls_expand_label(&c, 0, r3_res_master, "resumption", r3_ticket_nonce,
                    sizeof(r3_ticket_nonce), s, 32);
   ASSERT_MEM_EQ(s, r3_resumption_psk, 32);
 }
@@ -127,36 +127,36 @@ TEST(test_resumption_secrets) {
 TEST(test_traffic_keys) {
   tls_keys_t k;
   memset(&k, 0xAA, sizeof(k));
-  tls_traffic_keys(&c, r3_s_hs_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_s_hs_traffic, &k);
   ASSERT_MEM_EQ(k.key, r3_s_hs_key, 16);
   ASSERT_MEM_EQ(k.iv, r3_s_hs_iv, 12);
   ASSERT_TRUE(k.seq == 0);
-  tls_traffic_keys(&c, r3_c_hs_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_hs_traffic, &k);
   ASSERT_MEM_EQ(k.key, r3_c_hs_key, 16);
   ASSERT_MEM_EQ(k.iv, r3_c_hs_iv, 12);
-  tls_traffic_keys(&c, r3_s_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_s_ap_traffic, &k);
   ASSERT_MEM_EQ(k.key, r3_s_ap_key, 16);
   ASSERT_MEM_EQ(k.iv, r3_s_ap_iv, 12);
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   ASSERT_MEM_EQ(k.key, r3_c_ap_key, 16);
   ASSERT_MEM_EQ(k.iv, r3_c_ap_iv, 12);
 }
 
 TEST(test_server_finished) {
   uint8_t fk[32], th[32], mac[32];
-  tls_expand_label(&c, r3_s_hs_traffic, "finished", NULL, 0, fk, 32);
+  tls_expand_label(&c, 0, r3_s_hs_traffic, "finished", NULL, 0, fk, 32);
   ASSERT_MEM_EQ(fk, r3_s_finished_key, 32);
   transcript(5, th); /* .. CertificateVerify */
-  tls_finished_mac(&c, r3_s_hs_traffic, th, mac);
+  tls_finished_mac(&c, 0, r3_s_hs_traffic, th, mac);
   ASSERT_MEM_EQ(mac, r3_s_finished + 4, 32);
 }
 
 TEST(test_client_finished) {
   uint8_t fk[32], th[32], mac[32];
-  tls_expand_label(&c, r3_c_hs_traffic, "finished", NULL, 0, fk, 32);
+  tls_expand_label(&c, 0, r3_c_hs_traffic, "finished", NULL, 0, fk, 32);
   ASSERT_MEM_EQ(fk, r3_c_finished_key, 32);
   transcript(6, th); /* .. server Finished */
-  tls_finished_mac(&c, r3_c_hs_traffic, th, mac);
+  tls_finished_mac(&c, 0, r3_c_hs_traffic, th, mac);
   ASSERT_MEM_EQ(mac, r3_c_finished + 4, 32);
 }
 
@@ -175,9 +175,9 @@ TEST(test_key_update) {
   uint8_t s[32];
   tls_keys_t k;
   memcpy(s, r3_s_ap_traffic, 32);
-  tls_update_secret(&c, s);
+  tls_update_secret(&c, 0, s);
   ASSERT_MEM_EQ(s, upd, 32);
-  tls_traffic_keys(&c, s, &k);
+  tls_traffic_keys(&c, 0, s, &k);
   ASSERT_MEM_EQ(k.key, key, 16);
   ASSERT_MEM_EQ(k.iv, iv, 12);
 }
@@ -197,34 +197,34 @@ TEST(test_psk_binder) {
    * completes the ClientHello */
   uint8_t bk[32], h[32], b[32];
   tls_hash_t th;
-  tls_derive_secret(&c, r4_early_secret, "res binder", NULL, bk);
+  tls_derive_secret(&c, 0, r4_early_secret, "res binder", NULL, bk);
   ASSERT_MEM_EQ(bk, r4_binder_key, 32);
   c.hash_init(&th);
   c.hash_update(&th, r4_ch_prefix, sizeof(r4_ch_prefix));
   c.hash_peek(&th, h);
   ASSERT_MEM_EQ(h, r4_binder_hash, 32);
-  tls_psk_binder(&c, r4_early_secret, 1, h, b);
+  tls_psk_binder(&c, 0, r4_early_secret, 1, h, b);
   ASSERT_MEM_EQ(b, r4_binder, 32);
   ASSERT_MEM_EQ(r4_client_hello, r4_ch_prefix, sizeof(r4_ch_prefix));
   ASSERT_MEM_EQ(r4_client_hello + sizeof(r4_ch_prefix), "\x00\x21\x20", 3);
   ASSERT_MEM_EQ(r4_client_hello + sizeof(r4_ch_prefix) + 3, r4_binder, 32);
   /* an external PSK's binder uses another label */
-  tls_psk_binder(&c, r4_early_secret, 0, h, b);
+  tls_psk_binder(&c, 0, r4_early_secret, 0, h, b);
   ASSERT_TRUE(memcmp(b, r4_binder, 32) != 0);
 }
 
 TEST(test_psk_dhe_handshake_secrets) {
   uint8_t s[32], th[32], t2[32];
   memcpy(s, r4_early_secret, 32);
-  tls_next_secret(&c, s, r4_ecdhe_shared, 32);
+  tls_next_secret(&c, 0, s, r4_ecdhe_shared, 32);
   ASSERT_MEM_EQ(s, r4_handshake_secret, 32);
   hash2(r4_client_hello, sizeof(r4_client_hello), r4_server_hello,
         sizeof(r4_server_hello), th);
-  tls_derive_secret(&c, s, "c hs traffic", th, t2);
+  tls_derive_secret(&c, 0, s, "c hs traffic", th, t2);
   ASSERT_MEM_EQ(t2, r4_c_hs_traffic, 32);
-  tls_derive_secret(&c, s, "s hs traffic", th, t2);
+  tls_derive_secret(&c, 0, s, "s hs traffic", th, t2);
   ASSERT_MEM_EQ(t2, r4_s_hs_traffic, 32);
-  tls_next_secret(&c, s, NULL, 0);
+  tls_next_secret(&c, 0, s, NULL, 0);
   ASSERT_MEM_EQ(s, r4_master_secret, 32);
 }
 
@@ -256,9 +256,9 @@ TEST(test_hrr_transcript) {
   c.hash_peek(&th, h);
   ASSERT_MEM_EQ(h, r5_hash_hs, 32);
   tls_early_secret(&c, NULL, 0, s);
-  tls_next_secret(&c, s, r5_ecdhe_shared, 32);
+  tls_next_secret(&c, 0, s, r5_ecdhe_shared, 32);
   ASSERT_MEM_EQ(s, r5_handshake_secret, 32);
-  tls_derive_secret(&c, s, "c hs traffic", h, h);
+  tls_derive_secret(&c, 0, s, "c hs traffic", h, h);
   ASSERT_MEM_EQ(h, r5_c_hs_traffic, 32);
 }
 
@@ -283,7 +283,7 @@ static int seal_eq(const uint8_t *secret, uint64_t seq, uint8_t type,
                    size_t want_len) {
   tls_keys_t k;
   size_t n;
-  tls_traffic_keys(&c, secret, &k);
+  tls_traffic_keys(&c, 0, secret, &k);
   k.seq = seq;
   memset(rec, 0xEE, sizeof(rec));
   memcpy(rec + TLS_RECORD_HDR, payload, len);
@@ -335,7 +335,7 @@ TEST(test_open_sequence) {
   tls_keys_t k;
   uint8_t type = 0;
   int n;
-  tls_traffic_keys(&c, r3_s_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_s_ap_traffic, &k);
 
   memcpy(rec, r3_nst_record, sizeof(r3_nst_record));
   n = tls_record_open(&c, &k, rec, sizeof(r3_nst_record), &type);
@@ -362,7 +362,7 @@ TEST(test_open_server_handshake_flight) {
   tls_keys_t k;
   uint8_t type = 0;
   int n;
-  tls_traffic_keys(&c, r3_s_hs_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_s_hs_traffic, &k);
   memcpy(rec, r3_s_hs_record, sizeof(r3_s_hs_record));
   n = tls_record_open(&c, &k, rec, sizeof(r3_s_hs_record), &type);
   ASSERT_EQ(n, (int)sizeof(r3_s_hs_payload));
@@ -377,7 +377,7 @@ TEST(test_open_tampered) {
   for (i = 0; i < 4; i++) {
     tls_keys_t k;
     uint8_t type;
-    tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+    tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
     memcpy(rec, r3_c_app_record, sizeof(r3_c_app_record));
     rec[at[i]] ^= 0x01;
     ASSERT_EQ(tls_record_open(&c, &k, rec, sizeof(r3_c_app_record), &type),
@@ -389,7 +389,7 @@ TEST(test_open_wrong_sequence) {
   /* REQ-TLS-028/029: the nonce carries the sequence number */
   tls_keys_t k;
   uint8_t type;
-  tls_traffic_keys(&c, r3_s_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_s_ap_traffic, &k);
   memcpy(rec, r3_s_app_record, sizeof(r3_s_app_record)); /* seq 1 */
   ASSERT_EQ(tls_record_open(&c, &k, rec, sizeof(r3_s_app_record), &type),
             -TLS_ALERT_BAD_RECORD_MAC);
@@ -398,7 +398,7 @@ TEST(test_open_wrong_sequence) {
 TEST(test_open_length_mismatch) {
   tls_keys_t k;
   uint8_t type;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memcpy(rec, r3_c_app_record, sizeof(r3_c_app_record));
   ASSERT_EQ(tls_record_open(&c, &k, rec, sizeof(r3_c_app_record) - 1, &type),
             -TLS_ALERT_DECODE_ERROR);
@@ -408,7 +408,7 @@ TEST(test_open_too_short) {
   /* Shorter than a content type plus a tag */
   tls_keys_t k;
   uint8_t type;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memcpy(rec, "\x17\x03\x03\x00\x10", 5);
   memset(rec + 5, 0, 16);
   ASSERT_EQ(tls_record_open(&c, &k, rec, 21, &type),
@@ -424,7 +424,7 @@ TEST(test_open_not_application_data) {
   /* A protected record always has opaque_type application_data */
   tls_keys_t k;
   uint8_t type;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memcpy(rec, r3_c_app_record, sizeof(r3_c_app_record));
   rec[0] = TLS_CT_HANDSHAKE;
   ASSERT_EQ(tls_record_open(&c, &k, rec, sizeof(r3_c_app_record), &type),
@@ -437,11 +437,11 @@ TEST(test_padding_stripped) {
   tls_keys_t k;
   uint8_t type = 0;
   size_t n;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memcpy(rec + 5, "hello\x17\x00\x00\x00", 9);
   n = tls_record_seal(&c, &k, 0, rec, 9);
   ASSERT_EQ(n, (size_t)(9 + TLS_RECORD_OVERHEAD));
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   ASSERT_EQ(tls_record_open(&c, &k, rec, n, &type), 5);
   ASSERT_EQ(type, TLS_CT_APPLICATION_DATA);
   ASSERT_MEM_EQ(rec + 5, "hello", 5);
@@ -452,10 +452,10 @@ TEST(test_all_zero_plaintext) {
   tls_keys_t k;
   uint8_t type;
   size_t n;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memset(rec + 5, 0, 8);
   n = tls_record_seal(&c, &k, 0, rec, 8);
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   ASSERT_EQ(tls_record_open(&c, &k, rec, n, &type),
             -TLS_ALERT_UNEXPECTED_MESSAGE);
 }
@@ -465,7 +465,7 @@ TEST(test_open_ciphertext_overflow) {
   tls_keys_t k;
   uint8_t type;
   size_t len = TLS_MAX_CIPHERTEXT + 1;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   rec[0] = 23;
   rec[1] = 3;
   rec[2] = 3;
@@ -480,19 +480,19 @@ TEST(test_open_plaintext_overflow) {
   tls_keys_t k;
   uint8_t type;
   size_t n;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memset(rec + 5, 'x', TLS_MAX_PLAINTEXT + 1);
   n = tls_record_seal(&c, &k, TLS_CT_APPLICATION_DATA, rec,
                       TLS_MAX_PLAINTEXT + 1);
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   ASSERT_EQ(tls_record_open(&c, &k, rec, n, &type),
             -TLS_ALERT_RECORD_OVERFLOW);
   /* exactly 2^14 is fine */
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   memset(rec + 5, 'x', TLS_MAX_PLAINTEXT);
   n = tls_record_seal(&c, &k, TLS_CT_APPLICATION_DATA, rec,
                       TLS_MAX_PLAINTEXT);
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   ASSERT_EQ(tls_record_open(&c, &k, rec, n, &type), (int)TLS_MAX_PLAINTEXT);
 }
 
@@ -503,7 +503,7 @@ TEST(test_nonce_uses_all_sequence_bytes) {
   uint8_t nonce[12], tag[16], want[3 + 16], hdr[5];
   size_t n;
   int i;
-  tls_traffic_keys(&c, r3_c_ap_traffic, &k);
+  tls_traffic_keys(&c, 0, r3_c_ap_traffic, &k);
   k.seq = 0x0102030405060708ull;
   memcpy(nonce, k.iv, 12);
   for (i = 0; i < 8; i++)

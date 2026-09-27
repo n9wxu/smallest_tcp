@@ -78,17 +78,23 @@ size_t tls_record_seal(const tls_crypto_t *c, tls_keys_t *k, uint8_t type,
 int tls_record_open(const tls_crypto_t *c, tls_keys_t *k, uint8_t *rec,
                     size_t rec_len, uint8_t *type);
 
-/**
- * HKDF-Expand-Label(@p secret, "tls13 " + @p label, @p context,
- * @p out_len); @p label at most 12 characters, @p context at most 32 bytes.
+/*
+ * The functions that expand labels take @p dtls: 0 for TLS 1.3's label
+ * prefix "tls13 ", 1 for DTLS 1.3's "dtls13" (RFC 9147 §5.9).
  */
-void tls_expand_label(const tls_crypto_t *c, const uint8_t *secret,
+
+/**
+ * HKDF-Expand-Label(@p secret, "tls13 " (or "dtls13") + @p label,
+ * @p context, @p out_len); @p label at most 12 characters, @p context at
+ * most 32 bytes.
+ */
+void tls_expand_label(const tls_crypto_t *c, int dtls, const uint8_t *secret,
                       const char *label, const uint8_t *context,
                       size_t context_len, uint8_t *out, size_t out_len);
 
 /** Derive-Secret(@p secret, @p label, Messages), @p hash being
  *  Transcript-Hash(Messages), or NULL for no messages. */
-void tls_derive_secret(const tls_crypto_t *c, const uint8_t *secret,
+void tls_derive_secret(const tls_crypto_t *c, int dtls, const uint8_t *secret,
                        const char *label, const uint8_t *hash,
                        uint8_t out[TLS_HASH_LEN]);
 
@@ -102,15 +108,16 @@ void tls_early_secret(const tls_crypto_t *c, const uint8_t *psk, size_t psk_len,
  * to Handshake Secret with the (EC)DHE secret, Handshake to Master Secret
  * with @p ikm NULL.
  */
-void tls_next_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN],
-                     const uint8_t *ikm, size_t ikm_len);
+void tls_next_secret(const tls_crypto_t *c, int dtls,
+                     uint8_t secret[TLS_HASH_LEN], const uint8_t *ikm,
+                     size_t ikm_len);
 
 /** The write key and IV of traffic secret @p secret; sequence 0. */
-void tls_traffic_keys(const tls_crypto_t *c, const uint8_t *secret,
+void tls_traffic_keys(const tls_crypto_t *c, int dtls, const uint8_t *secret,
                       tls_keys_t *k);
 
 /** Finished verify_data (§4.4.4): HMAC(finished_key(@p base), @p hash). */
-void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
+void tls_finished_mac(const tls_crypto_t *c, int dtls, const uint8_t *base,
                       const uint8_t hash[TLS_HASH_LEN],
                       uint8_t out[TLS_HASH_LEN]);
 
@@ -119,8 +126,8 @@ void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
  * for a @p resumption PSK, "ext binder" for an external one — over
  * @p hash, the transcript hash up to the binders.
  */
-void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early, int resumption,
-                    const uint8_t hash[TLS_HASH_LEN],
+void tls_psk_binder(const tls_crypto_t *c, int dtls, const uint8_t *early,
+                    int resumption, const uint8_t hash[TLS_HASH_LEN],
                     uint8_t out[TLS_HASH_LEN]);
 
 /** After a HelloRetryRequest (§4.4.1): the transcript of ClientHello1
@@ -128,7 +135,8 @@ void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early, int resumption,
 void tls_transcript_hrr(const tls_crypto_t *c, tls_hash_t *transcript);
 
 /** KeyUpdate (§7.2): the next generation of a traffic secret. */
-void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]);
+void tls_update_secret(const tls_crypto_t *c, int dtls,
+                       uint8_t secret[TLS_HASH_LEN]);
 
 /** Constant-time comparison: 1 if equal. */
 int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);

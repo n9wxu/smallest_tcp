@@ -259,16 +259,17 @@ and is not measured here.
 
 | | .text | RAM |
 |---|---:|---:|
-| `tls.c` (records, alerts, KeyUpdate, API) | 3,108 B | — |
-| `tls_keys.c` (key schedule, record protection) | 1,043 B | — |
-| `tls_server.c` (`tls_accept()`, server handshake) | 3,066 B | — |
-| `tls_client.c` (`tls_connect()`, client handshake) | 3,484 B | — |
-| **Server only** | **7,217 B** | — |
-| **Client and server** | **10,701 B** | — |
+| `tls_common.c` (handshake framing, keys, alerts; shared with DTLS) | 766 B | — |
+| `tls.c` (stream records, KeyUpdate, API) | 2,490 B | — |
+| `tls_keys.c` (key schedule, record protection) | 1,086 B | — |
+| `tls_server.c` (`tls_accept()`, server handshake) | 3,094 B | — |
+| `tls_client.c` (`tls_connect()`, client handshake) | 3,522 B | — |
+| **Server only** | **7,436 B** | — |
+| **Client and server** | **10,958 B** | — |
 | `tls_conn_t` (per connection) | — | 440 B (128 of them the backend's SHA-256 state) |
 | `tls_config_t` (shared) | — | 40 B |
 
-A server-only device links 7.2 KB: `tls.c` reaches the handshake only through
+A server-only device links 7.4 KB: `tls.c` reaches the handshake only through
 the role pointer that `tls_accept()` or `tls_connect()` sets, so the role an
 application never starts is never referenced and never linked
 ([tls.md §2.1](tls.md#21-the-role-interface)).  Plus the application's record
@@ -359,6 +360,7 @@ Cortex-M0 has no divide instruction ([coding-rules.md](coding-rules.md)).
 | 2026-09-27 | …+TCP+HTTP (transport release hook) | 10,990 B (10,794 stack) | — | — |
 | 2026-09-27 | ETH+ARP+IPv4+ICMP+UDP, dual stack | 7,805 B (7,691 stack) | — | — |
 | 2026-09-27 | TLS 1.3 (keys wiped after close_notify, `tls_release()`) | 7,217 B / 10,701 B | — | — |
+| 2026-09-27 | TLS 1.3 (record-layer interface shared with DTLS) | 7,436 B / 10,958 B | — | — |
 
 > The UDP-only growth from 2026-03-19 to 2026-09-26 came from `net_poll()`
 > (Milestone 7), the peek-based UDP dispatch, IPv4 Protocol Unreachable, and

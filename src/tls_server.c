@@ -224,7 +224,7 @@ static int send_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen,
   net_write16be(p + 10, TLS_VERSION_13);
   p += SELECTED_GROUP_EXT + SUPPORTED_VERSIONS_EXT;
   tls_hs_end(t, hrr, TLS_HS_SERVER_HELLO, (size_t)(p - hrr - HS_HDR));
-  tls_rec_close(t);
+  tls_hs_flush(t);
   if (t->sid_len) /* compatibility mode: the dummy CCS goes here */
     (void)tls_queue_ccs(t);
   t->group = group;
@@ -254,7 +254,8 @@ static int take_early_secret(tls_conn_t *t, const client_hello_t *ch,
   tls_early_secret(c, cfg->psk, cfg->psk_len, t->secret);
   c->hash_update(&t->transcript, m, ch->binders_at);
   c->hash_peek(&t->transcript, h);
-  tls_psk_binder(c, t->secret, cfg->psk_resumption, h, expected);
+  tls_psk_binder(c, tls_is_dtls(t), t->secret, cfg->psk_resumption, h,
+                 expected);
   if (!tls_equal(expected, binder.p, TLS_HASH_LEN))
     return tls_fail(t, TLS_ALERT_DECRYPT_ERROR);
   c->hash_update(&t->transcript, m + ch->binders_at, mlen - ch->binders_at);
@@ -306,7 +307,7 @@ static int send_server_hello(tls_conn_t *t, uint8_t psk_mode, int pick,
   net_write16be(p + 4, TLS_VERSION_13);
   p += SUPPORTED_VERSIONS_EXT;
   tls_hs_end(t, sh, TLS_HS_SERVER_HELLO, (size_t)(p - sh - HS_HDR));
-  tls_rec_close(t);
+  tls_hs_flush(t);
   return 0;
 }
 
@@ -316,12 +317,12 @@ static int send_server_hello(tls_conn_t *t, uint8_t psk_mode, int pick,
 static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
   const tls_crypto_t *c = t->cfg->crypto;
   uint8_t h[TLS_HASH_LEN];
-  tls_next_secret(c, t->secret, shared, TLS_HASH_LEN);
+  tls_next_secret(c, tls_is_dtls(t), t->secret, shared, TLS_HASH_LEN);
   c->hash_peek(&t->transcript, h);
-  tls_derive_secret(c, t->secret, "c hs traffic", h, t->rsec);
-  tls_derive_secret(c, t->secret, "s hs traffic", h, t->wsec);
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
+  tls_derive_secret(c, tls_is_dtls(t), t->secret, "c hs traffic", h, t->rsec);
+  tls_derive_secret(c, tls_is_dtls(t), t->secret, "s hs traffic", h, t->wsec);
+  tls_set_keys(t, 0);
+  tls_set_keys(t, 1);
   t->flags |= F_RPROT | F_WPROT | F_CCS_OK;
   /* A client in middlebox compatibility mode (a session ID) gets the
    * dummy change_cipher_spec (RFC 8446 D.4) */
@@ -482,16 +483,16 @@ static int send_finished(tls_conn_t *t) {
   if (!m)
     return 0;
   c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->wsec, h, m + HS_HDR);
+  tls_finished_mac(c, tls_is_dtls(t), t->wsec, h, m + HS_HDR);
   tls_hs_end(t, m, TLS_HS_FINISHED, TLS_HASH_LEN);
-  tls_rec_close(t);
+  tls_hs_flush(t);
   c->hash_peek(&t->transcript, h);
   memcpy(master, t->secret, sizeof(master));
-  tls_next_secret(c, master, NULL, 0);
-  tls_derive_secret(c, master, "c ap traffic", h, t->secret);
-  tls_derive_secret(c, master, "s ap traffic", h, t->wsec);
+  tls_next_secret(c, tls_is_dtls(t), master, NULL, 0);
+  tls_derive_secret(c, tls_is_dtls(t), master, "c ap traffic", h, t->secret);
+  tls_derive_secret(c, tls_is_dtls(t), master, "s ap traffic", h, t->wsec);
   tls_wipe(master, sizeof(master));
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
+  tls_set_keys(t, 1);
   return 1;
 }
 
@@ -537,13 +538,13 @@ static int on_client_finished(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   if (mlen != HS_HDR + TLS_HASH_LEN)
     return tls_fail(t, TLS_ALERT_DECODE_ERROR);
   c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->rsec, h, mac);
+  tls_finished_mac(c, tls_is_dtls(t), t->rsec, h, mac);
   if (!tls_equal(mac, m + HS_HDR, TLS_HASH_LEN))
     return tls_fail(t, TLS_ALERT_DECRYPT_ERROR);
   c->hash_update(&t->transcript, m, mlen);
   memcpy(t->rsec, t->secret, TLS_HASH_LEN);
   tls_wipe(t->secret, sizeof(t->secret));
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
+  tls_set_keys(t, 0);
   t->flags &= (uint16_t)~F_CCS_OK;
   t->step = ST_DONE;
   t->state = TLS_STATE_CONNECTED;

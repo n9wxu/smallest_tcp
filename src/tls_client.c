@@ -170,7 +170,8 @@ static void write_binder(tls_conn_t *t, uint8_t *m, uint8_t *binders,
   }
   c->hash_update(&th, m, (size_t)(binders - m));
   c->hash_peek(&th, h);
-  tls_psk_binder(c, t->secret, cfg->psk_resumption, h, binders + 3);
+  tls_psk_binder(c, tls_is_dtls(t), t->secret, cfg->psk_resumption, h,
+                 binders + 3);
 }
 
 /*
@@ -222,7 +223,7 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie, size_t cookie_len,
   if (binders)
     write_binder(t, m, binders, p, mh, hrr, hrr_len);
   tls_hs_end(t, m, TLS_HS_CLIENT_HELLO, (size_t)(p - m - HS_HDR));
-  tls_rec_close(t);
+  tls_hs_flush(t);
   return 0;
 }
 
@@ -303,12 +304,12 @@ static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
   uint8_t h[TLS_HASH_LEN];
   if (!(t->flags & F_PSK)) /* else t->secret holds the PSK's Early Secret */
     tls_early_secret(c, NULL, 0, t->secret);
-  tls_next_secret(c, t->secret, shared, TLS_HASH_LEN);
+  tls_next_secret(c, tls_is_dtls(t), t->secret, shared, TLS_HASH_LEN);
   c->hash_peek(&t->transcript, h);
-  tls_derive_secret(c, t->secret, "s hs traffic", h, t->rsec);
-  tls_derive_secret(c, t->secret, "c hs traffic", h, t->wsec);
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
+  tls_derive_secret(c, tls_is_dtls(t), t->secret, "s hs traffic", h, t->rsec);
+  tls_derive_secret(c, tls_is_dtls(t), t->secret, "c hs traffic", h, t->wsec);
+  tls_set_keys(t, 0);
+  tls_set_keys(t, 1);
   t->flags |= F_RPROT | F_WPROT;
   t->step = ST_C_WAIT_EE;
 }
@@ -499,17 +500,17 @@ static int on_server_finished(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   if (mlen != HS_HDR + TLS_HASH_LEN)
     return tls_fail(t, TLS_ALERT_DECODE_ERROR);
   c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->rsec, h, mac);
+  tls_finished_mac(c, tls_is_dtls(t), t->rsec, h, mac);
   if (!tls_equal(mac, m + HS_HDR, TLS_HASH_LEN))
     return tls_fail(t, TLS_ALERT_DECRYPT_ERROR);
   c->hash_update(&t->transcript, m, mlen);
   c->hash_peek(&t->transcript, h);
   memcpy(master, t->secret, sizeof(master));
-  tls_next_secret(c, master, NULL, 0);
-  tls_derive_secret(c, master, "s ap traffic", h, t->rsec);
-  tls_derive_secret(c, master, "c ap traffic", h, t->secret);
+  tls_next_secret(c, tls_is_dtls(t), master, NULL, 0);
+  tls_derive_secret(c, tls_is_dtls(t), master, "s ap traffic", h, t->rsec);
+  tls_derive_secret(c, tls_is_dtls(t), master, "c ap traffic", h, t->secret);
   tls_wipe(master, sizeof(master));
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
+  tls_set_keys(t, 0);
   t->flags &= (uint16_t)~F_CCS_OK;
   t->step = ST_C_SEND_FIN;
   return HS_KEYS;
@@ -533,12 +534,12 @@ static int pump_client(tls_conn_t *t) {
     m += HS_HDR + 4;
   }
   c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->wsec, h, m + HS_HDR);
+  tls_finished_mac(c, tls_is_dtls(t), t->wsec, h, m + HS_HDR);
   tls_hs_end(t, m, TLS_HS_FINISHED, TLS_HASH_LEN);
-  tls_rec_close(t);
+  tls_hs_flush(t);
   memcpy(t->wsec, t->secret, TLS_HASH_LEN);
   tls_wipe(t->secret, sizeof(t->secret));
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
+  tls_set_keys(t, 1);
   t->step = ST_DONE;
   t->state = TLS_STATE_CONNECTED;
   tls_notify(t, TLS_EVT_CONNECTED);
