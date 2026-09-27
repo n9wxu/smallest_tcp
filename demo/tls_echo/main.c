@@ -175,7 +175,6 @@ static void do_listen(void) {
 
 static void tls_service(void) {
   const uint8_t *q;
-  size_t n;
   int w;
   tcp_state_t st = conn.state;
 
@@ -194,18 +193,7 @@ static void tls_service(void) {
     active = 1;
   }
 
-  /* Ciphertext in, straight from the TCP buffer into the TLS buffer */
-  for (;;) {
-    uint8_t *p;
-    uint16_t got;
-    n = tls_rx_space(&tls, &p);
-    if (n > 0xFFFFu)
-      n = 0xFFFFu;
-    if (!n || !(got = tcp_recv(&conn, p, (uint16_t)n)))
-      break;
-    tls_rx_commit(&tls, got);
-    tcp_window_update(&net, &conn);
-  }
+  demo_tls_carry(&net, &conn, &tls);
 
   /* Echo */
   for (;;) {
@@ -222,14 +210,7 @@ static void tls_service(void) {
     echo_len -= (size_t)w;
   }
 
-  /* Ciphertext out */
-  while ((n = tls_tx_pending(&tls, &q)) > 0) {
-    w = tcp_write(&conn, q, (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n));
-    if (w <= 0)
-      break;
-    tls_tx_done(&tls, (size_t)w);
-  }
-  tcp_output(&net, &conn);
+  demo_tls_carry(&net, &conn, &tls);
 
   switch (tls_state(&tls)) {
   case TLS_STATE_CONNECTED:

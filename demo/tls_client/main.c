@@ -101,31 +101,6 @@ static void service(uint32_t *last) {
   }
 }
 
-/* Move ciphertext between TCP and TLS */
-static void carry(void) {
-  const uint8_t *q;
-  uint8_t *p;
-  size_t n;
-  uint16_t got;
-  int w;
-  for (;;) {
-    n = tls_rx_space(&tls, &p);
-    if (n > 0xFFFFu)
-      n = 0xFFFFu;
-    if (!n || !(got = tcp_recv(&conn, p, (uint16_t)n)))
-      break;
-    tls_rx_commit(&tls, got);
-    tcp_window_update(&net, &conn);
-  }
-  while ((n = tls_tx_pending(&tls, &q)) > 0) {
-    w = tcp_write(&conn, q, (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n));
-    if (w <= 0)
-      break;
-    tls_tx_done(&tls, (size_t)w);
-  }
-  tcp_output(&net, &conn);
-}
-
 int main(int argc, char *argv[]) {
   static uint8_t out[65536], in[65536];
   const char *name = env("TLS_NAME", "pyro-dead01.local");
@@ -253,7 +228,7 @@ int main(int argc, char *argv[]) {
       started = 1;
     }
     if (conn.state == TCP_ESTABLISHED || conn.state == TCP_CLOSE_WAIT)
-      carry();
+      demo_tls_carry(&net, &conn, &tls);
 
     switch (tls_state(&tls)) {
     case TLS_STATE_CONNECTED:
@@ -303,7 +278,7 @@ int main(int argc, char *argv[]) {
     case TLS_STATE_ERROR:
       printf("[tls_client] TLS alert %u\n", (unsigned)tls.alert);
       fflush(stdout);
-      carry(); /* our alert, if it was ours */
+      demo_tls_carry(&net, &conn, &tls); /* our alert, if it was ours */
       rc = 2;
       goto done;
     default:

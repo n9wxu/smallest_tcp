@@ -589,9 +589,10 @@ jobs:
   # ── TLS 1.3 blackbox tests (Linux, once per MAC driver) ─────────────
   # smallest_tcp's TLS 1.3 over its own TCP, Mbed TLS for the crypto:
   # tls_echo_demo against Python ssl and openssl s_client, tls_client_demo
-  # against Python ssl and openssl s_server.
+  # against Python ssl and openssl s_server, https_demo against Python
+  # and curl.
   blackbox-tls:
-    name: Blackbox — TLS 1.3 server + client (${{ matrix.label }})
+    name: Blackbox — TLS 1.3 server + client + HTTPS (${{ matrix.label }})
     runs-on: ubuntu-latest
     needs: cmake-linux
     strategy:
@@ -607,7 +608,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            python3-pip iproute2 openssl
+            python3-pip iproute2 openssl curl
 
       - name: Install Python deps
         run: |
@@ -615,10 +616,10 @@ jobs:
             -r tests/blackbox/requirements.txt \
             pytest-github-actions-annotate-failures
 
-      - name: Build tls_echo_demo and tls_client_demo
+      - name: Build the TLS demos
         run: |
           cmake -S . -B build
-          cmake --build build --target tls_echo_demo tls_client_demo
+          cmake --build build --target tls_echo_demo tls_client_demo https_demo
 
       - name: Set up the SUT link (${{ matrix.label }})
         run: |
@@ -631,12 +632,14 @@ jobs:
           openssl version
           sudo python3 -m pytest tests/blackbox/test_tls_conform.py \
             tests/blackbox/test_tls_client_conform.py      \
+            tests/blackbox/test_https_conform.py           \
             --iface          "$TEST_IF"                    \
             --sut-iface      "$SUT_IF"                     \
             --sut-ip         10.0.0.2                      \
             --our-ip         10.0.0.100                    \
             --tls-sut-bin    ./build/demo/tls_echo_demo    \
             --tls-client-bin ./build/demo/tls_client_demo  \
+            --https-sut-bin  ./build/demo/https_demo       \
             -p no:cacheprovider --tb=short -v              \
             2>&1 | tee /tmp/tls_blackbox.out
 
@@ -645,6 +648,7 @@ jobs:
         run: |
           sudo pkill -x tls_echo_demo 2>/dev/null || true
           sudo pkill -x tls_client_demo 2>/dev/null || true
+          sudo pkill -x https_demo 2>/dev/null || true
           sudo tests/blackbox/sut_net.sh down ${{ matrix.driver }}
 
       - name: TLS results summary

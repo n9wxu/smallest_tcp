@@ -133,6 +133,8 @@ if [[ -x "$BUILD/demo/tls_echo_demo" ]]; then
   run_suite "test_tls_client_conform.py" "$HERE/test_tls_client_conform.py" \
     --iface "$IFACE" --our-ip 10.0.0.1 \
     --tls-client-bin "$BUILD/demo/tls_client_demo"
+  run_suite "test_https_conform.py" "$HERE/test_https_conform.py" \
+    --iface "$IFACE" --sut-ip "$SUT_IP" --https-sut-bin "$BUILD/demo/https_demo"
 else
   echo "── TLS suites skipped: no $BUILD/demo/tls_echo_demo"
 fi

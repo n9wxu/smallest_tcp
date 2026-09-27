@@ -1,6 +1,7 @@
 /**
  * @file demo_tls.h
- * @brief Shared by the TLS demos: a pre-shared key from the environment.
+ * @brief Shared by the TLS demos: moving bytes between TCP and TLS, and a
+ *        pre-shared key from the environment.
  *
  *   TLS_PSK        the key, hex (e.g. 32 bytes = 64 hex digits)
  *   TLS_PSK_ID     its identity                     (default "device-1")
@@ -11,10 +12,40 @@
 #ifndef DEMO_TLS_H
 #define DEMO_TLS_H
 
+#include "net.h"
+#include "tcp.h"
 #include "tls.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Move ciphertext between a TCP connection and its TLS connection: what
+ * arrived straight into the TLS receive buffer, what TLS has to send into
+ * the TCP transmit buffer, then transmit. */
+static inline void demo_tls_carry(net_t *net, tcp_conn_t *conn,
+                                  tls_conn_t *tls) {
+  const uint8_t *q;
+  uint8_t *p;
+  size_t n;
+  uint16_t got;
+  int w;
+  for (;;) {
+    n = tls_rx_space(tls, &p);
+    if (n > 0xFFFFu)
+      n = 0xFFFFu;
+    if (!n || !(got = tcp_recv(conn, p, (uint16_t)n)))
+      break;
+    tls_rx_commit(tls, got);
+    tcp_window_update(net, conn);
+  }
+  while ((n = tls_tx_pending(tls, &q)) > 0) {
+    w = tcp_write(conn, q, (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n));
+    if (w <= 0)
+      break;
+    tls_tx_done(tls, (size_t)w);
+  }
+  tcp_output(net, conn);
+}
 
 /* Fill @p cfg's PSK fields from the environment; 0 if none is set, 1 if
  * one is, -1 if TLS_PSK is not valid hex. */
