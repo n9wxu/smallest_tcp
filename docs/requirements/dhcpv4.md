@@ -112,6 +112,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-034 | SHOULD | Extract T1 (Renewal Time, option 58) and T2 (Rebinding Time, option 59) | RFC 2132 §9.11, §9.12 | TEST-DHCPv4-034 |
 | REQ-DHCPv4-035 | MUST | If T1 not provided, default T1 = 0.5 × lease time | RFC 2131 §4.4.5 | TEST-DHCPv4-035 |
 | REQ-DHCPv4-036 | MUST | If T2 not provided, default T2 = 0.875 × lease time | RFC 2131 §4.4.5 | TEST-DHCPv4-036 |
+| REQ-DHCPv4-079 | SHOULD | T1 and T2 with some random fuzz: both brought forward by the same random share, less than 1/16 | RFC 2131 §4.4.5 | TEST-DHCPv4-079 |
 
 ### DHCPNAK Processing
 

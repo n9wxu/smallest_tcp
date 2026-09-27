@@ -311,7 +311,7 @@ starts with a unit test that fails on the current code.
 
 **DHCPv4** ([docs/design/dhcpv4.md](docs/design/dhcpv4.md) §7)
 - [ ] No random 1–10 s delay before the first DISCOVER (RFC 2131 §4.4.1 SHOULD)
-- [ ] T1 and T2 are not randomized ("fuzzed", RFC 2131 §4.4.5)
+- [x] T1 and T2 are not randomized ("fuzzed", RFC 2131 §4.4.5)
 - [x] The lease is timed from the ACK, not from the REQUEST it answers
       (§4.4.5), so it ends later by a round-trip time
 - [x] Renewing REQUESTs carry the Server Identifier (RFC 2131 §4.3.2: MUST NOT)

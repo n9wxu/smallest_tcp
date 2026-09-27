@@ -108,6 +108,21 @@ static void run_option_handlers(const dhcpv4_client_t *c, uint8_t code,
   }
 }
 
+/* @p v × @p f / 65536, for f < 4096, with no 64-bit product and no divide */
+static uint32_t share_of(uint32_t v, uint32_t f) {
+  return (v >> 16) * f + (((v & 0xFFFFu) * f) >> 16);
+}
+
+/* RFC 2131 §4.4.5: T1 and T2 "with some random fuzz", so clients given
+ * their leases together do not renew together.  Both come forward by the
+ * same random share of themselves, less than 1/16: never later than the
+ * server said, and still in order. */
+static void fuzz_renewal_times(net_t *net, dhcpv4_client_t *c) {
+  uint32_t f = net_random(net) & 0xFFFu;
+  c->t1 -= share_of(c->t1, f);
+  c->t2 -= share_of(c->t2, f);
+}
+
 /* REQ-DHCPv4-028..036: the lease's parameters, applied to net_t.  It runs
  * from the state's first REQUEST, not from the ACK (RFC 2131 §4.4.5). */
 static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
@@ -150,6 +165,7 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
     c->t1 = c->lease_time / 2u;
   if (c->t2 == 0) /* REQ-DHCPv4-036: 0.875 × lease */
     c->t2 = c->lease_time - c->lease_time / 8u;
+  fuzz_renewal_times(net, c);
   c->since_s -= c->request_s;
   c->next_request_s = c->t1;
 }

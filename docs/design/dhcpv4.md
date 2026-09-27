@@ -124,7 +124,20 @@ next one half the time left until the state's deadline — T2 in RENEWING,
 the end of the lease in REBINDING — but at least 60 s later; when the
 deadline comes first, it brings its own REQUEST (REBINDING's first) or
 none (expiry).  When `since_s` reaches `lease_time` the lease has
-expired.  A 3600 s lease with the default T1 and T2 (1800 s, 3150 s):
+expired.
+
+**T1 and T2 are fuzzed** (`fuzz_renewal_times()`): RFC 2131 §4.4.5 wants
+them "chosen with some random 'fuzz' around a fixed value, to avoid
+synchronization of client reacquisition" — devices that got their leases
+together, after a power cut, would otherwise renew together.  Whether the
+server sent them or they are the defaults, both come forward by the same
+random share of themselves, less than 1/16 (up to 112 s of a 1800 s T1):
+never later than the server said, and still in their order.  The share is
+`net_random()`'s low 12 bits in 65536ths, applied without a 64-bit
+product or a divide (`share_of()`).  An infinite lease has neither time.
+
+A 3600 s lease with the default T1 and T2 (1800 s, 3150 s), as they are
+before the fuzz:
 
 | Seconds into the lease | State | Sends | Time left | Next REQUEST |
 |---|---|---|---|---|

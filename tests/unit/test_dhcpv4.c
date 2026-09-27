@@ -206,6 +206,11 @@ static uint16_t make_server_msg(uint8_t *buf, uint8_t msg_type, uint32_t xid,
   return (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
 }
 
+/* T1 or T2 as the client fuzzed it: less than 1/16 before @p base */
+static int fuzzed(uint32_t got, uint32_t base) {
+  return got <= base && got > base - base / 16u;
+}
+
 /* ── Setup ────────────────────────────────────────────────────────── */
 
 static void setup(void) {
@@ -352,8 +357,8 @@ TEST(test_dhcp_client_ack_enters_bound) {
   ASSERT_EQ(net.subnet_mask, NET_IPV4(255, 255, 255, 0)); /* REQ-DHCPv4-030 */
   ASSERT_EQ(net.gateway_ipv4, NET_IPV4(10, 0, 0, 1));     /* REQ-DHCPv4-031 */
   ASSERT_EQ(cli.lease_time, 3600u);                       /* REQ-DHCPv4-033 */
-  ASSERT_EQ(cli.t1, 1800u);                               /* REQ-DHCPv4-034 */
-  ASSERT_EQ(cli.t2, 3150u);                               /* REQ-DHCPv4-034 */
+  ASSERT_TRUE(fuzzed(cli.t1, 1800u));                     /* REQ-DHCPv4-034 */
+  ASSERT_TRUE(fuzzed(cli.t2, 3150u));                     /* REQ-DHCPv4-034 */
   ASSERT_EQ(event_count, 1);
   ASSERT_EQ(last_event, DHCPV4_EVT_BOUND);
 }
@@ -378,8 +383,8 @@ TEST(test_dhcp_client_default_t1_t2) {
   dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
-  ASSERT_EQ(cli.t1, 1800u); /* 0.5 × 3600 — REQ-DHCPv4-035 */
-  ASSERT_EQ(cli.t2, 3150u); /* 0.875 × 3600 — REQ-DHCPv4-036 */
+  ASSERT_TRUE(fuzzed(cli.t1, 1800u)); /* 0.5 × 3600 — REQ-DHCPv4-035 */
+  ASSERT_TRUE(fuzzed(cli.t2, 3150u)); /* 0.875 × 3600 — REQ-DHCPv4-036 */
 }
 
 /* REQ-DHCPv4-037..038: NAK → restart INIT, IP cleared */
@@ -609,8 +614,9 @@ TEST(test_dhcp_client_requesting_gives_up) {
 static uint32_t clock_s; /* seconds since bind_lease() */
 
 /* Start, take the OFFER and bind with the ACK's lease, T1 and T2 (0 =
-   absent); the clock starts at 0 and the frames sent so far are forgotten */
-static void bind_lease(uint32_t lease, uint32_t t1, uint32_t t2) {
+   absent); the clock starts at 0 and the frames sent so far are forgotten.
+   T1 and T2 are as the client fuzzed them. */
+static void bind_lease_fuzzed(uint32_t lease, uint32_t t1, uint32_t t2) {
   uint8_t msg[DHCP_MIN_LEN + 64];
   uint16_t mlen;
   dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
@@ -624,6 +630,15 @@ static void bind_lease(uint32_t lease, uint32_t t1, uint32_t t2) {
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   send_count = 0;
   clock_s = 0;
+}
+
+/* As bind_lease_fuzzed(), with T1 and T2 exactly as given or the defaults:
+   the schedule tests count from them (the fuzz has its own test) */
+static void bind_lease(uint32_t lease, uint32_t t1, uint32_t t2) {
+  bind_lease_fuzzed(lease, t1, t2);
+  cli.t1 = t1 ? t1 : lease / 2u;
+  cli.t2 = t2 ? t2 : lease - lease / 8u;
+  cli.next_request_s = cli.t1;
 }
 
 static void tick_seconds(uint32_t step_s) {
@@ -853,7 +868,7 @@ TEST(test_dhcp_client_lease_timed_from_the_request) {
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   send_count = 0;
   clock_s = 2; /* since the REQUEST */
-  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u));
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), cli.t1));
 
   /* A renewal answered after a retransmission: from the first REQUEST */
   bind_lease(3600, 0, 0);
@@ -864,7 +879,7 @@ TEST(test_dhcp_client_lease_timed_from_the_request) {
                          SERVER_IP, 3600, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   ASSERT_EQ(last_event, DHCPV4_EVT_RENEWED);
-  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u + 1800u));
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u + cli.t1));
 }
 
 /* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again —
@@ -881,8 +896,35 @@ TEST(test_dhcp_client_renewal_restarts_lease) {
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(last_event, DHCPV4_EVT_RENEWED);
-  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u + 1800u));
+  ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1800u + cli.t1));
   ASSERT_EQ(cli.state, DHCPV4_CLI_RENEWING);
+}
+
+/* RFC 2131 §4.4.5: T1 and T2 "with some random fuzz", so clients bound
+   together do not renew together: both come forward by the same random
+   share of themselves, less than 1/16 — never later than the server said,
+   and in their order.  An infinite lease has neither. */
+TEST(test_dhcp_client_t1_t2_fuzzed) {
+  uint32_t seed, first_t1 = 0;
+  int differs = 0;
+  for (seed = 1; seed <= 8; seed++) {
+    setup();
+    net_random_seed(&net, seed * 0x9E3779B9u);
+    bind_lease_fuzzed(3600, 0, 0);
+    ASSERT_TRUE(fuzzed(cli.t1, 1800u));
+    ASSERT_TRUE(fuzzed(cli.t2, 3150u));
+    ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), cli.t1));
+    if (seed == 1)
+      first_t1 = cli.t1;
+    else if (cli.t1 != first_t1)
+      differs = 1;
+    bind_lease_fuzzed(30000000u, 5000000u, 15000000u);
+    ASSERT_TRUE(fuzzed(cli.t1, 5000000u));
+    ASSERT_TRUE(fuzzed(cli.t2, 15000000u));
+  }
+  ASSERT_TRUE(differs);
+  bind_lease_fuzzed(0xFFFFFFFFu, 0, 0);
+  ASSERT_TRUE(is_u32(clock_at_next_send(3600u, 400u * 86400u), 400u * 86400u));
 }
 
 /* RFC 2131 §3.3: an infinite lease is never renewed and never expires,
@@ -1225,6 +1267,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_ack_without_lease_time_dropped);
   RUN_TEST(test_dhcp_client_lease_timed_from_the_request);
   RUN_TEST(test_dhcp_client_infinite_lease);
+  RUN_TEST(test_dhcp_client_t1_t2_fuzzed);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);
   RUN_TEST(test_dhcp_server_offer_on_discover);
