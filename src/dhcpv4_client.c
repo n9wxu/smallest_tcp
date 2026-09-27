@@ -200,9 +200,9 @@ static void lose_address(net_t *net, dhcpv4_client_t *c, uint8_t evt) {
   start_selecting(net, c);
 }
 
-/* An infinite lease (RFC 2131 §3.3), or one of unknown length */
+/* RFC 2131 §3.3 */
 static int lease_is_endless(const dhcpv4_client_t *c) {
-  return c->lease_time == DHCP_LEASE_INFINITE || c->lease_time == 0u;
+  return c->lease_time == DHCP_LEASE_INFINITE;
 }
 
 /* The state the lease's age calls for (RFC 2131 §4.4.5) */
@@ -276,6 +276,12 @@ static int nak_from_server_asked(const dhcpv4_client_t *c, const uint8_t *msg,
   return id != 0u && (c->state == DHCPV4_CLI_REBINDING || id == c->server_ip);
 }
 
+/* REQ-DHCPv4-033; RFC 2131 Table 3: an ACK to a REQUEST carries the lease
+ * time — one without, or of 0 s, grants nothing */
+static int grants_a_lease(const uint8_t *msg, uint16_t len) {
+  return dhcp_option_u32(msg, len, DHCP_OPT_LEASE_TIME, 0u) != 0u;
+}
+
 static int awaiting_ack(const dhcpv4_client_t *c) {
   return c->state == DHCPV4_CLI_REQUESTING || c->state == DHCPV4_CLI_RENEWING ||
          c->state == DHCPV4_CLI_REBINDING;
@@ -300,7 +306,7 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
     begin_exchange(net, c, DHCPV4_CLI_REQUESTING);
     break;
   case DHCP_MSG_ACK:
-    if (awaiting_ack(c)) {
+    if (awaiting_ack(c) && grants_a_lease(data, len)) {
       int renewal = c->state != DHCPV4_CLI_REQUESTING;
       take_lease(net, c, data, len);
       memcpy(c->server_mac, src_mac, 6);

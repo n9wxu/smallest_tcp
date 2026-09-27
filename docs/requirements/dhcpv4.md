@@ -108,7 +108,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-030 | MUST | Extract and apply Subnet Mask option (1) | RFC 2132 §3.3 | TEST-DHCPv4-030 |
 | REQ-DHCPv4-031 | MUST | Extract and apply Router option (3) as default gateway | RFC 2132 §3.5 | TEST-DHCPv4-031 |
 | REQ-DHCPv4-032 | SHOULD | Extract DNS Server option (6) | RFC 2132 §3.8 | TEST-DHCPv4-032 |
-| REQ-DHCPv4-033 | MUST | Extract IP Address Lease Time option (51) | RFC 2132 §9.2 | TEST-DHCPv4-033 |
+| REQ-DHCPv4-033 | MUST | Extract IP Address Lease Time option (51); an ACK without it, or with a lease of 0 s, is dropped | RFC 2132 §9.2, RFC 2131 Table 3 | TEST-DHCPv4-033 |
 | REQ-DHCPv4-034 | SHOULD | Extract T1 (Renewal Time, option 58) and T2 (Rebinding Time, option 59) | RFC 2132 §9.11, §9.12 | TEST-DHCPv4-034 |
 | REQ-DHCPv4-035 | MUST | If T1 not provided, default T1 = 0.5 × lease time | RFC 2131 §4.4.5 | TEST-DHCPv4-035 |
 | REQ-DHCPv4-036 | MUST | If T2 not provided, default T2 = 0.875 × lease time | RFC 2131 §4.4.5 | TEST-DHCPv4-036 |

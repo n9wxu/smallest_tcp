@@ -320,8 +320,8 @@ starts with a unit test that fails on the current code.
 - [x] Any NAK with our xid drops the lease; its source is not checked
 - [x] No event when REQUESTING gives up and discovery restarts (§3.1 SHOULD
       notify the user); adding one changes the API — `DHCPV4_EVT_TIMEOUT`
-- [ ] An ACK without a lease time leaves the client bound for good, like an
-      infinite lease
+- [x] An ACK without a lease time leaves the client bound for good, like an
+      infinite lease — dropped, as is a lease of 0 s
 - [ ] Server: always sets the broadcast flag and leaves `giaddr` 0, where
       RFC 2131 Table 3 copies the client's values
 - [x] REQ-DHCPv4-050, 051 and 078 require the init functions to check for a

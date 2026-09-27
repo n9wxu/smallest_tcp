@@ -232,7 +232,12 @@ address is not checked.  By message type (`dhcp_message_type()`):
 - **OFFER**, in SELECTING only: the first one is taken — `yiaddr` becomes
   `offered_ip`, option 54 `server_ip` — and the client enters
   REQUESTING.
-- **ACK**, in REQUESTING, RENEWING or REBINDING: `take_lease()` applies
+- **ACK**, in REQUESTING, RENEWING or REBINDING, if it grants a lease
+  (`grants_a_lease()`): RFC 2131 Table 3 requires the lease time (51) in
+  an ACK to a REQUEST, and one without it — or with a lease of 0 s — is
+  dropped, and the client keeps retransmitting.  Such an ACK used to be
+  taken, and a lease time of 0 counted as infinite, so the client stayed
+  bound for good.  Then `take_lease()` applies
   the lease and restarts the lease clock, the frame's source MAC becomes
   `server_mac`, the client enters BOUND, and the event fires (BOUND after
   REQUESTING, RENEWED otherwise).
@@ -447,7 +452,7 @@ has two clocks, each used in its own states:
 | Clock | Fields | States | Counts | Compared with |
 |---|---|---|---|---|
 | Retransmission | `timer_ms` | SELECTING, REQUESTING | Milliseconds down to 0 (`net_countdown()`); at 0 the DISCOVER or REQUEST is sent again | — |
-| Lease | `since_s`, `sec_ms` | BOUND, RENEWING, REBINDING, unless the lease is infinite or of unknown length (§7) | Whole seconds up from the ACK, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
+| Lease | `since_s`, `sec_ms` | BOUND, RENEWING, REBINDING, unless the lease is infinite | Whole seconds up from the ACK, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
 
 The lease clock counts seconds because leases are long.  32-bit
 milliseconds wrap after 49.7 days (4,294,967 s), and a lease time may be
@@ -464,7 +469,6 @@ the halving is a shift: no multiplication and no division.
 |---|---|
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
-| An ACK without a lease time (and none remembered) leaves the client BOUND for good, as an infinite lease does | Servers must send option 51 in an ACK |
 | The lease is timed from the ACK, not from the REQUEST it answers (RFC 2131 §4.4.5) | It ends later by the round-trip time |
 | Option Overload (52), `sname`/`file` options | Not parsed |
 | `secs` field always 0 | — |

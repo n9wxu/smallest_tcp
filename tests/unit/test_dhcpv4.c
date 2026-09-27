@@ -796,6 +796,44 @@ TEST(test_dhcp_client_nak_from_the_server_asked) {
   ASSERT_EQ(last_event, DHCPV4_EVT_NAK);
 }
 
+/* REQ-DHCPv4-033; RFC 2131 Table 3: an ACK to a REQUEST carries the lease
+   time.  One without — or with a lease of 0 s — grants nothing and is
+   dropped: taken, it left the client bound for good, like an infinite
+   lease */
+static void ack_without_lease(int zero_lease) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid,
+                                  NET_IPV4(10, 0, 0, 50), SERVER_IP,
+                                  zero_lease ? 1u : 0u, 0, 0, 0, 0);
+  if (zero_lease) /* options: 53 (3 bytes), 54 (6), 51 — its value */
+    net_write32be(msg + DHCP_OFF_OPTIONS + 11, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+}
+
+TEST(test_dhcp_client_ack_without_lease_time_dropped) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  setup();
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  ack_without_lease(0);
+  ack_without_lease(1);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_REQUESTING);
+  ASSERT_EQ(event_count, 0);
+
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ack_without_lease(0);
+  ack_without_lease(1);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_RENEWING);
+  ASSERT_EQ(event_count, 1); /* BOUND only */
+  ASSERT_TRUE(is_u32(clock_at_state(DHCPV4_CLI_SELECTING, 10u, 4000u), 3600u));
+  ASSERT_EQ(last_event, DHCPV4_EVT_EXPIRED);
+}
+
 /* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again */
 TEST(test_dhcp_client_renewal_restarts_lease) {
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -1150,6 +1188,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_unicasts_to_the_server_mac);
   RUN_TEST(test_dhcp_client_server_id_only_when_selecting);
   RUN_TEST(test_dhcp_client_nak_from_the_server_asked);
+  RUN_TEST(test_dhcp_client_ack_without_lease_time_dropped);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);
