@@ -115,4 +115,7 @@ endif()
 if(SMALLEST_TCP_TLS)
     add_unit_test(test_tls_crypto)
     target_link_libraries(test_tls_crypto PRIVATE smallest_tcp_tls_mbedtls)
+    add_unit_test(test_tls_keys)
+    target_link_libraries(test_tls_keys PRIVATE
+        smallest_tcp_tls smallest_tcp_tls_mbedtls)
 endif()

@@ -149,7 +149,24 @@ if(SMALLEST_TCP_IPV6)
     add_library(smallest_tcp::dhcpv6_client ALIAS smallest_tcp_dhcpv6_client)
 endif()
 
-# ── TLS 1.3 (optional): tls.c + the Mbed TLS crypto backend ──────────
+# ── TLS 1.3 protocol (optional) — no dependencies: the application
+#    supplies a crypto backend (tls_crypto_t) ────────────────────────────
+
+add_library(smallest_tcp_tls STATIC
+    src/tls.c
+)
+target_include_directories(smallest_tcp_tls PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_compile_features(smallest_tcp_tls PUBLIC c_std_99)
+if(PROJECT_IS_TOP_LEVEL)
+    target_compile_options(smallest_tcp_tls PRIVATE
+        -Wall -Wextra -Werror -pedantic
+    )
+endif()
+add_library(smallest_tcp::tls ALIAS smallest_tcp_tls)
+
+# ── TLS crypto backend on Mbed TLS (optional) ────────────────────────
 #
 # Mbed TLS provides the cryptography only (crypto + X.509); the protocol is
 # smallest_tcp's own.  Pinned to the 3.6 LTS release tarball.
@@ -165,6 +182,7 @@ if(SMALLEST_TCP_TLS)
     FetchContent_Declare(mbedtls
         URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
         URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     FetchContent_MakeAvailable(mbedtls)
 
