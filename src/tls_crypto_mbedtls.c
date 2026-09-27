@@ -11,6 +11,7 @@
 #include "tls_crypto_mbedtls.h"
 #include "tls.h" /* alert numbers */
 
+#include <mbedtls/aes.h>
 #include <mbedtls/ecdh.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/gcm.h>
@@ -93,6 +94,15 @@ static int aead_open(const uint8_t key[TLS_AEAD_KEY_LEN],
                                tag, TLS_AEAD_TAG_LEN, in, out);
   mbedtls_gcm_free(&g);
   return r == 0 ? 0 : -1;
+}
+
+static void aes_block(const uint8_t key[TLS_AEAD_KEY_LEN], const uint8_t in[16],
+                      uint8_t out[16]) {
+  mbedtls_aes_context a;
+  mbedtls_aes_init(&a);
+  mbedtls_aes_setkey_enc(&a, key, 128);
+  mbedtls_aes_crypt_ecb(&a, MBEDTLS_AES_ENCRYPT, in, out);
+  mbedtls_aes_free(&a);
 }
 
 static mbedtls_ecp_group_id group_id(uint16_t group) {
@@ -325,6 +335,7 @@ int tls_mbedtls_init(tls_mbedtls_t *be, tls_crypto_t *c) {
   c->verify_chain = verify_chain;
   c->random = random_bytes;
   c->ctx = be;
+  c->aes_block = aes_block;
   return 0;
 }
 

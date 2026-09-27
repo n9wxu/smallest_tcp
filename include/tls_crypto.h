@@ -8,7 +8,8 @@
  * tls_crypto_mbedtls.c, the same pattern as net_mac_t for MAC drivers.
  *
  * One cipher suite, TLS_AES_128_GCM_SHA256: SHA-256 for the
- * transcript, HMAC and HKDF; AES-128-GCM for records.  Key exchange over
+ * transcript, HMAC and HKDF; AES-128-GCM for records (and, for DTLS, the
+ * AES block cipher alone to encrypt record numbers).  Key exchange over
  * x25519 or secp256r1.
  */
 
@@ -105,6 +106,11 @@ typedef struct tls_crypto_s {
   int (*random)(void *ctx, uint8_t *out, size_t len);
 
   void *ctx;
+
+  /** AES-128 of one block: DTLS 1.3 record number encryption (RFC 9147
+   *  §4.2.3).  TLS does not use it; a TLS-only backend may leave it NULL. */
+  void (*aes_block)(const uint8_t key[TLS_AEAD_KEY_LEN], const uint8_t in[16],
+                    uint8_t out[16]);
 } tls_crypto_t;
 
 #endif /* TLS_CRYPTO_H */

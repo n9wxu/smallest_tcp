@@ -2,8 +2,8 @@
  * @file test_tls_crypto.c
  * @brief Known-answer tests for the Mbed TLS crypto backend of the TLS
  *        layer: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM (GCM
- *        spec test cases 3-4), X25519 (RFC 7748), P-256 ECDH, ECDSA and
- *        RSA-PSS signatures, certificate chains, randomness.
+ *        spec test cases 3-4), the AES-128 block (FIPS-197), X25519 (RFC 7748),
+ * P-256 ECDH, ECDSA and RSA-PSS signatures, certificate chains, randomness.
  */
 
 #include "test_main.h"
@@ -150,6 +150,21 @@ TEST(test_gcm_open_rejects_tampering) {
   tag[0] ^= 1;
   ct[5] ^= 0x80;
   ASSERT_NE(c.aead_open(key, iv, NULL, 0, ct, 64, tag, out), 0);
+}
+
+/* ══ AES-128 block (FIPS-197 Appendices B and C.1) — DTLS record
+ *    number encryption, RFC 9147 §4.2.3 ════════════════════════════ */
+
+TEST(test_aes_block_fips197) {
+  uint8_t key[16], in[16], out[16];
+  hex("000102030405060708090a0b0c0d0e0f", key);
+  hex("00112233445566778899aabbccddeeff", in);
+  c.aes_block(key, in, out);
+  ASSERT_TRUE(eq_hex(out, 16, "69c4e0d86a7b0430d8cdb78070b4c55a"));
+  hex("2b7e151628aed2a6abf7158809cf4f3c", key);
+  hex("3243f6a8885a308d313198a2e0370734", in);
+  c.aes_block(key, in, out);
+  ASSERT_TRUE(eq_hex(out, 16, "3925841d02dc09fbdc118597196a0b32"));
 }
 
 /* ══ X25519 (RFC 7748 §6.1) ═══════════════════════════════════════ */
@@ -348,6 +363,7 @@ int main(void) {
   RUN_TEST(test_gcm_seal_no_aad);
   RUN_TEST(test_gcm_seal_with_aad_in_place);
   RUN_TEST(test_gcm_open_rejects_tampering);
+  RUN_TEST(test_aes_block_fips197);
   RUN_TEST(test_x25519_rfc7748);
   RUN_TEST(test_x25519_public_key_is_scalar_times_base);
   RUN_TEST(test_x25519_keygen_agrees);

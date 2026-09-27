@@ -1,12 +1,14 @@
 /**
  * @file test_tls_keys.c
  * @brief TLS 1.3 key schedule (RFC 8446 §7) and record protection (§5.2)
- *        against the RFC 8448 §3 trace, with the Mbed TLS backend.
+ *        against the RFC 8448 §3 trace, with the Mbed TLS backend; DTLS
+ *        1.3's label prefix (RFC 9147 §5.9).
  */
 
 #include "test_main.h"
 #include "tls.h"
 #include "tls_crypto_mbedtls.h"
+#include "tls_dtls13.h"
 #include "tls_rfc8448.h"
 #include <string.h>
 
@@ -270,6 +272,38 @@ TEST(test_equal) {
   ASSERT_EQ(tls_equal(a, d, 4), 0); /* a difference early is not lost */
   ASSERT_EQ(tls_equal(a, b, 3), 1);
   ASSERT_EQ(tls_equal(a, b, 0), 1);
+}
+
+/* ══ DTLS 1.3: the "dtls13" label prefix (RFC 9147 §5.9) ══════════
+ * Expected values from tests/tls/gen_dtls13.py, an independent HKDF, on
+ * RFC 8448 §3's secrets. */
+
+TEST(test_dtls13_labels) {
+  uint8_t out[32], secret[32];
+  tls_keys_t k;
+  tls_derive_secret(&c, 1, r3_handshake_secret, "s hs traffic", r3_hash_ch_sh,
+                    out);
+  ASSERT_MEM_EQ(out, d13_s_hs_traffic, 32);
+  tls_derive_secret(&c, 1, r3_handshake_secret, "derived", NULL, out);
+  ASSERT_MEM_EQ(out, d13_derived, 32);
+  tls_traffic_keys(&c, 1, r3_s_hs_traffic, &k);
+  ASSERT_MEM_EQ(k.key, d13_key, 16);
+  ASSERT_MEM_EQ(k.iv, d13_iv, 12);
+  tls_expand_label(&c, 1, r3_s_hs_traffic, "sn", NULL, 0, out, 16);
+  ASSERT_MEM_EQ(out, d13_sn, 16);
+  tls_finished_mac(&c, 1, r3_s_hs_traffic, d13_finished_hash, out);
+  ASSERT_MEM_EQ(out, d13_finished, 32);
+  memcpy(secret, r3_s_hs_traffic, 32);
+  tls_update_secret(&c, 1, secret);
+  ASSERT_MEM_EQ(secret, d13_traffic_upd, 32);
+}
+
+/* The same derivations under TLS's prefix are RFC 8448's */
+TEST(test_dtls13_labels_differ_from_tls) {
+  tls_keys_t k;
+  tls_traffic_keys(&c, 0, r3_s_hs_traffic, &k);
+  ASSERT_MEM_EQ(k.key, r3_s_hs_key, 16);
+  ASSERT_TRUE(memcmp(k.key, d13_key, 16) != 0);
 }
 
 /* ══ Record protection ════════════════════════════════════════════ */
@@ -550,6 +584,8 @@ int main(void) {
   RUN_TEST(test_p256_shared_secret);
   RUN_TEST(test_hrr_transcript);
   RUN_TEST(test_equal);
+  RUN_TEST(test_dtls13_labels);
+  RUN_TEST(test_dtls13_labels_differ_from_tls);
 
   RUN_TEST(test_seal_server_handshake_flight);
   RUN_TEST(test_seal_client_finished);
