@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-27 (Tasks 1–13 complete: through Milestone 13, TLS 1.3, and the Linux raw-socket driver.  718 unit tests on macOS (729 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 7.1 KB of TLS protocol code for a server.  Open issues from the review: Task 15.  Next: Milestone 14, DTLS 1.3.)
+**Last updated:** 2026-09-27 (Tasks 1–13 and 15 complete: through Milestone 13, TLS 1.3, the Linux raw-socket driver, and the issues found in the review.  749 unit tests on macOS (760 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.2 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says
@@ -270,9 +270,10 @@ state at all: every byte of RAM is application-owned.
 ### Task 14: DTLS 1.3 — planned
 - Design: [docs/design/dtls.md](docs/design/dtls.md); tracked in the README roadmap
 
-### Task 15: Open issues found in the 2026-09-27 review — open
-Found while fixing the design review's bugs; none is fixed yet.  Each fix
-starts with a unit test that fails on the current code.
+### ✅ Task 15: Open issues found in the 2026-09-27 review *(DONE)*
+Found while fixing the design review's bugs; all fixed.  Each fix started
+with a unit test that failed on the code before it (the board port, which
+is built in CI but has not run on a board, excepted).
 
 **TCP** ([docs/design/tcp.md](docs/design/tcp.md) §8.3)
 - [x] The FIN is sent whatever the peer's window and counts toward

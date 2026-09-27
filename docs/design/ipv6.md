@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 7,789 B flash / 780 B RAM for a dual-stack UDP echo (IPv4-only: 2,786 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
+**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 7,805 B flash / 780 B RAM for a dual-stack UDP echo (IPv4-only: 2,802 B; IPv6-only: 5,977 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
 **Files:** `include/ipv6.h`, `src/ipv6.c` (packets, addresses, groups); `include/icmpv6.h`, `src/icmpv6.c`; `include/ndp.h`, `src/ndp.c` (Neighbor Discovery, DAD, router discovery, SLAAC); `include/mld.h`, `src/mld.c`; `include/dhcpv6_client.h`, `src/dhcpv6_client.c`.  The interface's IPv6 state is `net_ip6_t` in `include/net.h`.
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)

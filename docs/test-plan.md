@@ -21,26 +21,26 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **718 tests on macOS; on Linux 721, or 729 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17.
+**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **749 tests on macOS; on Linux 752, or 760 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 18 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
 | `test_endian` | tests/unit/test_endian.c | 10 | Byte-order utilities |
 | `test_checksum` | tests/unit/test_checksum.c | 12 | net_cksum (REQ-CKS-*) |
 | `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
-| `test_net` | tests/unit/test_net.c | 11 | net init/dispatch, `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()` |
+| `test_net` | tests/unit/test_net.c | 13 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()` |
 | `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
 | `test_ipv4` | tests/unit/test_ipv4.c | 10 | IPv4 (REQ-IPV4-*) |
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 22 | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
-| `test_tcp` | tests/unit/test_tcp.c | **57** | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
-| `test_tftp` | tests/unit/test_tftp.c | 23 | TFTP client (REQ-TFTP-*) |
-| `test_dhcpv4` | tests/unit/test_dhcpv4.c | 26 | DHCPv4 client + server (REQ-DHCPv4-*) |
+| `test_tcp` | tests/unit/test_tcp.c | **63** | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
+| `test_tftp` | tests/unit/test_tftp.c | 28 | TFTP client (REQ-TFTP-*), incl. OACKs with options never asked for, truncated DATA and ERROR, port 0, the timer restarted only by progress |
+| `test_dhcpv4` | tests/unit/test_dhcpv4.c | 38 | DHCPv4 client + server (REQ-DHCPv4-*), incl. buffer checks at init, the 1–10 s start delay, renewals unicast to the server's MAC, the lease timed from the REQUEST, T1/T2 fuzz, NAKs only from the server asked, the server's §4.1 reply routing |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |
-| `test_http` | tests/unit/test_http.c | 45 | HTTP parser, formatter, server driven over the real TCP (REQ-HTTP-*) |
+| `test_http` | tests/unit/test_http.c | 46 | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
 | `test_udp6` | tests/unit/test_udp6.c | 14 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` (REQ-IPv6-044,045, REQ-ICMPv6-016) |
 | `test_tcp6` | tests/unit/test_tcp6.c | 19 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, advertised MSS from the RX frame buffer and within the Ethernet MTU (1440), send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
@@ -51,8 +51,8 @@ verified at both the unit and integration levels:
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 on Linux (4 elsewhere) | Raw-socket driver: offloaded-checksum completion (portable); context and no-frame checks (Linux); live on a veth pair (Linux, root, 8): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 | `test_tls_crypto` | tests/unit/test_tls_crypto.c | 22 | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
 | `test_tls_keys` | tests/unit/test_tls_keys.c | 34 | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034) |
-| `test_tls_server` | tests/unit/test_tls_server.c | 105 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate, alerts (REQ-TLS-001, 018..025, 030, 031, 035..043) |
-| `test_tls_client` | tests/unit/test_tls_client.c | 50 | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate (REQ-TLS-010..017, 023, 031) |
+| `test_tls_server` | tests/unit/test_tls_server.c | 107 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate (a request met by the peer's own), alerts, a failed key exchange leaving no secret (REQ-TLS-001, 018..025, 030, 031, 035..043) |
+| `test_tls_client` | tests/unit/test_tls_client.c | 53 | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()` (REQ-TLS-010..017, 023, 031) |
 
 ### Running Unit Tests
 

@@ -106,14 +106,14 @@ Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`):
 
 | Object | Bytes |
 |---|---:|
-| `tls.c` | 2,946 |
+| `tls.c` | 3,108 |
 | `tls_keys.c` | 1,043 |
-| `tls_server.c` | 3,070 |
-| `tls_client.c` | 3,488 |
-| **Server only** (`tls.c` + `tls_keys.c` + `tls_server.c`) | **7,059** |
-| **Client and server** | **10,547** |
+| `tls_server.c` | 3,066 |
+| `tls_client.c` | 3,484 |
+| **Server only** (`tls.c` + `tls_keys.c` + `tls_server.c`) | **7,217** |
+| **Client and server** | **10,701** |
 
-A client-only build is `tls.c` + `tls_keys.c` + `tls_client.c`, 7,433 bytes
+A client-only build is `tls.c` + `tls_keys.c` + `tls_client.c`, 7,635 bytes
 by the same objects.  These are object sizes; the crypto backend is extra
 (section 3).  No object calls a library divide (`make arm-check-division`).
 
@@ -297,7 +297,7 @@ even when empty fails with `internal_error` rather than waiting forever.
 | `tls_conn_t` | 440 B | 128 of them the backend's SHA-256 state; three 32-byte secrets; two `tls_keys_t` (key, IV, sequence number) |
 | `tls_config_t` | 40 B | Shared by any number of connections; it and everything it points to must outlive them |
 | rx, tx | section 5.2 | Application owned |
-| Stack | 376 B deepest frame | The server's ClientHello handler (it holds the ephemeral key pair and shared secret).  The longest chain through the TLS code — commit, process, handler, key schedule — is about 620 bytes, plus whatever the backend uses below it (Mbed TLS's ECDH and signatures are the heaviest).  Measured with `-fstack-usage` for Cortex-M0 |
+| Stack | 360 B deepest frame | The client's message handler, with the handlers inlined into it; the server's is 336 B (the ephemeral key pair and shared secret live in the connection, not here).  The longest chain through the TLS code — commit, process, handler, key schedule — is about 630 bytes, plus whatever the backend uses below it (Mbed TLS's ECDH and signatures are the heaviest).  Measured with `-fstack-usage` for Cortex-M0 |
 
 The TLS objects have no `.data` or `.bss`.
 
@@ -701,7 +701,7 @@ The Master Secret exists only on the stack for the moment it is used.
 
 ## 13. Testing
 
-**Unit (213 tests, CMake with `SMALLEST_TCP_TLS`):**
+**Unit (216 tests, CMake with `SMALLEST_TCP_TLS`):**
 
 | Suite | Tests | |
 |---|---:|---|
