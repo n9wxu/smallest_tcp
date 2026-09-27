@@ -45,6 +45,9 @@
 #define OPT_T2 59
 #define OPT_END 255
 
+/* The server's MAC, the source of its replies */
+static const uint8_t server_mac[6] = {0x02, 0x53, 0x45, 0x52, 0x56, 0x01};
+
 /* ETH+IP+UDP header size — DHCP payload starts at this offset */
 #define FRAME_HDR_SIZE (14u + 20u + 8u)
 
@@ -308,7 +311,7 @@ TEST(test_dhcp_client_offer_triggers_request) {
       msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50), NET_IPV4(10, 0, 0, 1),
       3600, 0, 0, NET_IPV4(255, 255, 255, 0), NET_IPV4(10, 0, 0, 1));
 
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_REQUESTING);
   ASSERT_EQ(cli.offered_ip, NET_IPV4(10, 0, 0, 50));
@@ -336,13 +339,13 @@ TEST(test_dhcp_client_ack_enters_bound) {
   uint16_t mlen =
       make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                       NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   /* Feed ACK */
   mlen = make_server_msg(msg, DHCP_MSG_ACK, xid, NET_IPV4(10, 0, 0, 50),
                          NET_IPV4(10, 0, 0, 1), 3600, 1800, 3150,
                          NET_IPV4(255, 255, 255, 0), NET_IPV4(10, 0, 0, 1));
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(net.ipv4_addr, NET_IPV4(10, 0, 0, 50));       /* REQ-DHCPv4-029 */
@@ -366,13 +369,13 @@ TEST(test_dhcp_client_default_t1_t2) {
   uint16_t mlen =
       make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                       NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   /* ACK without T1/T2 */
   mlen = make_server_msg(msg, DHCP_MSG_ACK, xid, NET_IPV4(10, 0, 0, 50),
                          NET_IPV4(10, 0, 0, 1), 3600, 0, 0,
                          NET_IPV4(255, 255, 255, 0), 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(cli.t1, 1800u); /* 0.5 × 3600 — REQ-DHCPv4-035 */
@@ -390,12 +393,12 @@ TEST(test_dhcp_client_nak_restarts_init) {
   uint16_t mlen =
       make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                       NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   /* Feed NAK */
   mlen = make_server_msg(msg, DHCP_MSG_NAK, xid, 0, NET_IPV4(10, 0, 0, 1), 0, 0,
                          0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING); /* restarted */
   ASSERT_EQ(net.ipv4_addr, 0u);
@@ -436,7 +439,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
   uint16_t olen =
       make_server_msg(offer, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                       NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), offer, olen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, offer, olen);
 
   /* Build ACK with DNS option 6 */
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -466,7 +469,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
   msg[pos++] = OPT_END;
   uint16_t mlen = (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
 
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_TRUE(s_dns_called);
@@ -484,12 +487,12 @@ TEST(test_dhcp_client_null_opt_table) {
   uint16_t mlen =
       make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                       NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   mlen = make_server_msg(msg, DHCP_MSG_ACK, xid, NET_IPV4(10, 0, 0, 50),
                          NET_IPV4(10, 0, 0, 1), 3600, 0, 0,
                          NET_IPV4(255, 255, 255, 0), 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(net.ipv4_addr, NET_IPV4(10, 0, 0, 50));
@@ -583,7 +586,7 @@ TEST(test_dhcp_client_requesting_gives_up) {
   xid = cli.xid;
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
                          NET_IPV4(10, 0, 0, 1), 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), msg, mlen);
+  dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
 
   for (i = 0; i < 4; i++) {
     ASSERT_TRUE(within_a_second(ms_until_sent(70000u), base_ms[i]));
@@ -611,11 +614,11 @@ static void bind_lease(uint32_t lease, uint32_t t1, uint32_t t2) {
   dhcpv4_client_start(&net, &cli);
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, lease, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, SERVER_IP, msg, mlen);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, lease, t1, t2, NET_IPV4(255, 255, 255, 0),
                          SERVER_IP);
-  dhcpv4_client_input(&net, &cli, SERVER_IP, msg, mlen);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   send_count = 0;
   clock_s = 0;
 }
@@ -695,6 +698,18 @@ TEST(test_dhcp_client_renew_rebind_timing) {
   ASSERT_EQ(net.ipv4_addr, 0u);
 }
 
+/* REQ-DHCPv4-026, 040: a renewing REQUEST and a RELEASE are unicast to the
+   server — at the MAC its ACK came from, not the broadcast MAC */
+TEST(test_dhcp_client_unicasts_to_the_server_mac) {
+  setup();
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  ASSERT_MEM_EQ(sent_frame, server_mac, 6);
+  dhcpv4_client_release(&net, &cli);
+  ASSERT_EQ(sent_ip_dst(), SERVER_IP);
+  ASSERT_MEM_EQ(sent_frame, server_mac, 6);
+}
+
 /* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again */
 TEST(test_dhcp_client_renewal_restarts_lease) {
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -705,7 +720,7 @@ TEST(test_dhcp_client_renewal_restarts_lease) {
   tick_seconds(100);
   mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, 3600, 0, 0, 0, 0);
-  dhcpv4_client_input(&net, &cli, SERVER_IP, msg, mlen);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(last_event, DHCPV4_EVT_RENEWED);
   ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), 1900u + 1800u));
@@ -1046,6 +1061,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_requesting_gives_up);
   RUN_TEST(test_dhcp_client_renew_rebind_timing);
   RUN_TEST(test_dhcp_client_renewal_restarts_lease);
+  RUN_TEST(test_dhcp_client_unicasts_to_the_server_mac);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);

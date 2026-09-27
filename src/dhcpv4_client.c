@@ -77,8 +77,7 @@ static void send_request(net_t *net, dhcpv4_client_t *c) {
   uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
   uint16_t pos = DHCP_OFF_OPTIONS;
   uint32_t src = client_address(net, c);
-  uint32_t dst =
-      c->state == DHCPV4_CLI_RENEWING ? c->server_ip : IPV4_BROADCAST;
+  int to_server = c->state == DHCPV4_CLI_RENEWING;
   if (!msg)
     return;
   net_write16be(msg + DHCP_OFF_FLAGS, DHCP_FLAG_BROADCAST);
@@ -88,8 +87,10 @@ static void send_request(net_t *net, dhcpv4_client_t *c) {
   if (c->state == DHCPV4_CLI_REQUESTING)
     pos = dhcp_put_u32(msg, pos, DHCP_OPT_REQUESTED_IP, c->offered_ip);
   pos = put_param_request_list(msg, pos, c->opt_table);
-  udp_send_inplace_from(net, src, dst, broadcast_mac, DHCP_CLIENT_PORT,
-                        DHCP_SERVER_PORT, dhcp_end(msg, pos), NET_DEFAULT_TTL);
+  udp_send_inplace_from(net, src, to_server ? c->server_ip : IPV4_BROADCAST,
+                        to_server ? c->server_mac : broadcast_mac,
+                        DHCP_CLIENT_PORT, DHCP_SERVER_PORT, dhcp_end(msg, pos),
+                        NET_DEFAULT_TTL);
 }
 
 /* REQ-DHCPv4-053..056 */
@@ -269,7 +270,8 @@ static int awaiting_ack(const dhcpv4_client_t *c) {
 
 /* REQ-DHCPv4-018..038, 041..044 */
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
-                         const uint8_t *data, uint16_t len) {
+                         const uint8_t *src_mac, const uint8_t *data,
+                         uint16_t len) {
   (void)src_ip;
   if (len < DHCP_OFF_OPTIONS + 4 || data[DHCP_OFF_OP] != DHCP_OP_REPLY ||
       net_read32be(data + DHCP_OFF_MAGIC) != DHCP_MAGIC ||
@@ -288,6 +290,7 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
     if (awaiting_ack(c)) {
       int renewal = c->state != DHCPV4_CLI_REQUESTING;
       take_lease(net, c, data, len);
+      memcpy(c->server_mac, src_mac, 6);
       c->state = DHCPV4_CLI_BOUND;
       fire_event(c, renewal ? DHCPV4_EVT_RENEWED : DHCPV4_EVT_BOUND);
     }
@@ -312,7 +315,7 @@ void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
     net_write32be(msg + DHCP_OFF_CIADDR, net->ipv4_addr);
     pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_RELEASE);
     pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
-    udp_send_inplace(net, c->server_ip, broadcast_mac, DHCP_CLIENT_PORT,
+    udp_send_inplace(net, c->server_ip, c->server_mac, DHCP_CLIENT_PORT,
                      DHCP_SERVER_PORT, dhcp_end(msg, pos), NET_DEFAULT_TTL);
   }
   clear_address(net);

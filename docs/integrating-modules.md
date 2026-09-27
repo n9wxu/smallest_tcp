@@ -35,8 +35,7 @@ static void dhcp_port(net_t *n, uint32_t src_ip, uint16_t src_port,
                       const uint8_t *src_mac, const uint8_t *payload,
                       uint16_t len) {
   (void)src_port;
-  (void)src_mac;
-  dhcpv4_client_input(n, &dhcp, src_ip, payload, len);
+  dhcpv4_client_input(n, &dhcp, src_ip, src_mac, payload, len);
 }
 ```
 
@@ -49,7 +48,7 @@ replies are built in `net->tx.buf`, a separate buffer.
 
 | Module | Header, CMake target | State | Init | Traffic → input | Start | Tick |
 |---|---|---|---|---|---|---|
-| DHCPv4 client | `dhcpv4_client.h`, `smallest_tcp::dhcpv4_client` | `dhcpv4_client_t` | `dhcpv4_client_init(c, net, on_event, ctx, opts)` | UDP **68** → `dhcpv4_client_input(net, c, src_ip, payload, len)` | `dhcpv4_client_start(net, c)` | `dhcpv4_client_tick(net, c, ms)` |
+| DHCPv4 client | `dhcpv4_client.h`, `smallest_tcp::dhcpv4_client` | `dhcpv4_client_t` | `dhcpv4_client_init(c, net, on_event, ctx, opts)` | UDP **68** → `dhcpv4_client_input(net, c, src_ip, src_mac, payload, len)` | `dhcpv4_client_start(net, c)` | `dhcpv4_client_tick(net, c, ms)` |
 | DHCPv4 server | `dhcpv4_server.h`, `smallest_tcp::dhcpv4_server` | `dhcpv4_server_t`, `const dhcpv4_server_cfg_t` | `dhcpv4_server_init(s, net, cfg, on_event, ctx)` | UDP **67** → `dhcpv4_server_input(net, s, src_ip, src_mac, payload, len)` | — (answers requests) | — |
 | DHCPv6 client | `dhcpv6_client.h`, `smallest_tcp::dhcpv6_client` | `dhcpv6_client_t` | `dhcpv6_client_init(c, on_event, ctx, opts)` | UDP over IPv6 **546** (udp6 table) → `dhcpv6_client_input(net, c, src_ip, payload, len)` | `dhcpv6_client_start(net, c, mode)` | `dhcpv6_client_tick(net, c, ms)` |
 | TFTP client | `tftp.h`, `smallest_tcp::tftp` | `tftp_client_t` | `tftp_client_init(c, local_port, on_data, on_done, ctx)` | UDP **`local_port`** (your choice) → `tftp_client_input(net, c, src_ip, src_mac, src_port, payload, len)` | `tftp_client_get(net, c, server_ip, server_mac, filename, blksize_opt)` | `tftp_client_tick(net, c, ms)` |
@@ -153,8 +152,7 @@ static void dhcp_port(net_t *n, uint32_t src_ip, uint16_t src_port,
                       const uint8_t *src_mac, const uint8_t *payload,
                       uint16_t len) {
   (void)src_port;
-  (void)src_mac;
-  dhcpv4_client_input(n, &dhcp, src_ip, payload, len);
+  dhcpv4_client_input(n, &dhcp, src_ip, src_mac, payload, len);
 }
 
 static void mdns_port(net_t *n, uint32_t src_ip, uint16_t src_port,

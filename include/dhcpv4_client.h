@@ -88,6 +88,8 @@ typedef struct {
   uint32_t xid;            /**< Current transaction ID (random) */
   uint32_t offered_ip;     /**< IP offered by server (yiaddr) */
   uint32_t server_ip;      /**< Server Identifier option (54) */
+  uint8_t server_mac[6];   /**< Where the ACK came from: the server, or the
+                                relay agent on the way to it */
   uint32_t lease_time;     /**< Lease time, seconds; 0xFFFFFFFF = infinite */
   uint32_t t1;             /**< Renewal time, seconds into the lease */
   uint32_t t2;             /**< Rebinding time, seconds into the lease */
@@ -131,9 +133,12 @@ void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms);
 /**
  * Feed an incoming UDP payload (port 68) to the client.
  * Call from the application's port-68 UDP handler.
+ * @param src_mac  Source MAC of its frame (6 bytes): an ACK's is where
+ *                 renewals and the RELEASE are unicast.
  */
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
-                         const uint8_t *data, uint16_t len);
+                         const uint8_t *src_mac, const uint8_t *data,
+                         uint16_t len);
 
 /**
  * Voluntarily release the lease.  Sends DHCPRELEASE and clears net->ipv4_addr.

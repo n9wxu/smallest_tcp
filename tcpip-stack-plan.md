@@ -315,7 +315,8 @@ starts with a unit test that fails on the current code.
 - [ ] The lease is timed from the ACK, not from the REQUEST it answers
       (§4.4.5), so it ends later by a round-trip time
 - [ ] Renewing REQUESTs carry the Server Identifier (RFC 2131 §4.3.2: MUST NOT)
-- [ ] Unicast renewals are sent to the broadcast MAC
+- [x] Unicast renewals are sent to the broadcast MAC — to the source MAC
+      of the server's ACK; `dhcpv4_client_input()` takes it
 - [ ] Any NAK with our xid drops the lease; its source is not checked
 - [ ] No event when REQUESTING gives up and discovery restarts (§3.1 SHOULD
       notify the user); adding one changes the API

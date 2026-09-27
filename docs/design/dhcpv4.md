@@ -153,6 +153,8 @@ typedef struct {
   uint32_t xid;            /* transaction ID, from net_random() */
   uint32_t offered_ip;     /* yiaddr of the OFFER */
   uint32_t server_ip;      /* Server Identifier (54) */
+  uint8_t server_mac[6];   /* source MAC of the ACK: the server, or the
+                              relay agent on the way to it */
   uint32_t lease_time;     /* seconds; 0xFFFFFFFF = infinite */
   uint32_t t1;             /* option 58, or 0.5 × lease (seconds) */
   uint32_t t2;             /* option 59, or 0.875 × lease (seconds) */
@@ -180,7 +182,8 @@ net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);   /* DISCOVER now */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms);
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
-                         const uint8_t *data, uint16_t len); /* from the port-68 handler */
+                         const uint8_t *src_mac, const uint8_t *data,
+                         uint16_t len); /* from the port-68 handler */
 void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c);
 uint8_t dhcpv4_client_state(const dhcpv4_client_t *c);
 ```
@@ -196,14 +199,22 @@ whichever header came first.
 |---|---|---|---|---|---|---|
 | DISCOVER | `send_discover()` | broadcast | 0 | 53, 55 | 0.0.0.0 → 255.255.255.255 | broadcast |
 | REQUEST (REQUESTING) | `send_request()` | broadcast | 0 | 53, 54, 50, 55 | 0.0.0.0 → 255.255.255.255 | broadcast |
-| REQUEST (RENEWING) | `send_request()` | broadcast | our address | 53, 54, 55 | our address → server | broadcast |
+| REQUEST (RENEWING) | `send_request()` | broadcast | our address | 53, 54, 55 | our address → server | the server's (`server_mac`) |
 | REQUEST (REBINDING) | `send_request()` | broadcast | our address | 53, 54, 55 | our address → 255.255.255.255 | broadcast |
-| RELEASE | `dhcpv4_client_release()` | — | our address | 53, 54 | our address → server | broadcast |
+| RELEASE | `dhcpv4_client_release()` | — | our address | 53, 54 | our address → server | the server's (`server_mac`) |
 
 The broadcast flag asks the server to broadcast its replies: before a
 lease the stack accepts only broadcast (and 0.0.0.0) IPv4 destinations,
-so a unicast OFFER or ACK to the new address would be dropped.  The MAC
-is always broadcast: the client never learns the server's MAC.
+so a unicast OFFER or ACK to the new address would be dropped.
+
+A message to the server goes to `server_mac`, the source MAC of its last
+ACK (`dhcpv4_client_input()` takes the frame's source MAC for this).  That
+is the server's own MAC when it is on the link, or the relay agent's when
+the ACK came through one — the router a unicast to the server takes
+anyway.  The client used to send these to the broadcast MAC, since it
+never learned the server's: every host on the link received them, and a
+router does not forward a frame sent to the broadcast MAC, so behind a
+relay only rebinding could reach the server.
 
 ### 3.5 Receiving
 
@@ -215,8 +226,9 @@ address is not checked.  By message type (`dhcp_message_type()`):
   `offered_ip`, option 54 `server_ip` — and the client enters
   REQUESTING.
 - **ACK**, in REQUESTING, RENEWING or REBINDING: `take_lease()` applies
-  the lease and restarts the lease clock, the client enters BOUND, and
-  the event fires (BOUND after REQUESTING, RENEWED otherwise).
+  the lease and restarts the lease clock, the frame's source MAC becomes
+  `server_mac`, the client enters BOUND, and the event fires (BOUND after
+  REQUESTING, RENEWED otherwise).
 - **NAK**, in the same states: `DHCPV4_EVT_NAK`, address cleared,
   discovery restarts.
 
@@ -437,7 +449,6 @@ the halving is a shift: no multiplication and no division.
 | Item | Notes |
 |---|---|
 | RENEWING/REBINDING REQUEST carries the Server Identifier | RFC 2131 §4.3.2 says it MUST NOT; known deviation, not fixed |
-| Unicast renewals are sent to the broadcast MAC | The client never learns the server's MAC.  Works with a server on the link; a router will normally not forward it, so behind a relay agent only the REBINDING broadcast can succeed |
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
 | An ACK without a lease time (and none remembered) leaves the client BOUND for good, as an infinite lease does | Servers must send option 51 in an ACK |

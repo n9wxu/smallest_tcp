@@ -53,8 +53,7 @@ static void dhcp_input(net_t *n, uint32_t src_ip, uint16_t src_port,
                        const uint8_t *src_mac, const uint8_t *payload,
                        uint16_t len) {
   (void)src_port;
-  (void)src_mac;
-  dhcpv4_client_input(n, &dhcp, src_ip, payload, len);
+  dhcpv4_client_input(n, &dhcp, src_ip, src_mac, payload, len);
 }
 
 static void udp_echo(net_t *n, uint32_t src_ip, uint16_t src_port,
