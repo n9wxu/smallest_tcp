@@ -26,7 +26,6 @@
 #define TCP_MSS_OPTION_LEN 4
 #define TCP_DEFAULT_MSS_IPV4 536u  /* §3.7.1 */
 #define TCP_DEFAULT_MSS_IPV6 1220u /* 1280 - 40 - 20 */
-#define TCP_ETHERNET_MSS 1460u
 #define TCP_MAX_RETRANSMITS 8u
 #define TCP_TIME_WAIT_MS (2u * NET_DEFAULT_TCP_MSL_MS)
 
@@ -75,11 +74,23 @@ static uint16_t default_mss(const tcp_ep_t *ep) {
   return is_ipv6(ep) ? TCP_DEFAULT_MSS_IPV6 : TCP_DEFAULT_MSS_IPV4;
 }
 
-/* REQ-TCP-077: the largest segment our TX frame buffer carries */
-static uint16_t our_mss(const net_t *net, const tcp_ep_t *ep) {
-  uint16_t mss = (uint16_t)(net->tx.capacity - ETH_HDR_SIZE -
-                            ip_header_size(ep) - TCP_HDR_SIZE);
-  return mss < TCP_ETHERNET_MSS ? mss : TCP_ETHERNET_MSS;
+/* REQ-TCP-077: the largest segment a frame buffer of @p capacity holds,
+ * to or from @p ep, within an Ethernet frame */
+static uint16_t segment_room(uint16_t capacity, const tcp_ep_t *ep) {
+  uint16_t headers = ETH_HDR_SIZE + ip_header_size(ep) + TCP_HDR_SIZE;
+  if (capacity > ETH_HDR_SIZE + ETH_MTU)
+    capacity = ETH_HDR_SIZE + ETH_MTU;
+  return capacity > headers ? (uint16_t)(capacity - headers) : 0u;
+}
+
+static uint16_t receive_mss(const net_t *net, const tcp_ep_t *ep) {
+  return segment_room(net->rx.capacity, ep);
+}
+
+/* @p mss, but no more than our TX frame buffer carries */
+static uint16_t send_mss(const net_t *net, const tcp_ep_t *ep, uint16_t mss) {
+  uint16_t room = segment_room(net->tx.capacity, ep);
+  return mss < room ? mss : room;
 }
 
 /* The checksum of a segment we send to @p peer, or (@p from_peer) one it
@@ -199,6 +210,12 @@ static void retransmit_timer_start(tcp_conn_t *conn) {
   timer_start(conn, TCP_TIMER_RETRANSMIT, conn->rto_ms);
 }
 
+/* RFC 6298 §5.1: started by a segment sent while it is not running */
+static void retransmit_timer_run(tcp_conn_t *conn) {
+  if (!timer_running(conn, TCP_TIMER_RETRANSMIT))
+    retransmit_timer_start(conn);
+}
+
 static void retransmit_timer_restart_if_running(tcp_conn_t *conn) {
   if (timer_running(conn, TCP_TIMER_RETRANSMIT))
     conn->timer_ms = conn->rto_ms;
@@ -261,26 +278,58 @@ static void reset_connection(net_t *net, tcp_conn_t *conn) {
 
 /* ── Output ── */
 
-/* REQ-TCP-084, 085: one segment of queued data, as the peer's window
- * allows; a zero window starts the persist timer instead */
-static void flush(net_t *net, tcp_conn_t *conn) {
-  uint16_t can_send =
+static int all_data_sent(const tcp_conn_t *conn) {
+  return conn->txbuf_ops->queued(conn->txbuf_ctx) ==
+         conn->txbuf_ops->in_flight(conn->txbuf_ctx);
+}
+
+/* Closing, with our FIN still behind queued data (§3.10.4) */
+static int fin_queued(const tcp_conn_t *conn) {
+  return !conn->fin_sent &&
+         (conn->state == TCP_FIN_WAIT_1 || conn->state == TCP_CLOSING ||
+          conn->state == TCP_LAST_ACK);
+}
+
+/* REQ-TCP-084, 085: one segment of unsent data, as the peer's window
+ * allows; a zero window starts the persist timer instead.  A frame the
+ * driver did not take is a lost segment, which the retransmission timer
+ * recovers. */
+static void send_data(net_t *net, tcp_conn_t *conn) {
+  uint16_t room =
       conn->snd_wnd < conn->snd_mss ? (uint16_t)conn->snd_wnd : conn->snd_mss;
   const uint8_t *data = NULL;
   uint16_t len;
 
-  if (can_send == 0) {
-    if (!conn->timer_ms)
+  if (room == 0) {
+    if (!all_data_sent(conn) && !conn->timer_ms)
       persist_start(conn);
     return;
   }
   persist_stop(conn);
-  len = conn->txbuf_ops->next_segment(conn->txbuf_ctx, &data, can_send);
-  if (len > 0 && send_segment(net, conn, TCP_FLAG_ACK, conn->snd_nxt, data,
-                              len) == NET_OK) {
+  len = conn->txbuf_ops->next_segment(conn->txbuf_ctx, &data, room);
+  if (len > 0) {
+    send_segment(net, conn, TCP_FLAG_ACK, conn->snd_nxt, data, len);
     conn->snd_nxt += len;
-    retransmit_timer_start(conn);
   }
+  if (SEQ_LT(conn->snd_una, conn->snd_nxt))
+    retransmit_timer_run(conn);
+}
+
+static void send_queued_fin(net_t *net, tcp_conn_t *conn) {
+  send_fin(net, conn, conn->snd_nxt);
+  conn->snd_nxt++;
+  conn->fin_sent = 1;
+  retransmit_timer_run(conn);
+}
+
+/* Data, then a queued FIN once all the data has been sent */
+static void flush(net_t *net, tcp_conn_t *conn) {
+  if (conn->state != TCP_ESTABLISHED && conn->state != TCP_CLOSE_WAIT &&
+      !fin_queued(conn))
+    return;
+  send_data(net, conn);
+  if (fin_queued(conn) && all_data_sent(conn))
+    send_queued_fin(net, conn);
 }
 
 /* ── Input ── */
@@ -350,11 +399,9 @@ static uint16_t peer_mss(const tcp_seg_t *s, uint16_t default_mss) {
   return mss;
 }
 
-/* No larger than a segment our TX buffer carries */
-static void take_peer_mss(tcp_conn_t *conn, const tcp_seg_t *s,
-                          uint16_t default_mss) {
-  uint16_t mss = peer_mss(s, default_mss);
-  conn->snd_mss = mss < conn->our_mss ? mss : conn->our_mss;
+static void take_peer_mss(const net_t *net, tcp_conn_t *conn,
+                          const tcp_ep_t *from, const tcp_seg_t *s) {
+  conn->snd_mss = send_mss(net, from, peer_mss(s, default_mss(from)));
 }
 
 /* REQ-TCP-072..075: a RST answering @p s, from nowhere we have a
@@ -428,6 +475,43 @@ static void take_peer_syn(tcp_conn_t *conn, const tcp_seg_t *s) {
   conn->rcv_wnd = conn->rxbuf_ops->available(conn->rxbuf_ctx);
 }
 
+/* RFC 6528, REQ-TCP-028: a 4 µs clock plus a keyed hash of the addresses
+ * and ports, so a connection's successor starts beyond it and no one
+ * without the secret can guess where */
+static uint32_t initial_sequence_number(const net_t *net,
+                                        const tcp_conn_t *conn) {
+  uint8_t id[16 + 16 + 2 + 2];
+  uint16_t n = 8;
+  tcp_ep_t ep;
+  conn_endpoint(net, conn, &ep);
+#if NET_USE_IPV6
+  if (is_ipv6(&ep)) {
+    memcpy(id, ep.local6, 16);
+    memcpy(id + 16, ep.ip6, 16);
+    n = 32;
+  } else
+#endif
+  {
+    net_write32be(id, ep.local_ip4);
+    net_write32be(id + 4, ep.ip4);
+  }
+  net_write16be(id + n, conn->local_port);
+  net_write16be(id + n + 2, conn->remote_port);
+  return net->tcp_clock + net_hash(net, id, (uint16_t)(n + 4u));
+}
+
+/* Our side of a new connection, the peer's address and ports known */
+static void start_send_sequence(net_t *net, tcp_conn_t *conn) {
+  tcp_ep_t ep;
+  conn_endpoint(net, conn, &ep);
+  conn->our_mss = receive_mss(net, &ep);
+  conn->iss = initial_sequence_number(net, conn);
+  conn->snd_una = conn->iss;
+  conn->snd_nxt = conn->iss + 1u;
+  conn->fin_sent = 0;
+  conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
+}
+
 /* §3.10.7.2, REQ-TCP-030..035: a SYN opens the connection */
 static void listen_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
                          const tcp_seg_t *s) {
@@ -440,15 +524,11 @@ static void listen_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
   if (!has(s, TCP_FLAG_SYN))
     return;
   remember_peer(net, conn, from, s->src_port);
-  conn->our_mss = our_mss(net, from);
-  take_peer_mss(conn, s, default_mss(from));
+  start_send_sequence(net, conn);
+  take_peer_mss(net, conn, from, s);
   take_peer_syn(conn, s);
   conn->snd_wl1 = s->seq;
   conn->snd_wl2 = s->ack;
-  conn->iss = net_random(net); /* REQ-TCP-028 */
-  conn->snd_una = conn->iss;
-  conn->snd_nxt = conn->iss + 1u;
-  conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
   conn->state = TCP_SYN_RECEIVED;
   send_syn(net, conn);
   retransmit_timer_start(conn);
@@ -474,7 +554,7 @@ static void syn_sent_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
   }
   if (!has(s, TCP_FLAG_SYN))
     return;
-  take_peer_mss(conn, s, default_mss(from));
+  take_peer_mss(net, conn, from, s);
   take_peer_syn(conn, s);
   if (ack_ok) {
     conn->snd_una = s->ack;
@@ -525,25 +605,31 @@ static void update_send_window(tcp_conn_t *conn, const tcp_seg_t *s) {
 
 /* REQ-TCP-055, 097, 098: SND.UNA advances; the retransmission timer runs
  * while anything — data or our FIN — is unacknowledged */
-static void take_ack(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
+static void take_ack(tcp_conn_t *conn, const tcp_seg_t *s) {
   conn->txbuf_ops->ack(conn->txbuf_ctx, s->ack - conn->snd_una);
   conn->snd_una = s->ack;
-  if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0 ||
-      SEQ_LT(conn->snd_una, conn->snd_nxt))
+  if (SEQ_LT(conn->snd_una, conn->snd_nxt))
     retransmit_timer_restart_if_running(conn);
   else
     retransmit_timer_stop(conn);
+}
+
+/* REQ-TCP-055..058: SND.UNA <= SEG.ACK <= SND.NXT.  New data acknowledged
+ * or a window update, even of an ACK of nothing new, can let more go. */
+static void send_side_ack(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
+  int acked_new = SEQ_GT(s->ack, conn->snd_una);
+  if (acked_new)
+    take_ack(conn, s);
   update_send_window(conn, s);
-  if (conn->state == TCP_ESTABLISHED || conn->state == TCP_CLOSE_WAIT)
-    flush(net, conn);
-  if (conn->txbuf_ops->writable(conn->txbuf_ctx) > 0)
+  flush(net, conn);
+  if (acked_new && conn->txbuf_ops->writable(conn->txbuf_ctx) > 0)
     notify(conn, TCP_EVT_WRITABLE);
 }
 
 /* Step 5, REQ-TCP-053..062.  Returns 0 if the segment is done with. */
 static int ack_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
                      const tcp_seg_t *s) {
-  int all_acked;
+  int fin_acked;
   if (!has(s, TCP_FLAG_ACK))
     return 0;
   if (conn->state == TCP_SYN_RECEIVED) {
@@ -569,21 +655,21 @@ static int ack_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
     send_ack(net, conn);
     return 0;
   }
-  if (SEQ_GT(s->ack, conn->snd_una)) /* REQ-TCP-057: else a duplicate */
-    take_ack(net, conn, s);
+  if (SEQ_GE(s->ack, conn->snd_una)) /* REQ-TCP-057: else a duplicate */
+    send_side_ack(net, conn, s);
 
-  all_acked = SEQ_GE(s->ack, conn->snd_nxt); /* our FIN included */
+  fin_acked = conn->fin_sent && SEQ_GE(s->ack, conn->snd_nxt);
   switch (conn->state) {
   case TCP_FIN_WAIT_1:
-    if (all_acked)
+    if (fin_acked)
       conn->state = TCP_FIN_WAIT_2;
     break;
   case TCP_CLOSING:
-    if (all_acked)
+    if (fin_acked)
       enter_time_wait(conn);
     break;
   case TCP_LAST_ACK:
-    if (all_acked) {
+    if (fin_acked) {
       close_with(conn, TCP_EVT_CLOSED);
       return 0;
     }
@@ -728,9 +814,19 @@ void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
 /* ── Timers ── */
 
 static int fin_unacked(const tcp_conn_t *conn) {
-  return (conn->state == TCP_FIN_WAIT_1 || conn->state == TCP_CLOSING ||
-          conn->state == TCP_LAST_ACK) &&
-         SEQ_LT(conn->snd_una, conn->snd_nxt);
+  return conn->fin_sent && SEQ_LT(conn->snd_una, conn->snd_nxt);
+}
+
+/* The data in flight again, from SND.UNA, whatever the window: the peer's
+ * window took it once, and a window shrunk since makes it a probe.  SND.NXT
+ * stays, past a FIN already sent. */
+static void resend_in_flight(net_t *net, tcp_conn_t *conn) {
+  uint16_t in_flight = conn->txbuf_ops->in_flight(conn->txbuf_ctx);
+  const uint8_t *data = NULL;
+  uint16_t len;
+  conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
+  len = conn->txbuf_ops->next_segment(conn->txbuf_ctx, &data, in_flight);
+  send_segment(net, conn, TCP_FLAG_ACK, conn->snd_una, data, len);
 }
 
 /* REQ-TCP-090..100: the earliest unacknowledged segment again, with the
@@ -756,15 +852,7 @@ static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
   if (syn) {
     send_syn(net, conn);
   } else if (data_unacked) {
-    /* From SND.UNA, with the original sequence numbers.  A FIN already
-     * sent after the data keeps its place; it is resent once the data is
-     * acknowledged. */
-    uint32_t sent_up_to = conn->snd_nxt;
-    conn->snd_nxt = conn->snd_una;
-    conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
-    flush(net, conn);
-    if (fin)
-      conn->snd_nxt = sent_up_to;
+    resend_in_flight(net, conn); /* a FIN follows once it is acknowledged */
   } else {
     send_fin(net, conn, conn->snd_nxt - 1u);
   }
@@ -782,10 +870,8 @@ static void probe_zero_window(net_t *net, tcp_conn_t *conn) {
     persist_stop(conn); /* nothing left to send */
     return;
   }
-  if (send_segment(net, conn, TCP_FLAG_ACK, conn->snd_nxt, byte, 1) == NET_OK)
-    conn->snd_nxt += 1u;
-  else
-    conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
+  send_segment(net, conn, TCP_FLAG_ACK, conn->snd_nxt, byte, 1);
+  conn->snd_nxt += 1u;
   conn->persist_ms = doubled_up_to_rto_max(conn->persist_ms);
   timer_start(conn, TCP_TIMER_PERSIST, conn->persist_ms);
 }
@@ -809,6 +895,7 @@ static void conn_tick(net_t *net, tcp_conn_t *conn, uint32_t elapsed_ms) {
 
 void tcp_tick(net_t *net, uint32_t elapsed_ms) {
   uint8_t i;
+  net->tcp_clock += elapsed_ms * 250u;
   for (i = 0; i < net->tcp_conn_count; i++) {
     if (net->tcp_conns[i])
       conn_tick(net, net->tcp_conns[i], elapsed_ms);
@@ -858,14 +945,10 @@ static net_err_t open_to(net_t *net, tcp_conn_t *conn,
   memcpy(conn->remote_mac, remote_mac, 6);
   conn->mac_valid = 1;
   conn_endpoint(net, conn, &peer);
-  conn->our_mss = our_mss(net, &peer);
-  conn->snd_mss = default_mss(&peer); /* until the peer says */
-  conn->iss = net_random(net);
-  conn->snd_una = conn->iss;
-  conn->snd_nxt = conn->iss + 1u;
+  start_send_sequence(net, conn);
+  conn->snd_mss = send_mss(net, &peer, default_mss(&peer)); /* until told */
   conn->rcv_nxt = 0;
   conn->rcv_wnd = conn->rxbuf_ops->available(conn->rxbuf_ctx);
-  conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
   conn->state = TCP_SYN_SENT;
   if ((err = send_syn(net, conn)) != NET_OK) {
     conn->state = TCP_CLOSED;
@@ -975,9 +1058,7 @@ net_err_t tcp_close(net_t *net, tcp_conn_t *conn) {
     conn->state = TCP_LAST_ACK;
   else
     return NET_OK; /* closed or closing already */
-  send_fin(net, conn, conn->snd_nxt);
-  conn->snd_nxt++;
-  retransmit_timer_start(conn);
+  flush(net, conn);
   return NET_OK;
 }
 

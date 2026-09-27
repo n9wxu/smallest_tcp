@@ -86,9 +86,9 @@ one iteration per second.
 
 | Owner | Field(s) | Values | On expiry |
 |---|---|---|---|
-| TCP connection | `timer_ms`, `rto_ms`, `retransmits` | RTO starts at `NET_DEFAULT_TCP_RTO_INIT_MS` (1 s), doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS` (60 s) | Resend the SYN, the data from SND.UNA, or the FIN; the expiry after the 8th retransmission sends RST and reports `TCP_EVT_ERROR` |
-| TCP connection, TIME-WAIT | `timer_ms` | 2 × `NET_DEFAULT_TCP_MSL_MS` (4 min) | CLOSED, `TCP_EVT_CLOSED` |
-| TCP connection, zero window | `persist_timer_ms`, `persist_ms` | from 1 s, doubling to 60 s | Send a one-byte window probe |
+| TCP connection | `timer_ms` (`timer` = retransmit), `rto_ms`, `retransmits` | RTO starts at `NET_DEFAULT_TCP_RTO_INIT_MS` (1 s), doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS` (60 s) | Resend the SYN, the data from SND.UNA, or the FIN; the expiry after the 8th retransmission sends RST and reports `TCP_EVT_ERROR` |
+| TCP connection, TIME-WAIT | `timer_ms` (`timer` = TIME-WAIT) | 2 × `NET_DEFAULT_TCP_MSL_MS` (4 min) | CLOSED, `TCP_EVT_CLOSED` |
+| TCP connection, zero window | `timer_ms` (`timer` = persist), `persist_ms` | from 1 s, doubling to 60 s | Send a one-byte window probe |
 | IPv6 address | `dad_timer_ms` | random 0–1 s before the link-local probe; 1 s between probes | Next DAD probe, or the address becomes PREFERRED |
 | IPv6 router discovery | `router_solicit_ms`, `router_solicits_left` | random 0–1 s, then 4 s; up to 3 | Next Router Solicitation |
 | MLD | `query_reply_ms`, `report_repeat_ms`, `v1_querier_left_s` | random within the query's maximum response delay; 1 s; 260 s | Report; repeat a change report; leave MLDv1 mode |
@@ -98,6 +98,12 @@ one iteration per second.
 | TFTP client | `timer_ms` | 3 s, 5 retries | Resend the RRQ or the last ACK; give up |
 | mDNS | `timer_ms`, `pending.timer_ms` | probes 250 ms apart, announcements 1 s apart; shared-record answers delayed 20–120 ms | Next probe or announcement; send the aggregated answers |
 | HTTP slot | `timer_ms` | 10 s to receive a request, 10 s to respond | Abort the connection, re-listen |
+
+A TCP connection runs one of its three timers at a time, in one countdown
+([tcp.md §5](tcp.md#5-timers)).  `tcp_tick()` also advances `net->tcp_clock`
+by 250 per millisecond, the 4 µs clock of initial sequence numbers
+([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)); it is a clock, not a
+timer, and never fires.
 
 TCP has no delayed-ACK timer (an ACK goes out as soon as data arrives) and no
 round-trip-time estimator: the RTO is not measured (RFC 6298's smoothed RTT is
@@ -146,7 +152,7 @@ wake at its tick period even when nothing is due.
 Adding it would take:
 
 1. `net_next_event_ms(net)`: the minimum over every running TCP timer
-   (`timer_ms`, `persist_timer_ms`), the IPv6 DAD, router-solicitation and MLD
+   (one `timer_ms` per connection), the IPv6 DAD, router-solicitation and MLD
    timers, and — whenever any second-granularity lifetime is finite — the
    time to the next whole second (`1000 - lifetime_carry_ms`); `UINT32_MAX`
    if nothing runs.

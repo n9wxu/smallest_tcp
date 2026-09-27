@@ -143,15 +143,53 @@ TEST(test_saw_tx_ack_partial_shifts_buffer) {
   tcp_saw_tx_ops.next_segment(&tx_ctx, &seg, 1460);
   tcp_saw_tx_ops.ack(&tx_ctx, 4); /* Partial ACK: 4 bytes */
 
-  /* 4 bytes remain; in_flight cleared (allow resend) */
-  ASSERT_EQ(tcp_saw_tx_ops.in_flight(&tx_ctx), 0);
-
-  /* Remaining data is the un-ACKed tail */
+  /* The other 4 were sent: still in flight, not sent again as new data */
+  ASSERT_EQ(tcp_saw_tx_ops.in_flight(&tx_ctx), 4);
   const uint8_t *seg2 = NULL;
+  ASSERT_EQ(tcp_saw_tx_ops.next_segment(&tx_ctx, &seg2, 1460), 0);
+
+  /* A retransmission sends the un-ACKed tail */
+  tcp_saw_tx_ops.mark_retransmit(&tx_ctx);
   uint16_t len2 = tcp_saw_tx_ops.next_segment(&tx_ctx, &seg2, 1460);
   ASSERT_EQ(len2, 4);
   ASSERT_EQ(seg2[0], 0x50);
   ASSERT_EQ(seg2[3], 0x80);
+}
+
+/* A segment smaller than the data: only the bytes sent are in flight */
+TEST(test_saw_tx_in_flight_counts_bytes_sent) {
+  setup_tx();
+  uint8_t data[20];
+  for (int i = 0; i < 20; i++)
+    data[i] = (uint8_t)i;
+  tcp_saw_tx_ops.write(&tx_ctx, data, 20);
+
+  const uint8_t *seg = NULL;
+  ASSERT_EQ(tcp_saw_tx_ops.next_segment(&tx_ctx, &seg, 10), 10);
+  ASSERT_EQ(tcp_saw_tx_ops.in_flight(&tx_ctx), 10);
+  ASSERT_EQ(tcp_saw_tx_ops.queued(&tx_ctx), 20);
+
+  tcp_saw_tx_ops.ack(&tx_ctx, 10);
+  ASSERT_EQ(tcp_saw_tx_ops.in_flight(&tx_ctx), 0);
+  ASSERT_EQ(tcp_saw_tx_ops.next_segment(&tx_ctx, &seg, 10), 10);
+  ASSERT_MEM_EQ(seg, data + 10, 10);
+}
+
+/* An ACK covering more than was sent (our FIN) releases only what was
+ * sent: unsent data is never dropped */
+TEST(test_saw_tx_ack_beyond_sent_keeps_unsent) {
+  setup_tx();
+  uint8_t data[20];
+  for (int i = 0; i < 20; i++)
+    data[i] = (uint8_t)i;
+  tcp_saw_tx_ops.write(&tx_ctx, data, 20);
+
+  const uint8_t *seg = NULL;
+  tcp_saw_tx_ops.next_segment(&tx_ctx, &seg, 10);
+  tcp_saw_tx_ops.ack(&tx_ctx, 11);
+  ASSERT_EQ(tcp_saw_tx_ops.queued(&tx_ctx), 10);
+  ASSERT_EQ(tcp_saw_tx_ops.next_segment(&tx_ctx, &seg, 10), 10);
+  ASSERT_MEM_EQ(seg, data + 10, 10);
 }
 
 TEST(test_saw_tx_mark_retransmit) {
@@ -313,6 +351,8 @@ int main(void) {
   RUN_TEST(test_saw_tx_write_blocked_when_in_flight);
   RUN_TEST(test_saw_tx_ack_full_clears_buffer);
   RUN_TEST(test_saw_tx_ack_partial_shifts_buffer);
+  RUN_TEST(test_saw_tx_in_flight_counts_bytes_sent);
+  RUN_TEST(test_saw_tx_ack_beyond_sent_keeps_unsent);
   RUN_TEST(test_saw_tx_mark_retransmit);
   RUN_TEST(test_saw_rx_init_state);
   RUN_TEST(test_saw_rx_deliver_basic);

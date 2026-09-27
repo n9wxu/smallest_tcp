@@ -241,43 +241,48 @@ class TcpConn:
         return synack
 
     def close(self, timeout=RECV_TIMEOUT):
-        """Send FIN+ACK and wait for SUT's FIN+ACK, then send final ACK.
+        """Send FIN+ACK, then behave as a real peer until the SUT's FIN: ACK
+        the data it still sends — its FIN follows all the data it had queued
+        (RFC 9293 §3.10.4) — then ACK the FIN.
 
         Uses send_recv (AsyncSniffer) so we don't miss the SUT's ACK/FIN
         on a fast TAP interface where the reply can arrive before a naive
-        send-then-sniff socket is even open.
+        send-then-sniff socket is even open.  Returns the replies to our FIN.
         """
         fin_pkt = self.fin_ack()
         self.our_seq += 1  # FIN consumes a sequence number
-        # Expect up to 2 replies: ACK of our FIN, then SUT's own FIN+ACK.
-        # Use sport filter so retransmitted data for a previous test's connection
-        # does not satisfy the count=2 quota before the SUT's actual FIN arrives.
+        # Up to 2 replies: ACK of our FIN, then SUT's own FIN+ACK.  The sport
+        # filter keeps a previous test's retransmissions out of the count.
         replies = send_recv(self.ctx, fin_pkt, timeout=timeout, count=2,
                             sport=self.sport)
-        fin_seen = False
-        for pkt in replies:
-            if pkt[TCP].flags & 0x01:  # FIN flag set
-                self.our_ack = pkt[TCP].seq + 1
-                send_pkt(self.ctx, self.ack())
-                fin_seen = True
+        segments = replies
+        for _ in range(8):  # a few segments of echo data at most
+            if any(self._take_segment(p) for p in segments):
+                send_pkt(self.ctx, self.ack())  # the SUT's FIN
                 break
-        if not fin_seen:
-            # The first 2 packets may have been retransmitted data arriving
-            # before the SUT's FIN (e.g. when the SUT had unsent echo segments
-            # buffered when we sent FIN).  Try once more with a short window.
-            extras = recv_tcp(self.ctx, timeout=1, count=2,
-                              extra_filter=f"tcp dst port {self.sport}")
-            for pkt in extras:
-                if pkt[TCP].flags & 0x01:
-                    self.our_ack = pkt[TCP].seq + 1
-                    send_pkt(self.ctx, self.ack())
-                    break
+            if not segments:
+                break
+            # ACK the data received so far; the rest, then the FIN, follow
+            segments = send_recv(self.ctx, self.ack(), timeout=2, count=2,
+                                 sport=self.sport)
         # Give the SUT time to process the final ACK, exit LAST_ACK, run the
         # do_listen() usleep(50 ms), and return to LISTEN before the next test
         # sends a SYN.  Without this pause the next test's SYN can arrive
         # while the SUT is still in CLOSED/LAST_ACK and receive RST.
         time.sleep(0.15)
         return replies
+
+    def _take_segment(self, pkt):
+        """Advance our ACK past a segment from the SUT; True if it is the
+        SUT's FIN.  Data the test received earlier without acknowledging it
+        counts as received."""
+        end = pkt[TCP].seq + len(bytes(pkt[TCP].payload))
+        if (end - self.our_ack) % 2**32 < 2**31:
+            self.our_ack = end % 2**32
+        if pkt[TCP].flags & 0x01:
+            self.our_ack = (end + 1) % 2**32
+            return True
+        return False
 
 
 def tcp_connect(ctx, sport, dport=None, our_mss=536, timeout=RECV_TIMEOUT):

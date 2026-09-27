@@ -10,7 +10,7 @@
 static uint16_t saw_tx_write(void *ctx, const uint8_t *data, uint16_t len) {
   tcp_saw_tx_ctx_t *c = (tcp_saw_tx_ctx_t *)ctx;
   uint16_t space = (uint16_t)(c->capacity - c->data_len);
-  if (c->in_flight)
+  if (c->sent_len)
     return 0;
   if (len > space)
     len = space;
@@ -22,29 +22,26 @@ static uint16_t saw_tx_write(void *ctx, const uint8_t *data, uint16_t len) {
 static uint16_t saw_tx_next_segment(void *ctx, const uint8_t **data,
                                     uint16_t mss) {
   tcp_saw_tx_ctx_t *c = (tcp_saw_tx_ctx_t *)ctx;
-  if (c->in_flight || c->data_len == 0)
+  if (c->sent_len || c->data_len == 0)
     return 0;
   *data = c->buf;
-  c->in_flight = 1;
-  return c->data_len < mss ? c->data_len : mss;
+  c->sent_len = c->data_len < mss ? c->data_len : mss;
+  return c->sent_len;
 }
 
-/* A partial ACK (a segment smaller than the data, or a zero-window probe)
- * keeps the rest, moved to the front, to be sent again */
 static void saw_tx_ack(void *ctx, uint32_t bytes_acked) {
   tcp_saw_tx_ctx_t *c = (tcp_saw_tx_ctx_t *)ctx;
   uint16_t acked =
-      bytes_acked < c->data_len ? (uint16_t)bytes_acked : c->data_len;
+      bytes_acked < c->sent_len ? (uint16_t)bytes_acked : c->sent_len;
   if (acked == 0)
     return;
   c->data_len = (uint16_t)(c->data_len - acked);
+  c->sent_len = (uint16_t)(c->sent_len - acked);
   memmove(c->buf, c->buf + acked, c->data_len);
-  c->in_flight = 0;
 }
 
 static uint16_t saw_tx_in_flight(const void *ctx) {
-  const tcp_saw_tx_ctx_t *c = (const tcp_saw_tx_ctx_t *)ctx;
-  return c->in_flight ? c->data_len : 0;
+  return ((const tcp_saw_tx_ctx_t *)ctx)->sent_len;
 }
 
 static uint16_t saw_tx_queued(const void *ctx) {
@@ -53,11 +50,11 @@ static uint16_t saw_tx_queued(const void *ctx) {
 
 static uint16_t saw_tx_writable(const void *ctx) {
   const tcp_saw_tx_ctx_t *c = (const tcp_saw_tx_ctx_t *)ctx;
-  return c->in_flight ? 0 : (uint16_t)(c->capacity - c->data_len);
+  return c->sent_len ? 0 : (uint16_t)(c->capacity - c->data_len);
 }
 
 static void saw_tx_mark_retransmit(void *ctx) {
-  ((tcp_saw_tx_ctx_t *)ctx)->in_flight = 0;
+  ((tcp_saw_tx_ctx_t *)ctx)->sent_len = 0;
 }
 
 const tcp_txbuf_ops_t tcp_saw_tx_ops = {
@@ -70,7 +67,7 @@ void tcp_saw_tx_init(tcp_saw_tx_ctx_t *ctx, uint8_t *buf, uint16_t size) {
   ctx->buf = buf;
   ctx->capacity = size;
   ctx->data_len = 0;
-  ctx->in_flight = 0;
+  ctx->sent_len = 0;
 }
 
 /* pos + n with pos < capacity and n <= capacity: one subtraction wraps

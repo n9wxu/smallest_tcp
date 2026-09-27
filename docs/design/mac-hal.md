@@ -128,10 +128,26 @@ the frame into its own TX buffer or start a DMA from the caller's buffer, but
 it must be finished with `frame` when `send()` returns: the next frame is
 built in the same memory.
 
-`net_transmit()` returns `NET_OK` for any `send()` result ≥ 0, so **a busy
-driver (0) silently drops the frame**, as a congested wire would.  TCP
-recovers by retransmission; UDP and ICMP do not.  Only a negative return
-becomes `NET_ERR_NO_FRAME`.
+`net_transmit()` maps `send()`'s result: > 0 is `NET_OK`, 0 — the driver had
+no room — is `NET_ERR_BUSY`, and < 0 is `NET_ERR_NO_FRAME`.  Either error
+means the frame was not sent.  What happens next depends on the caller:
+
+- **The application's own sends** — `udp_send()`, `udp6_send()` and their
+  in-place forms, `arp_request()` — return the error, and the application may
+  try again.  An in-place payload is still in `tx.buf` only until the next
+  frame is built there.
+- **TCP** ignores it, except for the SYN of `tcp_connect()` /
+  `tcp6_connect()`, which fails with it.  Every other segment counts as sent
+  and lost: data, SYN,ACK, FIN and window probes are sent again by the
+  retransmission or persist timer
+  ([tcp.md §4.3](tcp.md#43-output-flush-and-send_data)), and a lost ACK or
+  RST is repeated when the peer retransmits.
+- **Messages the stack sends on its own** — ARP replies, ICMP and ICMPv6
+  echo replies and errors, neighbor discovery and MLD messages — are lost, as
+  they would be on a congested wire.
+
+`net_transmit()` used to return `NET_OK` for a busy driver, so the frame was
+lost with no one told.
 
 ## 6. Bundled drivers
 

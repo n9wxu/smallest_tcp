@@ -21,6 +21,7 @@ typedef enum {
   NET_ERR_BUF_TOO_SMALL = -1,
   NET_ERR_INVALID_PARAM = -2,
   NET_ERR_NO_FRAME = -3,
+  NET_ERR_BUSY = -4,
 } net_err_t;
 
 /** An application-provided frame buffer. */
@@ -88,7 +89,8 @@ typedef struct {
   uint8_t mac[6];
   const net_mac_t *mac_driver;
   void *mac_ctx;
-  uint32_t rng; /**< net_random() state */
+  uint32_t secret[2];    /**< net_hash() key */
+  uint32_t random_count; /**< net_random() outputs so far */
 
   /* IPv4, host byte order; 0 = unconfigured */
   uint32_t ipv4_addr;
@@ -120,6 +122,7 @@ typedef struct {
 #if NET_USE_TCP
   struct tcp_conn_s *const *tcp_conns;
   uint8_t tcp_conn_count;
+  uint32_t tcp_clock; /**< 4 µs ticks, for initial sequence numbers */
 #endif
 } net_t;
 
@@ -144,20 +147,26 @@ void net_tick(net_t *net, uint32_t elapsed_ms);
 
 /**
  * Send the frame of @p frame_len bytes built in net->tx.buf.
- * @return NET_OK, or NET_ERR_NO_FRAME if the driver failed.
+ * @return NET_OK, NET_ERR_BUSY if the driver had no room for it, or
+ *         NET_ERR_NO_FRAME if the driver failed.
  */
 net_err_t net_transmit(net_t *net, uint16_t frame_len);
 
-/* Randomness (xorshift32) */
+/* Randomness: HalfSipHash-2-4 under a secret key, so no output gives
+ * away the key or any other output */
 
 /**
- * Mix @p entropy into the generator.  net_init() seeds it from the MAC
+ * Mix @p entropy into the secret.  net_init() seeds it from the MAC
  * address, which differs per device but is public: seed it from a true
  * random source where one exists (TCP initial sequence numbers and DHCP
- * transaction IDs come from it).
+ * transaction IDs depend on it).
  */
 void net_random_seed(net_t *net, uint32_t entropy);
 
+/** HalfSipHash-2-4 of @p data under the secret. */
+uint32_t net_hash(const net_t *net, const uint8_t *data, uint16_t len);
+
+/** The hash of a count of the outputs so far. */
 uint32_t net_random(net_t *net);
 
 /** Uniform in [0, @p n) for n <= 65536, by scaling. */

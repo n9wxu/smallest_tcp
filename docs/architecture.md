@@ -14,7 +14,7 @@ requirements are under [`requirements/`](requirements/).
 |---|---|
 | **Zero allocation** | The stack never calls `malloc()`.  The application declares every buffer and structure; init functions validate and prepare them ([memory-model.md](design/memory-model.md)). |
 | **No global mutable state** | All state lives in `net_t` or in structures the application passes in.  File-scope data is `const`. |
-| **Application-sized buffers** | Limits follow from the buffers the application provides: TCP MSS from the TX buffer, TFTP block size from the RX buffer, the largest datagram from both. |
+| **Application-sized buffers** | Limits follow from the buffers the application provides: the TCP MSS we advertise from the RX buffer and the segments we send from the TX buffer, TFTP block size from the RX buffer, the largest datagram from both. |
 | **Parse and build in place** | A received frame is copied once, from the MAC driver into `net->rx.buf`, and parsed where it lies.  Outgoing frames are built in place in `net->tx.buf`; application data is copied into the frame once (by `udp_send()`, or from a TCP connection's buffer), and modules write their messages there directly. |
 | **Compile-time composition of the core, link-time for the rest** | IPv6 and the two transports are compiled in or out; the application protocols are separate libraries that are linked or not (§2). |
 | **Abstract MAC** | The hardware is reached through one six-function interface, `net_mac_t` ([mac-hal.md](design/mac-hal.md)). |
@@ -87,15 +87,16 @@ One `net_t` per interface holds everything the core knows:
 |---|---|
 | Buffers | `rx`, `tx` — `{buf, capacity}`, supplied to `net_init()` |
 | Link | `mac`, `mac_driver`, `mac_ctx` |
-| Randomness | `rng` (§9) |
+| Randomness | `secret`, `random_count` (§9) |
 | IPv4 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` (host byte order), `gateway_mac`, `gateway_mac_valid`, `mcast_groups[]` |
 | IPv6 | `ip6` — address slots with DAD state and lifetimes, hop limit, RA flags, default router, solicitation, lifetime and MLD timers; `mcast6_groups[][16]` |
 | Dispatch | `udp_ports` / `udp_port_count`, `udp6_ports` / `udp6_port_count`, `tcp_conns` / `tcp_conn_count` — tables the application binds with `udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()` |
+| TCP | `tcp_clock` — 4 µs ticks, advanced by `tcp_tick()`, for initial sequence numbers ([tcp.md §4.6](design/tcp.md#46-initial-sequence-numbers)) |
 
 The dispatch tables used to be globals (`udp_ports`, `udp6_ports`,
 `tcp_connections`); in `net_t` they leave the stack with no global mutable
-state.  On Cortex-M0, `net_t` is 64 bytes for a UDP-only IPv4 build, 76 with
-the defaults and 196 dual stack ([memory-model.md](design/memory-model.md)).
+state.  On Cortex-M0, `net_t` is 72 bytes for a UDP-only IPv4 build, 88 with
+the defaults and 208 dual stack ([memory-model.md](design/memory-model.md)).
 
 ## 5. Receive path
 
@@ -190,43 +191,69 @@ through `on_event`, which must not send or close.  See
 
 ## 9. Randomness
 
-The stack has one generator: xorshift32, with its state in `net->rng`.
+The stack has one generator: a keyed pseudo-random function,
+HalfSipHash-2-4 with a 32-bit output (the 32-bit-word variant of Aumasson and
+Bernstein's SipHash), under a 64-bit secret key in `net->secret`.
 
 ```c
-void     net_random_seed(net_t *net, uint32_t entropy); /* mix entropy in */
+void     net_random_seed(net_t *net, uint32_t entropy); /* mix entropy into the key */
+uint32_t net_hash(const net_t *net, const uint8_t *data, uint16_t len);
 uint32_t net_random(net_t *net);
 uint32_t net_random_below(net_t *net, uint32_t n);     /* [0, n), n ≤ 65536 */
 ```
 
-`net_init()` seeds it from the last four bytes of the MAC address.
-`net_random_seed()` XORs its argument into the state (avoiding the all-zero
-state, which xorshift never leaves) and steps the generator.
-`net_random_below()` scales rather than takes a remainder (no division on
-Cortex-M0).  It replaced five separate generators in earlier versions.
+- `net_hash()` is HalfSipHash-2-4 of `data` under the key.  `test_net` checks
+  it against the algorithm's reference vectors.
+- `net_random()` is `net_hash()` of how many outputs came before it
+  (`net->random_count`, big-endian), so no two calls hash the same input
+  until the 32-bit count wraps.
+- `net_random_seed()` replaces the key with two hashes of the entropy under
+  the old key — the entropy followed by a byte 0 for the first word, 1 for
+  the second.  Each seed therefore adds to what the key already holds.
+- `net_init()` zeroes the key and seeds it with bytes 2..5 of the MAC
+  address.
+- `net_random_below()` scales rather than takes a remainder (no division on
+  Cortex-M0).
 
-Users: TCP initial sequence numbers (`listen_input()`, `tcp_connect()`),
-DHCPv4 and DHCPv6 transaction IDs, and the randomized delays of mDNS
-(probing, shared-record answers), NDP (DAD, Router Solicitations), MLD
-(query responses) and DHCPv6 (start delay, retransmission jitter).  TLS does
-not use it; its randomness comes from the crypto backend.
+The three kinds of input have different lengths — a 4-byte count, a 5-byte
+seed, a 12- or 36-byte TCP connection id — and HalfSipHash puts the length
+into its last block, so zero padding cannot make one kind of input the same
+message as another.
+
+**Why a keyed hash.**  The generator it replaced, xorshift32, returned its
+whole 32-bit state as every output: anyone who saw one value — a DHCPv4
+transaction ID on the wire, the initial sequence number of a SYN,ACK — could
+compute every value after it.  An output of a pseudo-random function reveals
+nothing of the key or of any other output.  It also serves as the keyed hash
+RFC 6528 asks for, so TCP's initial sequence numbers need no second
+primitive.  With it `net.c` grew by 234 bytes on Cortex-M0 and `net_t` by 8
+([size-comparison.md](design/size-comparison.md)).
+
+Users: TCP initial sequence numbers, which hash the connection's addresses
+and ports with `net_hash()` directly ([tcp.md §4.6](design/tcp.md#46-initial-sequence-numbers));
+and through `net_random()`, DHCPv4 and DHCPv6 transaction IDs and the
+randomized delays of mDNS (probing, shared-record answers), NDP (DAD, Router
+Solicitations), MLD (query responses) and DHCPv6 (start delay, retransmission
+jitter).  It replaced five separate generators in earlier versions.  TLS
+does not use it; its randomness comes from the crypto backend.
 
 **Seed it.**  The MAC address differs per device but is public, so an
-unseeded device's sequence numbers and transaction IDs are predictable to
-anyone who knows the MAC (RFC 6528 is about exactly this for TCP).  Call
-`net_random_seed()` after `net_init()` with real entropy — a hardware RNG,
-ADC noise, timing jitter — and again whenever more is available.
+unseeded device's key — and with it its sequence numbers and transaction IDs
+— can be computed by anyone who knows the MAC.  Call `net_random_seed()`
+after `net_init()` with real entropy — a hardware RNG, ADC noise, timing
+jitter — and again whenever more is available, preferably before TCP
+connections are opened (a new key moves every initial sequence number).
 
-**Know its limits.**  xorshift32 is not a cryptographic generator, and each
-output *is* its whole 32-bit state: anyone who sees one value (a DHCP
-transaction ID on the wire, a TCP initial sequence number) can compute every
-following value until the next `net_random_seed()`.  Seeding protects against
-an off-path attacker who knows only the MAC, not against one who can observe
-traffic.  RFC 6528's keyed-hash initial sequence numbers are not implemented.
+**Know its limits.**  The key is 64 bits and each seed adds at most 32 bits
+of entropy; the outputs are 32 bits.  That suits sequence numbers,
+transaction IDs and delays; it is not a source for cryptographic keys or
+nonces.
 
 ## 10. Timers
 
 `net_tick(net, elapsed_ms)` runs the stack's own timers: `tcp_tick()` if
-TCP is compiled in (retransmission, zero-window probes, TIME-WAIT) and
+TCP is compiled in (retransmission, zero-window probes, TIME-WAIT, and the
+clock of initial sequence numbers) and
 `ipv6_tick()` if IPv6 is (DAD, router solicitation, MLD, address and router
 lifetimes).  ARP has none.  Application-owned modules — the DHCP clients,
 TFTP, mDNS, HTTP — keep their own `*_tick()` functions, because the stack
@@ -264,7 +291,7 @@ held in host order for IPv4 and as 16-byte network-order arrays for IPv6
 ## 13. Errors, debugging, concurrency
 
 - API calls return `net_err_t` (`NET_OK`, `NET_ERR_BUF_TOO_SMALL`,
-  `NET_ERR_INVALID_PARAM`, `NET_ERR_NO_FRAME`).
+  `NET_ERR_INVALID_PARAM`, `NET_ERR_NO_FRAME`, `NET_ERR_BUSY`).
 - Malformed, unwanted or unsupported packets are dropped silently, as the
   RFCs require, or answered with the ICMP error the RFCs call for.
 - `NET_DEBUG=1` makes `NET_LOG()` trace to `stderr` on hosted builds; it is
@@ -381,6 +408,7 @@ smallest_tcp/
 | RFC 4443 | ICMPv6 | `icmpv6.c` |
 | RFC 4861 | Neighbor Discovery | `ndp.c` |
 | RFC 4862 | SLAAC, DAD | `ndp.c`, `ipv6.c` |
+| RFC 6528 | TCP initial sequence numbers | `tcp.c` (clock), `net.c` (keyed hash) |
 | RFC 6724 | IPv6 source address selection | `ipv6.c` |
 | RFC 6762, RFC 6763 | mDNS, DNS-SD | `mdns.c` |
 | RFC 6864 | IPv4 ID field | `ipv4.c` |
@@ -390,7 +418,6 @@ smallest_tcp/
 | RFC 9110, RFC 9112 | HTTP semantics, HTTP/1.1 syntax | `http.c` |
 | RFC 9293 | TCP | `tcp.c` |
 
-Partly implemented: RFC 6298 (initial RTO and back-off, no RTT estimation)
-and RFC 6528 (random initial sequence numbers, not keyed-hash).  Not
-implemented: ARP address conflict detection (RFC 5227), TCP congestion
-control (RFC 5681) and TCP extensions (RFC 7323).
+Partly implemented: RFC 6298 (initial RTO and back-off, no RTT
+estimation).  Not implemented: ARP address conflict detection (RFC 5227), TCP
+congestion control (RFC 5681) and TCP extensions (RFC 7323).

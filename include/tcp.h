@@ -100,13 +100,15 @@ typedef struct tcp_conn_s {
   uint32_t snd_wnd;
   uint32_t snd_wl1; /**< Segment sequence number of the last window update */
   uint32_t snd_wl2; /**< Segment acknowledgment number of it */
-  uint16_t snd_mss; /**< The peer's MSS, at most ours */
+  uint16_t snd_mss; /**< The peer's MSS, at most what our TX buffer carries */
+  uint8_t fin_sent; /**< Our FIN is SND.NXT - 1; until then it waits for the
+                         data queued before it */
 
   /* Receive sequence space */
   uint32_t irs;
   uint32_t rcv_nxt;
   uint16_t rcv_wnd; /**< Free space in the RX buffer, as last advertised */
-  uint16_t our_mss;
+  uint16_t our_mss; /**< What our RX buffer takes; in our SYN */
 
   /* One timer at a time: retransmission, zero-window probe or TIME-WAIT */
   uint32_t timer_ms;   /**< Until it fires; 0 = stopped */
@@ -167,8 +169,8 @@ net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
                        uint16_t local_port);
 #endif
 
-/** Send our FIN: ESTABLISHED → FIN-WAIT-1, CLOSE-WAIT → LAST-ACK
- *. */
+/** Close our side: ESTABLISHED → FIN-WAIT-1, CLOSE-WAIT → LAST-ACK.  The
+ *  FIN follows the data already written (RFC 9293 §3.10.4). */
 net_err_t tcp_close(net_t *net, tcp_conn_t *conn);
 
 /** Send RST and go to CLOSED at once. */

@@ -13,6 +13,7 @@
 #define ETH_OFF_SRC 6
 #define ETH_OFF_TYPE 12
 #define ETH_HDR_SIZE 14
+#define ETH_MTU 1500 /**< The largest payload a frame carries */
 
 #define NET_ETHERTYPE_IPV4 0x0800
 #define NET_ETHERTYPE_ARP 0x0806

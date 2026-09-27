@@ -274,11 +274,25 @@ TEST(test_tcp6_default_peer_mss_is_1220) {
 
 TEST(test_tcp6_our_mss_from_small_buffer) {
   uint8_t f[256];
-  setup_cap(600, 1);
+  setup();
+  net.rx.capacity = 600; /* what we can receive, not what we can send */
   tcp_listen(&conn, ECHO_PORT);
   input(f, tcp6_frame(f, peer_ll, our_ll, PEER_PORT, ECHO_PORT, PEER_ISS, 0,
                       TCP_FLAG_SYN, NULL, 1440));
   ASSERT_EQ(s_mss(0), 600 - 14 - 40 - 20);
+}
+
+/* A buffer larger than an Ethernet frame: the MSS is the MTU's, 1440 */
+TEST(test_tcp6_our_mss_within_ethernet_mtu) {
+  static uint8_t big_rx[2048];
+  uint8_t f[256];
+  setup();
+  net.rx.buf = big_rx;
+  net.rx.capacity = sizeof(big_rx);
+  tcp_listen(&conn, ECHO_PORT);
+  input(f, tcp6_frame(f, peer_ll, our_ll, PEER_PORT, ECHO_PORT, PEER_ISS, 0,
+                      TCP_FLAG_SYN, NULL, 1440));
+  ASSERT_EQ(s_mss(0), 1440);
 }
 
 TEST(test_tcp6_bad_checksum_dropped) {
@@ -504,6 +518,7 @@ int main(void) {
   RUN_TEST(test_tcp6_handshake_and_data);
   RUN_TEST(test_tcp6_default_peer_mss_is_1220);
   RUN_TEST(test_tcp6_our_mss_from_small_buffer);
+  RUN_TEST(test_tcp6_our_mss_within_ethernet_mtu);
   RUN_TEST(test_tcp6_bad_checksum_dropped);
   RUN_TEST(test_tcp6_multicast_destination_dropped);
   RUN_TEST(test_tcp6_syn_to_closed_port_rst);

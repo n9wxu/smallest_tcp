@@ -21,10 +21,12 @@ typedef struct {
    *  nothing is ready.  The bytes are then in flight. */
   uint16_t (*next_segment)(void *ctx, const uint8_t **data, uint16_t mss);
 
-  /** The peer acknowledged @p bytes_acked bytes: release them. */
+  /** The peer acknowledged @p bytes_acked bytes: release them.  The count
+   *  may include our FIN, so it is capped at the bytes sent. */
   void (*ack)(void *ctx, uint32_t bytes_acked);
 
-  /** Bytes sent and not yet acknowledged. */
+  /** Bytes sent and not yet acknowledged: TCP resends them, from the
+   *  start, only after mark_retransmit(). */
   uint16_t (*in_flight)(const void *ctx);
 
   /** Bytes written and not yet acknowledged, sent or not. */
@@ -62,7 +64,7 @@ typedef struct {
   uint8_t *buf;
   uint16_t capacity;
   uint16_t data_len; /**< Written, not yet acknowledged */
-  uint8_t in_flight; /**< The data has been sent */
+  uint16_t sent_len; /**< Of those, sent: in flight */
 } tcp_saw_tx_ctx_t;
 
 typedef struct {

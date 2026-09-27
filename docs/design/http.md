@@ -272,11 +272,14 @@ longer ESTABLISHED or CLOSE-WAIT (a RST, an unexpected close) recycles the
 slot at once.  Recycling (`slot_listen()`) re-initialises the slot's TCP
 buffers and connection and listens again.
 
-**Why `delivered()` gates the FIN.**  `tcp_close()` sends the FIN at once
-rather than after queued data ([tcp.md §4.7](tcp.md#47-closing)), and over TLS
-the close_notify is itself data.  So the server closes only when the
-transport reports that everything, the close_notify included, has been
-acknowledged.
+**Why `delivered()` gates the FIN.**  `tcp_close()` queues the FIN behind the
+data in the TCP transmit buffer ([tcp.md §4.7](tcp.md#47-closing)), but not
+behind data the transport has yet to write into it: over TLS, records and
+the close_notify can still be waiting in TLS's own buffer.  So the server
+closes only when the transport reports that everything, the close_notify
+included, has been sent and acknowledged.  For plain TCP the wait is longer
+than the FIN needs, since `tcp_close()` would queue it, but one rule serves
+both transports.
 
 **Recycling out of TIME-WAIT.**  An HTTP/1.0 server closes first, which
 leaves its TCP side in TIME-WAIT for 2×MSL = 240 s.  With one or two slots

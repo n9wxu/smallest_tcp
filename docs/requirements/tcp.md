@@ -8,11 +8,12 @@
 - RFC 7323 — TCP Extensions for High Performance (Window Scale, Timestamps)  
 - RFC 1122 — Requirements for Internet Hosts (§4.2)  
 - RFC 6691 — TCP Options and Maximum Segment Size (MSS)  
+- RFC 6528 — Defending against Sequence Number Attacks  
 - RFC 8200 §8.1 — IPv6 Upper-Layer Checksum  
 
 **Supersession:** RFC 9293 supersedes RFC 793 (original TCP specification)  
 **Scope:** V1 (IPv4), V2 (IPv6 — same TCP, different pseudo-header)  
-**Last updated:** 2026-03-19
+**Last updated:** 2026-09-27
 
 ## Overview
 
@@ -92,8 +93,8 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | REQ-TCP-025 | MUST | Maintain Receive Sequence Variables: RCV.NXT, RCV.WND, RCV.UP, IRS | RFC 9293 §3.4.1 | TEST-TCP-025 |
 | REQ-TCP-026 | MUST | Use 32-bit unsigned arithmetic with wrap-around for sequence number comparisons | RFC 9293 §3.4.1 | TEST-TCP-026 |
 | REQ-TCP-027 | MUST | Correctly handle sequence number wrap-around (comparison using signed difference) | RFC 9293 §3.4.1 | TEST-TCP-027 |
-| REQ-TCP-028 | MUST | Initial Sequence Number (ISS) MUST NOT be predictable (SHOULD be randomized) | RFC 9293 §3.4.1, RFC 6528 | TEST-TCP-028 |
-| REQ-TCP-029 | SHOULD | ISS generation SHOULD use a combination of clock and randomness | RFC 9293 §3.4.1 | TEST-TCP-029 |
+| REQ-TCP-028 | MUST | Initial Sequence Number (ISS) MUST NOT be predictable: ISS = M + F(local address, remote address, local port, remote port, secret key), M a 4 µs clock and F a keyed pseudo-random function | RFC 9293 §3.4.1, RFC 6528 | TEST-TCP-028 |
+| REQ-TCP-029 | SHOULD | ISS generation SHOULD combine a clock (a connection id's ISS advances with time) with a secret (another connection id's ISS cannot be derived from it) | RFC 9293 §3.4.1, RFC 6528 | TEST-TCP-029 |
 
 ### Segment Processing — LISTEN State (RFC 9293 §3.10.7.2)
 
@@ -159,7 +160,7 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | REQ-TCP-055 | MUST | In ESTABLISHED: process ACK — advance SND.UNA, remove acknowledged data from retransmit queue | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-055 |
 | REQ-TCP-056 | MUST | In ESTABLISHED: if ACK acknowledges something not yet sent (SEG.ACK > SND.NXT), send ACK and discard | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-056 |
 | REQ-TCP-057 | MUST | In ESTABLISHED: if duplicate ACK (SEG.ACK ≤ SND.UNA), it can be ignored | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-057 |
-| REQ-TCP-058 | MUST | Update SND.WND from segments that advance SND.WL1/SND.WL2 | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-058 |
+| REQ-TCP-058 | MUST | Update SND.WND from segments with SND.UNA ≤ SEG.ACK ≤ SND.NXT that advance SND.WL1/SND.WL2 — including an ACK of nothing new (a window update) | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-058 |
 | REQ-TCP-059 | MUST | In FIN-WAIT-1: if our FIN is ACKed, transition to FIN-WAIT-2 | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-059 |
 | REQ-TCP-060 | MUST | In FIN-WAIT-2: remain in FIN-WAIT-2 waiting for remote FIN | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-060 |
 | REQ-TCP-061 | MUST | In CLOSING: if our FIN is ACKed, transition to TIME-WAIT | RFC 9293 §3.10.7.4 Step 5 | TEST-TCP-061 |
@@ -203,11 +204,11 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-TCP-076 | MUST | Send MSS option in SYN and SYN,ACK segments | RFC 9293 §3.7.1, RFC 6691 | TEST-TCP-076 |
-| REQ-TCP-077 | MUST | Outbound MSS = min(tx buffer capacity - headers, 1460) for IPv4 | RFC 6691 §3 | TEST-TCP-077 |
+| REQ-TCP-077 | MUST | The MSS we advertise is what the RX frame buffer takes: min(rx buffer capacity, one Ethernet frame) − Ethernet, IP and TCP headers — at most 1460 over IPv4, 1440 over IPv6 | RFC 6691 §3, RFC 9293 §3.7.1 | TEST-TCP-077 |
 | REQ-TCP-078 | MUST | If peer sends MSS option, limit outbound segment size to peer's MSS | RFC 9293 §3.7.1 | TEST-TCP-078 |
 | REQ-TCP-079 | MUST | If peer does not send MSS option, assume default MSS = 536 (IPv4) | RFC 9293 §3.7.1 | TEST-TCP-079 |
 | REQ-TCP-080 | MUST | IPv6 default MSS (no option) = 1220 | RFC 9293 §3.7.1 | TEST-TCP-080 |
-| REQ-TCP-081 | MUST | Never send segments larger than min(our MSS, peer MSS) | RFC 9293 §3.7.1 | TEST-TCP-081 |
+| REQ-TCP-081 | MUST | Never send segments larger than the peer's MSS (or the default), nor larger than the TX frame buffer carries | RFC 9293 §3.7.1 | TEST-TCP-081 |
 
 ### Window Management
 
@@ -329,8 +330,8 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-TCP-142 | MUST | TCP implementation MUST NOT directly access buffer memory — use buffer ops vtable | Architecture | TEST-TCP-142 |
-| REQ-TCP-143 | MUST | TX buffer ops: write, next_segment, ack, in_flight, window | Architecture | TEST-TCP-143 |
-| REQ-TCP-144 | MUST | RX buffer ops: deliver, consume, available (for window advertisement) | Architecture | TEST-TCP-144 |
+| REQ-TCP-143 | MUST | TX buffer ops: write, next_segment, ack (never releasing more than is in flight), in_flight (bytes sent and unacknowledged), queued, writable, mark_retransmit | Architecture | TEST-TCP-143 |
+| REQ-TCP-144 | MUST | RX buffer ops: deliver, read, readable, available (for window advertisement) | Architecture | TEST-TCP-144 |
 | REQ-TCP-145 | MUST | Provide stop-and-wait buffer implementation (1 segment in flight) | Architecture | TEST-TCP-145 |
 | REQ-TCP-146 | SHOULD | Provide circular buffer implementation (streaming window) | Architecture | TEST-TCP-146 |
 | REQ-TCP-147 | MAY | Provide packet-list buffer implementation (scatter-gather) | Architecture | TEST-TCP-147 |
@@ -354,7 +355,7 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-TCP-153 | MUST | Randomize ISS to prevent sequence number prediction attacks | RFC 9293 §3.4.1, RFC 6528 | TEST-TCP-153 |
+| REQ-TCP-153 | MUST | Prevent sequence number prediction attacks: the ISS of one connection, or of any number of them, reveals nothing about the ISS of a connection with another address or port (RFC 6528's keyed hash, under a secret seeded from real entropy) | RFC 9293 §3.4.1, RFC 6528 | TEST-TCP-153 |
 | REQ-TCP-154 | SHOULD | Implement challenge ACK for in-window SYN/RST (RFC 5961 blind attack mitigation) | RFC 5961, RFC 9293 §3.10.7.4 | TEST-TCP-154 |
 | REQ-TCP-155 | SHOULD | Rate-limit RST generation to mitigate RST attacks | RFC 5961, RFC 9293 | TEST-TCP-155 |
 

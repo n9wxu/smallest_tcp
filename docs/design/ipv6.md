@@ -1,6 +1,6 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 7,549 B flash / 772 B RAM for a dual-stack UDP echo (IPv4-only: 2,574 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
+**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 7,789 B flash / 780 B RAM for a dual-stack UDP echo (IPv4-only: 2,786 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
 **Files:** `include/ipv6.h`, `src/ipv6.c` (packets, addresses, groups); `include/icmpv6.h`, `src/icmpv6.c`; `include/ndp.h`, `src/ndp.c` (Neighbor Discovery, DAD, router discovery, SLAAC); `include/mld.h`, `src/mld.c`; `include/dhcpv6_client.h`, `src/dhcpv6_client.c`.  The interface's IPv6 state is `net_ip6_t` in `include/net.h`.
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
@@ -438,10 +438,11 @@ for an MLD answer).
 
 Random delays — the DAD and RS start-up jitter, MLD answer delays,
 DHCPv6 start delay, retransmission jitter and transaction IDs — come from
-the stack's one generator, `net_random()` / `net_random_below()` (xorshift32
-in `net_t`, scaled rather than reduced with `%`).  `net_init()` seeds it
-from the MAC; an application with a real entropy source mixes it in with
-`net_random_seed()`.  The IPv6 code used to keep its own generator
+the stack's one generator, `net_random()` / `net_random_below()` (a keyed
+hash, HalfSipHash-2-4, with its key in `net_t`; scaled rather than reduced
+with `%`; [architecture.md §9](../architecture.md#9-randomness)).
+`net_init()` keys it from the MAC; an application with a real entropy source
+mixes that in with `net_random_seed()`.  The IPv6 code used to keep its own generator
 (`ipv6_random()`), seeded from the MAC at `ipv6_start()`.
 
 ## 12. Dual-stack UDP and TCP (stages 2–3)
@@ -463,12 +464,14 @@ from the MAC; an application with a real entropy source mixes it in with
   matched: one segment builder, one input state machine, with thin
   `tcp_input()` / `tcp6_input()` entry points.  A listening connection
   accepts either family.  `tcp6_connect()` mirrors `tcp_connect()`.
-- **MSS**: our MSS comes from the TX frame buffer and is 20 bytes smaller
-  over IPv6 (1440 on a 1514-byte buffer); without an MSS option the peer's
-  is 1220 over IPv6 (536 over IPv4).  The send MSS is also clamped to what
-  the TX frame buffer carries — before, a peer advertising more than a
-  small buffer holds stalled the connection (segments that could not be
-  built were never sent), which the larger IPv6 header makes likelier.
+- **MSS**: our MSS comes from the RX frame buffer and is 20 bytes smaller
+  over IPv6: 1440 for a buffer of 1514 bytes or more, since it is capped at
+  what one Ethernet frame carries; without an MSS option the peer's is 1220
+  over IPv6 (536 over IPv4).  The send MSS is also clamped to what the TX
+  frame buffer carries — before, a peer advertising more than a small buffer
+  holds stalled the connection (segments that could not be built were never
+  sent), which the larger IPv6 header makes likelier
+  ([tcp.md §4.4](tcp.md#44-segment-size)).
 
 ## 13. Deviations and deferred items
 

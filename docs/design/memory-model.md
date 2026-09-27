@@ -31,7 +31,7 @@ One `net_t` per network interface (`include/net.h`):
 |---|---|---|
 | `rx`, `tx` | The frame buffers: `{uint8_t *buf; uint16_t capacity;}` each | always |
 | `mac`, `mac_driver`, `mac_ctx` | Our MAC address; the driver's table and context | always |
-| `rng` | `net_random()` state (xorshift32) | always |
+| `secret`, `random_count` | The 64-bit key of `net_hash()` and the count of `net_random()` outputs ([architecture.md §9](../architecture.md#9-randomness)) | always |
 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` | IPv4 configuration, host byte order; 0 = unconfigured | always |
 | `gateway_mac`, `gateway_mac_valid` | The gateway's MAC, learned from ARP replies | always |
 | `mcast_groups[]` | Joined IPv4 groups (0 = free slot) | `NET_MAX_MCAST_GROUPS > 0` |
@@ -40,14 +40,15 @@ One `net_t` per network interface (`include/net.h`):
 | `udp_ports`, `udp_port_count` | The UDP port table | `NET_USE_UDP` |
 | `udp6_ports`, `udp6_port_count` | The UDP-over-IPv6 port table | `NET_USE_UDP` and `NET_USE_IPV6` |
 | `tcp_conns`, `tcp_conn_count` | The TCP connection table (pointers) | `NET_USE_TCP` |
+| `tcp_clock` | 4 µs ticks, advanced by `tcp_tick()`, for initial sequence numbers ([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)) | `NET_USE_TCP` |
 
 Size on Cortex-M0 (`arm-none-eabi-gcc -mcpu=cortex-m0`):
 
 | Configuration | `sizeof(net_t)` |
 |---|---|
-| IPv4, UDP only, no multicast (the `make arm-size` build) | 64 bytes |
-| IPv4, UDP + TCP, one multicast group (defaults) | 76 bytes |
-| Dual stack, defaults (`NET_USE_IPV6=1`) | 196 bytes |
+| IPv4, UDP only, no multicast (the `make arm-size` build) | 72 bytes |
+| IPv4, UDP + TCP, one multicast group (defaults) | 88 bytes |
+| Dual stack, defaults (`NET_USE_IPV6=1`) | 208 bytes |
 
 Because the configuration changes this layout, the library and the
 application must be built with the same settings
@@ -82,12 +83,14 @@ for automatic replies).
 | TCP segment over IPv4 / IPv6 | 54 / 74 + payload (+ 4 on a SYN) |
 | ICMPv6 error | Quotes as much of the invoking packet as fits, up to the 1280-byte minimum MTU |
 
-**TCP MSS.**  The MSS we advertise and the largest segment we send are
-both derived from the TX buffer: `tx.capacity − 14 − IP header − 20`, capped
-at 1460 (`our_mss()` in `tcp.c`); a peer's larger MSS is clamped to it.  The
-advertised MSS invites the peer to send segments that size, so **keep
-`rx.capacity ≥ tx.capacity`**, or a full-size segment from the peer will be
-truncated and dropped.  The usual choice is two equal buffers.
+**TCP MSS.**  Each buffer limits TCP in its own direction
+(`segment_room()` in `tcp.c`: capacity − 14 − IP header − 20, at most what
+one 1514-byte Ethernet frame carries, so 1460 over IPv4 and 1440 over IPv6).
+The MSS we advertise comes from `rx.capacity`, so a peer that honours it never
+sends a segment `net_poll()` would truncate; the largest segment we send comes from
+`tx.capacity`, and a peer's larger MSS is clamped to it.  The two buffers
+need not be equal: either can be the smaller
+([tcp.md §4.4](tcp.md#44-segment-size)).
 
 ## 4. Per-module memory
 
@@ -97,7 +100,7 @@ in parentheses where it differs):
 
 | Structure | Size | Plus |
 |---|---|---|
-| `tcp_conn_t` | 100 B (120 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
+| `tcp_conn_t` | 96 B (116 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
 | `http_conn_t` (one slot) | about 200 B (230 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
 | `http_server_t` | 24 B | The slot array and a `const` route table |
 | `mdns_t` | 44 B | A `const` record table |
@@ -122,7 +125,7 @@ For whole-build flash and RAM figures, see
 
 | Function | Validates | Sets |
 |---|---|---|
-| `net_init()` | Non-NULL `net`, buffers and driver; each buffer ≥ 14 bytes (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds `rng` from the MAC.  Does **not** call `driver->init()`. |
+| `net_init()` | Non-NULL `net`, buffers and driver; each buffer ≥ 14 bytes (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with MAC bytes 2..5 (`net_random_seed()`).  Does **not** call `driver->init()`. |
 | `tcp_conn_init()` | Non-NULL connection and buffer tables/contexts | CLOSED, initial RTO, default MSS |
 | `tcp_saw_tx_init()`, `tcp_saw_rx_init()` | — | Buffer and capacity |
 | `http_conn_init()` | Buffers present; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |
@@ -137,7 +140,8 @@ UDP) have no init function; their state is in `net_t`.
 ## 6. Errors
 
 - API calls return `net_err_t`: `NET_OK`, `NET_ERR_BUF_TOO_SMALL`,
-  `NET_ERR_INVALID_PARAM`, `NET_ERR_NO_FRAME` (the driver failed to send).
+  `NET_ERR_INVALID_PARAM`, `NET_ERR_NO_FRAME` (the driver failed to send),
+  `NET_ERR_BUSY` (the driver had no room for the frame; try again).
   Check them — especially from `net_init()`.
 - Invalid or unwanted received packets are dropped silently, as the RFCs
   require.  With `NET_DEBUG=1`, `NET_LOG()` traces some of the reasons to

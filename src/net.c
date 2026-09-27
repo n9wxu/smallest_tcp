@@ -37,7 +37,6 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
   net->ipv4_addr = NET_DEFAULT_IPV4_ADDR;
   net->subnet_mask = NET_DEFAULT_SUBNET_MASK;
   net->gateway_ipv4 = NET_DEFAULT_GATEWAY;
-  net->rng = 1;
   net_random_seed(net, (uint32_t)net->mac[2] << 24 |
                            (uint32_t)net->mac[3] << 16 |
                            (uint32_t)net->mac[4] << 8 | net->mac[5]);
@@ -73,25 +72,77 @@ void net_tick(net_t *net, uint32_t elapsed_ms) {
 }
 
 net_err_t net_transmit(net_t *net, uint16_t frame_len) {
-  return net->mac_driver->send(net->mac_ctx, net->tx.buf, frame_len) >= 0
-             ? NET_OK
-             : NET_ERR_NO_FRAME;
+  int sent = net->mac_driver->send(net->mac_ctx, net->tx.buf, frame_len);
+  if (sent > 0)
+    return NET_OK;
+  return sent == 0 ? NET_ERR_BUSY : NET_ERR_NO_FRAME;
 }
 
+/* ── HalfSipHash-2-4, 32-bit output (Aumasson, Bernstein) ── */
+
+static uint32_t rotl(uint32_t x, unsigned bits) {
+  return x << bits | x >> (32u - bits);
+}
+
+static void sip_rounds(uint32_t v[4], unsigned rounds) {
+  while (rounds--) {
+    v[0] += v[1];
+    v[1] = rotl(v[1], 5) ^ v[0];
+    v[0] = rotl(v[0], 16);
+    v[2] += v[3];
+    v[3] = rotl(v[3], 8) ^ v[2];
+    v[0] += v[3];
+    v[3] = rotl(v[3], 7) ^ v[0];
+    v[2] += v[1];
+    v[1] = rotl(v[1], 13) ^ v[2];
+    v[2] = rotl(v[2], 16);
+  }
+}
+
+static void sip_absorb(uint32_t v[4], uint32_t word) {
+  v[3] ^= word;
+  sip_rounds(v, 2);
+  v[0] ^= word;
+}
+
+uint32_t net_hash(const net_t *net, const uint8_t *data, uint16_t len) {
+  uint32_t v[4];
+  uint32_t word = 0;
+  uint16_t i;
+  v[0] = net->secret[0];
+  v[1] = net->secret[1];
+  v[2] = 0x6c796765u ^ net->secret[0];
+  v[3] = 0x74656462u ^ net->secret[1];
+  for (i = 0; i < len; i++) { /* little-endian words */
+    word |= (uint32_t)data[i] << (8u * (i & 3u));
+    if ((i & 3u) == 3u) {
+      sip_absorb(v, word);
+      word = 0;
+    }
+  }
+  sip_absorb(v, word | (uint32_t)len << 24);
+  v[2] ^= 0xFFu;
+  sip_rounds(v, 4);
+  return v[1] ^ v[3];
+}
+
+/* The new secret is the entropy hashed under the old one, so each seed
+ * adds to what the key already holds */
 void net_random_seed(net_t *net, uint32_t entropy) {
-  net->rng ^= entropy;
-  if (net->rng == 0)
-    net->rng = 1; /* the one state xorshift never leaves */
-  net_random(net);
+  uint8_t in[5];
+  uint32_t first;
+  net_write32be(in, entropy);
+  in[4] = 0;
+  first = net_hash(net, in, sizeof(in));
+  in[4] = 1;
+  net->secret[1] = net_hash(net, in, sizeof(in));
+  net->secret[0] = first;
 }
 
 uint32_t net_random(net_t *net) {
-  uint32_t x = net->rng;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  net->rng = x;
-  return x;
+  uint8_t count[4];
+  net_write32be(count, net->random_count++);
+  return net_hash(net, count, sizeof(count));
 }
 
 uint32_t net_random_below(net_t *net, uint32_t n) {

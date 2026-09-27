@@ -13,11 +13,12 @@ static int stub_init(void *ctx) {
   (void)ctx;
   return 0;
 }
+static int driver_busy;
+
 static int stub_send(void *ctx, const uint8_t *f, uint16_t l) {
   (void)ctx;
   (void)f;
-  (void)l;
-  return (int)l;
+  return driver_busy ? 0 : (int)l;
 }
 static int stub_poll(void *ctx) {
   (void)ctx;
@@ -143,6 +144,61 @@ TEST(test_mac_is_multicast) {
 
 /* ── Main ─────────────────────────────────────────────────────────── */
 
+/* ── Transmit ─────────────────────────────────────────────────────── */
+
+TEST(test_net_transmit_reports_busy_driver) {
+  uint8_t rx[200], tx[200];
+  net_t net;
+  int ctx = 0;
+  net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac, &ctx);
+  ASSERT_EQ(net_transmit(&net, 60), NET_OK);
+  driver_busy = 1;
+  ASSERT_EQ(net_transmit(&net, 60), NET_ERR_BUSY);
+  driver_busy = 0;
+}
+
+/* ── Random numbers ───────────────────────────────────────────────── */
+
+static uint32_t xorshift32(uint32_t x) {
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  return x;
+}
+
+/* HalfSipHash-2-4, 32-bit output: the reference vectors (key 00..07,
+ * message 00..len-1) for every tail length */
+TEST(test_net_hash_matches_reference_vectors) {
+  static const uint32_t expected[16] = {
+      0x5b9f35a9u, 0xb85a4727u, 0x03a662fau, 0x04e7fe8au,
+      0x89466e2au, 0x69b6fac5u, 0x23fc6358u, 0xc563cf8bu,
+      0x8f84b8d0u, 0x79e706f8u, 0x3479b094u, 0x50300808u,
+      0x2f87f057u, 0xff63e677u, 0x7cf8ffd6u, 0x972bfe74u,
+  };
+  net_t net;
+  uint8_t msg[16];
+  uint16_t len;
+  memset(&net, 0, sizeof(net));
+  net.secret[0] = 0x03020100u;
+  net.secret[1] = 0x07060504u;
+  for (len = 0; len < 16; len++)
+    msg[len] = (uint8_t)len;
+  for (len = 0; len < 16; len++)
+    ASSERT_EQ(net_hash(&net, msg, len), expected[len]);
+}
+
+/* An output must not give away the generator's state */
+TEST(test_net_random_output_does_not_predict_the_next) {
+  uint8_t rx[200], tx[200];
+  net_t net;
+  int ctx = 0;
+  uint32_t a, b;
+  net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac, &ctx);
+  a = net_random(&net);
+  b = net_random(&net);
+  ASSERT_TRUE(b != xorshift32(a));
+}
+
 int main(void) {
   fprintf(stderr, "=== test_net ===\n");
 
@@ -154,6 +210,9 @@ int main(void) {
   RUN_TEST(test_mac_equal);
   RUN_TEST(test_mac_is_broadcast);
   RUN_TEST(test_mac_is_multicast);
+  RUN_TEST(test_net_transmit_reports_busy_driver);
+  RUN_TEST(test_net_hash_matches_reference_vectors);
+  RUN_TEST(test_net_random_output_does_not_predict_the_next);
 
   TEST_REPORT();
   return test_failures;

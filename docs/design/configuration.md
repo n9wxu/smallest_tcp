@@ -87,7 +87,7 @@ to scattered `-D` flags: one file, included by every translation unit.
 | `NET_USE_UDP` | 1 | `ipv4_input()` / `ipv6_input()` dispatch to UDP; `net_t` has the port tables.  `udp.h` needs it.  CMake: `SMALLEST_TCP_UDP` (default ON). |
 | `NET_USE_TCP` | 1 | The same for TCP; `net_tick()` runs `tcp_tick()`.  `tcp.h` (and so `tcp.c`, `http.c`) needs it.  CMake: `SMALLEST_TCP_TCP` (default ON). |
 | `NET_MAX_MCAST_GROUPS` | 1 | IPv4 groups joinable at once (`ipv4_mcast_join()`, `igmp_join()`).  0 compiles multicast reception out; `mdns.c` refuses to compile with 0. |
-| `NET_MAX_MCAST6_GROUPS` | 1 | IPv6 groups joinable with `ipv6_mcast_join()` (mDNS uses `ff02::fb`).  All-nodes and our solicited-node groups are always accepted and need no slot. |
+| `NET_MAX_MCAST6_GROUPS` | 1 | IPv6 groups joinable with `ipv6_mcast_join()` (mDNS uses `ff02::fb`).  All-nodes and our solicited-node groups are always accepted and need no slot.  With `NET_USE_IPV6`, `mdns.c` refuses to compile with 0. |
 | `NET_IPV6_ADDRS` | 2 | IPv6 address slots: `[0]` link-local, the rest global (SLAAC, DHCPv6, static). |
 | `NET_IPV6_DAD_TRANSMITS` | 1 | Neighbor Solicitations per Duplicate Address Detection run (RFC 4862 `DupAddrDetectTransmits`). |
 | `NET_IPV6_DEFAULT_HOP_LIMIT` | 64 | Hop limit until a Router Advertisement supplies one. |
@@ -193,7 +193,9 @@ values are ordinary fields the application or a protocol changes:
 | `net->mac` | `mac` argument, else `NET_DEFAULT_MAC` | Set once at init |
 | `net->gateway_mac`, `gateway_mac_valid` | unset | ARP replies from the gateway |
 | `net->ip6` | zero | `ipv6_start()`, NDP, SLAAC, DHCPv6, `ipv6_addr_add()` |
-| `net->rng` | seeded from the MAC | `net_random_seed()` ([architecture.md §9](../architecture.md#9-randomness)) |
+| `net->secret` | derived from MAC bytes 2..5 | `net_random_seed()` ([architecture.md §9](../architecture.md#9-randomness)) |
+| `net->random_count` | 0 | `net_random()`, once per output |
+| `net->tcp_clock` | 0 | `tcp_tick()`, 250 per elapsed millisecond ([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)) |
 
 Values that exist only at run time — TCP sequence numbers, the peer's window
 and MSS, lease and lifetime timers, DAD state, transaction IDs — live in the

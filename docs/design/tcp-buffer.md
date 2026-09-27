@@ -46,9 +46,10 @@ Sequence numbers are not part of the interface.  `tcp.c` keeps SND.UNA and
 SND.NXT, the buffer keeps bytes, and the two stay in step by these rules:
 
 - The buffer's oldest byte is at SND.UNA.  `ack(n)` releases the n oldest
-  bytes, and `tcp.c` advances SND.UNA by n.
+  bytes — never more than are in flight — and `tcp.c` advances SND.UNA by n.
 - `next_segment()` returns the bytes after those already handed out, and
-  `tcp.c` sends them at SND.NXT.
+  `tcp.c` sends them at SND.NXT.  They stay in flight until acknowledged or
+  until `mark_retransmit()`; the buffer never offers them again by itself.
 - `mark_retransmit()` makes `next_segment()` start again at the oldest byte;
   `tcp.c` has set SND.NXT back to SND.UNA first.
 - Our SYN and FIN occupy sequence numbers but are never in the buffer.
@@ -56,15 +57,15 @@ SND.NXT, the buffer keeps bytes, and the two stay in step by these rules:
 | Operation | Called by | Contract |
 |---|---|---|
 | `write` | `tcp_write()`, in ESTABLISHED and CLOSE-WAIT, with `len` > 0 | Copy in what fits; return the count, which may be less than `len` or 0 |
-| `next_segment` | `flush()` with min(SND.WND, `snd_mss`); `probe_zero_window()` with 1 | Return up to `mss` bytes, or 0 if nothing is ready; they are then in flight.  `*data` points into buffer memory and must stay valid until the next call into the buffer — `tcp.c` copies it into the frame at once |
-| `ack` | `take_ack()`, when SEG.ACK advances SND.UNA; `bytes_acked` = SEG.ACK − SND.UNA | Release the bytes.  `bytes_acked` can exceed what the buffer holds — an acknowledged FIN is counted — so clamp it.  Never called for the SYN |
-| `in_flight` | `retransmission_timeout()`, `take_ack()`, `probe_zero_window()` | Bytes handed out and not yet acknowledged.  `tcp.c` reads > 0 as "there is data to resend" |
-| `queued` | `tcp_tx_idle()` | Bytes written and not yet acknowledged, sent or not |
-| `writable` | `take_ack()`, which raises `TCP_EVT_WRITABLE` when it is > 0 | Room for `write` now |
-| `mark_retransmit` | `retransmission_timeout()`, `probe_zero_window()` (also after a probe that failed to send) | The next `next_segment()` returns the in-flight bytes again, from the oldest (REQ-TCP-095) |
+| `next_segment` | `send_data()` with min(SND.WND, `snd_mss`); `probe_zero_window()` with 1 | Return up to `mss` bytes, or 0 if nothing is ready; they are then in flight.  `*data` points into buffer memory and must stay valid until the next call into the buffer — `tcp.c` copies it into the frame at once |
+| `ack` | `take_ack()`, when SEG.ACK advances SND.UNA; `bytes_acked` = SEG.ACK − SND.UNA | Release that many of the oldest bytes, capped at the bytes in flight: the count includes our FIN once the FIN is acknowledged, and bytes not yet sent must never be released.  Never called for the SYN |
+| `in_flight` | `retransmission_timeout()`, `probe_zero_window()`, `all_data_sent()` | Bytes handed out and not yet acknowledged.  `tcp.c` reads > 0 as "there is data to resend", and `in_flight()` = `queued()` as "all data has been sent" (the queued FIN may go) |
+| `queued` | `tcp_tx_idle()`, `all_data_sent()` | Bytes written and not yet acknowledged, sent or not |
+| `writable` | `send_side_ack()`, which raises `TCP_EVT_WRITABLE` when new data was acknowledged and it is > 0 | Room for `write` now |
+| `mark_retransmit` | `retransmission_timeout()`, `probe_zero_window()` (a probe still unacknowledged) | The next `next_segment()` returns the in-flight bytes again, from the oldest (REQ-TCP-095) |
 
 One more rule, which comes from `tcp.c` rather than the interface:
-**`next_segment()` must return 0 while anything is in flight.**  `flush()`
+**`next_segment()` must return 0 while anything is in flight.**  `send_data()`
 limits a segment to min(SND.WND, MSS) without subtracting bytes in flight, and
 sends at SND.NXT; both are right only when SND.NXT = SND.UNA
 ([tcp.md](tcp.md) section 4.3).  A buffer that allows more needs the `tcp.c`
@@ -118,24 +119,37 @@ tables are `tcp_saw_tx_ops` and `tcp_saw_rx_ops` (quick start in
 ### 4.1 Transmit: one linear buffer
 
 `tcp_saw_tx_ctx_t` holds `buf`, `capacity`, `data_len` (written, not yet
-acknowledged) and an `in_flight` flag.  The data always starts at `buf[0]`,
-which is SND.UNA.
+acknowledged) and `sent_len` (of those, the bytes sent: in flight).  The data
+always starts at `buf[0]`, which is SND.UNA; the first `sent_len` bytes are in
+flight and the rest are not yet sent.
 
-- `write` returns 0 while `in_flight` is set; otherwise it appends up to
-  `capacity − data_len`.
-- `next_segment` returns nothing if a segment is in flight or the buffer is
-  empty; otherwise `buf` and min(`data_len`, `mss`), and sets `in_flight`.
-  The flag covers the whole buffer even when only `mss` bytes went out:
-  `writable` is 0 and `in_flight` reports all of `data_len` until the ACK.
-- `ack` clamps the count to `data_len`, moves what is left to the front of the
-  buffer and clears `in_flight`.  When the buffer held more than one segment,
-  the remainder is the next segment, and the `flush()` in `take_ack()` sends
-  it at once (in ESTABLISHED and CLOSE-WAIT).  An ACK that covers only part
-  of a segment also lands here; see [tcp.md](tcp.md) section 8.3.
-- `mark_retransmit` clears `in_flight`, so the same bytes, from `buf[0]`, are
+- `write` returns 0 while anything is in flight (`sent_len` > 0); otherwise it
+  appends up to `capacity − data_len`.
+- `next_segment` returns nothing while anything is in flight or the buffer is
+  empty; otherwise `buf` and min(`data_len`, `mss`), and sets `sent_len` to
+  that length.  When the data exceeds the MSS or the window, only the first
+  part is in flight; the rest is the next segment.
+- `in_flight` is `sent_len`.
+- `ack(n)` releases min(n, `sent_len`) bytes: `data_len` and `sent_len` shrink
+  by that much and what is left moves to the front of the buffer.  n counts
+  our FIN once it is acknowledged, and capping at `sent_len` means unsent
+  data is never dropped.  When the whole segment is acknowledged and more
+  data waits, that is the next segment, and the `flush()` that follows the
+  ACK sends it at once.
+- An ACK that covers only part of the segment in flight leaves the rest in
+  flight (`sent_len` > 0), so `next_segment` still returns nothing: the rest
+  is sent again only after `mark_retransmit`, at its original sequence
+  numbers ([tcp.md](tcp.md) section 5.1).
+- `mark_retransmit` sets `sent_len` to 0, so the same bytes, from `buf[0]`, are
   offered again.
-- `queued` is `data_len`; `writable` is 0 in flight, else `capacity −
-  data_len`.
+- `queued` is `data_len`; `writable` is 0 while anything is in flight, else
+  `capacity − data_len`.
+
+Counting the bytes sent, rather than flagging that something was, is what
+keeps the buffer in step with SND.NXT.  The flag it replaces covered the whole
+buffer and was cleared by any ACK, so after a partial ACK the buffer offered
+the rest as a new segment, and `tcp.c` sent it at SND.NXT — past the bytes'
+real sequence numbers — corrupting the stream.
 
 The buffer is linear rather than a ring because the unacknowledged data then
 always starts at `buf[0]`: `next_segment` returns one contiguous pointer with
@@ -159,12 +173,13 @@ advertised.
 
 ### 4.3 RAM and throughput
 
-A connection costs its `tcp_conn_t` (100 bytes on Cortex-M0, 120 with IPv6),
+A connection costs its `tcp_conn_t` (96 bytes on Cortex-M0, 116 with IPv6),
 two 12-byte contexts, and the TX and RX memory.  The frame buffers in `net_t`
 are separate and shared by every connection.
 
 **Sending** is one segment per round trip.  A segment is at most
-min(TX capacity, the peer's MSS, our MSS, the peer's window), and the next one
+min(TX capacity, the peer's MSS, what the TX frame buffer carries, the peer's
+window) ([tcp.md](tcp.md) section 4.4), and the next one
 leaves only when the previous one is acknowledged.  The round trip includes the
 peer's ACK delay: with only one segment outstanding, a peer that delays
 acknowledgements (§3.8.6.3 allows up to 500 ms; common stacks use tens to
@@ -181,8 +196,8 @@ segment costs the peer a retransmission of everything it sent after it.
 
 | TX / RX memory | RAM per connection (Cortex-M0, IPv4) | Sending, per round trip | Receiving, per round trip |
 |---|---|---|---|
-| 536 / 536 | 1,196 B | ≤ 536 B | ≤ 536 B |
-| 1460 / 4096 | 5,680 B | ≤ 1,460 B | ≤ 4,096 B |
+| 536 / 536 | 1,192 B | ≤ 536 B | ≤ 536 B |
+| 1460 / 4096 | 5,676 B | ≤ 1,460 B | ≤ 4,096 B |
 
 The trade: the smallest RAM of any design, at the cost of send throughput on
 links with a long round trip.  For a device page, a TLS handshake or a
@@ -212,22 +227,27 @@ contexts that were never written.
 The buffer is the easy part.  Several segments in flight need `tcp.c` to
 change first:
 
-- `flush()` must use the usable window, SND.UNA + SND.WND − SND.NXT, and keep
-  sending while it and the buffer allow.
+- `send_data()` must use the usable window, SND.UNA + SND.WND − SND.NXT, and
+  keep sending while it and the buffer allow.
 - Congestion control (RFC 5681: congestion window, slow start, congestion
   avoidance, REQ-TCP-101..105), since REQ-TCP-108 no longer covers it; fast
   retransmit and recovery (REQ-TCP-106, 107) need duplicate-ACK counting.
 - RTT measurement and a computed RTO (REQ-TCP-091, 099, 100).
-- Partial acknowledgements become normal.  After one, `flush()` must keep
-  sending at SND.NXT, from the buffer's send position, not from its oldest
-  byte (see the partial-ACK gap in [tcp.md](tcp.md) section 8.3).
-- Retransmission on a timeout: rewinding SND.NXT to SND.UNA resends
-  everything in flight (go-back-N); with a FIN already sent, the resend must
-  stop short of the FIN's sequence number.
+- Partial acknowledgements become normal.  The stop-and-wait buffer leaves the
+  rest of a partly acknowledged segment in flight until a timeout; a ring must
+  go on sending new bytes at SND.NXT, from its send position, while older ones
+  are in flight, and go back to the oldest byte only on `mark_retransmit()`.
+- Retransmission on a timeout: `resend_in_flight()` asks `next_segment()`
+  for at most `in_flight()` bytes after `mark_retransmit()`, one segment from
+  SND.UNA; a ring holding several segments in flight would resend only the
+  first (or all of them, go-back-N) and must stop short of a FIN already
+  sent.
 - `probe_zero_window()` rewinds SND.NXT to SND.UNA whenever `in_flight()` is
   non-zero, which is right only when the one byte in flight is the probe.
-- `tcp_close()` must queue the FIN behind unsent data (§3.10.4), which will
-  then be common.
+
+The FIN already waits behind unsent data (§3.10.4, [tcp.md](tcp.md)
+section 4.7): `all_data_sent()` compares `queued()` with `in_flight()`, which
+works for any buffer.
 
 ### 5.2 Packet list (REQ-TCP-147)
 
@@ -248,7 +268,7 @@ It needs the same `tcp.c` changes as the ring.
 ## 6. Writing another implementation
 
 - Fill every member of both tables.
-- Keep the sequence rules of section 2; clamp `ack()`.
+- Keep the sequence rules of section 2; cap `ack()` at the bytes in flight.
 - Return 0 from `next_segment()` while anything is in flight, until `tcp.c`
   supports more (section 5.1).
 - Shrink `available()` only in `deliver()`, keep `available()` + `readable()`

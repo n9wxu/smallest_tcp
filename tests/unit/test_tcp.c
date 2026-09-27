@@ -25,6 +25,7 @@
 static uint8_t sent_frames[8][1514];
 static uint16_t sent_lens[8];
 static int send_count;
+static int failing_sends; /* the next sends the driver fails */
 
 static int stub_init(void *ctx) {
   (void)ctx;
@@ -32,6 +33,10 @@ static int stub_init(void *ctx) {
 }
 static int stub_send(void *ctx, const uint8_t *f, uint16_t l) {
   (void)ctx;
+  if (failing_sends > 0) {
+    failing_sends--;
+    return -1;
+  }
   int idx = send_count < 8 ? send_count : 7;
   memcpy(sent_frames[idx], f, l);
   sent_lens[idx] = l;
@@ -102,6 +107,7 @@ static void setup(void) {
   memset(sent_frames, 0, sizeof(sent_frames));
   memset(sent_lens, 0, sizeof(sent_lens));
   send_count = 0;
+  failing_sends = 0;
   evt_connected = evt_data = evt_writable = evt_closed = evt_reset = evt_error =
       0;
 
@@ -390,16 +396,18 @@ TEST(test_tcp_data_send) {
 }
 
 /* Bring conn to ESTABLISHED via active open; clears the send log. */
-static void establish(void) {
+static void establish_with_mss(uint16_t peer_mss) {
   tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
   uint32_t our_isn = sent_tcp_seq(0);
   uint8_t frame[128];
   uint16_t len = build_tcp_frame(
       frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 5000u, our_isn + 1u,
-      TCP_FLAG_SYN | TCP_FLAG_ACK, 8192, NULL, 0, 1460);
+      TCP_FLAG_SYN | TCP_FLAG_ACK, 8192, NULL, 0, peer_mss);
   inject(frame, len);
   send_count = 0;
 }
+
+static void establish(void) { establish_with_mss(1460); }
 
 /* tcp_write() only buffers: nothing goes on the wire */
 TEST(test_tcp_write_buffers_without_sending) {
@@ -877,6 +885,225 @@ TEST(test_tcp_no_rst_for_broadcast_syn) {
     inject(frame, len);
     ASSERT_EQ(send_count, 0);
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Send path: partial ACKs, the FIN behind queued data, frames the driver
+ * could not send, window updates, MSS, initial sequence numbers
+ * ══════════════════════════════════════════════════════════════════ */
+
+static const uint8_t *sent_tcp_payload(int n) {
+  return sent_frames[n] + ETH_HDR_SIZE + IPV4_HDR_SIZE + TCP_HDR_SIZE;
+}
+
+static void fill_counting(uint8_t *data, uint16_t len) {
+  uint16_t i;
+  for (i = 0; i < len; i++)
+    data[i] = (uint8_t)i;
+}
+
+/* The unacknowledged rest of a segment keeps its sequence numbers */
+TEST(test_tcp_partial_ack_resends_rest_in_place) {
+  uint8_t data[100];
+  uint32_t seq;
+  fill_counting(data, sizeof(data));
+  setup();
+  establish();
+  ASSERT_EQ(tcp_send(&net, &conn, data, sizeof(data)), 100);
+  seq = sent_tcp_seq(0);
+  send_count = 0;
+  inject_from_peer(PEER_SEQ, seq + 50u, TCP_FLAG_ACK);
+  ASSERT_EQ(send_count, 0); /* the rest is still in flight */
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_seq(0), seq + 50u);
+  ASSERT_EQ(sent_tcp_payload_len(0), 50);
+  ASSERT_MEM_EQ(sent_tcp_payload(0), data + 50, 50);
+}
+
+static void inject_ack_with_window(uint32_t ack, uint16_t window) {
+  uint8_t frame[128];
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
+                                 PEER_SEQ, ack, TCP_FLAG_ACK, window, NULL, 0, 0);
+  inject(frame, len);
+}
+
+/* A window shrunk to zero does not stop the retransmission of what the
+ * peer's window once allowed */
+TEST(test_tcp_retransmission_ignores_shrunk_window) {
+  uint8_t data[100];
+  uint32_t seq;
+  fill_counting(data, sizeof(data));
+  setup();
+  establish();
+  tcp_send(&net, &conn, data, sizeof(data));
+  seq = sent_tcp_seq(0);
+  inject_ack_with_window(seq + 50u, 0);
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_seq(0), seq + 50u);
+  ASSERT_EQ(sent_tcp_payload_len(0), 50);
+  ASSERT_MEM_EQ(sent_tcp_payload(0), data + 50, 50);
+  ASSERT_EQ(conn.snd_nxt, seq + 100u);
+}
+
+TEST(test_tcp_retransmission_after_fin_keeps_data) {
+  uint8_t data[100];
+  uint32_t seq;
+  fill_counting(data, sizeof(data));
+  setup();
+  establish();
+  tcp_send(&net, &conn, data, sizeof(data));
+  seq = sent_tcp_seq(0);
+  tcp_close(&net, &conn); /* the FIN at seq + 100 */
+  inject_ack_with_window(seq + 50u, 0);
+  send_count = 0;
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_seq(0), seq + 50u);
+  ASSERT_EQ(sent_tcp_payload_len(0), 50);
+  ASSERT_EQ(conn.snd_nxt, seq + 101u);
+
+  inject_ack_with_window(seq + 100u, 8192); /* data in; FIN still out */
+  send_count = 0;
+  tcp_tick(&net, 4u * NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(0), seq + 100u);
+  inject_ack_with_window(seq + 101u, 8192);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_2);
+}
+
+/* RFC 9293 §3.10.4: the FIN is queued behind data not yet sent */
+TEST(test_tcp_close_sends_unsent_data_first) {
+  setup();
+  establish();
+  ASSERT_EQ(tcp_write(&conn, (const uint8_t *)"last", 4), 4);
+  ASSERT_EQ(send_count, 0);
+  tcp_close(&net, &conn);
+  ASSERT_EQ(send_count, 2);
+  ASSERT_EQ(sent_tcp_payload_len(0), 4);
+  ASSERT_FALSE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_TRUE(sent_tcp_flags(1) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(1), sent_tcp_seq(0) + 4u);
+}
+
+TEST(test_tcp_close_fin_waits_for_the_last_segment) {
+  uint8_t data[100];
+  uint32_t seq;
+  fill_counting(data, sizeof(data));
+  setup();
+  establish_with_mss(60);
+  ASSERT_EQ(tcp_send(&net, &conn, data, sizeof(data)), 100);
+  ASSERT_EQ(sent_tcp_payload_len(0), 60);
+  seq = sent_tcp_seq(0);
+  send_count = 0;
+  tcp_close(&net, &conn);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1);
+  ASSERT_EQ(send_count, 0); /* 40 bytes wait behind the 60 in flight */
+
+  inject_from_peer(PEER_SEQ, seq + 60u, TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1); /* all sent was ACKed; not our FIN */
+  ASSERT_EQ(send_count, 2);
+  ASSERT_EQ(sent_tcp_seq(0), seq + 60u);
+  ASSERT_EQ(sent_tcp_payload_len(0), 40);
+  ASSERT_MEM_EQ(sent_tcp_payload(0), data + 60, 40);
+  ASSERT_FALSE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+  ASSERT_TRUE(sent_tcp_flags(1) & TCP_FLAG_FIN);
+  ASSERT_EQ(sent_tcp_seq(1), seq + 100u);
+
+  inject_from_peer(PEER_SEQ, seq + 101u, TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_2);
+}
+
+/* A frame the driver could not send is a lost segment: retransmitted */
+TEST(test_tcp_unsent_frame_is_retransmitted) {
+  setup();
+  establish();
+  failing_sends = 1;
+  ASSERT_EQ(tcp_send(&net, &conn, (const uint8_t *)"data", 4), 4);
+  ASSERT_EQ(send_count, 0);
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_payload_len(0), 4);
+  ASSERT_MEM_EQ(sent_tcp_payload(0), "data", 4);
+}
+
+/* §3.10.7.4 step 5: an ACK of nothing new still updates the window */
+TEST(test_tcp_window_update_resumes_sending) {
+  uint8_t frame[128];
+  uint16_t len;
+  uint32_t our_isn;
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  our_isn = sent_tcp_seq(0);
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 5000u,
+                        our_isn + 1u, TCP_FLAG_SYN | TCP_FLAG_ACK, 0, NULL, 0,
+                        1460);
+  inject(frame, len);
+  send_count = 0;
+  ASSERT_EQ(tcp_send(&net, &conn, (const uint8_t *)"data", 4), 4);
+  ASSERT_EQ(send_count, 0); /* zero window */
+
+  inject_from_peer(PEER_SEQ, our_isn + 1u, TCP_FLAG_ACK);
+  ASSERT_EQ(conn.snd_wnd, 8192u);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_payload_len(0), 4);
+}
+
+/* The MSS we advertise is what our RX frame buffer can take */
+TEST(test_tcp_mss_advertised_from_rx_buffer) {
+  uint8_t frame[128];
+  uint16_t len;
+  setup();
+  net.rx.capacity = 600;
+  tcp_listen(&conn, LOCAL_PORT);
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 9000u, 0u,
+                        TCP_FLAG_SYN, 8192, NULL, 0, 1460);
+  inject(frame, len);
+  ASSERT_EQ(sent_tcp_mss(0), 600 - ETH_HDR_SIZE - IPV4_HDR_SIZE - TCP_HDR_SIZE);
+}
+
+/* ... and the segments we send fit our TX frame buffer */
+TEST(test_tcp_segments_fit_tx_buffer) {
+  uint8_t data[1000];
+  setup();
+  net.tx.capacity = 600;
+  establish();
+  ASSERT_EQ(tcp_send(&net, &conn, data, sizeof(data)), 1000);
+  ASSERT_EQ(sent_tcp_payload_len(0),
+            600 - ETH_HDR_SIZE - IPV4_HDR_SIZE - TCP_HDR_SIZE);
+}
+
+/* RFC 6528: ISN = M + F(connection id, secret), M a 4 µs clock.  The same
+ * connection id advances with the clock alone; another is unrelated. */
+TEST(test_tcp_isn_is_clock_plus_keyed_hash) {
+  uint32_t first, again, other;
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  first = conn.iss;
+  tcp_abort(&net, &conn);
+  tcp_tick(&net, 1000u);
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  again = conn.iss;
+  ASSERT_EQ(again - first, 250000u);
+  tcp_abort(&net, &conn);
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT + 1u,
+              LOCAL_PORT);
+  other = conn.iss;
+  ASSERT_TRUE(other != again);
+}
+
+TEST(test_tcp_isn_depends_on_secret) {
+  uint32_t unseeded;
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  unseeded = conn.iss;
+  setup();
+  net_random_seed(&net, 0x5eed1234u);
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  ASSERT_TRUE(conn.iss != unseeded);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1406,6 +1633,17 @@ int main(void) {
   RUN_TEST(test_tcp_no_rst_in_listen_for_rst);
   RUN_TEST(test_tcp_rst_sent_for_unknown_port);
   RUN_TEST(test_tcp_no_rst_for_broadcast_syn);
+  RUN_TEST(test_tcp_partial_ack_resends_rest_in_place);
+  RUN_TEST(test_tcp_retransmission_ignores_shrunk_window);
+  RUN_TEST(test_tcp_retransmission_after_fin_keeps_data);
+  RUN_TEST(test_tcp_close_sends_unsent_data_first);
+  RUN_TEST(test_tcp_close_fin_waits_for_the_last_segment);
+  RUN_TEST(test_tcp_unsent_frame_is_retransmitted);
+  RUN_TEST(test_tcp_window_update_resumes_sending);
+  RUN_TEST(test_tcp_mss_advertised_from_rx_buffer);
+  RUN_TEST(test_tcp_segments_fit_tx_buffer);
+  RUN_TEST(test_tcp_isn_is_clock_plus_keyed_hash);
+  RUN_TEST(test_tcp_isn_depends_on_secret);
   RUN_TEST(test_tcp_timewait_expires);
   RUN_TEST(test_tcp_retransmit_on_timeout);
   RUN_TEST(test_tcp_rto_resets_on_ack);
