@@ -136,12 +136,15 @@ net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
  * @param net       Network context.
  * @param c         Client state.
  * @param src_ip    Source IP of the incoming datagram.
+ * @param src_mac   Source MAC of its frame (6 bytes), where an ERROR for
+ *                  a datagram not from the server's TID is sent.
  * @param src_port  Source port of the incoming datagram (server TID).
  * @param data      UDP payload bytes (TFTP packet, starting at opcode).
  * @param len       Number of bytes.
  */
 void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
-                       uint16_t src_port, const uint8_t *data, uint16_t len);
+                       const uint8_t *src_mac, uint16_t src_port,
+                       const uint8_t *data, uint16_t len);
 
 /**
  * Drive retransmit timers.  Call with elapsed milliseconds each main loop.

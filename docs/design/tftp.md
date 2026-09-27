@@ -18,7 +18,7 @@ straight to flash, so the stack never holds more than one block.
 |---|---|
 | Read request (RRQ), `octet` mode | ✅ |
 | blksize option (RFC 2348), sized to the RX buffer | ✅ |
-| Server transfer ID (port) tracking, ERROR 5 for a foreign port | ✅ (see §9) |
+| Server transfer ID (port) tracking, ERROR 5 to a stray datagram's source | ✅ |
 | Duplicate blocks re-acknowledged, block-number wrap | ✅ |
 | Retransmission of RRQ and last ACK, give-up after 5 | ✅ |
 | Write request (WRQ), `netascii` mode | — |
@@ -47,7 +47,7 @@ static void on_done(uint8_t ok, uint16_t err_code, const char *msg, void *ctx) {
 
 static void tftp_udp(net_t *n, uint32_t src_ip, uint16_t src_port,
                      const uint8_t *src_mac, const uint8_t *payload, uint16_t len) {
-  tftp_client_input(n, &tftp, src_ip, src_port, payload, len);
+  tftp_client_input(n, &tftp, src_ip, src_mac, src_port, payload, len);
 }
 static const udp_port_entry_t udp_ports[] = {{50000, tftp_udp}};
 
@@ -63,9 +63,11 @@ is no other state and no allocation.
 
 The server's MAC is passed in, already resolved (REQ-TFTP-035; see
 [arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open)):
-the client does no ARP of its own, and every packet it sends goes to that MAC,
-including those to the server's transfer port — which is the same host
-(REQ-TFTP-036).
+the client does no ARP of its own, and every packet it sends to the server
+goes to that MAC, including those to the server's transfer port — which is
+the same host (REQ-TFTP-036).  The one packet for another host, ERROR 5 for
+a stray datagram (§6), goes to the source MAC of the frame it answers, which
+is why `tftp_client_input()` takes `src_mac`.
 
 ---
 
@@ -172,14 +174,22 @@ the fixed `local_port` given to `tftp_client_init()`.  The server's is
 unknown until it answers from a new port:
 
 - `server_port()` returns port 69 until then, the server's port after.
-  The RRQ always goes to 69; ACKs and ERRORs go to `server_port()`
+  The RRQ always goes to 69; ACKs go to `server_port()`
   (REQ-TFTP-015).
 - The first DATA, OACK or ERROR from the server's IP fixes
   `server_tid` (REQ-TFTP-006).
-- Datagrams from any other IP are dropped silently.  A datagram from the
-  server's IP but another port draws ERROR 5 "Unknown TID" and is
-  otherwise ignored; the transfer continues (REQ-TFTP-018).  See §9 for
-  where that ERROR goes.
+- Any other datagram — another IP, another port, or, before the server
+  has answered, an opcode that cannot be its answer — is a stray
+  (`from_server_tid()` is false).  `reject_stray()` sends ERROR 5
+  "Unknown transfer ID" back to its source — its IP, port, and the source
+  MAC of its frame — and nothing else changes: the transfer continues
+  and the timer is not restarted (RFC 1350 §4, REQ-TFTP-018).  Sending
+  it to the server's port instead would end a good transfer: a stray
+  port typically comes from a duplicate RRQ that the server answered
+  twice, and the server treats an ERROR on the transfer's port as fatal.
+- A stray ERROR is dropped without an answer: two peers that each took
+  the other's packets for strays would otherwise exchange ERRORs
+  forever.
 
 ---
 
@@ -219,20 +229,21 @@ bytes and copied.
 |---|---|---|---|
 | RRQ | `send_rrq()` | 2 + name + 1 + 6 [+ 8 + digits + 1] | at most 191 bytes (127-char name, blksize option) |
 | ACK | `send_ack()` | 4 | 46 bytes |
-| ERROR | `send_error()` | 5 + text (at most 119 characters) | 58 bytes for "Unknown TID" |
+| ERROR | `put_error()`, sent by `reject_stray()` | 5 + text (at most 119 characters) | 66 bytes for "Unknown transfer ID" |
 
-Each checks its own size and returns `NET_ERR_BUF_TOO_SMALL` instead of
-sending.  `tftp_client_get()` returns the result of the first RRQ, but
-the transfer is REQUESTING either way, so a failed first send is retried
-by the timer.
+Each checks its own size: `send_rrq()` and `send_ack()` return
+`NET_ERR_BUF_TOO_SMALL` instead of sending, and an ERROR that does not
+fit (`put_error()` returns 0) is not sent.  `tftp_client_get()` returns
+the result of the first RRQ, but the transfer is REQUESTING either way,
+so a failed first send is retried by the timer.
 
 **Retransmission** (`tftp_client_tick()`).  One timer of `TFTP_TIMEOUT_MS`
-(3 s) runs in REQUESTING and RECEIVING; every datagram accepted from the
-server — right IP and, once known, transfer port, any opcode — restarts
-it and clears the retry count.  When it runs out, REQUESTING resends the RRQ and
-RECEIVING resends the last ACK (`next_block − 1`, which is ACK 0 after an
-OACK); after `TFTP_MAX_RETRIES` (5) retransmissions without an answer the
-transfer ends with `on_done(0, 0, "Timeout")` — 18 s of silence in all.
+(3 s) runs in REQUESTING and RECEIVING; every datagram from the server's
+transfer ID (§6), any opcode, restarts it and clears the retry count.
+When it runs out, REQUESTING resends the RRQ and RECEIVING resends the
+last ACK (`next_block − 1`, which is ACK 0 after an OACK); after
+`TFTP_MAX_RETRIES` (5) retransmissions without an answer the transfer
+ends with `on_done(0, 0, "Timeout")` — 18 s of silence in all.
 The server's own retransmissions drive a lock-step transfer forward just
 as well: the client answers each duplicate block.
 
@@ -242,7 +253,6 @@ as well: the client answers each duplicate block.
 
 | Item | Notes |
 |---|---|
-| ERROR 5 for a datagram from a foreign port is sent to the *established* transfer port, not to the foreign one | RFC 1350 §4 says the error goes to the source of the stray packet without disturbing the transfer; as built, the legitimate server receives an ERROR and ends the transfer.  A stray port typically comes from a duplicate RRQ that the server answered twice |
 | A duplicate OACK (our ACK 0 was lost) is not answered, yet it restarts the retransmission timer | If the server retransmits its OACK more often than every 3 s, the client never resends ACK 0 and the transfer stalls until the server gives up |
 | An OACK `blksize` larger than the one requested is accepted | RFC 2348 lets the server only lower it; a larger block may not fit the RX buffer |
 | The ERROR message passed to `on_done` is not checked for a terminating NUL | A malformed ERROR makes the callback read past the datagram |
@@ -257,12 +267,13 @@ The header documents `msg` as `""` on timeout; the code passes
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (15 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (17 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
-ends the transfer, duplicate block re-acknowledged, ERROR aborts, foreign
-port → ERROR 5, OACK sets the block size and draws ACK 0, fallback when
-the server ignores the option, blksize option in the RRQ, RRQ and ACK
-retransmission, give-up after the maximum retries, timer restart on DATA.
+ends the transfer, duplicate block re-acknowledged, ERROR aborts, ERROR 5
+to a stray port or host and none for a stray ERROR, OACK sets the block
+size and draws ACK 0, fallback when the server ignores the option,
+blksize option in the RRQ, RRQ and ACK retransmission, give-up after the
+maximum retries, timer restart on DATA.
 
 `demo/tftp_client` fetches a file from a real server (e.g. dnsmasq with
 `--enable-tftp`) with blksize negotiation.

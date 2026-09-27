@@ -33,6 +33,10 @@ static uint16_t server_port(const tftp_client_t *c) {
   return c->server_tid ? c->server_tid : TFTP_SERVER_PORT;
 }
 
+static int from_server_tid(const tftp_client_t *c, uint32_t ip, uint16_t port) {
+  return ip == c->server_ip && port == c->server_tid;
+}
+
 static net_err_t send_payload(net_t *net, tftp_client_t *c, uint16_t len) {
   return udp_send_inplace(net, c->server_ip, c->server_mac, c->local_port,
                           server_port(c), len, NET_DEFAULT_TTL);
@@ -78,19 +82,27 @@ static net_err_t send_ack(net_t *net, tftp_client_t *c, uint16_t block) {
   return send_payload(net, c, 4);
 }
 
-static net_err_t send_error(net_t *net, tftp_client_t *c, uint16_t code,
-                            const char *text) {
+/* An ERROR at UDP_PAYLOAD_OFFSET; its length, or 0 if it does not fit */
+static uint16_t put_error(net_t *net, uint16_t code, const char *text) {
   uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
   size_t len = strlen(text);
   if (len > TFTP_ERROR_MSG_MAX)
     len = TFTP_ERROR_MSG_MAX;
   if (net->tx.capacity < UDP_PAYLOAD_OFFSET + 5 + len)
-    return NET_ERR_BUF_TOO_SMALL;
+    return 0;
   net_write16be(msg, TFTP_OP_ERROR);
   net_write16be(msg + 2, code);
   memcpy(msg + 4, text, len);
   msg[4 + len] = '\0';
-  return send_payload(net, c, (uint16_t)(5 + len));
+  return (uint16_t)(5 + len);
+}
+
+/* REQ-TFTP-018: to the stray datagram's own source (RFC 1350 §4) */
+static void reject_stray(net_t *net, const tftp_client_t *c, uint32_t ip,
+                         const uint8_t *mac, uint16_t port) {
+  uint16_t len = put_error(net, TFTP_ERR_UNKNOWN_TID, "Unknown transfer ID");
+  if (len)
+    udp_send_inplace(net, ip, mac, c->local_port, port, len, NET_DEFAULT_TTL);
 }
 
 static void finish(tftp_client_t *c, uint8_t ok, uint16_t code,
@@ -197,19 +209,22 @@ net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
 
 /* REQ-TFTP-006, 016..018 */
 void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
-                       uint16_t src_port, const uint8_t *data, uint16_t len) {
+                       const uint8_t *src_mac, uint16_t src_port,
+                       const uint8_t *data, uint16_t len) {
   uint16_t opcode;
   if ((c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) ||
-      src_ip != c->server_ip || len < 2)
+      len < 2)
     return;
   opcode = net_read16be(data);
 
-  /* The first answer fixes the server's transfer ID (port) */
-  if (c->server_tid == 0 && (opcode == TFTP_OP_DATA || opcode == TFTP_OP_OACK ||
-                             opcode == TFTP_OP_ERROR))
+  /* The first answer from the server's IP fixes its transfer ID (port) */
+  if (c->server_tid == 0 && src_ip == c->server_ip &&
+      (opcode == TFTP_OP_DATA || opcode == TFTP_OP_OACK ||
+       opcode == TFTP_OP_ERROR))
     c->server_tid = src_port;
-  if (c->server_tid != 0 && src_port != c->server_tid) {
-    send_error(net, c, TFTP_ERR_UNKNOWN_TID, "Unknown TID");
+  if (!from_server_tid(c, src_ip, src_port)) {
+    if (opcode != TFTP_OP_ERROR) /* an ERROR for an ERROR could loop */
+      reject_stray(net, c, src_ip, src_mac, src_port);
     return;
   }
   c->timer_ms = TFTP_TIMEOUT_MS;

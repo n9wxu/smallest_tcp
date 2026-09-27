@@ -12,7 +12,7 @@
  *   REQ-TFTP-013       Duplicate block re-ACK (no double delivery)
  *   REQ-TFTP-014,015   ACK format and destination port (server TID)
  *   REQ-TFTP-016,017   ERROR packet → abort + error callback
- *   REQ-TFTP-018       Wrong TID → ERROR(5) sent
+ *   REQ-TFTP-018       Wrong TID → ERROR(5) to its source
  *   REQ-TFTP-020,021   Tick retransmits last ACK / RRQ
  *   REQ-TFTP-023,024   Max retries → timeout reported
  *   REQ-TFTP-025,026   blksize option in RRQ
@@ -130,6 +130,8 @@ static const uint32_t SERVER_IP = (10u << 24) | (0u << 16) | (0u << 8) | 1u;
 static const uint8_t SERVER_MAC[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01};
 #define CLIENT_PORT 6900u
 #define SERVER_TID 4567u /* server's ephemeral port */
+static const uint32_t STRAY_IP = (10u << 24) | 9u;
+static const uint8_t STRAY_MAC[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x09};
 
 static void setup(void) {
   memset(&net, 0, sizeof(net));
@@ -166,6 +168,11 @@ static uint16_t get_udp_dport(int idx) {
   if (sent_lens[idx] < 14 + 20 + 4)
     return 0;
   return net_read16be(sent_frames[idx] + 14 + 20 + 2);
+}
+
+static uint32_t get_ipv4_dst(int idx) {
+  /* ETH(14) + IP destination at byte 16 */
+  return net_read32be(sent_frames[idx] + 14 + 16);
 }
 
 /* Build a raw TFTP DATA packet (used as input to tftp_client_input) */
@@ -270,7 +277,8 @@ TEST(test_tftp_data_block1_ack) {
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, payload, 10);
 
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   /* REQ-TFTP-012: data callback called */
   ASSERT_EQ(data_calls, 1);
@@ -312,7 +320,8 @@ TEST(test_tftp_full_block_not_last) {
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, payload, 512);
 
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   ASSERT_EQ(data_calls, 1);
   ASSERT_EQ(data_lens[0], 512);
@@ -332,13 +341,15 @@ TEST(test_tftp_last_block_short) {
   memset(full, 0x11, 512);
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, full, 512);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   /* Short block 2 (100 bytes = last) */
   uint8_t last[100];
   memset(last, 0x22, 100);
   plen = make_data(pkt, 2, last, 100);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   ASSERT_EQ(data_calls, 2);
   ASSERT_EQ(data_lens[1], 100);
@@ -358,13 +369,15 @@ TEST(test_tftp_duplicate_block) {
   memset(full, 0x55, 512);
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, full, 512);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
   ASSERT_EQ(data_calls, 1);
 
   send_count = 0;
 
   /* Duplicate block 1 */
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   /* REQ-TFTP-013: re-ACK but no new data delivery */
   ASSERT_EQ(data_calls, 1); /* still only 1 delivery */
@@ -382,7 +395,8 @@ TEST(test_tftp_error_packet_aborts) {
 
   uint8_t pkt[128];
   uint16_t plen = make_error(pkt, TFTP_ERR_FILE_NOT_FOUND, "File not found");
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   ASSERT_EQ(done_called, 1);
   ASSERT_EQ(done_ok, 0);
@@ -400,7 +414,8 @@ TEST(test_tftp_wrong_tid_sends_error5) {
   memset(full, 0xCC, 512);
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, full, 512);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   send_count = 0;
 
@@ -409,7 +424,7 @@ TEST(test_tftp_wrong_tid_sends_error5) {
   uint8_t small[10];
   memset(small, 0, 10);
   plen = make_data(pkt, 2, small, 10);
-  tftp_client_input(&net, &client, SERVER_IP, wrong_tid, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, wrong_tid, pkt, plen);
 
   /* REQ-TFTP-018: ERROR(5) was sent */
   ASSERT_TRUE(send_count >= 1);
@@ -419,7 +434,68 @@ TEST(test_tftp_wrong_tid_sends_error5) {
   ASSERT_EQ(net_read16be(e), (uint16_t)TFTP_OP_ERROR);
   ASSERT_EQ(net_read16be(e + 2), (uint16_t)TFTP_ERR_UNKNOWN_TID);
 
+  /* RFC 1350 §4: to the stray packet's source, not the server's TID */
+  ASSERT_EQ(get_ipv4_dst(0), SERVER_IP);
+  ASSERT_EQ(get_udp_dport(0), wrong_tid);
+
   /* Transfer did NOT advance (block from wrong TID discarded) */
+  ASSERT_EQ(client.state, TFTP_STATE_RECEIVING);
+  ASSERT_EQ(client.next_block, (uint16_t)2);
+  ASSERT_EQ(data_calls, 1);
+}
+
+/* REQ-TFTP-018 — a datagram from another host → ERROR(5) to that host */
+TEST(test_tftp_stray_host_gets_error5) {
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+
+  uint8_t full[512];
+  memset(full, 0xCC, 512);
+  uint8_t pkt[600];
+  uint16_t plen = make_data(pkt, 1, full, 512);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  send_count = 0;
+
+  plen = make_data(pkt, 2, full, 10);
+  tftp_client_input(&net, &client, STRAY_IP, STRAY_MAC, SERVER_TID, pkt, plen);
+
+  ASSERT_EQ(send_count, 1);
+  uint16_t elen;
+  const uint8_t *e = get_tftp_payload(0, &elen);
+  ASSERT_EQ(net_read16be(e), (uint16_t)TFTP_OP_ERROR);
+  ASSERT_EQ(net_read16be(e + 2), (uint16_t)TFTP_ERR_UNKNOWN_TID);
+  ASSERT_MEM_EQ(sent_frames[0], STRAY_MAC, 6);
+  ASSERT_EQ(get_ipv4_dst(0), STRAY_IP);
+  ASSERT_EQ(get_udp_dport(0), (uint16_t)SERVER_TID);
+  ASSERT_EQ(data_calls, 1);
+
+  /* The transfer goes on: block 2 from the server completes it */
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  ASSERT_EQ(data_calls, 2);
+  ASSERT_EQ(done_ok, 1);
+}
+
+/* REQ-TFTP-018 — an ERROR from a stray TID is not answered: no ERROR loop */
+TEST(test_tftp_stray_error_not_answered) {
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+
+  uint8_t full[512];
+  memset(full, 0xCC, 512);
+  uint8_t pkt[600];
+  uint16_t plen = make_data(pkt, 1, full, 512);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  send_count = 0;
+
+  plen = make_error(pkt, TFTP_ERR_UNKNOWN_TID, "Unknown transfer ID");
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID + 1u, pkt,
+                    plen);
+
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(done_called, 0);
   ASSERT_EQ(client.state, TFTP_STATE_RECEIVING);
 }
 
@@ -433,7 +509,8 @@ TEST(test_tftp_oack_updates_blksize) {
   uint8_t oack[64];
   uint16_t olen = make_oack_blksize(oack, 256);
 
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, oack, olen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    olen);
 
   /* REQ-TFTP-028: blksize updated */
   ASSERT_EQ(client.blksize, (uint16_t)256);
@@ -463,7 +540,8 @@ TEST(test_tftp_fallback_no_oack) {
   memset(payload, 0x77, 512);
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, payload, 512);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
 
   (void)negotiated; /* silence unused warning */
 
@@ -524,7 +602,8 @@ TEST(test_tftp_tick_retransmits_ack) {
   memset(full, 0xAA, 512);
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, full, 512);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
   ASSERT_EQ(client.state, TFTP_STATE_RECEIVING);
   send_count = 0;
 
@@ -570,7 +649,8 @@ TEST(test_tftp_timer_reset_on_data) {
   memset(full, 0, 512);
   uint8_t pkt[600];
   uint16_t plen = make_data(pkt, 1, full, 512);
-  tftp_client_input(&net, &client, SERVER_IP, SERVER_TID, pkt, plen);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
   send_count = 0;
 
   /* Advance less than one full timeout after the reset */
@@ -590,6 +670,8 @@ int main(void) {
   RUN_TEST(test_tftp_duplicate_block);
   RUN_TEST(test_tftp_error_packet_aborts);
   RUN_TEST(test_tftp_wrong_tid_sends_error5);
+  RUN_TEST(test_tftp_stray_host_gets_error5);
+  RUN_TEST(test_tftp_stray_error_not_answered);
   RUN_TEST(test_tftp_oack_updates_blksize);
   RUN_TEST(test_tftp_fallback_no_oack);
   RUN_TEST(test_tftp_rrq_contains_blksize_option);

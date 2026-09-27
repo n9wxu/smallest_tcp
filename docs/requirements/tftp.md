@@ -4,7 +4,7 @@
 **Primary RFC:** RFC 1350 — The TFTP Protocol (Revision 2)  
 **Supporting:** RFC 2348 — TFTP Blocksize Option, RFC 2349 — TFTP Timeout Interval and Transfer Size Options, RFC 7440 — TFTP Windowsize Option  
 **Scope:** V1 (IPv4), V2 (IPv6)  
-**Last updated:** 2026-03-19
+**Last updated:** 2026-09-27
 
 ## Overview
 
@@ -87,7 +87,7 @@ OACK:
 |---|---|---|---|---|
 | REQ-TFTP-016 | MUST | Process ERROR packets (opcode 5) and abort transfer | RFC 1350 §2 | TEST-TFTP-016 |
 | REQ-TFTP-017 | MUST | Report error code and message to application | RFC 1350 §2 | TEST-TFTP-017 |
-| REQ-TFTP-018 | MUST | Send ERROR if packet received from wrong TID | RFC 1350 §2 | TEST-TFTP-018 |
+| REQ-TFTP-018 | MUST | Answer a packet from a wrong TID (IP or port) with ERROR 5 to its source, and continue the transfer | RFC 1350 §4 | TEST-TFTP-018 |
 | REQ-TFTP-019 | MUST | Support error codes: 0 (not defined), 1 (file not found), 2 (access violation), 3 (disk full), 4 (illegal op), 5 (unknown TID), 6 (file exists), 7 (no such user) | RFC 1350 §5 | TEST-TFTP-019 |
 
 ### Timeout and Retransmission

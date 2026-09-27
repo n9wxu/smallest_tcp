@@ -54,8 +54,7 @@ static void on_done(uint8_t ok, uint16_t err_code, const char *msg, void *ctx) {
 static void tftp_input(net_t *n, uint32_t src_ip, uint16_t src_port,
                        const uint8_t *src_mac, const uint8_t *payload,
                        uint16_t len) {
-  (void)src_mac;
-  tftp_client_input(n, &tftp, src_ip, src_port, payload, len);
+  tftp_client_input(n, &tftp, src_ip, src_mac, src_port, payload, len);
 }
 
 static const udp_port_entry_t udp_ports[] = {{TFTP_CLIENT_PORT, tftp_input}};
