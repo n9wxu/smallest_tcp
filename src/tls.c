@@ -213,7 +213,7 @@ static int on_key_update(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   tls_update_secret(t->cfg->crypto, t->rsec);
   tls_traffic_keys(t->cfg->crypto, t->rsec, &t->rkeys);
   if (m[HS_HDR])
-    t->flags |= F_KU_OWED;
+    t->flags |= F_KU_OWED | F_KU_ANS;
   return HS_KEYS;
 }
 
@@ -229,16 +229,21 @@ static int on_handshake(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
 }
 
+/* Our KeyUpdate's request_update: never set in an answer (RFC 8446 §4.6.3) */
+static int request_update(const tls_conn_t *t) {
+  return (t->flags & (F_KU_REQ | F_KU_ANS)) == F_KU_REQ;
+}
+
 static void send_owed_key_update(tls_conn_t *t) {
   uint8_t *m = tls_hs_begin(t, HS_HDR + 1);
   if (!m)
     return; /* once tx has room */
-  m[HS_HDR] = (t->flags & F_KU_REQ) ? 1 : 0;
+  m[HS_HDR] = request_update(t);
   tls_hs_end(t, m, TLS_HS_KEY_UPDATE, 1);
   tls_rec_close(t);
   tls_update_secret(t->cfg->crypto, t->wsec);
   tls_traffic_keys(t->cfg->crypto, t->wsec, &t->wkeys);
-  t->flags &= (uint16_t) ~(F_KU_OWED | F_KU_REQ);
+  t->flags &= (uint16_t) ~(F_KU_OWED | F_KU_REQ | F_KU_ANS);
 }
 
 /* Produce whatever output is due; runs after every input and drain */

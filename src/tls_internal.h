@@ -22,7 +22,8 @@
 #define F_CERT_REQ 0x40u /* client: the server asked for our certificate */
 #define F_PSK 0x80u      /* a PSK authenticates the handshake */
 #define F_HRR 0x100u     /* a HelloRetryRequest was sent (received) */
-#define F_KU_REQ 0x200u  /* the owed KeyUpdate asks the peer for one */
+#define F_KU_REQ 0x200u  /* tls_key_update() asked for the peer's too */
+#define F_KU_ANS 0x400u  /* the owed KeyUpdate answers the peer's request */
 
 /* tls_conn_t.step: where the handshake is */
 enum {

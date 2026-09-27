@@ -2266,6 +2266,47 @@ TEST(test_no_data_before_owed_key_update) {
   ASSERT_MEM_EQ(buf + 5, "abc", 3);
 }
 
+/* Our tls_key_update(1) and the client's KeyUpdate(update_requested) cross
+ * while tx is full; the one KeyUpdate we then send must not ask back */
+static int crossed_key_updates(tls_conn_t *s, int ours_first) {
+  static uint8_t big[5000], buf[4096];
+  uint8_t rec[64], type;
+  size_t n, off = 0;
+  out_len = 0;
+  CHECK(tls_write(s, big, sizeof(big)) > 0); /* tx full */
+  if (ours_first)
+    CHECK(tls_key_update(s, 1) == 0);
+  n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x01", 5, rec);
+  tls_update_secret(&c, peer.c_ap);
+  tls_traffic_keys(&c, peer.c_ap, &peer.wr);
+  CHECK(tls_input(s, rec, n) == n);
+  if (!ours_first)
+    CHECK(tls_key_update(s, 1) == 0);
+  drain(s);
+  CHECK(peer_open(&peer, &off, &type, buf) > 0);
+  CHECK(peer_open(&peer, &off, &type, buf) == 5);
+  CHECK(memcmp(buf + 5, "\x18\x00\x00\x01\x00", 5) == 0);
+  CHECK(off == out_len);
+  tls_update_secret(&c, peer.s_ap);
+  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  return 0;
+}
+
+TEST(test_key_update_answer_never_asks) {
+  /* RFC 8446 §4.6.3, whichever came first; a request alone still asks */
+  tls_conn_t s;
+  uint8_t buf[64], type;
+  size_t off = 0;
+  ASSERT_EQ(connected(&s), 0);
+  ASSERT_EQ(crossed_key_updates(&s, 1), 0);
+  ASSERT_EQ(crossed_key_updates(&s, 0), 0);
+  out_len = 0;
+  ASSERT_EQ(tls_key_update(&s, 1), 0);
+  drain(&s);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
+  ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x01", 5);
+}
+
 TEST(test_key_update_needs_connection) {
   tls_conn_t s;
   ASSERT_EQ(server_start(&s, &cfg_ec, sizeof(srv_tx)), 0);
@@ -2471,6 +2512,7 @@ int main(void) {
   RUN_TEST(test_key_update_by_itself);
   RUN_TEST(test_no_data_past_key_limit);
   RUN_TEST(test_no_data_before_owed_key_update);
+  RUN_TEST(test_key_update_answer_never_asks);
   RUN_TEST(test_key_update_needs_connection);
 
   RUN_TEST(test_init_and_accept_checks);

@@ -573,11 +573,16 @@ switches our records to the client application keys, and reports
 - **KeyUpdate** (RFC 8446 §4.6.3).  A received KeyUpdate (one byte, 0 or 1;
   `decode_error` / `illegal_parameter` otherwise) moves the peer's traffic
   secret one generation on and installs its keys; it must end its record
-  (`HS_KEYS`).  If it asks for an update, we owe one (`F_KU_OWED`).
-  `tls_key_update(tls, request)` owes one too, asking the peer to follow if
-  `request` (`F_KU_REQ`).  `pump()` sends an owed KeyUpdate as soon as tx has
-  room, then moves our secret on and installs the new keys.  Until it has
-  gone, `tls_write()` accepts nothing: no data follows it under the old key.
+  (`HS_KEYS`).  If it asks for an update, we owe one as an answer
+  (`F_KU_OWED`, `F_KU_ANS`).  `tls_key_update(tls, request)` owes one too,
+  asking the peer to follow if `request` (`F_KU_REQ`).  However many are
+  owed, one KeyUpdate goes, and an answer is update_not_requested even when
+  the application asked as well: the peer's sending keys have just changed,
+  which is all the request wanted, and asking back could keep the two sides
+  updating each other (§4.6.3).  `pump()` sends an owed KeyUpdate as soon as
+  tx has room, then moves our secret on and installs the new keys.  Until it
+  has gone, `tls_write()` accepts nothing, so no data goes out under the key
+  it retires.
 - **The record limit.**  `tls_write()` owes a KeyUpdate itself once
   `TLS_KEY_UPDATE_RECORDS` (2^24) records have been sealed under one key
   (RFC 8446 §5.5 allows 2^24.5 for AES-GCM).
