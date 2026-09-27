@@ -296,7 +296,7 @@ bytes and copied.
 |---|---|---|---|
 | RRQ | `send_rrq()` | 2 + name + 1 + 6 [+ 8 + digits + 1] | at most 191 bytes (127-char name, blksize option) |
 | ACK | `send_ack()` | 4 | 46 bytes |
-| ERROR | `put_error()`, sent by `reject_stray()` | 5 + text (at most 119 characters) | 66 bytes for "Unknown transfer ID" |
+| ERROR | `put_error()`, sent by `reject_stray()` and `refuse_oack()` | 5 + text (a constant: "Unknown transfer ID", "Bad blksize", "Option not requested") | at most 67 bytes |
 
 Each checks its own size: `send_rrq()` and `send_ack()` return
 `NET_ERR_BUF_TOO_SMALL` instead of sending, and an ERROR that does not

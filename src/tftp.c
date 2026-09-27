@@ -14,7 +14,6 @@
 #define TFTP_MIN_BLKSIZE 8u         /* RFC 2348 §2 */
 #define TFTP_MAX_BLKSIZE 65464u     /* RFC 2348 §2 */
 #define TFTP_ETHERNET_BLKSIZE 1468u /* the largest DATA in one frame */
-#define TFTP_ERROR_MSG_MAX 119u
 
 /* The largest block the RX buffer holds (REQ-TFTP-037, 038) */
 static uint16_t largest_blksize(const net_t *net) {
@@ -87,12 +86,11 @@ static net_err_t send_ack(net_t *net, tftp_client_t *c, uint16_t block) {
   return send_payload(net, c, 4);
 }
 
-/* An ERROR at UDP_PAYLOAD_OFFSET; its length, or 0 if it does not fit */
+/* An ERROR with @p text (one of our constants) at UDP_PAYLOAD_OFFSET; its
+ * length, or 0 if it does not fit */
 static uint16_t put_error(net_t *net, uint16_t code, const char *text) {
   uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
   size_t len = strlen(text);
-  if (len > TFTP_ERROR_MSG_MAX)
-    len = TFTP_ERROR_MSG_MAX;
   if (net->tx.capacity < UDP_PAYLOAD_OFFSET + 5 + len)
     return 0;
   net_write16be(msg, TFTP_OP_ERROR);

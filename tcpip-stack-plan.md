@@ -344,7 +344,7 @@ starts with a unit test that fails on the current code.
       TID, including ones that are ignored
 - [x] The server TID uses 0 for "unknown", so a server answering from port 0
       is mishandled — a datagram from port 0 is dropped
-- [ ] The 119-character cap on ERROR text in `put_error()` never applies —
+- [x] The 119-character cap on ERROR text in `put_error()` never applies —
       every text is a short constant — and can go
 
 **CI** (`.github/workflows/fuzz.yml`)
