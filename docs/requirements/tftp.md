@@ -107,7 +107,7 @@ OACK:
 | REQ-TFTP-025 | MAY | Include "blksize" option in RRQ to negotiate block size | RFC 2348 §2 | TEST-TFTP-025 |
 | REQ-TFTP-026 | MUST | Requested blksize MUST fit in application buffer: blksize ≤ buffer - ETH - IP - UDP - TFTP header | Architecture, RFC 2348 | TEST-TFTP-026 |
 | REQ-TFTP-027 | MUST | If server responds with OACK, acknowledge with ACK block 0; acknowledge a repeated OACK again until DATA block 1 arrives | RFC 2347 §4 | TEST-TFTP-027 |
-| REQ-TFTP-028 | MUST | Parse OACK to extract negotiated blksize (server may reduce it) | RFC 2348 §2 | TEST-TFTP-028 |
+| REQ-TFTP-028 | MUST | Parse OACK to extract negotiated blksize (server may reduce it); refuse a larger one, or one below 8, with ERROR 8 and end the transfer | RFC 2348 §2, RFC 2347 | TEST-TFTP-028 |
 | REQ-TFTP-029 | MAY | Include "tsize" option in RRQ to request transfer size | RFC 2349 §3 | TEST-TFTP-029 |
 | REQ-TFTP-030 | MAY | Include "timeout" option in RRQ to negotiate timeout interval | RFC 2349 §2 | TEST-TFTP-030 |
 | REQ-TFTP-031 | MUST | If server does not understand options (sends DATA block 1 instead of OACK), fall back to defaults | RFC 2347 §4 | TEST-TFTP-031 |

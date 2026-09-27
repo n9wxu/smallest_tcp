@@ -98,6 +98,15 @@ With the blksize option (RFC 2347 §4, RFC 2348):
    …
 ```
 
+An OACK that raises the block size, or lowers it below 8, is refused
+(§5):
+
+```
+  RRQ "file" "octet" "blksize" "<N>"  ──► port 69
+                                      ◄── OACK "blksize" "<M>"    M > N or M < 8
+  ERROR 8 "Bad blksize"               ──► TID                      on_done(ok = 0, 8, "Bad blksize")
+```
+
 A server that does not support options ignores them and answers with
 DATA 1; the client then falls back to 512-byte blocks (REQ-TFTP-031).  A
 server that refuses the transfer answers with ERROR, which ends it:
@@ -117,6 +126,7 @@ IDLE ── tftp_client_get() ──► REQUESTING ── OACK (sends ACK 0) ─
                                    │                                     │ short DATA block
                                    │                                     ▼
                                    │                                    DONE
+                                   ├── OACK refused (sends ERROR 8) ──► ERROR
                                    └── ERROR, or 5 retransmissions ──► ERROR ◄── (same, from RECEIVING)
 ```
 
@@ -153,10 +163,22 @@ division routine.
 **OACK.**  `oack_input()` walks the name/value pairs (`next_string()`
 stops at the first unterminated string).  An option named `blksize` —
 compared in full and case-insensitively with `net_equal_nocase()`; the
-old parser looked only at the first two letters — with a value of
-8 … 65464 sets the block size; `parse_decimal()` stops accumulating past
-65464, so a long digit string cannot overflow.  Other options are
-ignored.  The client then enters RECEIVING and sends ACK 0.
+old parser looked only at the first two letters — sets the block size
+if `acceptable_blksize()`: at least 8, and no more than the size
+requested.  `parse_decimal()` stops accumulating past 65464, so a long
+digit string cannot overflow.  Other options are ignored.  The client
+then enters RECEIVING and sends ACK 0.
+
+Any other `blksize` — larger, below 8, empty or not a number (which
+reads as 0) — is refused by `refuse_oack()`: ERROR 8 "Bad blksize" to
+the server, as RFC 2347 prescribes for an OACK the client does not
+accept, and `on_done(0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize")`.
+RFC 2348 §2 lets the server only lower the size; a larger block might
+not fit the RX buffer, which is what the size requested was chosen for.
+Ignoring a bad value and keeping the requested size, as the client once
+did for one below 8, is worse than refusing it: the server sends
+blocks of the size it announced, and the first one shorter than the
+client expects ends the transfer as if it were the last.
 
 **Repeated OACK.**  If ACK 0 is lost, the server sends its OACK again.
 In RECEIVING, an OACK that arrives while `next_block` is still 1 — no
@@ -182,7 +204,7 @@ the fixed `local_port` given to `tftp_client_init()`.  The server's is
 unknown until it answers from a new port:
 
 - `server_port()` returns port 69 until then, the server's port after.
-  The RRQ always goes to 69; ACKs go to `server_port()`
+  The RRQ always goes to 69; ACKs and ERROR 8 go to `server_port()`
   (REQ-TFTP-015).
 - The first DATA, OACK or ERROR from the server's IP fixes
   `server_tid` (REQ-TFTP-006).
@@ -261,7 +283,6 @@ as well: the client answers each duplicate block.
 
 | Item | Notes |
 |---|---|
-| An OACK `blksize` larger than the one requested is accepted | RFC 2348 lets the server only lower it; a larger block may not fit the RX buffer |
 | The ERROR message passed to `on_done` is not checked for a terminating NUL | A malformed ERROR makes the callback read past the datagram |
 | Fixed local port for every transfer | RFC 1350 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
 | No tsize, timeout or windowsize options; no WRQ; no netascii | Scope (§1) |
@@ -274,14 +295,15 @@ The header documents `msg` as `""` on timeout; the code passes
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (18 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (20 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
-fallback when the server ignores the option,
-blksize option in the RRQ, RRQ and ACK retransmission, give-up after the
-maximum retries, timer restart on DATA.
+an OACK blksize above the one requested or below 8 draws ERROR 8 and
+ends the transfer, fallback when the server ignores the option, blksize
+option in the RRQ, RRQ and ACK retransmission, give-up after the maximum
+retries, timer restart on DATA.
 
 `demo/tftp_client` fetches a file from a real server (e.g. dnsmasq with
 `--enable-tftp`) with blksize negotiation.

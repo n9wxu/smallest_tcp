@@ -33,7 +33,7 @@ extern "C" {
 #define TFTP_OP_ERROR 5
 #define TFTP_OP_OACK 6
 
-/* TFTP error codes (RFC 1350 §5) */
+/* TFTP error codes (RFC 1350 §5; 8 from RFC 2347) */
 #define TFTP_ERR_NOT_DEFINED 0
 #define TFTP_ERR_FILE_NOT_FOUND 1
 #define TFTP_ERR_ACCESS_VIOLATION 2
@@ -42,6 +42,7 @@ extern "C" {
 #define TFTP_ERR_UNKNOWN_TID 5
 #define TFTP_ERR_FILE_EXISTS 6
 #define TFTP_ERR_NO_SUCH_USER 7
+#define TFTP_ERR_OPTION_NEGOTIATION 8
 
 /* TFTP constants */
 #define TFTP_SERVER_PORT 69      /**< Well-known TFTP port */
@@ -67,9 +68,10 @@ typedef void (*tftp_data_fn_t)(uint16_t block_num, const uint8_t *data,
  * Called when the transfer completes or fails.
  *
  * @param ok        1 = success (all blocks received), 0 = error/timeout.
- * @param err_code  TFTP error code (TFTP_ERR_*). Valid only when ok==0 and
- *                  the failure was caused by a server ERROR packet.
- * @param msg       The server's error message, or "Timeout".
+ * @param err_code  TFTP error code (TFTP_ERR_*) when ok==0: the server's,
+ *                  or TFTP_ERR_OPTION_NEGOTIATION if the client refused
+ *                  the server's OACK; 0 on timeout.
+ * @param msg       The server's error message, "Bad blksize" or "Timeout".
  * @param ctx       Application context pointer.
  */
 typedef void (*tftp_done_fn_t)(uint8_t ok, uint16_t err_code, const char *msg,

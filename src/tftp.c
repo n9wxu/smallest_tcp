@@ -131,16 +131,33 @@ static uint32_t parse_decimal(const char *s) {
   return v;
 }
 
-/* REQ-TFTP-027, 028: the server's blksize, acknowledged with ACK(0) */
+/* RFC 2348 §2: the server may lower the size requested, never raise it */
+static int acceptable_blksize(const tftp_client_t *c, uint32_t v) {
+  return v >= TFTP_MIN_BLKSIZE && v <= c->blksize;
+}
+
+/* RFC 2347: ERROR 8 to the server, and the transfer ends */
+static void refuse_oack(net_t *net, tftp_client_t *c) {
+  uint16_t len = put_error(net, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize");
+  if (len)
+    send_payload(net, c, len);
+  finish(c, 0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize");
+}
+
+/* REQ-TFTP-027, 028, 038: the server's blksize, acknowledged with ACK(0) */
 static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
   const uint8_t *p = data + 2, *end = data + len;
   const char *name, *value;
   while ((name = next_string(&p, end)) && (value = next_string(&p, end))) {
     uint32_t v = parse_decimal(value);
-    if (net_equal_nocase(name, "blksize") && v >= TFTP_MIN_BLKSIZE &&
-        v <= TFTP_MAX_BLKSIZE)
-      c->blksize = (uint16_t)v;
+    if (!net_equal_nocase(name, "blksize"))
+      continue;
+    if (!acceptable_blksize(c, v)) {
+      refuse_oack(net, c);
+      return;
+    }
+    c->blksize = (uint16_t)v;
   }
   c->state = TFTP_STATE_RECEIVING;
   send_ack(net, c, 0);
