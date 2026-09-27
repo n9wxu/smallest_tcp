@@ -275,7 +275,7 @@ the TLS stream one.
       record layers share), `tls_rl_t`, `tls_set_keys()`, the label-prefix
       parameter; TLS unchanged on the wire, every TLS test passing
 - [x] Stage 2: `aes_block` in the backend; "dtls13" labels and the "sn" key
-- [ ] Stage 3: records — DTLSPlaintext, the unified header, record number
+- [x] Stage 3: records — DTLSPlaintext, the unified header, record number
       encryption, sequence reconstruction, the replay window
 - [ ] Stage 4: the handshake over datagrams — the roles' DTLS formats,
       flights, fragmentation and reassembly, the timer, ACKs, the cookie

@@ -124,6 +124,7 @@ smallest_tcp_library(tls SOURCES
     src/tls_keys.c
     src/tls_server.c
     src/tls_client.c
+    src/dtls.c
 )
 
 # ── Applications over TCP ─────────────────────────────────────────────
