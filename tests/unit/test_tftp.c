@@ -18,6 +18,7 @@
  *   REQ-TFTP-025,026   blksize option in RRQ
  *   REQ-TFTP-027,028   OACK: ACK(0) sent (again for a repeat), blksize updated
  *   REQ-TFTP-028,038   OACK blksize above the request or below 8 → ERROR(8)
+ *   REQ-TFTP-028       OACK blksize not requested → ERROR(8); none → 512
  *   REQ-TFTP-031       Server ignores blksize option (DATA(1) without OACK)
  */
 
@@ -626,6 +627,54 @@ TEST(test_tftp_oack_tiny_blksize_refused) {
   ASSERT_EQ(client.state, TFTP_STATE_ERROR);
 }
 
+/* REQ-TFTP-028 — an OACK without blksize declines it: 512-byte blocks */
+TEST(test_tftp_oack_without_blksize_means_512) {
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 1);
+  ASSERT_TRUE(client.blksize > TFTP_DEFAULT_BLKSIZE);
+
+  static const uint8_t oack[] = {0, TFTP_OP_OACK, 't', 's', 'i', 'z', 'e',
+                                 0, '9',          '0', '0', 0};
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    sizeof(oack));
+
+  uint8_t full[512];
+  memset(full, 0x3C, 512);
+  uint8_t pkt[600];
+  uint16_t plen = make_data(pkt, 1, full, 512);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  ASSERT_EQ(done_called, 0);
+  ASSERT_EQ(client.state, TFTP_STATE_RECEIVING);
+
+  plen = make_data(pkt, 2, full, 100);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen);
+  ASSERT_EQ(data_calls, 2);
+  ASSERT_EQ(done_ok, 1);
+}
+
+/* REQ-TFTP-028 — an OACK blksize we did not request → ERROR(8), abort */
+TEST(test_tftp_oack_unrequested_blksize_refused) {
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+  send_count = 0;
+
+  uint8_t oack[64];
+  uint16_t olen = make_oack_blksize(oack, 256);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, oack,
+                    olen);
+
+  ASSERT_EQ(send_count, 1);
+  uint16_t elen;
+  const uint8_t *e = get_tftp_payload(0, &elen);
+  ASSERT_EQ(net_read16be(e), (uint16_t)TFTP_OP_ERROR);
+  ASSERT_EQ(net_read16be(e + 2), (uint16_t)TFTP_ERR_OPTION_NEGOTIATION);
+  ASSERT_EQ(done_called, 1);
+  ASSERT_EQ(done_ok, 0);
+  ASSERT_EQ(client.state, TFTP_STATE_ERROR);
+}
+
 /* REQ-TFTP-031 — server sends DATA(1) without OACK: fall back to 512 */
 TEST(test_tftp_fallback_no_oack) {
   setup();
@@ -777,6 +826,8 @@ int main(void) {
   RUN_TEST(test_tftp_duplicate_oack_reacked);
   RUN_TEST(test_tftp_oack_larger_blksize_refused);
   RUN_TEST(test_tftp_oack_tiny_blksize_refused);
+  RUN_TEST(test_tftp_oack_without_blksize_means_512);
+  RUN_TEST(test_tftp_oack_unrequested_blksize_refused);
   RUN_TEST(test_tftp_fallback_no_oack);
   RUN_TEST(test_tftp_rrq_contains_blksize_option);
   RUN_TEST(test_tftp_tick_retransmits_rrq);

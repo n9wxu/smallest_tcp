@@ -98,8 +98,9 @@ With the blksize option (RFC 2347 §4, RFC 2348):
    …
 ```
 
-An OACK that raises the block size, or lowers it below 8, is refused
-(§5):
+An OACK without `blksize` declines it, and the blocks are 512 bytes.  An
+OACK that raises the block size, lowers it below 8, or answers a
+`blksize` the RRQ did not ask for is refused (§5):
 
 ```
   RRQ "file" "octet" "blksize" "<N>"  ──► port 69
@@ -167,25 +168,37 @@ hold a 512-byte block, 558 bytes.
 Cortex-M0 has no divide instruction, and `%` or `/` would link a software
 division routine.
 
-**OACK.**  `oack_input()` walks the name/value pairs (`next_string()`
-stops at the first unterminated string).  An option named `blksize` —
-compared in full and case-insensitively with `net_equal_nocase()`; the
-old parser looked only at the first two letters — sets the block size
-if `acceptable_blksize()`: at least 8, and no more than the size
-requested.  `parse_decimal()` stops accumulating past 65464, so a long
-digit string cannot overflow.  Other options are ignored.  The client
-then enters RECEIVING and sends ACK 0.
+**OACK.**  `oack_input()` first sets the block size to 512.  An OACK
+lists only the options the server accepted (RFC 2347), so one without
+`blksize` declines it, and the server sends 512-byte blocks.  Keeping
+the requested size instead would make the first 512-byte block look
+short: the transfer would end after it, truncated but reported as a
+success.
+
+It then walks the name/value pairs (`next_string()` stops at the first
+unterminated string).  An option named `blksize` — compared in full and
+case-insensitively with `net_equal_nocase()`; the old parser looked only
+at the first two letters — sets the block size if
+`acceptable_blksize()`: at least 8, and no more than the size requested.
+`parse_decimal()` stops accumulating past 65464, so a long digit string
+cannot overflow.  Other options are ignored.  The client then enters
+RECEIVING and sends ACK 0.
 
 Any other `blksize` — larger, below 8, empty or not a number (which
-reads as 0) — is refused by `refuse_oack()`: ERROR 8 "Bad blksize" to
-the server, as RFC 2347 prescribes for an OACK the client does not
-accept, and `on_done(0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize")`.
-RFC 2348 §2 lets the server only lower the size; a larger block might
-not fit the RX buffer, which is what the size requested was chosen for.
-Ignoring a bad value and keeping the requested size, as the client once
-did for one below 8, is worse than refusing it: the server sends
-blocks of the size it announced, and the first one shorter than the
-client expects ends the transfer as if it were the last.
+reads as 0), or one the RRQ did not ask for — is refused by
+`refuse_oack()`.  The RRQ asks only for a size other than 512
+(`blksize_requested()`); when it did not ask, the size requested counts
+as 0, so every `blksize` is refused: RFC 2347 lets the server
+acknowledge only the options the client requested.  A refusal is
+ERROR 8 "Bad blksize" to the server, as RFC 2347 prescribes for an OACK
+the client does not accept, and
+`on_done(0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize")`.  RFC 2348 §2
+lets the server only lower the size; a larger block might not fit the RX
+buffer, which is what the size requested was chosen for.  Ignoring a bad
+value and keeping the requested size, as the client once did for one
+below 8, is worse than refusing it: the server sends blocks of the size
+it announced, and the first one shorter than the client expects ends the
+transfer as if it were the last.
 
 **Repeated OACK.**  If ACK 0 is lost, the server sends its OACK again.
 In RECEIVING, an OACK that arrives while `next_block` is still 1 — no
@@ -298,14 +311,15 @@ as well: the client answers each duplicate block.
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (21 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (23 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts with
 its message and an unterminated message is reported as `""`, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
-an OACK blksize above the one requested or below 8 draws ERROR 8 and
-ends the transfer, fallback when the server ignores the option, blksize
+an OACK blksize above the one requested, below 8 or not requested at
+all draws ERROR 8 and ends the transfer, an OACK without blksize means
+512-byte blocks, fallback when the server ignores the option, blksize
 option in the RRQ, RRQ and ACK retransmission, give-up after the maximum
 retries, timer restart on DATA.
 

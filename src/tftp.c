@@ -48,11 +48,16 @@ static uint16_t put_string(uint8_t *msg, uint16_t pos, const char *s) {
   return (uint16_t)(pos + len);
 }
 
+/* REQ-TFTP-025: only a size other than the default is asked for */
+static int blksize_requested(const tftp_client_t *c) {
+  return c->blksize_opt && c->blksize != TFTP_DEFAULT_BLKSIZE;
+}
+
 /* REQ-TFTP-001..003, 025, 026: filename, "octet", and blksize unless it
  * is the default */
 static net_err_t send_rrq(net_t *net, tftp_client_t *c) {
   uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
-  int with_blksize = c->blksize_opt && c->blksize != TFTP_DEFAULT_BLKSIZE;
+  int with_blksize = blksize_requested(c);
   char blksize[NET_U32_DEC_MAX];
   uint8_t digits = net_u32_to_dec(blksize, c->blksize);
   uint32_t len = 2 + strlen(c->filename) + 1 + sizeof("octet") +
@@ -142,9 +147,10 @@ static uint32_t parse_decimal(const char *s) {
   return v;
 }
 
-/* RFC 2348 §2: the server may lower the size requested, never raise it */
-static int acceptable_blksize(const tftp_client_t *c, uint32_t v) {
-  return v >= TFTP_MIN_BLKSIZE && v <= c->blksize;
+/* RFC 2348 §2: the server may lower the size requested (0 if none was),
+ * never raise it */
+static int acceptable_blksize(uint16_t requested, uint32_t v) {
+  return v >= TFTP_MIN_BLKSIZE && v <= requested;
 }
 
 /* RFC 2347: ERROR 8 to the server, and the transfer ends */
@@ -160,11 +166,13 @@ static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
   const uint8_t *p = data + 2, *end = data + len;
   const char *name, *value;
+  uint16_t requested = blksize_requested(c) ? c->blksize : 0;
+  c->blksize = TFTP_DEFAULT_BLKSIZE; /* an OACK without blksize declines it */
   while ((name = next_string(&p, end)) && (value = next_string(&p, end))) {
     uint32_t v = parse_decimal(value);
     if (!net_equal_nocase(name, "blksize"))
       continue;
-    if (!acceptable_blksize(c, v)) {
+    if (!acceptable_blksize(requested, v)) {
       refuse_oack(net, c);
       return;
     }
