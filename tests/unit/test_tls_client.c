@@ -832,6 +832,27 @@ TEST(test_key_share_wiped) {
   ASSERT_MEM_EQ(t.kx_priv, zero, sizeof(zero));
 }
 
+TEST(test_key_share_wiped_on_failure) {
+  /* Before the ServerHello is processed: a refused ServerHello, the
+   * server's alert, a ClientHello too big for tx */
+  static const uint8_t zero[TLS_KX_PRIV_MAX];
+  static char long_host[201];
+  tls_conn_t t;
+  script_t o;
+  memset(&o, 0, sizeof(o));
+  o.bad_sid = 1;
+  ASSERT_EQ(scripted(&t, &o), 0);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_ERROR);
+  ASSERT_MEM_EQ(t.kx_priv, zero, sizeof(zero));
+  ASSERT_EQ(client_start(&t, &cli, sizeof(cli_rx), sizeof(cli_tx), HOST), 0);
+  tls_input(&t, (const uint8_t *)"\x15\x03\x03\x00\x02\x02\x28", 7);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_ERROR);
+  ASSERT_MEM_EQ(t.kx_priv, zero, sizeof(zero));
+  memset(long_host, 'a', sizeof(long_host) - 1);
+  ASSERT_EQ(client_start(&t, &cli, sizeof(cli_rx), 256, long_host), -1);
+  ASSERT_MEM_EQ(t.kx_priv, zero, sizeof(zero));
+}
+
 TEST(test_scripted_refusals_encrypted_extensions) {
   script_t o;
   memset(&o, 0, sizeof(o));
@@ -1403,6 +1424,7 @@ int main(void) {
   RUN_TEST(test_scripted_message_beside_kept_certificate);
   RUN_TEST(test_scripted_ccs_refused_after_handshake);
   RUN_TEST(test_key_share_wiped);
+  RUN_TEST(test_key_share_wiped_on_failure);
   RUN_TEST(test_scripted_refusals_encrypted_extensions);
   RUN_TEST(test_scripted_refusals_certificate);
   RUN_TEST(test_scripted_refusals_certificate_verify);

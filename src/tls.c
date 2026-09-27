@@ -34,6 +34,7 @@ static void wipe_keys(tls_conn_t *t) {
   tls_wipe(t->wsec, sizeof(t->wsec));
   tls_wipe(&t->rkeys, sizeof(t->rkeys));
   tls_wipe(&t->wkeys, sizeof(t->wkeys));
+  tls_wipe(t->kx_priv, sizeof(t->kx_priv));
 }
 
 /* ── Shared by both roles ── */

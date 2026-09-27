@@ -236,7 +236,7 @@ if (tls_state(&tls) == TLS_STATE_CONNECTED) {
 States: `IDLE` → `HANDSHAKE` (`tls_accept()` / `tls_connect()`) →
 `CONNECTED` (Finished) → `CLOSED` (the peer's close_notify; we may still
 write until our own `tls_close()`), or `ERROR` from any of them (an alert
-sent or received; secrets and record keys wiped).  After `CLOSED` or `ERROR`, received
+sent or received; secrets and keys wiped).  After `CLOSED` or `ERROR`, received
 bytes are discarded.
 
 The demos: `tls_echo_demo` (an echo server on port 4433), `https_demo`
@@ -409,8 +409,9 @@ when the next message does not fit, the step waits for `tls_tx_done()`.
 
 `tls_fail(t, alert)` drops a half-built record, queues the fatal alert
 (protected if our keys are active, and only if tx has room), sets `ERROR`
-and `tls->alert`, wipes the secrets and record keys, reports `TLS_EVT_ERROR`, and
-returns the negated alert, which the callers pass up to `tls_rx_commit()`.
+and `tls->alert`, wipes the secrets, record keys and the client's key share,
+reports `TLS_EVT_ERROR`, and returns the negated alert, which the callers
+pass up to `tls_rx_commit()`.
 
 ---
 
@@ -663,11 +664,10 @@ The Master Secret exists only on the stack for the moment it is used.
 ## 12. Security notes
 
 - Finished MACs and PSK binders are compared in constant time (`tls_equal()`).
-- Secrets, traffic keys and the server's ephemeral private key are wiped as
-  soon as they are done with; the secrets and record keys also on any fatal
-  error or fatal alert.  The client's ephemeral private key (`kx_priv`) is
-  wiped once the ServerHello has been processed; a handshake that fails
-  before that leaves it in the connection until the next `tls_init()`.
+- Secrets, traffic keys and ephemeral private keys are wiped as soon as they
+  are done with — the client's (`kx_priv`) once the ServerHello has been
+  processed — and all of them on any fatal error or fatal alert, and when
+  `tls_connect()` fails.
 - The client verifies the chain, the name (DNS or IP) and CertificateVerify
   before it sends its Finished — before that it has sent only its
   ClientHello — and refuses any extension it did not offer.

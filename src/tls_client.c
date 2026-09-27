@@ -601,8 +601,10 @@ int tls_connect(tls_conn_t *t, const char *host) {
   t->group = first_group(cfg);
   c->hash_init(&t->transcript);
   if (c->random(c->ctx, t->sid, TLS_RANDOM_LEN) != 0 ||
-      client_hello(t, NULL, 0, NULL, NULL, 0) != 0)
+      client_hello(t, NULL, 0, NULL, NULL, 0) != 0) {
+    tls_wipe(t->kx_priv, sizeof(t->kx_priv));
     return -1;
+  }
   t->state = TLS_STATE_HANDSHAKE;
   t->step = ST_C_WAIT_SH;
   t->flags = F_CCS_OK; /* a server may send the dummy one anyway */
