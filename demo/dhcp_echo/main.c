@@ -43,6 +43,9 @@ static void on_dhcp_event(uint8_t event, void *ctx) {
   case DHCPV4_EVT_NAK:
     printf("[DHCP] NAK — restarting\n");
     break;
+  case DHCPV4_EVT_TIMEOUT:
+    printf("[DHCP] no answer to the REQUEST — restarting\n");
+    break;
   default:
     break;
   }

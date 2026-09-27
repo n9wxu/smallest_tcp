@@ -93,7 +93,7 @@ server from its configured address.  The old code temporarily overwrote
 |---|---|---|---|---|
 | INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()` | — | none | `dhcpv4_client_start()` → SELECTING |
 | SELECTING | start, NAK, lease expiry, REQUESTING's give-up (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER → REQUESTING |
-| REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING |
+| REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING (`DHCPV4_EVT_TIMEOUT`) |
 | BOUND | ACK | — | lease clock | T1 → RENEWING |
 | RENEWING | T1 | REQUEST to the server's IP; again after half the time left until T2, at least 60 s later | lease clock | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; T2 → REBINDING |
 | REBINDING | T2 | REQUEST, broadcast; again after half the time left until the lease ends, at least 60 s later | lease clock | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; lease end → `DHCPV4_EVT_EXPIRED`, SELECTING |
@@ -110,7 +110,9 @@ milliseconds from `net_random_below()`), with the same transaction ID
 REQUESTING gives up after four retransmissions — RFC 2131 §3.1's example,
 60 s: when the 64 s wait after the fourth runs out with no ACK or NAK,
 discovery starts again with a new transaction ID (`retransmit()`,
-RFC 2131 §4.4.1).  No event fires; the client had no address yet.
+RFC 2131 §4.4.1), and `DHCPV4_EVT_TIMEOUT` tells the application, as
+RFC 2131 §3.1 says the client SHOULD ("notify the user that the
+initialization process has failed and is restarting").
 
 **Renewing and rebinding** (RFC 2131 §4.4.5) run on the lease clock
 (§6): `since_s`, the seconds since the ACK.  `lease_phase()` names the
@@ -318,6 +320,7 @@ included option 150.
 | `DHCPV4_EVT_RENEWED` | ACK in RENEWING or REBINDING | As BOUND, with the new lease |
 | `DHCPV4_EVT_EXPIRED` | The lease clock reaches `lease_time` | Still the old address — it is cleared right after the callback, and a DISCOVER follows |
 | `DHCPV4_EVT_NAK` | NAK in REQUESTING, RENEWING or REBINDING | As EXPIRED |
+| `DHCPV4_EVT_TIMEOUT` | REQUESTING's fourth retransmission unanswered | No address yet; a DISCOVER follows |
 
 On EXPIRED and NAK the application tears down its TCP connections: the
 address they use is gone.  Release fires no event.

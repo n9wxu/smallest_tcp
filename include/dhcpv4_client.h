@@ -40,6 +40,8 @@ extern "C" {
 #define DHCPV4_EVT_RENEWED 2 /**< Lease extended by a renew or rebind */
 #define DHCPV4_EVT_EXPIRED 3 /**< Lease expired; IP cleared, INIT restarted */
 #define DHCPV4_EVT_NAK 4     /**< Server rejected request; INIT restarted */
+#define DHCPV4_EVT_TIMEOUT 5 /**< No answer to the REQUEST for an offer;
+                                  discovery restarts (RFC 2131 §3.1) */
 
 /* Option handler callback */
 
@@ -110,7 +112,7 @@ typedef struct {
  * @param c         Application-owned client state.
  * @param net       The interface, whose frame buffers must hold
  *                  DHCPV4_CLIENT_TX_MIN and DHCPV4_CLIENT_RX_MIN bytes.
- * @param on_event  Called on BOUND/RENEWED/EXPIRED/NAK (may be NULL).
+ * @param on_event  Called on DHCPV4_EVT_* (may be NULL).
  * @param evt_ctx   Opaque pointer passed to on_event.
  * @param opts      Option handler table (may be NULL).
  * @return NET_OK, NET_ERR_INVALID_PARAM, or NET_ERR_BUF_TOO_SMALL.

@@ -180,9 +180,11 @@ static void start_selecting(net_t *net, dhcpv4_client_t *c) {
   begin_exchange(net, c, DHCPV4_CLI_SELECTING);
 }
 
-/* REQ-DHCPv4-045 */
+/* REQ-DHCPv4-045; RFC 2131 §3.1: the user is told when a REQUEST goes
+ * unanswered and discovery starts again */
 static void retransmit(net_t *net, dhcpv4_client_t *c) {
   if (c->state == DHCPV4_CLI_REQUESTING && c->retries == REQUEST_RETRANSMITS) {
+    fire_event(c, DHCPV4_EVT_TIMEOUT);
     start_selecting(net, c);
     return;
   }

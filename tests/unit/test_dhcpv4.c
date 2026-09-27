@@ -573,7 +573,7 @@ static uint8_t sent_msg_type(void) {
 }
 
 /* RFC 2131 §3.1, §4.4.1: four REQUEST retransmissions unanswered —
-   discovery starts again, with a new xid */
+   discovery starts again, with a new xid, and the application is told */
 TEST(test_dhcp_client_requesting_gives_up) {
   static const uint32_t base_ms[] = {4000, 8000, 16000, 32000};
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -581,7 +581,7 @@ TEST(test_dhcp_client_requesting_gives_up) {
   uint32_t xid;
   uint8_t i;
   setup();
-  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
   xid = cli.xid;
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
@@ -592,10 +592,13 @@ TEST(test_dhcp_client_requesting_gives_up) {
     ASSERT_TRUE(within_a_second(ms_until_sent(70000u), base_ms[i]));
     ASSERT_EQ(sent_msg_type(), DHCP_MSG_REQUEST);
   }
+  ASSERT_EQ(event_count, 0);
   ASSERT_TRUE(within_a_second(ms_until_sent(70000u), 64000u));
   ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
   ASSERT_EQ(sent_msg_type(), DHCP_MSG_DISCOVER);
   ASSERT_NE(cli.xid, xid);
+  ASSERT_EQ(event_count, 1);
+  ASSERT_EQ(last_event, DHCPV4_EVT_TIMEOUT);
 }
 
 /* ── Helpers: the lease clock ─────────────────────────────────────── */

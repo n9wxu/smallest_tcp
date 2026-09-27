@@ -318,8 +318,8 @@ starts with a unit test that fails on the current code.
 - [x] Unicast renewals are sent to the broadcast MAC — to the source MAC
       of the server's ACK; `dhcpv4_client_input()` takes it
 - [x] Any NAK with our xid drops the lease; its source is not checked
-- [ ] No event when REQUESTING gives up and discovery restarts (§3.1 SHOULD
-      notify the user); adding one changes the API
+- [x] No event when REQUESTING gives up and discovery restarts (§3.1 SHOULD
+      notify the user); adding one changes the API — `DHCPV4_EVT_TIMEOUT`
 - [ ] An ACK without a lease time leaves the client bound for good, like an
       infinite lease
 - [ ] Server: always sets the broadcast flag and leaves `giaddr` 0, where
