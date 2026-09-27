@@ -26,6 +26,7 @@ static uint8_t sent_frames[8][1514];
 static uint16_t sent_lens[8];
 static int send_count;
 static int failing_sends; /* the next sends the driver fails */
+static int busy_sends;    /* the next sends find the driver busy */
 
 static int stub_init(void *ctx) {
   (void)ctx;
@@ -36,6 +37,10 @@ static int stub_send(void *ctx, const uint8_t *f, uint16_t l) {
   if (failing_sends > 0) {
     failing_sends--;
     return -1;
+  }
+  if (busy_sends > 0) {
+    busy_sends--;
+    return 0;
   }
   int idx = send_count < 8 ? send_count : 7;
   memcpy(sent_frames[idx], f, l);
@@ -108,6 +113,7 @@ static void setup(void) {
   memset(sent_lens, 0, sizeof(sent_lens));
   send_count = 0;
   failing_sends = 0;
+  busy_sends = 0;
   evt_connected = evt_data = evt_writable = evt_closed = evt_reset = evt_error =
       0;
 
@@ -1115,6 +1121,34 @@ TEST(test_tcp_unsent_frame_is_retransmitted) {
   ASSERT_MEM_EQ(sent_tcp_payload(0), "data", 4);
 }
 
+/* A SYN the driver did not take is lost like any other segment: the
+ * connection is opening, and the retransmission timer sends it again */
+TEST(test_tcp_connect_with_busy_driver_resends_syn) {
+  setup();
+  busy_sends = 1;
+  ASSERT_EQ(tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT,
+                        LOCAL_PORT),
+            NET_OK);
+  ASSERT_EQ(conn.state, TCP_SYN_SENT);
+  ASSERT_EQ(send_count, 0);
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_flags(0), TCP_FLAG_SYN);
+  ASSERT_EQ(sent_tcp_seq(0), conn.iss);
+}
+
+TEST(test_tcp_connect_with_failing_driver_resends_syn) {
+  setup();
+  failing_sends = 1;
+  ASSERT_EQ(tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT,
+                        LOCAL_PORT),
+            NET_OK);
+  ASSERT_EQ(conn.state, TCP_SYN_SENT);
+  tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_flags(0), TCP_FLAG_SYN);
+}
+
 /* §3.10.7.4 step 5: an ACK of nothing new still updates the window */
 TEST(test_tcp_window_update_resumes_sending) {
   uint8_t frame[128];
@@ -1728,6 +1762,8 @@ int main(void) {
   RUN_TEST(test_tcp_close_sends_unsent_data_first);
   RUN_TEST(test_tcp_close_fin_waits_for_the_last_segment);
   RUN_TEST(test_tcp_unsent_frame_is_retransmitted);
+  RUN_TEST(test_tcp_connect_with_busy_driver_resends_syn);
+  RUN_TEST(test_tcp_connect_with_failing_driver_resends_syn);
   RUN_TEST(test_tcp_window_update_resumes_sending);
   RUN_TEST(test_tcp_mss_advertised_from_rx_buffer);
   RUN_TEST(test_tcp_segments_fit_tx_buffer);

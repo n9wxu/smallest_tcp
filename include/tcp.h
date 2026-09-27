@@ -165,8 +165,10 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
 net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port);
 
 /**
- * Active open over IPv4; TCP_EVT_CONNECTED follows.
+ * Active open over IPv4; TCP_EVT_CONNECTED follows.  A SYN the driver does
+ * not take is resent by the retransmission timer, like any lost segment.
  * @param remote_mac  The peer's or the gateway's MAC, already resolved.
+ * @return NET_OK, or NET_ERR_INVALID_PARAM.
  */
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
@@ -174,7 +176,8 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
 
 #if NET_USE_IPV6
 /**
- * Active open over IPv6, from the address ipv6_src_for() picks.
+ * Active open over IPv6, from the address ipv6_src_for() picks; otherwise
+ * as tcp_connect().
  * @return NET_OK, or NET_ERR_INVALID_PARAM (also: no usable source).
  */
 net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,

@@ -195,7 +195,7 @@ goes out after the next `TCP_EVT_WRITABLE`.
 |---|---|---|
 | `tcp_conn_init()` | Zero the connection, attach buffers and callback; CLOSED | any |
 | `tcp_listen()` | LISTEN on a port | any (normally CLOSED) |
-| `tcp_connect()`, `tcp6_connect()` | Send the SYN now; SYN-SENT.  An error, and still CLOSED, if the SYN cannot be sent (`NET_ERR_BUSY` from a busy driver), or (IPv6) no source address is usable | CLOSED |
+| `tcp_connect()`, `tcp6_connect()` | Send the SYN now; SYN-SENT.  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  An error, and still CLOSED, only for a bad argument or (IPv6) when no source address is usable | CLOSED |
 | `tcp_write()` | Queue data; returns bytes accepted — 0 while the stop-and-wait buffer has a segment in flight | ESTABLISHED, CLOSE-WAIT (else < 0) |
 | `tcp_output()` | Send one segment of the data not yet sent, as the window allows | ESTABLISHED, CLOSE-WAIT |
 | `tcp_send()` | `tcp_write()`, then `tcp_output()` if anything was accepted | ESTABLISHED, CLOSE-WAIT |
@@ -439,11 +439,13 @@ leaving room for the IP header; the caller writes the TCP header and payload;
 `frame_send()` computes the checksum over the pseudo-header, writes the IPv4
 or IPv6 header and calls `net_transmit()`.  The payload is copied once, from
 the TX buffer into the frame.  The checksum is always computed in software.
-What `net_transmit()` returns matters only for the first SYN of an active
-open, which `tcp_connect()` and `tcp6_connect()` report.  Any other segment
-the driver did not take is treated as lost on the wire: a SYN or SYN,ACK,
-data, a FIN or a probe is sent again by its timer (section 4.3), and an ACK
-or RST is answered again when the peer retransmits.
+TCP ignores what `net_transmit()` returns: a segment the driver did not take
+is treated as lost on the wire.  A SYN or SYN,ACK, data, a FIN or a probe is
+sent again by its timer (section 4.3), and an ACK or RST is answered again
+when the peer retransmits.  That includes the first SYN of an active open:
+`tcp_connect()` used to fail with `NET_ERR_BUSY` for a busy driver, the one
+segment treated differently.  Every segment fits `net->tx`, since
+`net_init()` insists on `TCP_MIN_FRAME` (section 4.4).
 
 ### 4.2 Segments
 
@@ -855,13 +857,13 @@ With `NET_USE_IPV6` 0 the IPv6 members and branches compile out.
 
 ## 9. Tests and files
 
-- **Unit:** `tests/unit/test_tcp.c` (61 tests: handshakes, `tcp_write()` /
+- **Unit:** `tests/unit/test_tcp.c` (63 tests: handshakes, `tcp_write()` /
   `tcp_output()`, in-order delivery with gaps, overlaps, duplicates and FIN
   placement, window updates including pure ones, active and passive close,
   the FIN queued behind unsent data, RST, retransmission of SYN, data and FIN,
   partial ACKs, a zero window that outlasts the retransmission limit while
   the peer answers, retransmissions counted per segment, frames the driver
-  did not send, TIME-WAIT, MSS from the RX and TX buffers, RFC 6528 initial
+  did not send (an active open's SYN among them), TIME-WAIT, MSS from the RX and TX buffers, RFC 6528 initial
   sequence numbers, persist),
   `tests/unit/test_tcp6.c` (19: IPv6, dual-stack listeners, source address,
   MSS within the Ethernet MTU), `tests/unit/test_tcp_buf.c` (22: the

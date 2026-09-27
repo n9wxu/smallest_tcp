@@ -121,8 +121,8 @@ static uint8_t *frame_start(net_t *net, const tcp_ep_t *ep, uint16_t tcp_len) {
 }
 
 /* Checksum the finished segment, add the IP header, send (REQ-TCP-139) */
-static net_err_t frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
-                            uint16_t tcp_len) {
+static void frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
+                       uint16_t tcp_len) {
   uint8_t *ip_hdr = net->tx.buf + ETH_HDR_SIZE;
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, 0);
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, checksum(ep, 0, tcp_hdr, tcp_len));
@@ -133,8 +133,7 @@ static net_err_t frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
   else
 #endif
     ipv4_build(ip_hdr, tcp_len, IPV4_PROTO_TCP, ep->local_ip4, ep->ip4);
-  return net_transmit(net,
-                      (uint16_t)(ETH_HDR_SIZE + ip_header_size(ep) + tcp_len));
+  net_transmit(net, (uint16_t)(ETH_HDR_SIZE + ip_header_size(ep) + tcp_len));
 }
 
 static void write_header(uint8_t *hdr, uint16_t src_port, uint16_t dst_port,
@@ -152,11 +151,12 @@ static void write_header(uint8_t *hdr, uint16_t src_port, uint16_t dst_port,
 
 /*
  * A segment on @p conn acknowledging RCV.NXT and advertising our window
- * (none on a RST).  A SYN carries our MSS (REQ-TCP-076).
+ * (none on a RST).  A SYN carries our MSS (REQ-TCP-076).  One the driver
+ * does not take is lost, as on the wire (docs/design/tcp.md §4.1).
  */
-static net_err_t send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
-                              uint32_t seq, const uint8_t *data,
-                              uint16_t data_len) {
+static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
+                         uint32_t seq, const uint8_t *data,
+                         uint16_t data_len) {
   uint16_t hdr_len =
       TCP_HDR_SIZE + ((flags & TCP_FLAG_SYN) ? TCP_MSS_OPTION_LEN : 0);
   uint16_t tcp_len = (uint16_t)(hdr_len + data_len);
@@ -165,7 +165,7 @@ static net_err_t send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
 
   conn_endpoint(net, conn, &ep);
   if (!(hdr = frame_start(net, &ep, tcp_len)))
-    return NET_ERR_BUF_TOO_SMALL;
+    return;
   write_header(hdr, conn->local_port, conn->remote_port, seq, conn->rcv_nxt,
                flags, hdr_len, (flags & TCP_FLAG_RST) ? 0 : conn->rcv_wnd);
   if (flags & TCP_FLAG_SYN) {
@@ -175,7 +175,7 @@ static net_err_t send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
   }
   if (data_len > 0)
     memcpy(hdr + hdr_len, data, data_len);
-  return frame_send(net, &ep, hdr, tcp_len);
+  frame_send(net, &ep, hdr, tcp_len);
 }
 
 static void send_ack(net_t *net, tcp_conn_t *conn) {
@@ -183,10 +183,10 @@ static void send_ack(net_t *net, tcp_conn_t *conn) {
 }
 
 /* Our SYN (SYN-SENT) or SYN,ACK (SYN-RECEIVED) */
-static net_err_t send_syn(net_t *net, tcp_conn_t *conn) {
+static void send_syn(net_t *net, tcp_conn_t *conn) {
   uint8_t flags =
       conn->state == TCP_SYN_SENT ? TCP_FLAG_SYN : TCP_FLAG_SYN | TCP_FLAG_ACK;
-  return send_segment(net, conn, flags, conn->iss, NULL, 0);
+  send_segment(net, conn, flags, conn->iss, NULL, 0);
 }
 
 /* Our FIN, which occupies the sequence number @p seq */
@@ -940,12 +940,11 @@ net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port) {
   return NET_OK;
 }
 
-/* Active open, once the peer's address is in @p conn */
-static net_err_t open_to(net_t *net, tcp_conn_t *conn,
-                         const uint8_t *remote_mac, uint16_t remote_port,
-                         uint16_t local_port) {
+/* Active open, once the peer's address is in @p conn.  A SYN the driver
+ * did not take is lost like any other segment: its timer resends it. */
+static void open_to(net_t *net, tcp_conn_t *conn, const uint8_t *remote_mac,
+                    uint16_t remote_port, uint16_t local_port) {
   tcp_ep_t peer;
-  net_err_t err;
 
   conn->local_port = local_port;
   conn->remote_port = remote_port;
@@ -957,12 +956,8 @@ static net_err_t open_to(net_t *net, tcp_conn_t *conn,
   conn->rcv_nxt = 0;
   conn->rcv_wnd = conn->rxbuf_ops->available(conn->rxbuf_ctx);
   conn->state = TCP_SYN_SENT;
-  if ((err = send_syn(net, conn)) != NET_OK) {
-    conn->state = TCP_CLOSED;
-    return err;
-  }
+  send_syn(net, conn);
   retransmit_timer_start(conn);
-  return NET_OK;
 }
 
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
@@ -974,7 +969,8 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
 #if NET_USE_IPV6
   conn->ip_ver = 4;
 #endif
-  return open_to(net, conn, remote_mac, remote_port, local_port);
+  open_to(net, conn, remote_mac, remote_port, local_port);
+  return NET_OK;
 }
 
 #if NET_USE_IPV6
@@ -991,7 +987,8 @@ net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
   conn->local_slot = (uint8_t)ipv6_addr_slot(net, src);
   conn->remote_ip = 0;
   memcpy(conn->remote_ip6, remote_ip, 16);
-  return open_to(net, conn, remote_mac, remote_port, local_port);
+  open_to(net, conn, remote_mac, remote_port, local_port);
+  return NET_OK;
 }
 #endif
 

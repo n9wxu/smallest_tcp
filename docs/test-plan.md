@@ -104,7 +104,7 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 081 | Segments fit the TX frame buffer | test_tcp_segments_fit_tx_buffer | ✅ |
 | 082/083 | Window advertised > 0 | test_tcp_window_advertised_nonzero | ✅ |
 | 090 | Retransmit on timeout | test_tcp_retransmit_on_timeout | ✅ |
-| 095 | RTO doubles on retry; the rest of a partly ACKed segment and a frame the driver did not send are resent | test_tcp_retransmit_on_timeout, test_tcp_partial_ack_resends_rest_in_place, test_tcp_unsent_frame_is_retransmitted | ✅ |
+| 095 | RTO doubles on retry; the rest of a partly ACKed segment and a frame the driver did not send (an active open's SYN too) are resent | test_tcp_retransmit_on_timeout, test_tcp_partial_ack_resends_rest_in_place, test_tcp_unsent_frame_is_retransmitted, test_tcp_connect_with_busy_driver_resends_syn, test_tcp_connect_with_failing_driver_resends_syn | ✅ |
 | 097/098 | RTO stops on ACK; retransmissions counted per segment | test_tcp_rto_resets_on_ack, test_tcp_retransmissions_counted_per_segment | ✅ |
 | 109/111 | NOP/unknown option ignored | test_tcp_options_nop_unknown_ignored | ✅ |
 | 112 | MSS parsed from options | test_tcp_options_nop_unknown_ignored | ✅ |

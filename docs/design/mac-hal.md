@@ -136,10 +136,9 @@ means the frame was not sent.  What happens next depends on the caller:
   in-place forms, `arp_request()` — return the error, and the application may
   try again.  An in-place payload is still in `tx.buf` only until the next
   frame is built there.
-- **TCP** ignores it, except for the SYN of `tcp_connect()` /
-  `tcp6_connect()`, which fails with it.  Every other segment counts as sent
-  and lost: data, SYN,ACK, FIN and window probes are sent again by the
-  retransmission or persist timer
+- **TCP** ignores it.  Every segment counts as sent and lost: SYN (an
+  active open's first included), SYN,ACK, data, FIN and window probes are
+  sent again by the retransmission or persist timer
   ([tcp.md §4.3](tcp.md#43-output-flush-and-send_data)), and a lost ACK or
   RST is repeated when the peer retransmits.
 - **Messages the stack sends on its own** — ARP replies, ICMP and ICMPv6
