@@ -886,6 +886,40 @@ TEST(test_tftp_timer_reset_on_data) {
   ASSERT_EQ(send_count, 0); /* still no retransmit */
 }
 
+/* REQ-TFTP-020 — only progress restarts the timer: a duplicate block, a
+   repeated OACK or an unknown opcode from the server's port does not, and
+   a server that sends nothing new is given up on */
+TEST(test_tftp_timer_not_reset_without_progress) {
+  static const uint8_t odd[] = {0, 9, 0, 0};
+  uint8_t full[512], pkt[600];
+  uint16_t plen;
+  uint8_t i;
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+  memset(full, 0x22, sizeof(full));
+  plen = make_data(pkt, 1, full, 512);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen); /* progress: block 1, ACK 1 */
+  tftp_client_tick(&net, &client, TFTP_TIMEOUT_MS - 1000u);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    plen); /* block 1 again: ACK 1 again */
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, odd,
+                    sizeof(odd));
+  send_count = 0;
+  tftp_client_tick(&net, &client, 1000u);
+  ASSERT_EQ(send_count, 1); /* the timer ran out on schedule */
+  ASSERT_EQ(client.retries, (uint8_t)1);
+
+  for (i = 1; i <= TFTP_MAX_RETRIES; i++) {
+    tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                      plen);
+    tftp_client_tick(&net, &client, TFTP_TIMEOUT_MS);
+  }
+  ASSERT_EQ(done_called, 1);
+  ASSERT_EQ(done_ok, 0);
+  ASSERT_EQ(strcmp(done_msg, "Timeout"), 0);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -916,6 +950,7 @@ int main(void) {
   RUN_TEST(test_tftp_tick_retransmits_ack);
   RUN_TEST(test_tftp_max_retries_timeout);
   RUN_TEST(test_tftp_timer_reset_on_data);
+  RUN_TEST(test_tftp_timer_not_reset_without_progress);
   TEST_REPORT();
   return test_failures;
 }

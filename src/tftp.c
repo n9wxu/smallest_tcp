@@ -110,6 +110,13 @@ static void reject_stray(net_t *net, const tftp_client_t *c, uint32_t ip,
     udp_send_inplace(net, ip, mac, c->local_port, port, len, NET_DEFAULT_TTL);
 }
 
+/* REQ-TFTP-020: the server moved the transfer on — the OACK taken, or the
+ * block expected — so the timer starts again; nothing else restarts it */
+static void made_progress(tftp_client_t *c) {
+  c->timer_ms = TFTP_TIMEOUT_MS;
+  c->retries = 0;
+}
+
 static void finish(tftp_client_t *c, uint8_t ok, uint16_t code,
                    const char *msg) {
   c->state = ok ? TFTP_STATE_DONE : TFTP_STATE_ERROR;
@@ -181,6 +188,7 @@ static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
     c->blksize = (uint16_t)v;
   }
   c->state = TFTP_STATE_RECEIVING;
+  made_progress(c);
   send_ack(net, c, 0);
 }
 
@@ -194,6 +202,7 @@ static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
     c->state = TFTP_STATE_RECEIVING;
   }
   if (block == c->next_block) {
+    made_progress(c);
     if (c->on_data)
       c->on_data(block, data + TFTP_DATA_HDR_SIZE, block_len, c->cb_ctx);
     send_ack(net, c, block);
@@ -270,9 +279,6 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
       reject_stray(net, c, src_ip, src_mac, src_port);
     return;
   }
-  c->timer_ms = TFTP_TIMEOUT_MS;
-  c->retries = 0;
-
   switch (opcode) {
   case TFTP_OP_ERROR:
     finish(c, 0, net_read16be(data + 2), error_message(data, len));

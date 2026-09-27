@@ -300,8 +300,13 @@ the result of the first RRQ, but the transfer is REQUESTING either way,
 so a failed first send is retried by the timer.
 
 **Retransmission** (`tftp_client_tick()`).  One timer of `TFTP_TIMEOUT_MS`
-(3 s) runs in REQUESTING and RECEIVING; every datagram from the server's
-transfer ID (§6), any opcode, restarts it and clears the retry count.
+(3 s) runs in REQUESTING and RECEIVING.  Progress restarts it and clears
+the retry count (`made_progress()`): an OACK the client takes, or the DATA
+block it expects next.  Nothing else from the server does — a duplicate
+block (answered with its ACK again), a repeated OACK, an opcode the client
+ignores — so a server that keeps resending what it has sent, never
+getting our ACK, is given up on like a silent one.  Every datagram from
+the server's transfer ID used to restart it.
 When it runs out, REQUESTING resends the RRQ and RECEIVING resends the
 last ACK (`next_block − 1`, which is ACK 0 after an OACK); after
 `TFTP_MAX_RETRIES` (5) retransmissions without an answer the transfer
@@ -323,7 +328,7 @@ as well: the client answers each duplicate block.
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (26 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (27 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts with
 its message and an unterminated message is reported as `""`, a
@@ -335,7 +340,7 @@ all, or not a number ("512abc"), and an option never requested, draw
 ERROR 8 and end the transfer, an OACK without blksize means
 512-byte blocks, fallback when the server ignores the option, blksize
 option in the RRQ, RRQ and ACK retransmission, give-up after the maximum
-retries, timer restart on DATA.
+retries, timer restart on the block expected and on nothing else.
 
 `demo/tftp_client` fetches a file from a real server (e.g. dnsmasq with
 `--enable-tftp`) with blksize negotiation.

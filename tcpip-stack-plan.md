@@ -340,7 +340,7 @@ starts with a unit test that fails on the current code.
       the coding rules' "reject, don't repair" says drop it
 - [x] Options in an OACK we never requested, other than blksize, are ignored
       rather than refused (RFC 2347)
-- [ ] The retransmission timer restarts on any datagram from the server's
+- [x] The retransmission timer restarts on any datagram from the server's
       TID, including ones that are ignored
 - [ ] The server TID uses 0 for "unknown", so a server answering from port 0
       is mishandled
