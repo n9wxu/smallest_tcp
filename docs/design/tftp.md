@@ -117,6 +117,12 @@ server that refuses the transfer answers with ERROR, which ends it:
                               ◄── ERROR 1 "File not found"   on_done(ok = 0, 1, "File not found")
 ```
 
+An ERROR (or DATA) shorter than 4 bytes, too short for its code (or block
+number), is dropped before it counts for anything (`truncated()`) — it
+does not fix the server's transfer ID or restart the timer.  It used to
+end the transfer with error code 0; the coding rules' "reject, don't
+repair" says a malformed packet is dropped.
+
 `on_done` receives the server's message only if its NUL lies within the
 datagram (`error_message()`, REQ-TFTP-017); otherwise it receives `""`.
 The message is a pointer into the receive buffer, so an unterminated one
@@ -314,10 +320,11 @@ as well: the client answers each duplicate block.
 
 ## 10. Tests
 
-`tests/unit/test_tftp.c` (24 tests): RRQ format and default block size,
+`tests/unit/test_tftp.c` (25 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block
 ends the transfer, duplicate block re-acknowledged, ERROR aborts with
-its message and an unterminated message is reported as `""`, ERROR 5
+its message and an unterminated message is reported as `""`, a
+truncated ERROR is dropped, ERROR 5
 to a stray port or host and none for a stray ERROR, OACK sets the block
 size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
 an OACK blksize above the one requested, below 8 or not requested at

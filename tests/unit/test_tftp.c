@@ -453,6 +453,26 @@ TEST(test_tftp_error_unterminated_message) {
   ASSERT_EQ(strcmp(done_msg, ""), 0);
 }
 
+/* REQ-TFTP-017 — an ERROR too short for its code (2 or 3 bytes) is
+   malformed and dropped, not taken as ERROR 0: reject, don't repair */
+TEST(test_tftp_truncated_error_dropped) {
+  static const uint8_t err2[] = {0, TFTP_OP_ERROR};
+  static const uint8_t err3[] = {0, TFTP_OP_ERROR, 0};
+  uint8_t full[512], pkt[600];
+  setup();
+  tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, err2,
+                    sizeof(err2));
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, err3,
+                    sizeof(err3));
+  ASSERT_EQ(done_called, 0);
+  ASSERT_EQ(client.state, TFTP_STATE_REQUESTING);
+  memset(full, 0x11, sizeof(full));
+  tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
+                    make_data(pkt, 1, full, 100));
+  ASSERT_EQ(done_ok, 1);
+}
+
 /* REQ-TFTP-018 — wrong TID → ERROR(5) sent, transfer continues */
 TEST(test_tftp_wrong_tid_sends_error5) {
   setup();
@@ -865,6 +885,7 @@ int main(void) {
   RUN_TEST(test_tftp_duplicate_block);
   RUN_TEST(test_tftp_error_packet_aborts);
   RUN_TEST(test_tftp_error_unterminated_message);
+  RUN_TEST(test_tftp_truncated_error_dropped);
   RUN_TEST(test_tftp_wrong_tid_sends_error5);
   RUN_TEST(test_tftp_stray_host_gets_error5);
   RUN_TEST(test_tftp_stray_error_not_answered);

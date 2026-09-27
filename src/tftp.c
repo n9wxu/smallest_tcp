@@ -131,12 +131,8 @@ static const char *next_string(const uint8_t **p, const uint8_t *end) {
 
 /* REQ-TFTP-017: the ERROR's text, or "" if it does not end in the datagram */
 static const char *error_message(const uint8_t *data, uint16_t len) {
-  const uint8_t *p;
-  const char *msg;
-  if (len <= 4)
-    return "";
-  p = data + 4;
-  msg = next_string(&p, data + len);
+  const uint8_t *p = data + 4;
+  const char *msg = next_string(&p, data + len);
   return msg ? msg : "";
 }
 
@@ -187,11 +183,8 @@ static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
 /* REQ-TFTP-009..015, 031 */
 static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
-  uint16_t block, block_len;
-  if (len < TFTP_DATA_HDR_SIZE)
-    return;
-  block = net_read16be(data + 2);
-  block_len = (uint16_t)(len - TFTP_DATA_HDR_SIZE);
+  uint16_t block = net_read16be(data + 2);
+  uint16_t block_len = (uint16_t)(len - TFTP_DATA_HDR_SIZE);
   if (c->state == TFTP_STATE_REQUESTING) { /* blksize option ignored */
     c->blksize = TFTP_DEFAULT_BLKSIZE;
     c->state = TFTP_STATE_RECEIVING;
@@ -245,6 +238,12 @@ net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
   return send_rrq(net, c);
 }
 
+/* Too short for what its opcode says: a DATA or ERROR of fewer than 4
+ * bytes is dropped before it counts for anything (reject, don't repair) */
+static int truncated(uint16_t opcode, uint16_t len) {
+  return (opcode == TFTP_OP_DATA || opcode == TFTP_OP_ERROR) && len < 4;
+}
+
 /* REQ-TFTP-006, 016..018 */
 void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
                        const uint8_t *src_mac, uint16_t src_port,
@@ -254,6 +253,8 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
       len < 2)
     return;
   opcode = net_read16be(data);
+  if (truncated(opcode, len))
+    return;
 
   /* The first answer from the server's IP fixes its transfer ID (port) */
   if (c->server_tid == 0 && src_ip == c->server_ip &&
@@ -270,8 +271,7 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
 
   switch (opcode) {
   case TFTP_OP_ERROR:
-    finish(c, 0, len >= 4 ? net_read16be(data + 2) : 0,
-           error_message(data, len));
+    finish(c, 0, net_read16be(data + 2), error_message(data, len));
     break;
   case TFTP_OP_OACK:
     if (c->state == TFTP_STATE_REQUESTING)
