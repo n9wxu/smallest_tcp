@@ -8,17 +8,12 @@
 
 #include "dns_wire.h"
 #include "net_endian.h"
+#include "net_text.h"
 #include <string.h>
 
 /* Compression-pointer hops allowed while reading one name.  A legitimate
  * name has at most 127 labels; this bound stops pointer loops early. */
 #define DNS_MAX_HOPS 32
-
-static uint8_t lower(uint8_t c) {
-  return (c >= 'A' && c <= 'Z') ? (uint8_t)(c + ('a' - 'A')) : c;
-}
-
-/* ── Dotted-name iteration ────────────────────────────────────────── */
 
 /* "." is the root name; treat it like "". */
 static const char *dotted_begin(const char *name) {
@@ -43,6 +38,25 @@ static int dotted_next(const char **pp, const char **label) {
   return (int)(e - s);
 }
 
+int dns_dotted_equal(const char *a, const char *b) {
+  const char *la, *lb;
+  int na, nb, i;
+  a = dotted_begin(a);
+  b = dotted_begin(b);
+  for (;;) {
+    na = dotted_next(&a, &la);
+    nb = dotted_next(&b, &lb);
+    if (na != nb || na < 0)
+      return 0;
+    if (na == 0)
+      return 1;
+    for (i = 0; i < na; i++) {
+      if (net_tolower(la[i]) != net_tolower(lb[i]))
+        return 0;
+    }
+  }
+}
+
 int dns_name_wire_len(const char *name) {
   const char *p = dotted_begin(name);
   const char *label;
@@ -54,8 +68,6 @@ int dns_name_wire_len(const char *name) {
   }
   return (n < 0) ? -2 : total;
 }
-
-/* ── Wire-name iteration (follows compression pointers) ───────────── */
 
 typedef struct {
   const uint8_t *msg;
@@ -106,8 +118,6 @@ static void wire_begin(wire_iter_t *it, const uint8_t *msg, uint16_t len,
   it->total = 0;
   it->hops = 0;
 }
-
-/* ── Writer ───────────────────────────────────────────────────────── */
 
 void dns_writer_init(dns_writer_t *w, uint8_t *buf, uint16_t cap) {
   w->buf = buf;
@@ -223,8 +233,6 @@ void dns_set_counts(uint8_t *msg, uint16_t qdcount, uint16_t ancount,
   net_write16be(msg + DNS_OFF_ARCOUNT, arcount);
 }
 
-/* ── Reader ───────────────────────────────────────────────────────── */
-
 int dns_name_skip(const uint8_t *msg, uint16_t len, uint16_t off) {
   uint16_t start = off;
   for (;;) {
@@ -261,7 +269,7 @@ int dns_name_equals(const uint8_t *msg, uint16_t len, uint16_t off,
       return 1;
     int i;
     for (i = 0; i < wn; i++) {
-      if (lower(wl[i]) != lower((uint8_t)dl[i]))
+      if (net_tolower((char)wl[i]) != net_tolower(dl[i]))
         return 0;
     }
   }

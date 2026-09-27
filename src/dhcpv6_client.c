@@ -14,8 +14,6 @@
 #include "udp.h"
 #include <string.h>
 
-/* ── Transmission parameters (RFC 8415 §7.6), ms ──────────────────── */
-
 #define SOL_MAX_DELAY_MS 1000u
 #define SOL_TIMEOUT_MS 1000u
 #define SOL_MAX_RT_MS 3600000u
@@ -44,8 +42,6 @@ static const uint8_t all_dhcp[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                      0,    0,    0, 0, 0, 1, 0, 2};
 static const uint8_t all_dhcp_mac[6] = {0x33, 0x33, 0, 1, 0, 2};
 
-/* ── Helpers ──────────────────────────────────────────────────────── */
-
 /** About a tenth of v, for any 32-bit v. */
 static uint32_t tenth(uint32_t v) {
   return v < 10000000u ? (v * 205u) >> 11 : (v >> 11) * 205u;
@@ -58,7 +54,7 @@ static uint32_t tenth(uint32_t v) {
  */
 static uint32_t jitter(net_t *net, uint32_t base, uint32_t of, int positive) {
   uint32_t j = tenth(of); /* <= 8,640,000 for SOL_MAX_RT = 86400 s */
-  uint32_t r = ipv6_random(net) & 0xFFu;
+  uint32_t r = net_random(net) & 0xFFu;
   uint32_t span = 2u * j + 1u;
   if (positive)
     return base + 1u + ((r * j) >> 8);
@@ -119,8 +115,6 @@ static uint32_t iaid(const net_t *net) {
          (uint32_t)net->mac[4] << 8 | net->mac[5];
 }
 
-/* ── Build and send ───────────────────────────────────────────────── */
-
 static void send_msg(net_t *net, dhcpv6_client_t *c, uint8_t type) {
   uint8_t *m = net->tx.buf + UDP6_PAYLOAD_OFFSET;
   uint8_t *p;
@@ -135,7 +129,7 @@ static void send_msg(net_t *net, dhcpv6_client_t *c, uint8_t type) {
 
   /* REQ-DHCPv6-004,014,033..035: Client Identifier, DUID-LL */
   p = put_opt(p, DHCPV6_OPT_CLIENTID, DUID_LL_LEN);
-  net_write16be(p, 3); /* DUID-LL */
+  net_write16be(p, 3);     /* DUID-LL */
   net_write16be(p + 2, 1); /* Ethernet */
   memcpy(p + 4, net->mac, 6);
   p += DUID_LL_LEN;
@@ -189,7 +183,7 @@ static void send_msg(net_t *net, dhcpv6_client_t *c, uint8_t type) {
 
   /* REQ-DHCPv6-002,003,013,023: multicast, 546 → 547 */
   udp6_send_inplace(net, all_dhcp, all_dhcp_mac, DHCPV6_CLIENT_PORT,
-                    DHCPV6_SERVER_PORT, (uint16_t)(p - m), net->ip6_hop_limit);
+                    DHCPV6_SERVER_PORT, (uint16_t)(p - m), net->ip6.hop_limit);
 }
 
 /** Send the state's message now and set the next retransmission. */
@@ -213,19 +207,13 @@ static void transmit(net_t *net, dhcpv6_client_t *c) {
 static void begin(net_t *net, dhcpv6_client_t *c, uint8_t state,
                   uint32_t delay_ms) {
   c->state = state;
-  c->xid = ipv6_random(net) & 0xFFFFFFu;
+  c->xid = net_random(net) & 0xFFFFFFu;
   c->rc = 0;
   c->elapsed_ms = 0;
   c->timer_ms = delay_ms;
   if (delay_ms == 0)
     transmit(net, c);
 }
-
-static uint32_t random_delay(net_t *net, uint32_t max_ms) {
-  return ((ipv6_random(net) & 0xFFFFu) * (max_ms + 1u)) >> 16;
-}
-
-/* ── Parse ────────────────────────────────────────────────────────── */
 
 /** Every option fits the message (REQ-DHCPv6-042,043). */
 static int options_valid(const uint8_t *p, uint16_t len) {
@@ -322,25 +310,19 @@ static void bind(net_t *net, dhcpv6_client_t *c, const lease_t *l) {
   /* RFC 8415 §21.4: T1/T2 of 0 leave them to us — 0.5 and ~0.8 of the
    * preferred lifetime (shifts, not division) */
   c->t1_s = l->t1 ? l->t1 : l->preferred >> 1;
-  c->t2_s = l->t2 ? l->t2
-                  : (l->preferred >> 1) + (l->preferred >> 2) +
-                        (l->preferred >> 4);
+  c->t2_s =
+      l->t2 ? l->t2
+            : (l->preferred >> 1) + (l->preferred >> 2) + (l->preferred >> 4);
   c->since_s = 0;
   c->sec_ms = 0;
 
   int slot = ipv6_addr_slot(net, c->addr);
-  if (slot < 0) {
+  if (slot < 0)
     ipv6_addr_add(net, c->addr, l->valid, l->preferred); /* DAD */
-  } else {
-    net->ip6[slot].valid_s = l->valid;
-    net->ip6[slot].preferred_s = l->preferred;
-    if (net->ip6[slot].state == NET_IP6_DEPRECATED && l->preferred)
-      net->ip6[slot].state = NET_IP6_PREFERRED;
-  }
+  else
+    ipv6_addr_set_lifetimes(net, (uint8_t)slot, l->valid, l->preferred);
   c->state = DHCPV6_CLI_BOUND;
 }
-
-/* ── API ──────────────────────────────────────────────────────────── */
 
 void dhcpv6_client_init(dhcpv6_client_t *c, dhcpv6_event_fn_t on_event,
                         void *evt_ctx, const dhcpv6_opt_table_t *opts) {
@@ -355,24 +337,19 @@ void dhcpv6_client_init(dhcpv6_client_t *c, dhcpv6_event_fn_t on_event,
 void dhcpv6_client_start(net_t *net, dhcpv6_client_t *c, uint8_t mode) {
   c->mode = mode;
   if (mode == DHCPV6_MODE_STATEFUL)
-    begin(net, c, DHCPV6_CLI_SOLICIT, random_delay(net, SOL_MAX_DELAY_MS) + 1u);
+    begin(net, c, DHCPV6_CLI_SOLICIT,
+          net_random_below(net, SOL_MAX_DELAY_MS + 1u) + 1u);
   else
     begin(net, c, DHCPV6_CLI_INFO_REQUEST,
-          random_delay(net, INF_MAX_DELAY_MS) + 1u);
+          net_random_below(net, INF_MAX_DELAY_MS + 1u) + 1u);
 }
 
 void dhcpv6_client_tick(net_t *net, dhcpv6_client_t *c, uint32_t ms) {
   if (c->state == DHCPV6_CLI_IDLE)
     return;
 
-  /* Lease / refresh clock in whole seconds (no division) */
   if (c->state == DHCPV6_CLI_INFORMED || c->state >= DHCPV6_CLI_BOUND) {
-    uint32_t acc = c->sec_ms + ms;
-    while (acc >= 1000u) {
-      acc -= 1000u;
-      c->since_s++;
-    }
-    c->sec_ms = (uint16_t)acc;
+    c->since_s += net_whole_seconds(&c->sec_ms, ms);
 
     if (c->state == DHCPV6_CLI_INFORMED) {
       if (c->since_s >= c->t1_s) /* information refresh */
@@ -483,8 +460,8 @@ void dhcpv6_client_input(net_t *net, dhcpv6_client_t *c, const uint8_t *src_ip,
   }
 
   /* Reply to Request, Renew or Rebind */
-  if (!have_lease ||
-      (c->state != DHCPV6_CLI_REQUEST && !ipv6_addr_equal(lease.addr, c->addr))) {
+  if (!have_lease || (c->state != DHCPV6_CLI_REQUEST &&
+                      !ipv6_addr_equal(lease.addr, c->addr))) {
     if (c->state == DHCPV6_CLI_REQUEST)
       begin(net, c, DHCPV6_CLI_SOLICIT, 0);
     return; /* Renew/Rebind: keep trying until T2 / expiry */
@@ -500,7 +477,7 @@ void dhcpv6_client_input(net_t *net, dhcpv6_client_t *c, const uint8_t *src_ip,
 void dhcpv6_client_release(net_t *net, dhcpv6_client_t *c) {
   if (c->state >= DHCPV6_CLI_BOUND) {
     /* One Release (RFC 8415 allows up to REL_MAX_RC = 5 transmissions) */
-    c->xid = ipv6_random(net) & 0xFFFFFFu;
+    c->xid = net_random(net) & 0xFFFFFFu;
     c->elapsed_ms = 0;
     send_msg(net, c, DHCPV6_RELEASE);
     ipv6_addr_remove(net, c->addr);

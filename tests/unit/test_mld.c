@@ -83,9 +83,8 @@ static const uint8_t mdns6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                   0,    0,    0, 0, 0, 0, 0, 0xFB};
 static const uint8_t mac_mdns6[6] = {0x33, 0x33, 0, 0, 0, 0xFB};
 static const uint8_t unspec[16] = {0};
-static const uint8_t other_ll_iid[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0,
-                                         0,    0,    0,    0,    0, 0x12, 0x34,
-                                         0x56};
+static const uint8_t other_ll_iid[16] = {
+    0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56};
 static const uint8_t mac_mldv2[6] = {0x33, 0x33, 0, 0, 0, 0x16};
 static const uint8_t our_mac[6] = NET_DEFAULT_MAC;
 
@@ -227,8 +226,8 @@ TEST(test_mld_unsolicited_report_repeated) {
 TEST(test_mld_same_group_reported_once) {
   /* A SLAAC address with our interface identifier shares the link-local
    * address's solicited-node group */
-  static const uint8_t slaac[16] = {0x20, 0x01, 0x0D, 0xB8, 0,    1,
-                                    0,    0,    0,    0,    0,    0xFF,
+  static const uint8_t slaac[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 1,
+                                    0,    0,    0,    0,    0, 0xFF,
                                     0xFE, 0xDE, 0xAD, 0x01};
   setup_up();
   ipv6_addr_add(&net, slaac, NET_IP6_INFINITE, NET_IP6_INFINITE);
@@ -281,12 +280,12 @@ TEST(test_mcast_join_rejects_non_multicast_and_full_table) {
 
 static int udp6_calls;
 static void on_udp6(net_t *n, const uint8_t *src, uint16_t sport,
-                    const uint8_t *mac, uint16_t off, uint16_t len) {
+                    const uint8_t *mac, const uint8_t *payload, uint16_t len) {
   (void)n;
   (void)src;
   (void)sport;
   (void)mac;
-  (void)off;
+  (void)payload;
   (void)len;
   udp6_calls++;
 }
@@ -295,8 +294,7 @@ static const udp6_port_entry_t ports6[] = {{5353, on_udp6}};
 TEST(test_joined_group_datagrams_delivered) {
   uint8_t f[128];
   setup_up();
-  udp6_ports.entries = ports6;
-  udp6_ports.count = 1;
+  udp6_set_ports(&net, ports6, 1);
   udp6_calls = 0;
   /* UDP to ff02::fb before and after joining */
   for (int joined = 0; joined < 2; joined++) {

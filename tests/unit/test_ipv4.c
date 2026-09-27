@@ -27,7 +27,6 @@ TEST(test_ipv4_parse_valid) {
 
   ipv4_hdr_t hdr;
   ASSERT_EQ(ipv4_parse(pkt, 30, &hdr), NET_OK);
-  ASSERT_EQ(hdr.ihl, 5);
   ASSERT_EQ(hdr.protocol, IPV4_PROTO_UDP);
   ASSERT_EQ(hdr.total_len, 30);
   ASSERT_EQ(hdr.src_ip, NET_IPV4(10, 0, 0, 1));

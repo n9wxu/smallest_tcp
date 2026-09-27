@@ -1,6 +1,6 @@
 # Test Plan — smallest_tcp
 
-*Revision: Milestone 11 (HTTP server)*
+*Revision: Milestone 13 (TLS 1.3) — updated 2026-09-27*
 
 ---
 
@@ -11,7 +11,7 @@ verified at both the unit and integration levels:
 
 | Layer | Framework | Location | Trigger |
 |---|---|---|---|
-| C Unit Tests | Custom `TEST`/`ASSERT` macros (ctest) | `tests/unit/` | Every push/PR |
+| C Unit Tests | Custom `TEST`/`ASSERT` macros (`tests/unit/test_main.h`), run by CTest | `tests/unit/` | Every push/PR |
 | Blackbox Conformance | Python / Scapy (pytest) | `tests/blackbox/` | Every push/PR |
 | Fuzz / Robustness | Python / Scapy `fuzz()` (pytest) | `tests/blackbox/` | Nightly / manual |
 
@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**28 test suites, 690 tests total — all passing** (CTest).  The four TLS suites need Mbed TLS and are built by CMake only; `make test` runs the other 24 (482 tests).  (`test_rawsock`'s 8 live tests run only as root on Linux; CI runs them with `sudo` in `cmake-linux`.)
+**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **680 tests on macOS; on Linux 683, or 691 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -34,7 +34,7 @@ verified at both the unit and integration levels:
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 20 | Stop-and-wait TX/RX buffers (incl. RX ring wrap) |
-| `test_tcp` | tests/unit/test_tcp.c | **45** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken) |
+| `test_tcp` | tests/unit/test_tcp.c | **46** | TCP (REQ-TCP-*), incl. data/FIN retransmission, tcp_write/output, window updates, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
 | `test_tftp` | tests/unit/test_tftp.c | 15 | TFTP client (REQ-TFTP-*) |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 16 | DHCPv4 client + server (REQ-DHCPv4-*) |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
@@ -48,7 +48,7 @@ verified at both the unit and integration levels:
 | `test_mld` | tests/unit/test_mld.c | 13 | MLDv2 report before the DAD probe (from ::), repeated once, one group per solicited-node address, `ipv6_mcast_join/leave` (report, frame filter, delivery), general / group queries (delay, validation), MLDv1 compatibility (v1 reports, Done, fallback timeout) — RFC 3810, RFC 2710 |
 | `test_mdns6` | tests/unit/test_mdns6.c | 19 | mDNS over IPv6: ff02::fb joined, probes / announcements / goodbyes on both families, AAAA per usable address (not tentative), answers on the query's family, A ↔ AAAA and SRV → AAAA additionals, QU and legacy unicast over IPv6, known-answer suppression, NSEC with AAAA, delayed shared answers, explicit AAAA, conflicts, re-announcing (RFC 6762 §6.2, §8.4, §20) |
 | `test_dhcpv6` | tests/unit/test_dhcpv6.c | 20 | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-*) |
-| `test_rawsock` | tests/unit/test_rawsock.c | 15 | Raw-socket driver: offloaded-checksum completion (portable); live on a veth pair (root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
+| `test_rawsock` | tests/unit/test_rawsock.c | 15 on Linux (4 elsewhere) | Raw-socket driver: offloaded-checksum completion (portable); context and no-frame checks (Linux); live on a veth pair (Linux, root, 8): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
 | `test_tls_crypto` | tests/unit/test_tls_crypto.c | 22 | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
 | `test_tls_keys` | tests/unit/test_tls_keys.c | 34 | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034) |
 | `test_tls_server` | tests/unit/test_tls_server.c | 103 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate, alerts (REQ-TLS-001, 018..025, 030, 031, 035..043) |
@@ -57,13 +57,19 @@ verified at both the unit and integration levels:
 ### Running Unit Tests
 
 ```sh
-# CMake (recommended)
 cmake -S . -B build && cmake --build build
 ctest --test-dir build --output-on-failure
 
-# Make (quick)
-make test
+# IPv4 only, without TLS (what the cmake-ipv4-only CI job builds)
+cmake -S . -B build-v4 -DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF
+cmake --build build-v4 && ctest --test-dir build-v4 --output-on-failure
+
+# The raw-socket driver's live tests (Linux, root)
+sudo ./build/tests/test_rawsock
 ```
+
+The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
+(`make arm-size-all`, section 3).
 
 ### TCP Unit Test Coverage Matrix (REQ-TCP-*)
 
@@ -146,16 +152,19 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_tcp_conform.py` | 20 conformance tests (REQ-TCP-002..153) |
 | `tests/blackbox/test_tcp_fuzz.py` | 5 fuzz tests (header fields, flags, options, truncation) |
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 DHCPv4 client tests (SUT: `dhcp_echo_demo`) |
-| `tests/blackbox/test_mdns_conform.py` | 21 mDNS / DNS-SD tests, 019 of them over IPv4 (SUT: dual-stack `mdns_demo`, launched fresh per test) |
+| `tests/blackbox/test_mdns_conform.py` | 21 mDNS / DNS-SD tests, 19 of them over IPv4 (SUT: dual-stack `mdns_demo`, launched fresh per test) |
 | `tests/blackbox/test_http_conform.py` | 22 HTTP tests; the host's own TCP stack is the client, over IPv4 and IPv6 (SUT: `http_demo`) |
 | `tests/blackbox/test_ipv6_conform.py` | 29 IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 / MLD tests (SUT: dual-stack `tcp_echo_demo`, launched fresh per test) |
+| `tests/blackbox/test_tls_conform.py` | 29 TLS 1.3 server tests (25 functions, two parametrized) against `tls_echo_demo` |
+| `tests/blackbox/test_tls_client_conform.py` | 17 TLS 1.3 client tests: `tls_client_demo` against Python ssl and openssl s_server |
+| `tests/blackbox/test_https_conform.py` | 9 HTTPS tests against `https_demo` |
 | `tests/blackbox/dhcpv6_interop.sh` | dnsmasq as router + DHCPv6 server: RA with M → lease, DNS option, host ping + TCP echo at the leased address |
 | `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/`; `curl -6` over the link-local address |
 | `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
 | `tests/blackbox/mdns_interop.sh` | Avahi interop: resolve (IPv4, and IPv6 when Avahi runs it) + browse the demo, goodbye withdraws the service |
 | `tests/blackbox/run_blackbox_macos.sh` | macOS runner over a `feth` pair: every suite + `dns-sd` interop |
 | `tests/blackbox/mdns_interop_macos.sh` | mDNSResponder interop: `dns-sd -B/-L/-G`, TCP echo, goodbye removal |
-| `tests/blackbox/run_blackbox.sh` | Shell runner: starts SUT, runs all suites in order, reports summary |
+| `tests/blackbox/run_blackbox.sh` | Shell runner: starts `tcp_echo_demo`, runs the core suites (ARP, IPv4, ICMP, UDP, TCP) in order, reports summary; `--dhcp` adds DHCPv4, `--fuzz` the fuzz tests |
 | `tests/blackbox/sut_net.sh` | Builds/removes the harness↔SUT link for one Linux driver: `tap` (tap0) or `raw` (veth-test ↔ veth-sut); prints `TEST_IF` / `SUT_IF` |
 | `tests/blackbox/requirements.txt` | `pytest>=7.0`, `scapy>=2.5` |
 
@@ -180,8 +189,8 @@ sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 # 4. Start the SUT in the background
 sudo ./build/demo/tcp_echo_demo &   # ← build/DEMO/tcp_echo_demo, not build/
 
-# 5. Option A — run ALL conformance suites via the shell runner
-#    (starts SUT, runs every suite, stops SUT, prints ✓/✗ summary)
+# 5. Option A — run the core suites (ARP, IPv4, ICMP, UDP, TCP) via the shell runner
+#    (starts SUT, runs each suite, stops SUT, prints ✓/✗ summary)
 sudo tests/blackbox/run_blackbox.sh \
     --sut-bin ./build/demo/tcp_echo_demo \
     --setup-tap --teardown-tap -v
@@ -407,10 +416,9 @@ s_client/s_server, curl — through the host's TCP to ours.
 
 | Job | Workflow | Runner | Tests | Trigger |
 |---|---|---|---|---|
-| `make-linux` | ci.yml | ubuntu-latest | make test | push/PR |
-| `make-macos` | ci.yml | macos-latest | make test | push/PR |
-| `cmake-linux` | ci.yml | ubuntu-latest | ctest | push/PR |
-| `cmake-macos` | ci.yml | macos-latest | ctest | push/PR |
+| `cmake-ipv4-only` | ci.yml | ubuntu-latest | ctest on an IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`); then library-only builds without TCP and without UDP | push/PR |
+| `cmake-linux` | ci.yml | ubuntu-latest | ctest (dual stack, TLS) | push/PR |
+| `cmake-macos` | ci.yml | macos-latest | ctest (dual stack, TLS) | push/PR |
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
@@ -419,8 +427,8 @@ s_client/s_server, curl — through the host's TCP to ours.
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
 | `blackbox-tls` | ci.yml | ubuntu-latest | TLS 1.3 server, client and HTTPS suites against `tls_echo_demo`, `tls_client_demo`, `https_demo` with Python ssl, OpenSSL 3 and curl (TAP, raw socket) | push/PR |
-| `arm-size` | ci.yml | ubuntu-latest | Cortex-M0 size benchmark: UDP, UDP+TCP, UDP+mDNS, UDP+HTTP | push/PR |
-| `fetchcontent` | ci.yml | ubuntu-latest | Integration build | push/PR |
+| `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, TLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide | push/PR |
+| `fetchcontent` | ci.yml | ubuntu-latest | Builds and runs `examples/fetchcontent` against the checkout | push/PR |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz (real HW) | Nightly (when enabled) |
 
@@ -439,7 +447,7 @@ checksums that the driver must finish.
 - **`blackbox-validate` FAILS** → the test itself is wrong (assertion, timing, operator precedence). Fix the test.
 - **`blackbox-validate` PASSES, `blackbox-linux` FAILS** → our SUT has a real RFC compliance bug. Fix the SUT.
 
-Tests marked `@pytest.mark.sut_specific` are excluded from `blackbox-validate` because they depend on `smallest_tcp`'s specific timer values (e.g. 500 ms RTO), not RFC-mandated behaviour.  See [`docs/ci-debugging.md`](ci-debugging.md) for the full debugging workflow.
+Tests marked `@pytest.mark.sut_specific` are excluded from `blackbox-validate` because they depend on `smallest_tcp`'s specific timer values (e.g. its 1 s initial RTO and persist interval), not RFC-mandated behaviour.  See [`docs/ci-debugging.md`](ci-debugging.md) for the full debugging workflow.
 
 ---
 
@@ -632,4 +640,4 @@ curl -s "https://api.github.com/repos/n9wxu/smallest_tcp/check-runs/<JOB_ID>/ann
 
 ---
 
-*Last updated: Milestone 6 — Full blackbox conformance suite (ARP/IPv4/ICMP/UDP/TCP) complete.*
+*Last updated: 2026-09-27 — Milestone 13 (TLS 1.3); CMake-only host build.*

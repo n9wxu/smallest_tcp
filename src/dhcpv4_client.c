@@ -1,280 +1,176 @@
 /**
  * @file dhcpv4_client.c
- * @brief DHCPv4 client state machine — RFC 2131.
- *
- * Implements REQ-DHCPv4-001..059.
- * Zero dynamic allocation; all state lives in the caller-owned dhcpv4_client_t.
+ * @brief DHCPv4 client (RFC 2131).  REQ-DHCPv4-001..059.
  */
 
 #include "dhcpv4_client.h"
-#include "net_endian.h"
-#include "udp.h"
-#include <string.h>
+#include "dhcpv4_wire.h"
+#include "ipv4.h"
 
-/* ── DHCP wire offsets ────────────────────────────────────────────── */
-#define DHCP_OFF_OP 0
-#define DHCP_OFF_HTYPE 1
-#define DHCP_OFF_HLEN 2
-#define DHCP_OFF_HOPS 3
-#define DHCP_OFF_XID 4
-#define DHCP_OFF_SECS 8
-#define DHCP_OFF_FLAGS 10
-#define DHCP_OFF_CIADDR 12
-#define DHCP_OFF_YIADDR 16
-#define DHCP_OFF_SIADDR 20
-#define DHCP_OFF_GIADDR 24
-#define DHCP_OFF_CHADDR 28
-#define DHCP_OFF_MAGIC 236
-#define DHCP_OFF_OPTIONS 240
-#define DHCP_MIN_LEN 300 /* RFC 2131 §2 recommended minimum */
-
-#define DHCP_MAGIC 0x63825363u
-#define DHCP_OP_REQUEST 1
-#define DHCP_OP_REPLY 2
-
-/* DHCP message type values */
-#define DHCP_MSG_DISCOVER 1
-#define DHCP_MSG_OFFER 2
-#define DHCP_MSG_REQUEST 3
-#define DHCP_MSG_ACK 5
-#define DHCP_MSG_NAK 6
-#define DHCP_MSG_RELEASE 7
-
-/* DHCP option codes */
-#define OPT_SUBNET_MASK 1
-#define OPT_ROUTER 3
-#define OPT_DNS 6
-#define OPT_REQUESTED_IP 50
-#define OPT_LEASE_TIME 51
-#define OPT_MSG_TYPE 53
-#define OPT_SERVER_ID 54
-#define OPT_PARAM_REQ 55
-#define OPT_T1 58
-#define OPT_T2 59
-#define OPT_END 255
-#define OPT_PAD 0
-
-/* Retransmit backoff: initial 4 s, max 64 s — REQ-DHCPv4-045 */
+/* REQ-DHCPv4-045: retransmissions back off from 4 s to 64 s */
 #define RETRY_INIT_MS 4000u
 #define RETRY_MAX_MS 64000u
 
-static const uint8_t BCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-static const uint32_t BCAST_IP = 0xFFFFFFFFu;
+#define PARAM_REQUEST_MAX 35
 
-/* ── Internal helpers ─────────────────────────────────────────────── */
+static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static void fire_event(dhcpv4_client_t *c, uint8_t evt) {
   if (c->on_event)
     c->on_event(evt, c->evt_ctx);
 }
 
-/* Very small LCG — good enough for XID randomness. REQ-DHCPv4-009 */
-static uint32_t s_seed = 0x12345678u;
-static uint32_t rand_xid(void) {
-  s_seed = s_seed * 1664525u + 1013904223u;
-  return s_seed;
-}
-
-static uint32_t next_retry_ms(uint8_t retry_count) {
+static uint32_t retry_interval_ms(uint8_t retries) {
   uint32_t t = RETRY_INIT_MS;
-  for (uint8_t i = 0; i < retry_count && t < RETRY_MAX_MS; i++)
+  while (retries-- > 0 && t < RETRY_MAX_MS)
     t *= 2u;
-  return (t > RETRY_MAX_MS) ? RETRY_MAX_MS : t;
+  return t > RETRY_MAX_MS ? RETRY_MAX_MS : t;
 }
 
-/* Build the fixed 240-byte DHCP header + magic cookie into buf[0..239].
-   Returns DHCP_OFF_OPTIONS (240) — caller appends options starting there. */
-static uint16_t build_header(uint8_t *buf, uint32_t xid, uint32_t ciaddr,
-                             const uint8_t *chaddr) {
-  memset(buf, 0, DHCP_MIN_LEN);
-  buf[DHCP_OFF_OP] = DHCP_OP_REQUEST;
-  buf[DHCP_OFF_HTYPE] = 1; /* Ethernet */
-  buf[DHCP_OFF_HLEN] = 6;
-  net_write32be(buf + DHCP_OFF_XID, xid);
-  net_write16be(buf + DHCP_OFF_FLAGS, 0x8000u); /* broadcast flag */
-  net_write32be(buf + DHCP_OFF_CIADDR, ciaddr);
-  memcpy(buf + DHCP_OFF_CHADDR, chaddr, 6);
-  net_write32be(buf + DHCP_OFF_MAGIC, DHCP_MAGIC);
-  return DHCP_OFF_OPTIONS;
+/* REQ-DHCPv4-059: the built-in parameters, then the application's */
+static uint16_t put_param_request_list(uint8_t *msg, uint16_t pos,
+                                       const dhcpv4_opt_table_t *opts) {
+  uint8_t n = 0, i;
+  msg[pos] = DHCP_OPT_PARAM_REQ;
+  msg[pos + 2 + n++] = DHCP_OPT_SUBNET_MASK;
+  msg[pos + 2 + n++] = DHCP_OPT_ROUTER;
+  msg[pos + 2 + n++] = DHCP_OPT_LEASE_TIME;
+  for (i = 0; opts && i < opts->count && n < PARAM_REQUEST_MAX; i++)
+    msg[pos + 2 + n++] = opts->entries[i].option;
+  msg[pos + 1] = n;
+  return (uint16_t)(pos + 2 + n);
 }
 
-static uint16_t opt_byte(uint8_t *buf, uint16_t pos, uint8_t code, uint8_t v) {
-  buf[pos++] = code;
-  buf[pos++] = 1;
-  buf[pos++] = v;
-  return pos;
+/* Our address as a DHCP message source: none until the server ACKs it */
+static uint32_t client_address(const net_t *net, const dhcpv4_client_t *c) {
+  int have_lease =
+      c->state == DHCPV4_CLI_RENEWING || c->state == DHCPV4_CLI_REBINDING;
+  return have_lease ? net->ipv4_addr : 0u;
 }
 
-static uint16_t opt_u32(uint8_t *buf, uint16_t pos, uint8_t code, uint32_t v) {
-  buf[pos++] = code;
-  buf[pos++] = 4;
-  net_write32be(buf + pos, v);
-  return pos + 4;
-}
-
-/* Build Parameter Request List (option 55). REQ-DHCPv4-059 */
-static uint16_t build_prl(uint8_t *buf, uint16_t pos,
-                          const dhcpv4_opt_table_t *opts) {
-  /* mandatory built-ins: subnet mask, router, lease time */
-  uint8_t codes[35];
-  uint8_t n = 0;
-  codes[n++] = OPT_SUBNET_MASK;
-  codes[n++] = OPT_ROUTER;
-  codes[n++] = OPT_LEASE_TIME;
-  if (opts) {
-    for (uint8_t i = 0; i < opts->count && n < (uint8_t)sizeof(codes); i++)
-      codes[n++] = opts->entries[i].option;
-  }
-  buf[pos++] = OPT_PARAM_REQ;
-  buf[pos++] = n;
-  memcpy(buf + pos, codes, n);
-  return pos + n;
-}
-
-/* Send DHCPDISCOVER — REQ-DHCPv4-002, 008..017 */
+/* REQ-DHCPv4-002, 008..017 */
 static void send_discover(net_t *net, dhcpv4_client_t *c) {
-  uint8_t msg[DHCP_MIN_LEN + 16];
-  uint16_t pos = build_header(msg, c->xid, 0u, net->mac);
-  pos = opt_byte(msg, pos, OPT_MSG_TYPE, DHCP_MSG_DISCOVER);
-  pos = build_prl(msg, pos, c->opt_table);
-  msg[pos++] = OPT_END;
-  uint16_t len = (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
-
-  /* REQ-DHCPv4-015: src_ip must be 0.0.0.0 before address assignment */
-  uint32_t saved = net->ipv4_addr;
-  net->ipv4_addr = 0u;
-  udp_send(net, BCAST_IP, BCAST_MAC, 68, 67, msg, len);
-  net->ipv4_addr = saved;
+  uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
+  uint16_t pos = DHCP_OFF_OPTIONS;
+  if (!msg)
+    return;
+  net_write16be(msg + DHCP_OFF_FLAGS, DHCP_FLAG_BROADCAST);
+  pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_DISCOVER);
+  pos = put_param_request_list(msg, pos, c->opt_table);
+  udp_send_inplace_from(net, 0u, IPV4_BROADCAST, broadcast_mac,
+                        DHCP_CLIENT_PORT, DHCP_SERVER_PORT, dhcp_end(msg, pos),
+                        NET_DEFAULT_TTL);
 }
 
-/* Send DHCPREQUEST — REQ-DHCPv4-022..027 */
+/* REQ-DHCPv4-022..027: selecting an offer (broadcast, Requested IP), or
+ * extending the lease — to our server (RENEWING) or any (REBINDING) */
 static void send_request(net_t *net, dhcpv4_client_t *c) {
-  uint8_t msg[DHCP_MIN_LEN + 24];
-  uint32_t ciaddr = 0u;
-  uint32_t dst_ip = BCAST_IP;
-  const uint8_t *dst_mac = BCAST_MAC;
-
-  if (c->state == DHCPV4_CLI_RENEWING) {
-    /* REQ-DHCPv4-026: unicast to server; ciaddr = current IP */
-    ciaddr = net->ipv4_addr;
-    dst_ip = c->server_ip;
-  } else if (c->state == DHCPV4_CLI_REBINDING) {
-    /* REQ-DHCPv4-027: broadcast; ciaddr = current IP */
-    ciaddr = net->ipv4_addr;
-  }
-
-  uint16_t pos = build_header(msg, c->xid, ciaddr, net->mac);
-  pos = opt_byte(msg, pos, OPT_MSG_TYPE, DHCP_MSG_REQUEST);
-  pos = opt_u32(msg, pos, OPT_SERVER_ID, c->server_ip); /* REQ-DHCPv4-023 */
-  if (c->state == DHCPV4_CLI_REQUESTING) {
-    /* REQ-DHCPv4-024,025: include Requested IP; ciaddr must stay 0 */
-    pos = opt_u32(msg, pos, OPT_REQUESTED_IP, c->offered_ip);
-  }
-  pos = build_prl(msg, pos, c->opt_table);
-  msg[pos++] = OPT_END;
-  uint16_t len = (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
-
-  uint32_t saved = net->ipv4_addr;
+  uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
+  uint16_t pos = DHCP_OFF_OPTIONS;
+  uint32_t src = client_address(net, c);
+  uint32_t dst =
+      c->state == DHCPV4_CLI_RENEWING ? c->server_ip : IPV4_BROADCAST;
+  if (!msg)
+    return;
+  net_write16be(msg + DHCP_OFF_FLAGS, DHCP_FLAG_BROADCAST);
+  net_write32be(msg + DHCP_OFF_CIADDR, src);
+  pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_REQUEST);
+  pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
   if (c->state == DHCPV4_CLI_REQUESTING)
-    net->ipv4_addr = 0u;
-  udp_send(net, dst_ip, dst_mac, 68, 67, msg, len);
-  if (c->state == DHCPV4_CLI_REQUESTING)
-    net->ipv4_addr = saved;
+    pos = dhcp_put_u32(msg, pos, DHCP_OPT_REQUESTED_IP, c->offered_ip);
+  pos = put_param_request_list(msg, pos, c->opt_table);
+  udp_send_inplace_from(net, src, dst, broadcast_mac, DHCP_CLIENT_PORT,
+                        DHCP_SERVER_PORT, dhcp_end(msg, pos), NET_DEFAULT_TTL);
 }
 
-/* Parse DHCPACK options, apply to net_t, invoke app handlers.
-   REQ-DHCPv4-028..036, REQ-DHCPv4-053..055 */
-static void process_ack_options(net_t *net, dhcpv4_client_t *c,
-                                const uint8_t *opts, uint16_t len) {
-  uint16_t i = 0;
-  while (i < len) {
-    uint8_t code = opts[i++];
-    if (code == OPT_END)
-      break;
-    if (code == OPT_PAD)
-      continue;
-    if (i >= len)
-      break;
-    uint8_t olen = opts[i++];
-    if (i + olen > len)
-      break;
-
-    switch (code) {
-    case OPT_SUBNET_MASK:
-      if (olen >= 4)
-        net->subnet_mask = net_read32be(opts + i);
-      break;
-    case OPT_ROUTER:
-      if (olen >= 4)
-        net->gateway_ipv4 = net_read32be(opts + i);
-      break;
-    case OPT_LEASE_TIME:
-      if (olen >= 4)
-        c->lease_time = net_read32be(opts + i);
-      break;
-    case OPT_T1:
-      if (olen >= 4)
-        c->t1 = net_read32be(opts + i);
-      break;
-    case OPT_T2:
-      if (olen >= 4)
-        c->t2 = net_read32be(opts + i);
-      break;
-    case OPT_SERVER_ID:
-      if (olen >= 4)
-        c->server_ip = net_read32be(opts + i);
-      break;
-    default:
-      break;
+/* REQ-DHCPv4-053..056 */
+static void run_option_handlers(const dhcpv4_client_t *c, uint8_t code,
+                                const uint8_t *data, uint8_t len) {
+  uint8_t i;
+  for (i = 0; c->opt_table && i < c->opt_table->count; i++) {
+    const dhcpv4_opt_entry_t *e = &c->opt_table->entries[i];
+    if (e->option == code) {
+      e->handler(code, data, len, e->ctx);
+      return;
     }
+  }
+}
 
-    /* Invoke registered app handler — REQ-DHCPv4-053, 056 */
-    if (c->opt_table) {
-      for (uint8_t j = 0; j < c->opt_table->count; j++) {
-        if (c->opt_table->entries[j].option == code) {
-          c->opt_table->entries[j].handler(code, opts + i, olen,
-                                           c->opt_table->entries[j].ctx);
-          break;
-        }
+/* REQ-DHCPv4-028..036: the lease's parameters, applied to net_t */
+static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
+                       uint16_t len) {
+  uint16_t pos = DHCP_OFF_OPTIONS;
+  const uint8_t *v;
+  uint8_t code, olen;
+
+  net->ipv4_addr = net_read32be(msg + DHCP_OFF_YIADDR);
+  c->t1 = c->t2 = 0;
+  while ((code = dhcp_next_option(msg, len, &pos, &v, &olen)) != DHCP_OPT_END) {
+    uint32_t value = olen >= 4 ? net_read32be(v) : 0;
+    if (olen >= 4) {
+      switch (code) {
+      case DHCP_OPT_SUBNET_MASK:
+        net->subnet_mask = value;
+        break;
+      case DHCP_OPT_ROUTER:
+        net->gateway_ipv4 = value;
+        break;
+      case DHCP_OPT_LEASE_TIME:
+        c->lease_time = value;
+        break;
+      case DHCP_OPT_T1:
+        c->t1 = value;
+        break;
+      case DHCP_OPT_T2:
+        c->t2 = value;
+        break;
+      case DHCP_OPT_SERVER_ID:
+        c->server_ip = value;
+        break;
+      default:
+        break;
       }
     }
-    i += olen;
+    run_option_handlers(c, code, v, olen);
   }
-
-  /* REQ-DHCPv4-035: default T1 = 0.5 × lease */
-  if (c->t1 == 0 && c->lease_time > 0)
+  if (c->t1 == 0) /* REQ-DHCPv4-035: 0.5 × lease */
     c->t1 = c->lease_time / 2u;
-  /* REQ-DHCPv4-036: default T2 = 0.875 × lease (= lease - lease/8) */
-  if (c->t2 == 0 && c->lease_time > 0)
-    c->t2 = c->lease_time - (c->lease_time / 8u);
+  if (c->t2 == 0) /* REQ-DHCPv4-036: 0.875 × lease */
+    c->t2 = c->lease_time - c->lease_time / 8u;
 }
 
-/* Transition to BOUND, arm T1 timer */
-static void enter_bound(net_t *net, dhcpv4_client_t *c, uint8_t renewal) {
-  (void)net;
-  c->state = DHCPV4_CLI_BOUND;
-  c->retries = 0;
-  c->timer_ms = (uint32_t)c->t1 * 1000u;
-  fire_event(c, renewal ? DHCPV4_EVT_RENEWED : DHCPV4_EVT_BOUND);
-}
-
-/* Deconfigure IP and restart discovery */
-static void restart_init(net_t *net, dhcpv4_client_t *c) {
+static void clear_address(net_t *net) {
   net->ipv4_addr = 0u;
   net->subnet_mask = 0u;
   net->gateway_ipv4 = 0u;
-  c->xid = rand_xid();
+}
+
+static void start_selecting(net_t *net, dhcpv4_client_t *c) {
+  c->xid = net_random(net);
   c->state = DHCPV4_CLI_SELECTING;
   c->retries = 0;
   send_discover(net, c);
   c->timer_ms = RETRY_INIT_MS;
 }
 
-/* ════════════════════════════════════════════════════════════════════
- * Public API
- * ════════════════════════════════════════════════════════════════════ */
+static void enter_state(net_t *net, dhcpv4_client_t *c, uint8_t state,
+                        uint32_t timer_ms) {
+  c->state = state;
+  c->retries = 0;
+  c->timer_ms = timer_ms;
+  if (state == DHCPV4_CLI_REQUESTING || state == DHCPV4_CLI_RENEWING ||
+      state == DHCPV4_CLI_REBINDING)
+    send_request(net, c);
+}
 
-void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_event_fn_t on_event,
+/* Half the time left until @p until_s, from @p since_s (RFC 2131 §4.4.5),
+ * at least a second */
+static uint32_t half_remaining_ms(uint32_t since_s, uint32_t until_s) {
+  uint32_t ms = (until_s > since_s ? until_s - since_s : 1u) / 2u * 1000u;
+  return ms ? ms : 1000u;
+}
+
+void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_client_event_fn_t on_event,
                         void *evt_ctx, const dhcpv4_opt_table_t *opts) {
   memset(c, 0, sizeof(*c));
   c->on_event = on_event;
@@ -283,191 +179,101 @@ void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_event_fn_t on_event,
 }
 
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {
-  c->xid = rand_xid();
-  c->state = DHCPV4_CLI_SELECTING;
-  c->retries = 0;
-  c->timer_ms = 0;
-  send_discover(net, c);
-  c->timer_ms = RETRY_INIT_MS;
+  start_selecting(net, c);
 }
 
+/* REQ-DHCPv4-005..007, 045..047 */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
-  if (c->state == DHCPV4_CLI_INIT || c->timer_ms == 0)
+  if (c->state == DHCPV4_CLI_INIT || c->timer_ms == 0 ||
+      !net_countdown(&c->timer_ms, ms))
     return;
-
-  if (ms >= c->timer_ms) {
-    c->timer_ms = 0;
-  } else {
-    c->timer_ms -= ms;
-    return;
-  }
 
   switch (c->state) {
-
-  case DHCPV4_CLI_SELECTING:
-    /* REQ-DHCPv4-045: retransmit DISCOVER with exponential backoff.
-     * RFC 2131 §3.1: XID must stay constant for all retransmits of the
-     * same DISCOVER session; do NOT regenerate it here. */
-    send_discover(net, c);
-    c->timer_ms = next_retry_ms(c->retries);
-    if (c->retries < 255u)
-      c->retries++;
-    break;
-
+  case DHCPV4_CLI_SELECTING: /* the xid stays for the retransmissions */
   case DHCPV4_CLI_REQUESTING:
-    send_request(net, c);
-    c->timer_ms = next_retry_ms(c->retries);
+    if (c->state == DHCPV4_CLI_SELECTING)
+      send_discover(net, c);
+    else
+      send_request(net, c);
+    c->timer_ms = retry_interval_ms(c->retries);
     if (c->retries < 255u)
       c->retries++;
     break;
-
-  case DHCPV4_CLI_BOUND:
-    /* REQ-DHCPv4-005: T1 expired → start RENEWING */
-    c->state = DHCPV4_CLI_RENEWING;
-    c->retries = 0;
-    /* Arm timer for half of remaining time (T2-T1)/2 */
-    c->timer_ms = ((c->t2 > c->t1) ? (c->t2 - c->t1) : 1u) / 2u * 1000u;
-    if (c->timer_ms == 0)
-      c->timer_ms = 1000u;
-    send_request(net, c);
+  case DHCPV4_CLI_BOUND: /* T1 */
+    enter_state(net, c, DHCPV4_CLI_RENEWING, half_remaining_ms(c->t1, c->t2));
     break;
-
-  case DHCPV4_CLI_RENEWING:
-    /* REQ-DHCPv4-006: T2 expired → REBINDING */
-    c->state = DHCPV4_CLI_REBINDING;
-    c->retries = 0;
-    c->timer_ms =
-        ((c->lease_time > c->t2) ? (c->lease_time - c->t2) : 1u) / 2u * 1000u;
-    if (c->timer_ms == 0)
-      c->timer_ms = 1000u;
-    send_request(net, c);
+  case DHCPV4_CLI_RENEWING: /* T2 */
+    enter_state(net, c, DHCPV4_CLI_REBINDING,
+                half_remaining_ms(c->t2, c->lease_time));
     break;
-
-  case DHCPV4_CLI_REBINDING:
-    /* REQ-DHCPv4-007: lease expired */
+  case DHCPV4_CLI_REBINDING: /* the lease ran out */
     fire_event(c, DHCPV4_EVT_EXPIRED);
-    restart_init(net, c);
+    clear_address(net);
+    start_selecting(net, c);
     break;
-
   default:
     break;
   }
 }
 
+static int awaiting_ack(const dhcpv4_client_t *c) {
+  return c->state == DHCPV4_CLI_REQUESTING || c->state == DHCPV4_CLI_RENEWING ||
+         c->state == DHCPV4_CLI_REBINDING;
+}
+
+/* REQ-DHCPv4-018..038, 041..044 */
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
                          const uint8_t *data, uint16_t len) {
   (void)src_ip;
-
-  /* REQ-DHCPv4-018: validate op, magic, xid */
-  if (len < (uint16_t)(DHCP_OFF_OPTIONS + 4))
-    return;
-  if (data[DHCP_OFF_OP] != DHCP_OP_REPLY)
-    return;
-  if (net_read32be(data + DHCP_OFF_MAGIC) != DHCP_MAGIC)
-    return;
-  if (net_read32be(data + DHCP_OFF_XID) != c->xid)
+  if (len < DHCP_OFF_OPTIONS + 4 || data[DHCP_OFF_OP] != DHCP_OP_REPLY ||
+      net_read32be(data + DHCP_OFF_MAGIC) != DHCP_MAGIC ||
+      net_read32be(data + DHCP_OFF_XID) != c->xid)
     return;
 
-  /* Extract message type from options — REQ-DHCPv4-041..044 */
-  uint8_t msg_type = 0;
-  uint16_t i = DHCP_OFF_OPTIONS;
-  while (i < len) {
-    uint8_t code = data[i++];
-    if (code == OPT_END)
-      break;
-    if (code == OPT_PAD)
-      continue;
-    if (i >= len)
-      break;
-    uint8_t olen = data[i++];
-    if (code == OPT_MSG_TYPE && olen >= 1)
-      msg_type = data[i];
-    i += olen;
-  }
-  if (msg_type == 0)
-    return;
-
-  uint32_t yiaddr = net_read32be(data + DHCP_OFF_YIADDR);
-
-  switch (msg_type) {
-
-  case DHCP_MSG_OFFER:
-    /* REQ-DHCPv4-019..021: accept first offer in SELECTING */
+  switch (dhcp_message_type(data, len)) {
+  case DHCP_MSG_OFFER: /* the first offer is taken */
     if (c->state != DHCPV4_CLI_SELECTING)
       return;
-    c->offered_ip = yiaddr;
-    /* Extract server ID */
-    {
-      uint16_t j = DHCP_OFF_OPTIONS;
-      while (j < len) {
-        uint8_t code = data[j++];
-        if (code == OPT_END)
-          break;
-        if (code == OPT_PAD)
-          continue;
-        if (j >= len)
-          break;
-        uint8_t olen2 = data[j++];
-        if (code == OPT_SERVER_ID && olen2 >= 4)
-          c->server_ip = net_read32be(data + j);
-        j += olen2;
-      }
-    }
-    c->state = DHCPV4_CLI_REQUESTING;
-    c->retries = 0;
-    send_request(net, c);
-    c->timer_ms = RETRY_INIT_MS;
+    c->offered_ip = net_read32be(data + DHCP_OFF_YIADDR);
+    c->server_ip = dhcp_option_u32(data, len, DHCP_OPT_SERVER_ID, c->server_ip);
+    enter_state(net, c, DHCPV4_CLI_REQUESTING, RETRY_INIT_MS);
     break;
-
   case DHCP_MSG_ACK:
-    /* REQ-DHCPv4-028..036 */
-    if (c->state != DHCPV4_CLI_REQUESTING && c->state != DHCPV4_CLI_RENEWING &&
-        c->state != DHCPV4_CLI_REBINDING)
-      return;
-    net->ipv4_addr = yiaddr; /* REQ-DHCPv4-029 */
-    c->t1 = c->t2 = 0;
-    process_ack_options(net, c, data + DHCP_OFF_OPTIONS,
-                        len - DHCP_OFF_OPTIONS);
-    {
-      uint8_t renewal =
-          (c->state == DHCPV4_CLI_RENEWING || c->state == DHCPV4_CLI_REBINDING);
-      enter_bound(net, c, renewal);
+    if (awaiting_ack(c)) {
+      int renewal = c->state != DHCPV4_CLI_REQUESTING;
+      take_lease(net, c, data, len);
+      enter_state(net, c, DHCPV4_CLI_BOUND, c->t1 * 1000u);
+      fire_event(c, renewal ? DHCPV4_EVT_RENEWED : DHCPV4_EVT_BOUND);
     }
     break;
-
   case DHCP_MSG_NAK:
-    /* REQ-DHCPv4-037..038 */
-    if (c->state != DHCPV4_CLI_REQUESTING && c->state != DHCPV4_CLI_RENEWING &&
-        c->state != DHCPV4_CLI_REBINDING)
-      return;
-    fire_event(c, DHCPV4_EVT_NAK);
-    restart_init(net, c);
+    if (awaiting_ack(c)) {
+      fire_event(c, DHCPV4_EVT_NAK);
+      clear_address(net);
+      start_selecting(net, c);
+    }
     break;
-
   default:
     break;
   }
 }
 
+/* REQ-DHCPv4-039, 040 */
 void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
+  uint8_t *msg;
+  uint16_t pos = DHCP_OFF_OPTIONS;
   if (c->state != DHCPV4_CLI_BOUND && c->state != DHCPV4_CLI_RENEWING &&
       c->state != DHCPV4_CLI_REBINDING)
     return;
-
-  /* REQ-DHCPv4-039..040: unicast DHCPRELEASE to server */
-  uint8_t msg[DHCP_MIN_LEN + 8];
-  uint16_t pos = build_header(msg, c->xid, net->ipv4_addr, net->mac);
-  net_write16be(msg + DHCP_OFF_FLAGS, 0u); /* no broadcast flag */
-  pos = opt_byte(msg, pos, OPT_MSG_TYPE, DHCP_MSG_RELEASE);
-  pos = opt_u32(msg, pos, OPT_SERVER_ID, c->server_ip);
-  msg[pos++] = OPT_END;
-  uint16_t len = (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
-
-  udp_send(net, c->server_ip, BCAST_MAC, 68, 67, msg, len);
-
-  net->ipv4_addr = 0u;
-  net->subnet_mask = 0u;
-  net->gateway_ipv4 = 0u;
+  msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
+  if (msg) {
+    net_write32be(msg + DHCP_OFF_CIADDR, net->ipv4_addr);
+    pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_RELEASE);
+    pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
+    udp_send_inplace(net, c->server_ip, broadcast_mac, DHCP_CLIENT_PORT,
+                     DHCP_SERVER_PORT, dhcp_end(msg, pos), NET_DEFAULT_TTL);
+  }
+  clear_address(net);
   c->state = DHCPV4_CLI_INIT;
   c->timer_ms = 0u;
 }

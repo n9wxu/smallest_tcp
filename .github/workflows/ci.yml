@@ -10,29 +10,31 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Make build ──────────────────────────────────────────────────────
-  make-linux:
-    name: Make — Linux
+  # ── IPv4-only build (the default of net_config.h) ───────────────────
+  cmake-ipv4-only:
+    name: CMake — Linux, IPv4 only, no TLS; no-TCP and no-UDP builds
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make lib
-      - run: make test
-
-  make-macos:
-    name: Make — macOS
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: make lib
-      - run: make test
+      - name: Configure
+        run: cmake -S . -B build -DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Build without TCP, and without UDP (libraries only)
+        run: |
+          cmake -S . -B build-no-tcp -DSMALLEST_TCP_TCP=OFF -DSMALLEST_TCP_TLS=OFF
+          cmake --build build-no-tcp
+          cmake -S . -B build-no-udp -DSMALLEST_TCP_UDP=OFF -DSMALLEST_TCP_TLS=OFF
+          cmake --build build-no-udp
 
   # ── ARM Cortex-M0 size benchmark (keeps bench/ building) ────────────
   # Ubuntu's newlib has speed-optimized memcpy/memset, so ELF totals run
   # ~310 B above docs/design/size-comparison.md (Arm GNU toolchain);
   # stack-only code is identical.
   arm-size:
-    name: ARM Size — Cortex-M0 (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, TLS)
+    name: ARM Size — Cortex-M0 (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, TLS; no divides)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,21 +43,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-none-eabi libnewlib-arm-none-eabi
-      - name: Build and measure
+      - name: Build, measure, check for library divides
         run: |
           set -o pipefail
-          make arm-size     | tee /tmp/arm-size.out
-          make arm-size-tcp | tee -a /tmp/arm-size.out
-          make arm-size-mdns | tee -a /tmp/arm-size.out
-          make arm-size-http | tee -a /tmp/arm-size.out
-          make arm-size-ipv6 | tee -a /tmp/arm-size.out
-          make arm-size-tls | tee -a /tmp/arm-size.out
+          make arm-size-all | tee /tmp/arm-size.out
       - name: Size summary
         if: always()
         run: |
           echo "## ARM Cortex-M0 Size" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -A2 '^===.*Size' /tmp/arm-size.out >> "$GITHUB_STEP_SUMMARY" \
+          grep -A2 '^===.*size' /tmp/arm-size.out >> "$GITHUB_STEP_SUMMARY" \
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 

@@ -1,16 +1,8 @@
 /**
  * @file driver/tap.c
- * @brief Linux TAP network driver for the MAC HAL.
+ * @brief Linux MAC driver: a TAP device.
  *
- * Uses /dev/net/tun with IFF_TAP | IFF_NO_PI.
- * Only compiled on Linux.
- *
- * Driver model: CACHING.
- * poll() reads the next frame from the TAP fd into the driver's
- * internal rx_frame[] buffer.  All subsequent peek() calls read from
- * that buffer.  discard() clears the buffer, allowing the next poll()
- * to read a new frame.  The caller never receives a pointer to the
- * driver's internal buffer — data is accessed exclusively via peek().
+ * A caching driver (docs/design/mac-hal.md).
  */
 
 #ifdef __linux__
@@ -25,8 +17,6 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-/* ── Context init ─────────────────────────────────────────────────── */
-
 void tap_ctx_init(tap_ctx_t *ctx, const char *ifname) {
   memset(ctx, 0, sizeof(*ctx));
   ctx->fd = -1;
@@ -36,8 +26,6 @@ void tap_ctx_init(tap_ctx_t *ctx, const char *ifname) {
     strncpy(ctx->ifname, "tap0", sizeof(ctx->ifname) - 1);
   }
 }
-
-/* ── MAC operations ───────────────────────────────────────────────── */
 
 static int tap_init(void *ctx) {
   tap_ctx_t *tap = (tap_ctx_t *)ctx;
@@ -83,21 +71,10 @@ static int tap_send(void *ctx, const uint8_t *frame, uint16_t len) {
   return (int)n;
 }
 
-/**
- * poll() — Check for a new RX frame.
- *
- * Reads the next Ethernet frame from the TAP fd into the driver's
- * internal rx_frame[] buffer.  Non-blocking: returns 0 immediately
- * if no frame is pending.
- *
- * @return Frame length in bytes if a frame was read, 0 if no frame
- *         is available, <0 on error.
- */
 static int tap_poll(void *ctx) {
   tap_ctx_t *tap = (tap_ctx_t *)ctx;
 
-  /* If a frame is already buffered (discard() not yet called), return
-   * its length — poll() is idempotent until discard() is called. */
+  /* the same frame until discard() */
   if (tap->rx_len > 0) {
     return tap->rx_len;
   }

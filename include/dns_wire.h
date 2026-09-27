@@ -19,10 +19,10 @@
 #ifndef DNS_WIRE_H
 #define DNS_WIRE_H
 
+#include "net_config.h"
 #include <stdint.h>
 
-/* ── Header layout ────────────────────────────────────────────────── */
-
+/* Header layout */
 #define DNS_HDR_SIZE 12
 #define DNS_OFF_ID 0
 #define DNS_OFF_FLAGS 2
@@ -36,8 +36,7 @@
 #define DNS_FLAG_TC 0x0200     /**< Truncated */
 #define DNS_OPCODE_MASK 0x7800 /**< Opcode field (0 = standard query) */
 
-/* ── Record types and classes ─────────────────────────────────────── */
-
+/* Record types and classes */
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
 #define DNS_TYPE_TXT 16
@@ -52,8 +51,7 @@
 /** Top bit of the class field: QU (question) / cache-flush (record) in mDNS */
 #define DNS_CLASS_TOPBIT 0x8000
 
-/* ── Limits ───────────────────────────────────────────────────────── */
-
+/* Limits */
 #define DNS_MAX_LABEL 63
 #define DNS_MAX_NAME 255 /**< Wire length including length bytes + root */
 
@@ -62,8 +60,7 @@
 #define DNS_COMPRESS_MAX 16
 #endif
 
-/* ── Writer ───────────────────────────────────────────────────────── */
-
+/* Writer */
 typedef struct {
   uint8_t *buf;     /**< Start of the DNS message */
   uint16_t cap;     /**< Buffer capacity */
@@ -93,6 +90,10 @@ int dns_write_u32(dns_writer_t *w, uint32_t v);
  */
 int dns_write_name(dns_writer_t *w, const char *name);
 
+/** Two dotted names are the same name (case-insensitive, trailing dot
+ *  optional). */
+int dns_dotted_equal(const char *a, const char *b);
+
 /**
  * Validate a dotted name.
  * @return Its wire length (1..255), or -2 if it is invalid.
@@ -111,8 +112,7 @@ void dns_set_counts(uint8_t *msg, uint16_t qdcount, uint16_t ancount,
 dns_writer_mark_t dns_writer_mark(const dns_writer_t *w);
 void dns_writer_rollback(dns_writer_t *w, dns_writer_mark_t mark);
 
-/* ── Reader ───────────────────────────────────────────────────────── */
-
+/* Reader */
 typedef struct {
   uint16_t name_off; /**< Offset of QNAME */
   uint16_t type;

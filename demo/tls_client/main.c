@@ -28,36 +28,37 @@
  */
 
 #include "arp.h"
-#include "eth.h"
 #include "net.h"
 #include "tcp.h"
 #include "tcp_buf.h"
 #include "tls.h"
-#include "tls_crypto_mbedtls.h"
+#include "tls_tcp.h"
 #include <arpa/inet.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-#include "demo_mac.h"
+#include "demo_loop.h"
 #include "demo_tls.h"
 
-#define NET_BUF_SIZE 1514u
 #define TCP_TX_SIZE 1460u
 #define TCP_RX_SIZE 4096u
-#define TLS_RX_SIZE (TLS_RECORD_HDR + TLS_MAX_CIPHERTEXT + 512u)
-#define TLS_TX_SIZE 4096u
 #define TIMEOUT_MS 15000u
+#define ARP_RETRY_MS 500u
 
 #ifndef TLS_CLIENT_DEFAULT_CA
 #define TLS_CLIENT_DEFAULT_CA "tests/tls/ca.pem"
 #endif
 
-static uint8_t net_rx_mem[NET_BUF_SIZE];
-static uint8_t net_tx_mem[NET_BUF_SIZE];
+/* Exit status */
+#define EXIT_DONE 0
+#define EXIT_SETUP 1
+#define EXIT_TLS 2
+#define EXIT_TIMEOUT 3
+
 static net_t net;
+static demo_mac_t nic;
+static uint32_t last_tick;
 
 static uint8_t tcp_tx_mem[TCP_TX_SIZE];
 static uint8_t tcp_rx_mem[TCP_RX_SIZE];
@@ -66,205 +67,140 @@ static tcp_saw_rx_ctx_t rx_ctx;
 static tcp_conn_t conn;
 static tcp_conn_t *conn_table[1];
 
-static tls_mbedtls_t backend;
-static tls_crypto_t crypto;
+static demo_tls_t backend;
 static tls_config_t cfg;
-static uint8_t tls_rx[TLS_RX_SIZE];
-static uint8_t tls_tx[TLS_TX_SIZE];
+static uint8_t tls_rx[DEMO_TLS_RX_SIZE];
+static uint8_t tls_tx[DEMO_TLS_TX_SIZE];
 static tls_conn_t tls;
 
-static volatile int running = 1;
-static void sig_handler(int s) {
-  (void)s;
-  running = 0;
-}
+/* What to send, what came back */
+static uint8_t out[65536], in[65536];
+static size_t out_len, sent, got;
+static long pattern_bytes; /* TLS_BYTES: an echo is expected */
 
-static uint32_t now_ms(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
-}
+static void step(void) { demo_step(&net, &last_tick, "tls_client", NULL); }
 
-static const char *env(const char *name, const char *dflt) {
-  const char *v = getenv(name);
-  return v && *v ? v : dflt;
-}
+static int setup_tls(void) {
+  static uint8_t pem[65536];
+  const char *ca = demo_env("TLS_CA", TLS_CLIENT_DEFAULT_CA);
+  unsigned mfl = (unsigned)atoi(demo_env("TLS_MFL", "0")), code;
+  size_t n;
 
-/* Poll the network and run timers */
-static void service(uint32_t *last) {
-  uint32_t now = now_ms();
-  if (net_poll(&net) > 0)
-    eth_input(&net, net.rx.buf, net.rx.frame_len);
-  if (now - *last >= 10u) {
-    tcp_tick(&net, now - *last);
-    *last = now;
+  if (demo_tls_backend(&backend, &cfg, "tls_client") != 0)
+    return -1;
+  if (!(n = demo_read_pem(ca, pem, sizeof(pem))) ||
+      tls_mbedtls_set_ca(&backend.backend, pem, n) != 0) {
+    fprintf(stderr, "[tls_client] cannot read CA %s\n", ca);
+    return -1;
   }
+  for (code = TLS_MFL_512; code <= TLS_MFL_4096; code++)
+    if (mfl == 256u << code)
+      cfg.max_fragment = (uint8_t)code;
+  return 0;
 }
 
-int main(int argc, char *argv[]) {
-  static uint8_t out[65536], in[65536];
-  const char *name = env("TLS_NAME", "pyro-dead01.local");
-  const char *ca = env("TLS_CA", TLS_CLIENT_DEFAULT_CA);
-  const char *msg = env("TLS_MESSAGE", "hello from smallest_tcp\n");
-  long bytes = atol(env("TLS_BYTES", "0"));
-  unsigned port = (unsigned)atoi(env("TLS_PORT", "4433"));
-  struct in_addr a;
-  uint32_t server, hop, start, last, arp_at = 0;
-  size_t out_len, sent = 0, got = 0;
-  int started = 0, announced = 0, closing = 0, rc = 3;
-  demo_mac_t nic;
-  const net_mac_t *drv;
+static void choose_message(void) {
   size_t i;
-
-  signal(SIGINT, sig_handler);
-  signal(SIGTERM, sig_handler);
-  if (strcmp(name, "-") == 0)
-    name = NULL;
-  if (inet_pton(AF_INET, env("TLS_SERVER", "10.0.0.100"), &a) != 1) {
-    fprintf(stderr, "[tls_client] bad TLS_SERVER\n");
-    return 1;
-  }
-  server = ntohl(a.s_addr);
-
-  /* What to send */
-  if (bytes > 0) {
-    if (bytes > (long)sizeof(out))
-      bytes = (long)sizeof(out);
-    out_len = (size_t)bytes;
+  pattern_bytes = atol(demo_env("TLS_BYTES", "0"));
+  if (pattern_bytes > 0) {
+    if (pattern_bytes > (long)sizeof(out))
+      pattern_bytes = (long)sizeof(out);
+    out_len = (size_t)pattern_bytes;
     for (i = 0; i < out_len; i++)
       out[i] = (uint8_t)('a' + (i % 26u));
   } else {
+    const char *msg = demo_env("TLS_MESSAGE", "hello from smallest_tcp\n");
     out_len = strlen(msg);
     memcpy(out, msg, out_len);
   }
+}
 
-  /* Crypto and trust anchors */
-  {
-    static uint8_t pem[65536];
-    FILE *f = fopen(ca, "rb");
-    size_t n;
-    if (tls_mbedtls_init(&backend, &crypto) != 0 || !f) {
-      fprintf(stderr, "[tls_client] cannot set up (CA %s)\n", ca);
-      return 1;
-    }
-    n = fread(pem, 1, sizeof(pem) - 1, f);
-    fclose(f);
-    pem[n++] = 0;
-    if (tls_mbedtls_set_ca(&backend, pem, n) != 0) {
-      fprintf(stderr, "[tls_client] cannot parse %s\n", ca);
-      return 1;
-    }
-  }
-  cfg.crypto = &crypto;
-  {
-    unsigned mfl = (unsigned)atoi(env("TLS_MFL", "0")), code;
-    for (code = 1; code <= 4; code++)
-      if (mfl == 256u << code)
-        cfg.max_fragment = (uint8_t)code;
-  }
-  {
-    static uint8_t psk[64];
-    if (demo_tls_psk(&cfg, psk, sizeof(psk)) < 0) {
-      fprintf(stderr, "[tls_client] TLS_PSK is not hex\n");
-      return 1;
-    }
-  }
-
-  if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0)
-    return 1;
-  drv = nic.ops;
-  net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem,
-           sizeof(net_tx_mem), NULL, drv, &nic.ctx);
-  if (drv->init(&nic.ctx) != 0) {
-    fprintf(stderr, "[tls_client] Failed to open MAC driver\n");
-    return 1;
-  }
-  conn_table[0] = &conn;
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = 1;
-  tcp_saw_tx_init(&tx_ctx, tcp_tx_mem, TCP_TX_SIZE);
-  tcp_saw_rx_init(&rx_ctx, tcp_rx_mem, TCP_RX_SIZE);
-  tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
-                NULL);
-
-  /* The next hop's MAC: the stack learns one MAC by ARP, the gateway's,
-   * so the gateway is pointed at the next hop to the server */
-  hop = arp_next_hop(&net, server);
+/* The stack resolves one MAC by ARP, the gateway's: the gateway is pointed
+ * at the next hop to the server.  0, or -1 on timeout. */
+static int resolve_next_hop(uint32_t server, uint32_t start) {
+  uint32_t hop = arp_next_hop(&net, server), asked = 0;
   net.gateway_ipv4 = hop;
   net.gateway_mac_valid = 0;
-  start = last = now_ms();
-  while (running && !net.gateway_mac_valid &&
-         now_ms() - start < TIMEOUT_MS) {
-    if (now_ms() - arp_at >= 500u) {
+  while (demo_running && !net.gateway_mac_valid &&
+         demo_now_ms() - start < TIMEOUT_MS) {
+    if (!asked || demo_now_ms() - asked >= ARP_RETRY_MS) {
       arp_request(&net, hop);
-      arp_at = now_ms();
+      asked = demo_now_ms();
     }
-    service(&last);
+    step();
   }
-  if (!net.gateway_mac_valid) {
-    fprintf(stderr, "[tls_client] no ARP reply from the next hop\n");
-    goto done;
-  }
-  tcp_connect(&net, &conn, server, net.gateway_mac, (uint16_t)port,
-              (uint16_t)(49152u + (now_ms() & 0x3FFFu)));
-  printf("[tls_client] connecting to %s:%u as %s\n",
-         env("TLS_SERVER", "10.0.0.100"), port, name ? name : "(any name)");
-  fflush(stdout);
+  return net.gateway_mac_valid ? 0 : -1;
+}
 
-  while (running && now_ms() - start < TIMEOUT_MS) {
-    service(&last);
+static void announce_connected(void) {
+  printf("[tls_client] TLS 1.3 established (TLS_AES_128_GCM_SHA256, %s, "
+         "%s)\n",
+         demo_tls_group_name(&tls), tls_psk_used(&tls) ? "PSK" : "certificate");
+  if (tls.max_frag)
+    printf("[tls_client] max_fragment_length %u\n", (unsigned)tls.max_frag);
+  if (atoi(demo_env("TLS_KEY_UPDATE", "0")) && tls_key_update(&tls, 1) == 0)
+    printf("[tls_client] KeyUpdate sent\n");
+  fflush(stdout);
+}
+
+/* Send the message, collect the reply; once it is all back, close.
+ * Returns the exit status once decided, else -1. */
+static int exchange(int *closing) {
+  if (sent < out_len) {
+    int w = tls_write(&tls, out + sent, out_len - sent);
+    if (w > 0)
+      sent += (size_t)w;
+  }
+  got += tls_read(&tls, in + got, sizeof(in) - got);
+  if (got < out_len || *closing)
+    return -1;
+  if (pattern_bytes > 0)
+    printf("[tls_client] echo %s (%lu bytes)\n",
+           memcmp(in, out, out_len) == 0 ? "ok" : "MISMATCH",
+           (unsigned long)got);
+  else
+    printf("[tls_client] received: %.*s\n", (int)got, (char *)in);
+  fflush(stdout);
+  tls_close(&tls);
+  *closing = 1;
+  return (pattern_bytes > 0 && memcmp(in, out, out_len) != 0) ? EXIT_TLS
+                                                              : EXIT_DONE;
+}
+
+static int tcp_open(void) {
+  return conn.state == TCP_ESTABLISHED || conn.state == TCP_CLOSE_WAIT;
+}
+
+/* The TLS session over the TCP connection, until it ends or times out */
+static int run_session(const char *name, uint32_t start) {
+  int started = 0, announced = 0, closing = 0, rc = EXIT_TIMEOUT, r;
+
+  while (demo_running && demo_now_ms() - start < TIMEOUT_MS) {
+    step();
     if (conn.state == TCP_CLOSED) { /* done, refused or reset */
       if (!closing)
         fprintf(stderr, "[tls_client] TCP connection %s\n",
                 started ? "closed" : "refused");
-      break;
+      return rc;
     }
-    if (conn.state != TCP_ESTABLISHED && conn.state != TCP_CLOSE_WAIT &&
-        !(closing && started))
+    if (!tcp_open() && !(closing && started))
       continue;
     if (!started) {
       tls_init(&tls, &cfg, tls_rx, sizeof(tls_rx), tls_tx, sizeof(tls_tx));
       tls_connect(&tls, name);
       started = 1;
     }
-    if (conn.state == TCP_ESTABLISHED || conn.state == TCP_CLOSE_WAIT)
-      demo_tls_carry(&net, &conn, &tls);
+    if (tcp_open())
+      tls_tcp_carry(&net, &conn, &tls);
 
     switch (tls_state(&tls)) {
     case TLS_STATE_CONNECTED:
       if (!announced) {
         announced = 1;
-        printf("[tls_client] TLS 1.3 established (TLS_AES_128_GCM_SHA256, "
-               "%s, %s)\n",
-               tls.group == TLS_GROUP_X25519      ? "x25519"
-               : tls.group == TLS_GROUP_SECP256R1 ? "secp256r1"
-                                                  : "no (EC)DHE",
-               tls_psk_used(&tls) ? "PSK" : "certificate");
-        if (tls.max_frag)
-          printf("[tls_client] max_fragment_length %u\n",
-                 (unsigned)tls.max_frag);
-        if (atoi(env("TLS_KEY_UPDATE", "0")) && tls_key_update(&tls, 1) == 0)
-          printf("[tls_client] KeyUpdate sent\n");
-        fflush(stdout);
+        announce_connected();
       }
-      if (sent < out_len) {
-        int w = tls_write(&tls, out + sent, out_len - sent);
-        if (w > 0)
-          sent += (size_t)w;
-      }
-      got += tls_read(&tls, in + got, sizeof(in) - got);
-      if (got >= out_len && !closing) {
-        if (bytes > 0)
-          printf("[tls_client] echo %s (%lu bytes)\n",
-                 memcmp(in, out, out_len) == 0 ? "ok" : "MISMATCH",
-                 (unsigned long)got);
-        else
-          printf("[tls_client] received: %.*s\n", (int)got, (char *)in);
-        fflush(stdout);
-        tls_close(&tls);
-        closing = 1;
-        rc = (bytes > 0 && memcmp(in, out, out_len) != 0) ? 2 : 0;
-      }
+      if ((r = exchange(&closing)) >= 0)
+        rc = r;
       break;
     case TLS_STATE_CLOSED:
       if (!closing) {
@@ -272,43 +208,78 @@ int main(int argc, char *argv[]) {
                (unsigned long)got);
         tls_close(&tls);
         closing = 1;
-        rc = got >= out_len ? 0 : 2;
+        rc = got >= out_len ? EXIT_DONE : EXIT_TLS;
       }
       break;
     case TLS_STATE_ERROR:
       printf("[tls_client] TLS alert %u\n", (unsigned)tls.alert);
       fflush(stdout);
-      demo_tls_carry(&net, &conn, &tls); /* our alert, if it was ours */
-      rc = 2;
-      goto done;
+      tls_tcp_carry(&net, &conn, &tls); /* our alert, if it was ours */
+      return EXIT_TLS;
     default:
       break;
     }
-    if (closing && conn.state == TCP_ESTABLISHED) {
-      const uint8_t *q;
-      if (!tls_tx_pending(&tls, &q) && tx_ctx.data_len == 0 &&
-          conn.snd_una == conn.snd_nxt)
-        tcp_close(&net, &conn);
-    }
-    if (closing && (conn.state == TCP_TIME_WAIT ||
-                    conn.state == TCP_CLOSE_WAIT)) {
+    if (closing && conn.state == TCP_ESTABLISHED && tls_tcp_idle(&conn, &tls))
+      tcp_close(&net, &conn);
+    if (closing &&
+        (conn.state == TCP_TIME_WAIT || conn.state == TCP_CLOSE_WAIT)) {
       if (conn.state == TCP_CLOSE_WAIT)
         tcp_close(&net, &conn);
-      break;
+      return rc;
     }
   }
-  if (rc == 3 && running)
+  if (demo_running && rc == EXIT_TIMEOUT)
     fprintf(stderr, "[tls_client] timed out\n");
+  return rc;
+}
 
-done:
-  if (conn.state == TCP_ESTABLISHED || conn.state == TCP_CLOSE_WAIT) {
-    uint32_t t0 = now_ms();
-    while (now_ms() - t0 < 200u) /* let the last segments go */
-      service(&last);
+int main(int argc, char *argv[]) {
+  const char *name = demo_env("TLS_NAME", "pyro-dead01.local");
+  const char *server_s = demo_env("TLS_SERVER", "10.0.0.100");
+  unsigned port = (unsigned)atoi(demo_env("TLS_PORT", "4433"));
+  uint32_t server, start;
+  struct in_addr a;
+  int rc = EXIT_TIMEOUT;
+
+  if (strcmp(name, "-") == 0)
+    name = NULL;
+  if (inet_pton(AF_INET, server_s, &a) != 1) {
+    fprintf(stderr, "[tls_client] bad TLS_SERVER\n");
+    return EXIT_SETUP;
+  }
+  server = ntohl(a.s_addr);
+  choose_message();
+  if (setup_tls() != 0)
+    return EXIT_SETUP;
+  if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "tls_client") != 0)
+    return EXIT_SETUP;
+  conn_table[0] = &conn;
+  tcp_set_connections(&net, conn_table, 1);
+  tcp_saw_tx_init(&tx_ctx, tcp_tx_mem, TCP_TX_SIZE);
+  tcp_saw_rx_init(&rx_ctx, tcp_rx_mem, TCP_RX_SIZE);
+  tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
+                NULL);
+
+  start = last_tick = demo_now_ms();
+  if (resolve_next_hop(server, start) != 0) {
+    fprintf(stderr, "[tls_client] no ARP reply from the next hop\n");
+  } else {
+    tcp_connect(&net, &conn, server, net.gateway_mac, (uint16_t)port,
+                (uint16_t)(49152u + (net_random(&net) & 0x3FFFu)));
+    printf("[tls_client] connecting to %s:%u as %s\n", server_s, port,
+           name ? name : "(any name)");
+    fflush(stdout);
+    rc = run_session(name, start);
+  }
+
+  if (tcp_open()) {
+    uint32_t t0 = demo_now_ms();
+    while (demo_now_ms() - t0 < 200u) /* let the last segments go */
+      step();
     tcp_abort(&net, &conn);
   }
-  drv->close(&nic.ctx);
-  tls_mbedtls_free(&backend);
+  demo_net_close(&nic);
+  tls_mbedtls_free(&backend.backend);
   printf("[tls_client] exit %d\n", rc);
   return rc;
 }

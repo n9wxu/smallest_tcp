@@ -3,13 +3,13 @@
  * @brief Crypto backend interface for the TLS 1.3 layer (tls.c).
  *
  * tls.c implements the protocol — records, handshake, key schedule — and
- * no cryptography (REQ-TLS-006).  Every primitive it needs comes through
+ * no cryptography.  Every primitive it needs comes through
  * this vtable, which the application fills from a backend such as
  * tls_crypto_mbedtls.c, the same pattern as net_mac_t for MAC drivers.
  *
- * One cipher suite, TLS_AES_128_GCM_SHA256 (REQ-TLS-002): SHA-256 for the
+ * One cipher suite, TLS_AES_128_GCM_SHA256: SHA-256 for the
  * transcript, HMAC and HKDF; AES-128-GCM for records.  Key exchange over
- * x25519 (REQ-TLS-004) or secp256r1 (REQ-TLS-005).
+ * x25519 or secp256r1.
  */
 
 #ifndef TLS_CRYPTO_H
@@ -51,33 +51,32 @@ typedef union {
  * numbers, trust anchors).
  */
 typedef struct tls_crypto_s {
-  /* ── SHA-256 ─────────────────────────────────────────────────────── */
+  /* SHA-256 */
   void (*hash_init)(tls_hash_t *h);
   void (*hash_update)(tls_hash_t *h, const uint8_t *data, size_t len);
   /** The digest of everything so far; @p h keeps going. */
   void (*hash_peek)(const tls_hash_t *h, uint8_t out[TLS_HASH_LEN]);
 
-  /* ── HMAC-SHA-256 and HKDF (RFC 2104, RFC 5869) ──────────────────── */
+  /* HMAC-SHA-256 and HKDF (RFC 2104, RFC 5869) */
   void (*hmac)(const uint8_t *key, size_t key_len, const uint8_t *data,
                size_t len, uint8_t out[TLS_HASH_LEN]);
-  void (*hkdf_extract)(const uint8_t *salt, size_t salt_len,
-                       const uint8_t *ikm, size_t ikm_len,
-                       uint8_t prk[TLS_HASH_LEN]);
+  void (*hkdf_extract)(const uint8_t *salt, size_t salt_len, const uint8_t *ikm,
+                       size_t ikm_len, uint8_t prk[TLS_HASH_LEN]);
   void (*hkdf_expand)(const uint8_t prk[TLS_HASH_LEN], const uint8_t *info,
                       size_t info_len, uint8_t *out, size_t out_len);
 
-  /* ── AES-128-GCM; @p out may equal @p in ─────────────────────────── */
+  /* AES-128-GCM; @p out may equal @p in */
   void (*aead_seal)(const uint8_t key[TLS_AEAD_KEY_LEN],
                     const uint8_t nonce[TLS_AEAD_IV_LEN], const uint8_t *aad,
-                    size_t aad_len, const uint8_t *in, size_t len,
-                    uint8_t *out, uint8_t tag[TLS_AEAD_TAG_LEN]);
+                    size_t aad_len, const uint8_t *in, size_t len, uint8_t *out,
+                    uint8_t tag[TLS_AEAD_TAG_LEN]);
   /** @return 0 if authentic (and @p out holds the plaintext), else -1. */
   int (*aead_open)(const uint8_t key[TLS_AEAD_KEY_LEN],
                    const uint8_t nonce[TLS_AEAD_IV_LEN], const uint8_t *aad,
                    size_t aad_len, const uint8_t *in, size_t len,
                    const uint8_t tag[TLS_AEAD_TAG_LEN], uint8_t *out);
 
-  /* ── (EC)DHE ─────────────────────────────────────────────────────── */
+  /* (EC)DHE */
   /** New key pair for @p group; @p pub_len receives the share's size. */
   int (*kx_keygen)(void *ctx, uint16_t group, uint8_t *priv, uint8_t *pub,
                    size_t *pub_len);
@@ -86,7 +85,7 @@ typedef struct tls_crypto_s {
                    const uint8_t *peer, size_t peer_len,
                    uint8_t shared[TLS_HASH_LEN]);
 
-  /* ── Signatures and certificates (certificate mode only) ─────────── */
+  /* Signatures and certificates (certificate mode only) */
   /** Sign @p msg (the backend hashes it) with the private key @p key. */
   int (*sign)(void *ctx, const void *key, uint16_t scheme, const uint8_t *msg,
               size_t len, uint8_t *sig, size_t *sig_len, size_t sig_cap);
@@ -102,7 +101,7 @@ typedef struct tls_crypto_s {
                       const uint16_t *lens, uint8_t count,
                       const char *hostname);
 
-  /* ── Randomness ──────────────────────────────────────────────────── */
+  /* Randomness */
   int (*random)(void *ctx, uint8_t *out, size_t len);
 
   void *ctx;

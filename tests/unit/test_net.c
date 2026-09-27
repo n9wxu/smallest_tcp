@@ -87,8 +87,6 @@ TEST(test_net_init_defaults_applied) {
   ASSERT_EQ(net.subnet_mask, NET_DEFAULT_SUBNET_MASK);
   ASSERT_EQ(net.gateway_ipv4, NET_DEFAULT_GATEWAY);
   ASSERT_EQ(net.gateway_mac_valid, 0);
-  ASSERT_EQ(net.arp_retry_ms, NET_DEFAULT_ARP_RETRY_MS);
-  ASSERT_EQ(net.arp_max_retries, NET_DEFAULT_ARP_MAX_RETRIES);
 }
 
 TEST(test_net_init_buf_too_small) {

@@ -115,8 +115,7 @@ static void setup(void) {
                 &tcp_rx_ctx, on_event);
 
   conn_table[0] = &conn;
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = 1;
+  tcp_set_connections(&net, conn_table, 1);
 }
 
 /* ── Frame building helpers ───────────────────────────────────────── */
@@ -168,7 +167,7 @@ static uint16_t build_tcp_frame(uint8_t *frame, uint32_t src_ip,
   if (data && data_len > 0)
     memcpy(tcp + hdr_len, data, data_len);
 
-  uint16_t ck = tcp_checksum(src_ip, LOCAL_IP, tcp, tcp_len);
+  uint16_t ck = ipv4_cksum(src_ip, LOCAL_IP, IPV4_PROTO_TCP, tcp, tcp_len);
   net_write16be(tcp + TCP_OFF_CKSUM, ck);
 
   ipv4_build(ip, tcp_len, IPV4_PROTO_TCP, src_ip, LOCAL_IP);
@@ -246,12 +245,13 @@ TEST(test_tcp_checksum_basic) {
   tcp_seg[TCP_OFF_FLAGS] = TCP_FLAG_SYN;
   net_write16be(tcp_seg + TCP_OFF_WINDOW, 4096);
 
-  uint16_t ck = tcp_checksum(REMOTE_IP, LOCAL_IP, tcp_seg, 20);
+  uint16_t ck = ipv4_cksum(REMOTE_IP, LOCAL_IP, IPV4_PROTO_TCP, tcp_seg, 20);
   ASSERT_NE(ck, 0); /* Non-trivial payload should produce non-zero */
 
   /* Store checksum and re-compute — should yield 0xFFFF or 0x0000 */
   net_write16be(tcp_seg + TCP_OFF_CKSUM, ck);
-  uint16_t verify = tcp_checksum(REMOTE_IP, LOCAL_IP, tcp_seg, 20);
+  uint16_t verify =
+      ipv4_cksum(REMOTE_IP, LOCAL_IP, IPV4_PROTO_TCP, tcp_seg, 20);
   ASSERT_TRUE(verify == 0xFFFFu || verify == 0x0000u);
 }
 
@@ -394,10 +394,9 @@ static void establish(void) {
   tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
   uint32_t our_isn = sent_tcp_seq(0);
   uint8_t frame[128];
-  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
-                                 5000u, our_isn + 1u,
-                                 TCP_FLAG_SYN | TCP_FLAG_ACK, 8192, NULL, 0,
-                                 1460);
+  uint16_t len = build_tcp_frame(
+      frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, 5000u, our_isn + 1u,
+      TCP_FLAG_SYN | TCP_FLAG_ACK, 8192, NULL, 0, 1460);
   inject(frame, len);
   send_count = 0;
 }
@@ -420,7 +419,8 @@ TEST(test_tcp_output_sends_one_segment) {
   tcp_output(&net, &conn);
   ASSERT_EQ(send_count, 1);
   uint8_t *ip = sent_frames[0] + ETH_HDR_SIZE;
-  ASSERT_EQ(net_read16be(ip + IPV4_OFF_TOTLEN), IPV4_HDR_SIZE + TCP_HDR_SIZE + 8);
+  ASSERT_EQ(net_read16be(ip + IPV4_OFF_TOTLEN),
+            IPV4_HDR_SIZE + TCP_HDR_SIZE + 8);
   ASSERT_MEM_EQ(ip + IPV4_HDR_SIZE + TCP_HDR_SIZE, "HDR:body", 8);
   ASSERT_EQ(sent_tcp_flags(0) & TCP_FLAG_ACK, TCP_FLAG_ACK);
 }
@@ -465,8 +465,8 @@ static uint16_t sent_tcp_payload_len(int n) {
 
 static void inject_from_peer(uint32_t seq, uint32_t ack, uint8_t flags) {
   uint8_t frame[128];
-  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
-                                 seq, ack, flags, 8192, NULL, 0, 0);
+  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, seq,
+                                 ack, flags, 8192, NULL, 0, 0);
   inject(frame, len);
 }
 
@@ -570,10 +570,9 @@ static void fill_rx_window(void) {
   static uint8_t data[RX_BUF_CAP];
   uint8_t frame[1514];
   memset(data, 'd', sizeof(data));
-  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
-                                 PEER_SEQ, conn.snd_nxt,
-                                 TCP_FLAG_ACK | TCP_FLAG_PSH, 8192, data,
-                                 sizeof(data), 0);
+  uint16_t len = build_tcp_frame(
+      frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, PEER_SEQ, conn.snd_nxt,
+      TCP_FLAG_ACK | TCP_FLAG_PSH, 8192, data, sizeof(data), 0);
   inject(frame, len);
 }
 
@@ -631,10 +630,10 @@ TEST(test_tcp_window_update_noop_without_read) {
 
 static void inject_data(uint32_t seq, const char *data, uint8_t flags) {
   uint8_t frame[NET_BUF_CAP];
-  uint16_t len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT,
-                                 seq, conn.snd_nxt, flags | TCP_FLAG_ACK, 8192,
-                                 (const uint8_t *)data,
-                                 (uint16_t)strlen(data), 0);
+  uint16_t len =
+      build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, LOCAL_PORT, seq,
+                      conn.snd_nxt, flags | TCP_FLAG_ACK, 8192,
+                      (const uint8_t *)data, (uint16_t)strlen(data), 0);
   inject(frame, len);
 }
 
@@ -854,6 +853,32 @@ TEST(test_tcp_rst_sent_for_unknown_port) {
   ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_RST) != 0);
 }
 
+TEST(test_tcp_no_rst_for_broadcast_syn) {
+  /* TCP is unicast only: a segment to a broadcast address draws nothing */
+  static const uint32_t broadcasts[] = {IPV4_BROADCAST,
+                                        NET_IPV4(10, 0, 0, 255)};
+  size_t i;
+  for (i = 0; i < sizeof(broadcasts) / sizeof(broadcasts[0]); i++) {
+    uint8_t frame[256];
+    uint8_t *ip = frame + ETH_HDR_SIZE;
+    uint8_t *tcp = ip + IPV4_HDR_SIZE;
+    uint16_t len, tcp_len;
+    setup();
+    net.subnet_mask = NET_IPV4(255, 255, 255, 0);
+    len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT, 9999u, 9000u, 0u,
+                          TCP_FLAG_SYN, 4096, NULL, 0, 0);
+    tcp_len = (uint16_t)(len - ETH_HDR_SIZE - IPV4_HDR_SIZE);
+    memset(frame, 0xFF, 6);
+    net_write16be(tcp + TCP_OFF_CKSUM, 0);
+    net_write16be(
+        tcp + TCP_OFF_CKSUM,
+        ipv4_cksum(REMOTE_IP, broadcasts[i], IPV4_PROTO_TCP, tcp, tcp_len));
+    ipv4_build(ip, tcp_len, IPV4_PROTO_TCP, REMOTE_IP, broadcasts[i]);
+    inject(frame, len);
+    ASSERT_EQ(send_count, 0);
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * TIME_WAIT expiry (REQ-TCP-008)
  * ══════════════════════════════════════════════════════════════════ */
@@ -933,7 +958,7 @@ TEST(test_tcp_rto_resets_on_ack) {
   uint8_t data[4] = {1, 2, 3, 4};
   tcp_send(&net, &conn, data, 4);
   ASSERT_EQ(send_count, 1);
-  ASSERT_TRUE(conn.rto_active); /* Timer running */
+  ASSERT_TRUE(conn.timer == TCP_TIMER_RETRANSMIT && conn.timer_ms != 0);
 
   /* Peer ACKs the data */
   send_count = 0;
@@ -942,7 +967,7 @@ TEST(test_tcp_rto_resets_on_ack) {
                         data_seq + 4u, TCP_FLAG_ACK, 8192, NULL, 0, 0);
   inject(frame, len);
 
-  ASSERT_FALSE(conn.rto_active); /* Timer stopped */
+  ASSERT_FALSE(conn.timer == TCP_TIMER_RETRANSMIT && conn.timer_ms != 0);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1215,7 +1240,7 @@ static uint16_t build_syn_with_options(uint8_t *frame, uint32_t src_ip,
   memcpy(tcp + TCP_HDR_SIZE, opts, 8);
 
   uint16_t tcp_len = hdr_len;
-  uint16_t ck = tcp_checksum(src_ip, LOCAL_IP, tcp, tcp_len);
+  uint16_t ck = ipv4_cksum(src_ip, LOCAL_IP, IPV4_PROTO_TCP, tcp, tcp_len);
   net_write16be(tcp + TCP_OFF_CKSUM, ck);
   ipv4_build(ip, tcp_len, IPV4_PROTO_TCP, src_ip, LOCAL_IP);
   return (uint16_t)(ETH_HDR_SIZE + IPV4_HDR_SIZE + tcp_len);
@@ -1266,8 +1291,9 @@ TEST(test_tcp_persist_starts_on_zero_window) {
   ASSERT_EQ(accepted, 4);   /* All bytes accepted into TX buffer */
   ASSERT_EQ(send_count, 0); /* Nothing sent yet */
   /* REQ-TCP-085: persist timer MUST be running */
-  ASSERT_TRUE(conn.persist_active);
-  ASSERT_FALSE(conn.rto_active); /* RTO is NOT running (no segment in-flight) */
+  ASSERT_TRUE(conn.timer == TCP_TIMER_PERSIST && conn.timer_ms != 0);
+  /* the retransmission timer is not (no segment in flight) */
+  ASSERT_FALSE(conn.timer == TCP_TIMER_RETRANSMIT && conn.timer_ms != 0);
 }
 
 TEST(test_tcp_persist_probe_sent_on_timeout) {
@@ -1289,7 +1315,7 @@ TEST(test_tcp_persist_probe_sent_on_timeout) {
   /* Queue 8 bytes and wait for persist to arm */
   uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
   tcp_send(&net, &conn, data, sizeof(data));
-  ASSERT_TRUE(conn.persist_active);
+  ASSERT_TRUE(conn.timer == TCP_TIMER_PERSIST && conn.timer_ms != 0);
   ASSERT_EQ(send_count, 0);
 
   /* Advance past persist interval → probe fires */
@@ -1305,7 +1331,7 @@ TEST(test_tcp_persist_probe_sent_on_timeout) {
   /* REQ-TCP-087: interval MUST double (exponential backoff) */
   ASSERT_EQ(conn.persist_ms, NET_DEFAULT_TCP_RTO_INIT_MS * 2u);
   /* Timer re-armed with doubled interval */
-  ASSERT_TRUE(conn.persist_active);
+  ASSERT_TRUE(conn.timer == TCP_TIMER_PERSIST && conn.timer_ms != 0);
 }
 
 TEST(test_tcp_persist_stops_when_window_opens) {
@@ -1326,7 +1352,7 @@ TEST(test_tcp_persist_stops_when_window_opens) {
   /* Queue data, persist starts */
   uint8_t data[4] = {1, 2, 3, 4};
   tcp_send(&net, &conn, data, sizeof(data));
-  ASSERT_TRUE(conn.persist_active);
+  ASSERT_TRUE(conn.timer == TCP_TIMER_PERSIST && conn.timer_ms != 0);
 
   /* Fire one probe */
   tcp_tick(&net, NET_DEFAULT_TCP_RTO_INIT_MS + 1u);
@@ -1341,7 +1367,7 @@ TEST(test_tcp_persist_stops_when_window_opens) {
   inject(frame, len);
 
   /* REQ-TCP-085: persist timer MUST stop when window reopens */
-  ASSERT_FALSE(conn.persist_active);
+  ASSERT_FALSE(conn.timer == TCP_TIMER_PERSIST && conn.timer_ms != 0);
   /* Remaining data in TX buffer flushed now that window > 0 */
   ASSERT_TRUE(send_count >= 1);
 }
@@ -1379,6 +1405,7 @@ int main(void) {
   RUN_TEST(test_tcp_rst_in_established_aborts);
   RUN_TEST(test_tcp_no_rst_in_listen_for_rst);
   RUN_TEST(test_tcp_rst_sent_for_unknown_port);
+  RUN_TEST(test_tcp_no_rst_for_broadcast_syn);
   RUN_TEST(test_tcp_timewait_expires);
   RUN_TEST(test_tcp_retransmit_on_timeout);
   RUN_TEST(test_tcp_rto_resets_on_ack);

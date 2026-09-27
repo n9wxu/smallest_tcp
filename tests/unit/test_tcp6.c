@@ -118,8 +118,7 @@ static void reset_sent(void) {
 /** IPv6 up (link-local preferred), one connection registered. */
 static void setup_cap(uint16_t tx_cap, int start_ipv6) {
   int ctx = 0;
-  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, tx_cap, NULL, &stub_drv,
-           &ctx);
+  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, tx_cap, NULL, &stub_drv, &ctx);
   if (start_ipv6) {
     ipv6_start(&net);
     ipv6_tick(&net, 1000);
@@ -130,8 +129,7 @@ static void setup_cap(uint16_t tx_cap, int start_ipv6) {
   tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
                 on_event);
   table[0] = &conn;
-  tcp_connections.conns = table;
-  tcp_connections.count = 1;
+  tcp_set_connections(&net, table, 1);
   evt_connected = evt_data = evt_reset = 0;
   reset_sent();
 }
@@ -140,8 +138,8 @@ static void setup(void) { setup_cap(sizeof(tx_buf), 1); }
 
 /** A global address in slot 1, as SLAAC will add (stage 4). */
 static void add_global(void) {
-  memcpy(net.ip6[1].addr, our_global, 16);
-  net.ip6[1].state = NET_IP6_PREFERRED;
+  memcpy(net.ip6.addr[1].addr, our_global, 16);
+  net.ip6.addr[1].state = NET_IP6_PREFERRED;
 }
 
 /* ── Frames ───────────────────────────────────────────────────────── */
@@ -174,8 +172,7 @@ static uint16_t tcp6_frame(uint8_t *f, const uint8_t *src, const uint8_t *dst,
   }
   if (dlen)
     memcpy(t + hlen, data, dlen);
-  net_write16be(t + TCP_OFF_CKSUM,
-                ipv6_cksum(src, dst, IPV6_NH_TCP, t, tlen));
+  net_write16be(t + TCP_OFF_CKSUM, ipv6_cksum(src, dst, IPV6_NH_TCP, t, tlen));
   return (uint16_t)(54 + tlen);
 }
 
@@ -213,8 +210,8 @@ static uint32_t establish(const uint8_t *src, const uint8_t *dst) {
   input(f, tcp6_frame(f, src, dst, PEER_PORT, ECHO_PORT, PEER_ISS, 0,
                       TCP_FLAG_SYN, NULL, 1440));
   uint32_t iss = s_seq(0);
-  input(f, tcp6_frame(f, src, dst, PEER_PORT, ECHO_PORT, PEER_ISS + 1,
-                      iss + 1, TCP_FLAG_ACK, NULL, 0));
+  input(f, tcp6_frame(f, src, dst, PEER_PORT, ECHO_PORT, PEER_ISS + 1, iss + 1,
+                      TCP_FLAG_ACK, NULL, 0));
   reset_sent();
   return iss;
 }
@@ -288,8 +285,8 @@ TEST(test_tcp6_bad_checksum_dropped) {
   uint8_t f[256];
   setup();
   tcp_listen(&conn, ECHO_PORT);
-  uint16_t len = tcp6_frame(f, peer_ll, our_ll, PEER_PORT, ECHO_PORT,
-                            PEER_ISS, 0, TCP_FLAG_SYN, NULL, 1440);
+  uint16_t len = tcp6_frame(f, peer_ll, our_ll, PEER_PORT, ECHO_PORT, PEER_ISS,
+                            0, TCP_FLAG_SYN, NULL, 1440);
   f[54 + TCP_OFF_SEQ] ^= 1;
   input(f, len);
   ASSERT_EQ(send_count, 0);
@@ -300,8 +297,8 @@ TEST(test_tcp6_multicast_destination_dropped) {
   uint8_t f[256];
   setup();
   tcp_listen(&conn, ECHO_PORT);
-  input(f, tcp6_frame(f, peer_ll, all_nodes, PEER_PORT, ECHO_PORT, PEER_ISS,
-                      0, TCP_FLAG_SYN, NULL, 1440));
+  input(f, tcp6_frame(f, peer_ll, all_nodes, PEER_PORT, ECHO_PORT, PEER_ISS, 0,
+                      TCP_FLAG_SYN, NULL, 1440));
   ASSERT_EQ(send_count, 0);
   ASSERT_EQ(conn.state, TCP_LISTEN);
 }
@@ -335,8 +332,8 @@ TEST(test_tcp6_peer_rst_closes) {
   uint8_t f[256];
   setup();
   establish(peer_ll, our_ll);
-  input(f, tcp6_frame(f, peer_ll, our_ll, PEER_PORT, ECHO_PORT, PEER_ISS + 1,
-                      0, TCP_FLAG_RST, NULL, 0));
+  input(f, tcp6_frame(f, peer_ll, our_ll, PEER_PORT, ECHO_PORT, PEER_ISS + 1, 0,
+                      TCP_FLAG_RST, NULL, 0));
   ASSERT_EQ(conn.state, TCP_CLOSED);
   ASSERT_EQ(evt_reset, 1);
 }
@@ -419,8 +416,8 @@ static uint16_t tcp4_syn(uint8_t *f, uint16_t mss) {
     net_write16be(t + 22, mss);
   }
   net_write16be(t + TCP_OFF_CKSUM,
-                tcp_checksum(NET_IPV4(10, 0, 0, 1), NET_DEFAULT_IPV4_ADDR, t,
-                             hlen));
+                ipv4_cksum(NET_IPV4(10, 0, 0, 1), NET_DEFAULT_IPV4_ADDR,
+                           IPV4_PROTO_TCP, t, hlen));
   ipv4_build(f + 14, hlen, IPV4_PROTO_TCP, NET_IPV4(10, 0, 0, 1),
              NET_DEFAULT_IPV4_ADDR);
   return (uint16_t)(34 + hlen);

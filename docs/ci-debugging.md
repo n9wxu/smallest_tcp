@@ -1,6 +1,6 @@
 # CI/CD Debugging Guide — smallest_tcp
 
-**Last updated:** 2026-03-23
+**Last updated:** 2026-09-27
 
 This document captures every significant CI/CD failure encountered during
 development, along with the diagnostic workflow that resolved each one.  Consult
@@ -9,14 +9,36 @@ turn out to be test bugs or environment issues, not protocol bugs.
 
 ---
 
+## 0. The CI jobs
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`.
+CMake is the only host build; the `Makefile` is used only by `arm-size`.
+
+| Job | What it does |
+|---|---|
+| `cmake-ipv4-only` | IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`) and its unit tests; then library-only builds with `-DSMALLEST_TCP_TCP=OFF` and with `-DSMALLEST_TCP_UDP=OFF` |
+| `arm-size` | `make arm-size-all`: the Cortex-M0 size benchmarks and `arm-check-division` (§3.12) |
+| `cmake-linux`, `cmake-macos` | The default build (dual stack, TLS with Mbed TLS) and `ctest`; on Linux also `sudo ./build/tests/test_rawsock` for the raw-socket driver's live tests |
+| `blackbox-linux` | ARP, IPv4, ICMP, UDP, TCP suites against `tcp_echo_demo` via `run_blackbox.sh`, once over TAP and once over the raw socket |
+| `blackbox-validate` | The same suites against the Linux kernel as reference SUT (§1) |
+| `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks |
+| `fetchcontent` | Builds and runs `examples/fetchcontent` against the checkout |
+
+`fuzz.yml` runs the TCP fuzz suite nightly.  The full matrix is in
+[test-plan.md §3](test-plan.md#3-ci-job-matrix).
+
 ## 1. Two-Job Interpretation Rule
 
-Every protocol has two CI jobs running the same test files:
+The core protocol suites (ARP, IPv4, ICMP, UDP, TCP) run in two CI jobs:
 
 | Job | SUT | What a FAIL means |
 |---|---|---|
 | `blackbox-linux` | `smallest_tcp` binary (`tcp_echo_demo`) | **SUT bug** — our code is wrong |
 | `blackbox-validate` | Linux kernel + `socat` (reference implementation) | **Test bug** — the test assertion is wrong |
+
+The DHCPv4, mDNS, HTTP and IPv6 suites are excluded from
+`blackbox-validate` (they drive our demos, not the kernel), and the TLS and
+HTTPS suites skip themselves there because no SUT binary is given.
 
 **Always check `blackbox-validate` first.**  If the same test also fails
 against the Linux kernel, fix the test — do not touch SUT code.  Only once
@@ -366,6 +388,33 @@ hold 10.0.0.100.  A downed `tap0` that keeps the address leaves a
 `linkdown` route the kernel still uses, and the raw leg cannot reach the
 SUT — `sut_net.sh down tap` before `up raw`.
 
+### 3.12 `arm-size` fails: "These objects call a library divide"
+
+**Symptom:** `make arm-size-all` ends with `These objects call a library
+divide (no division on Cortex-M0):` and a list of object files.
+
+**Cause:** a `/` or `%` on a run-time value in one of them.  Cortex-M0 has
+no divide instruction, so the compiler calls a libgcc helper
+(`__aeabi_uidiv`, `__aeabi_uidivmod`, …) — slow, and several hundred bytes
+of flash.  `arm-check-division` runs `arm-none-eabi-nm -u` on every
+benchmark object and on every source in `src/` compiled dual stack.
+
+**Fix:** rewrite the expression without division — shifts and masks for
+powers of two, a comparison and subtraction for wrap-around, scaling for
+random ranges (`net_random_below()`), subtraction loops for decimal output
+(`net_u32_to_dec()`).  See [coding-rules.md §4](design/coding-rules.md#4-no-run-time-division).
+Reproduce locally with `make arm-check-division`.
+
+### 3.13 `cmake-ipv4-only` fails, `cmake-linux` passes
+
+The code, a test or a demo uses something that exists only with
+`NET_USE_IPV6` (for example `net->ip6`, the `udp6` API, or
+`http_request_t.remote_ip6`) outside `#if NET_USE_IPV6`.  Reproduce with
+`cmake -S . -B build-v4 -DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`.
+The same job's no-TCP and no-UDP builds catch the equivalent for
+`NET_USE_TCP` and `NET_USE_UDP` in the libraries
+([configuration.md §5](design/configuration.md#5-compile-time-protocol-selection)).
+
 ---
 
 ## 4. Reading CI Failures Without a Browser
@@ -397,8 +446,12 @@ specific timer values and are **excluded from `blackbox-validate`**.
 
 | Test | Why sut_specific |
 |---|---|
-| `test_tcp_090_syn_retransmit_on_timeout` | Waits 2.5 s for retransmit; SUT RTO=500 ms, Linux RTO starts at 1–3 s |
-| `test_tcp_085_persist_probe_on_zero_window` | `recv_tcp(timeout=3)`; SUT persist=~1 s, Linux persist starts at 5 s |
+| `test_tcp_090_syn_retransmit_on_timeout` | Waits 1.5 s, then up to 5 s, for the SYN-ACK retransmission; SUT initial RTO = 1 s (`NET_DEFAULT_TCP_RTO_INIT_MS`), Linux starts at 1–3 s |
+| `test_tcp_085_persist_probe_on_zero_window` | Expects a probe within a few seconds; SUT persist interval starts at 1 s, Linux at 5 s |
+| `test_tcp_078_sut_honors_our_mss` | The Linux kernel ignores a tiny peer MSS (100) on veth/loopback with TSO |
+| `test_ipv4_003_unknown_proto_icmp_unreachable`, `test_ipv4_007_outbound_df_bit_set` | Behaviour of this stack that the kernel reference does not share |
+| `test_http_021_idle_connection_times_out` | Waits for `http_demo`'s 10 s request timeout |
+| `test_dhcpv4_conform.py`: `test_ack_binds_ip`, `test_nak_triggers_rediscover`, `test_wrong_xid_offer_ignored`, `test_discover_retransmit`, `test_request_contains_server_id` | Depend on `dhcp_echo_demo` |
 
 When adding new timer-dependent tests, always ask: *"Would this pass against a
 standard Linux kernel with default RFC-compliant timer values?"*  If not, add
@@ -428,9 +481,9 @@ When implementing a new protocol and adding blackbox tests:
 
 1. ☐ Write `tests/blackbox/test_<proto>_conform.py`
 2. ☐ Add to `SUITES` list in `tests/blackbox/run_blackbox.sh`
-3. ☐ Add `blackbox-<proto>-linux` job to `.github/workflows/ci.yml`
-4. ☐ Add `blackbox-<proto>-validate` job (reference SUT) to `ci.yml`
-5. ☐ Add Linux sanity check step (kernel tool, 2–5 s) to `blackbox-<proto>-linux`
+3. ☐ Add a `blackbox-<proto>` job to `.github/workflows/ci.yml`, with the TAP and raw-socket matrix legs (`tests/blackbox/sut_net.sh`)
+4. ☐ If the suite can run against the Linux kernel, let `blackbox-validate` run it; if it drives one of our demos, add it to that job's `--ignore` list (or make it skip without its SUT option)
+5. ☐ Add a Linux sanity check or interop step (kernel tool, 2–5 s) to the new job
 6. ☐ Update `docs/test-plan.md` — suite table, CI matrix, coverage table
 7. ☐ Update `README.md` — test count in summary line and status table
 8. ☐ Add `@pytest.mark.sut_specific` to any timer-dependent tests

@@ -83,13 +83,13 @@ static const uint8_t all_dhcp_mac[6] = {0x33, 0x33, 0, 1, 0, 2};
 /* DUID-LL of 02:00:00:de:ad:01 (RFC 8415 §11.4) */
 static const uint8_t our_duid[10] = {0, 3, 0, 1, 0x02, 0, 0, 0xDE, 0xAD, 0x01};
 /* A server DUID-LLT */
-static const uint8_t srv_duid[14] = {0, 1, 0, 1, 0x2E, 0x3F, 0x10, 0x20,
-                                     0x52, 0x54, 0, 0x11, 0x22, 0x33};
+static const uint8_t srv_duid[14] = {0,    1,    0,    1, 0x2E, 0x3F, 0x10,
+                                     0x20, 0x52, 0x54, 0, 0x11, 0x22, 0x33};
 static const uint8_t other_duid[10] = {0, 3, 0, 1, 0x02, 0, 0, 0, 0, 0x99};
 static const uint8_t lease_addr[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0,
                                        0,    0,    0,    0,    0, 0, 0, 0x77};
 static const uint8_t dns_servers[32] = {
-    0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x53,
+    0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,    0x53,
     0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x53, 0x53};
 
 /* ── Fixture ──────────────────────────────────────────────────────── */
@@ -172,8 +172,7 @@ static uint16_t s_mlen(int i) {
   return (uint16_t)(sent_len[i] - UDP6_PAYLOAD_OFFSET);
 }
 static uint32_t s_xid(int i) {
-  return (uint32_t)s_msg(i)[1] << 16 | (uint32_t)s_msg(i)[2] << 8 |
-         s_msg(i)[3];
+  return (uint32_t)s_msg(i)[1] << 16 | (uint32_t)s_msg(i)[2] << 8 | s_msg(i)[3];
 }
 
 /** Top-level option @p code of a message, or NULL. */
@@ -269,9 +268,8 @@ TEST(test_dhcpv6_information_request) {
   ASSERT_EQ(ip[6], IPV6_NH_UDP);
   ASSERT_EQ(net_read16be(udp), DHCPV6_CLIENT_PORT);
   ASSERT_EQ(net_read16be(udp + 2), DHCPV6_SERVER_PORT);
-  ASSERT_EQ(ipv6_cksum(ip + 8, ip + 24, IPV6_NH_UDP, udp,
-                       net_read16be(udp + 4)),
-            0);
+  ASSERT_EQ(
+      ipv6_cksum(ip + 8, ip + 24, IPV6_NH_UDP, udp, net_read16be(udp + 4)), 0);
   ASSERT_EQ(s_msg(0)[0], DHCPV6_INFORMATION_REQUEST);
   uint16_t l;
   const uint8_t *o = s_opt(0, DHCPV6_OPT_CLIENTID, &l);
@@ -467,8 +465,8 @@ TEST(test_dhcpv6_reply_binds_address) {
   int slot = ipv6_addr_slot(&net, lease_addr);
   ASSERT_TRUE(slot > 0);
   ASSERT_EQ(ipv6_addr_state(&net, (uint8_t)slot), NET_IP6_TENTATIVE);
-  ASSERT_EQ(net.ip6[slot].valid_s, 7200u);
-  ASSERT_EQ(net.ip6[slot].preferred_s, 3600u);
+  ASSERT_EQ(net.ip6.addr[slot].valid_s, 7200u);
+  ASSERT_EQ(net.ip6.addr[slot].preferred_s, 3600u);
   run(2000); /* REQ-DHCPv6-032: DAD before use */
   ASSERT_EQ(ipv6_addr_state(&net, (uint8_t)slot), NET_IP6_PREFERRED);
   ASSERT_EQ(cli.t1_s, 1000u);
@@ -507,7 +505,7 @@ TEST(test_dhcpv6_reply_to_renew_extends) {
   ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_BOUND);
   int slot = ipv6_addr_slot(&net, lease_addr);
   ASSERT_TRUE(slot > 0);
-  ASSERT_EQ(net.ip6[slot].valid_s, 9000u);
+  ASSERT_EQ(net.ip6.addr[slot].valid_s, 9000u);
   ASSERT_EQ(cli.t1_s, 100u);
 }
 
@@ -562,8 +560,8 @@ TEST(test_dhcpv6_request_gives_up_after_ten) {
 TEST(test_dhcpv6_zero_t1_t2_from_preferred_lifetime) {
   setup();
   bind_lease(0, 0, 1000, 2000);
-  ASSERT_EQ(cli.t1_s, 500u);  /* 0.5 × preferred */
-  ASSERT_EQ(cli.t2_s, 812u);  /* ≈ 0.8 × preferred (0.8125: shifts) */
+  ASSERT_EQ(cli.t1_s, 500u); /* 0.5 × preferred */
+  ASSERT_EQ(cli.t2_s, 812u); /* ≈ 0.8 × preferred (0.8125: shifts) */
 }
 
 TEST(test_dhcpv6_stateful_reply_options_to_handlers) {

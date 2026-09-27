@@ -1,76 +1,117 @@
-# Address Resolution Design
+# Address Resolution — Design
 
-**Last updated:** 2026-03-19
+**Files:** `include/arp.h`, `src/arp.c`; IPv6 in `src/ndp.c`, `src/ipv6.c`
+**Last updated:** 2026-09-27
 
-## Architecture
+## 1. No cache
 
-No global ARP/NDP cache. Resolved MAC addresses live in the structures that use them:
+The stack keeps **no ARP cache and no IPv6 neighbour cache**.  Link-layer
+addresses live where they are used:
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   net_t      │     │ tcp_conn_t   │     │ udp_peer_t   │
-│              │     │              │     │  (optional)   │
-│ gateway_mac  │     │ remote_mac   │     │ remote_mac   │
-│ gateway_valid│     │ mac_valid    │     │ mac_valid    │
-└──────────────┘     └──────────────┘     └──────────────┘
-        ↑                    ↑                    ↑
-        └────────────────────┴────────────────────┘
-                    ARP/NDP reply handler scans
-                    all of these looking for
-                    matching IP
-```
+| Where | Holds | Filled by |
+|---|---|---|
+| `net_t.gateway_mac`, `gateway_mac_valid` | The IPv4 gateway's MAC | `arp_input()`, from an ARP *reply* whose sender IP is `net->gateway_ipv4` |
+| `net_t.ip6.router.mac` | The IPv6 default router's MAC | Router Advertisements (Source Link-Layer Address option, else the frame's source) |
+| `tcp_conn_t.remote_mac`, `mac_valid` | The peer's (or next hop's) MAC for the connection's life | The SYN that opened a passive connection, or the `remote_mac` argument of `tcp_connect()` / `tcp6_connect()` |
+| `tftp_client_t.server_mac` | The TFTP server's MAC | The `server_mac` argument of `tftp_client_get()` |
 
-## Resolution Flow (IPv4/ARP)
+A cache costs RAM per entry, needs ageing timers, and still has to be sized
+for the worst case.  A small device talks to a few peers, and most of its
+traffic is replies — which need no resolution at all (§2).
 
-1. App calls `tcp_connect()` or `udp_send()` to a destination IP.
-2. Stack checks if destination is on-subnet (via `net->subnet_mask`).
-   - On-subnet: resolve destination IP.
-   - Off-subnet: resolve `net->gateway_ipv4`.
-3. Check `mac_valid` in the relevant structure.
-4. If valid: send immediately.
-5. If not valid: send ARP request, defer data packet.
-6. On ARP reply: scan all connection structures for matching IP, fill MAC, set `mac_valid = 1`.
-7. On next `net_poll()` or `net_tick()`: retry deferred send.
+## 2. Where each frame's destination MAC comes from
 
-## Resolution Flow (IPv6/NDP)
+| Traffic | Destination MAC |
+|---|---|
+| **Replies** — ARP replies, ICMP echo replies and errors, UDP replies built from a handler's `src_mac`, TCP segments on a passively opened connection, NDP Neighbor Advertisements | The source MAC of the frame being answered.  On a single link that is the sender itself or the router that forwarded the packet, so the reply takes the right first hop without a lookup. |
+| **Broadcast and multicast** — the DHCPv4 client (every message, even a renewal addressed to the server's IP, is framed to `ff:ff:ff:ff:ff:ff`), DHCPv4 server replies that must be broadcast, mDNS, IGMP, MLD, NDP solicitations, DHCPv6 | Computed: broadcast, `ipv4_mcast_mac()` (01:00:5e + 23 bits), `ipv6_mcast_mac()` (33:33 + 32 bits) |
+| **New conversations** — `udp_send()`, `tcp_connect()`, `tftp_client_get()` | Supplied by the application (§3) |
 
-Same pattern but using Neighbor Solicitation/Advertisement instead of ARP. The NS goes to the solicited-node multicast address. Router MAC comes from Router Advertisement.
+## 3. Resolving a MAC for an active open
 
-## Scan Mechanism
-
-The application provides an array of connections to the stack. The ARP/NDP reply handler iterates this array:
+The stack provides the pieces; the application sequences them.
 
 ```c
-// Application registers connections with the stack
-tcp_conn_t *app_connections[] = { &conn1, &conn2, NULL };
-net_set_connections(net, app_connections);
-
-// In arp_input(), on ARP reply:
-for (int i = 0; app_connections[i]; i++) {
-    if (app_connections[i]->remote_ip == arp_sender_ip) {
-        memcpy(app_connections[i]->remote_mac, arp_sender_mac, 6);
-        app_connections[i]->mac_valid = 1;
-    }
-}
+uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip); /* dst_ip if on-link, else gateway */
+net_err_t arp_request(net_t *net, uint32_t target_ip);    /* broadcast a request */
 ```
 
-## Gateway-Only Mode
+`arp_next_hop()` compares the destination with our address under
+`net->subnet_mask` (`ipv4_is_local()`).  Because the only MAC the stack
+learns from ARP is the gateway's, a peer on the local subnet is resolved by
+pointing the gateway at it for the duration — this is what the `tls_client`
+demo does:
 
-For the smallest configuration, skip per-destination ARP entirely:
-- Set `gateway_mac_valid = 1` (resolved at startup or via DHCP).
-- ALL outbound frames use `gateway_mac` as Ethernet destination.
-- The gateway forwards on-subnet packets back onto the link (extra hop).
-- The gateway MAY send ICMP Redirect (which this mode ignores).
+```c
+uint32_t hop = arp_next_hop(&net, server);
+net.gateway_ipv4 = hop;          /* learn this MAC */
+net.gateway_mac_valid = 0;
+while (!net.gateway_mac_valid && !timed_out()) {
+  if (every_500_ms())
+    arp_request(&net, hop);
+  /* net_poll(), net_tick() ... */
+}
+tcp_connect(&net, &conn, server, net.gateway_mac, port, local_port);
+```
 
-This eliminates all per-connection MAC state. Legal per RFC, just slower.
+This changes where all off-link traffic goes while it is in effect; a device
+that also needs its real gateway must restore `gateway_ipv4` and resolve it
+again afterwards.  A device that only talks through its gateway resolves the
+gateway once and leaves it.
 
-## Protocol-Layer MAC Caching
+The stack keeps no timers for ARP: **retries and time-outs are the
+application's** (the demo retries every 500 ms).  The former
+`NET_DEFAULT_ARP_RETRY_MS` / `NET_DEFAULT_ARP_MAX_RETRIES` settings and the
+`arp_retry_ms` / `arp_max_retries` fields in `net_t` never had any code
+behind them and have been removed.
 
-| Protocol | Where MAC is Stored | Lifetime |
-|---|---|---|
-| TCP connections | `tcp_conn_t.remote_mac` | Connection lifetime |
-| UDP persistent peers | `udp_peer_t.remote_mac` | Application-managed |
-| DHCP server | `dhcp_state_t.server_mac` | Lease lifetime |
-| DNS server | `dns_ctx_t.server_mac` | Application-managed |
-| Default gateway | `net_t.gateway_mac` | Until changed |
-| TFTP server | `tftp_ctx_t.server_mac` | Transfer lifetime |
+### Gateway-only mode
+
+The smallest configuration resolves nothing but the gateway and sends every
+new conversation to `gateway_mac`, even for on-link destinations.  That is
+legal: the gateway forwards the packet back onto the link (and may send an
+ICMP Redirect, which this stack ignores).  It costs one extra hop and nothing
+in RAM.
+
+## 4. What `arp_input()` does
+
+- **Request for our address** (`TPA == net->ipv4_addr`): unicast a reply to
+  the requester's MAC.  The requester's mapping is not remembered.
+- **Reply from the gateway** (`SPA == net->gateway_ipv4`): store its MAC and
+  set `gateway_mac_valid`.  Any such reply is accepted, solicited or not, so
+  a gratuitous ARP reply from the gateway updates it; so would a spoofed one
+  (ARP has no authentication).
+- **Everything else** — requests for other addresses, replies from other
+  hosts, requests *from* the gateway — is ignored.  Only Ethernet/IPv4 ARP
+  (hardware type 1, protocol 0x0800, lengths 6 and 4) is considered.
+
+The gateway's MAC never expires; it is replaced by the next reply.
+
+Not implemented: Address Conflict Detection (RFC 5227 probes, announcements
+and defence) and automatic gratuitous ARP when an address is configured.  An
+application can announce its address itself with
+`arp_request(net, net->ipv4_addr)`, which sends a request whose sender and
+target addresses are both ours.
+
+## 5. IPv6
+
+Neighbor Discovery (`ndp.c`) follows the same model:
+
+- **Neighbor Solicitations for our addresses** are answered with a Neighbor
+  Advertisement to the solicitor (its Source Link-Layer Address option, else
+  the frame's source MAC).
+- **The default router's MAC** comes from Router Advertisements;
+  `ipv6_router_mac()` returns it while the router lifetime runs, else NULL.
+- **On-link or not:** `ipv6_on_link()` treats link-local destinations and
+  destinations inside the /64 of one of our global addresses as on-link;
+  everything else goes to the router's MAC.
+- **Neighbor Advertisements** are examined only for Duplicate Address
+  Detection (one claiming a tentative address of ours marks it DUPLICATE).
+  They are not recorded, so active resolution of an on-link neighbour is not
+  implemented: `ndp_send_ns(net, target, 0)` can send the solicitation, but
+  the answer is not kept.  To open a conversation with an on-link IPv6 peer,
+  the application needs its MAC from elsewhere — typically a packet the peer
+  sent first.
+
+Neighbour Unreachability Detection and Redirects are not implemented
+([ipv6.md](ipv6.md)).

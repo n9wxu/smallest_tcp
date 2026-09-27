@@ -1,42 +1,164 @@
 /**
  * @file tftp.c
- * @brief TFTP client — RFC 1350 with optional blksize option (RFC 2348).
- *
- * Implements REQ-TFTP-001 through REQ-TFTP-038.
- *
- * Protocol flow (RRQ, no options):
- *   Client → Server  RRQ "filename" "octet"         port 69
- *   Server → Client  DATA block=1 [0..512 bytes]    from server TID
- *   Client → Server  ACK block=1                    to server TID
- *   Server → Client  DATA block=2 [0..512 bytes]
- *   ...
- *   Server → Client  DATA block=N [0..blksize-1]   (last block < blksize)
- *   Client → Server  ACK block=N
- *   Transfer complete.
- *
- * With blksize option (RFC 2348):
- *   Client → Server  RRQ "filename" "octet" "blksize" "<N>"
- *   Server → Client  OACK "blksize" "<M>"   (M ≤ N, or M = N)
- *   Client → Server  ACK block=0
- *   Server → Client  DATA block=1 [0..M bytes]
- *   ...
+ * @brief TFTP client (RFC 1350) with the blksize option (RFC 2348).
+ *        REQ-TFTP-001..038.
  */
 
 #include "tftp.h"
 #include "net_endian.h"
+#include "net_text.h"
 #include "udp.h"
 #include <string.h>
 
-/* ── Forward declarations ─────────────────────────────────────────── */
+#define TFTP_DATA_HDR_SIZE 4
+#define TFTP_MIN_BLKSIZE 8u         /* RFC 2348 §2 */
+#define TFTP_MAX_BLKSIZE 65464u     /* RFC 2348 §2 */
+#define TFTP_ETHERNET_BLKSIZE 1468u /* the largest DATA in one frame */
+#define TFTP_ERROR_MSG_MAX 119u
 
-static net_err_t send_rrq(net_t *net, tftp_client_t *c);
-static net_err_t send_ack(net_t *net, tftp_client_t *c, uint16_t block);
+/* The largest block the RX buffer holds (REQ-TFTP-037, 038) */
+static uint16_t largest_blksize(const net_t *net) {
+  uint32_t room =
+      net->rx.capacity > UDP_PAYLOAD_OFFSET + TFTP_DATA_HDR_SIZE
+          ? net->rx.capacity - UDP_PAYLOAD_OFFSET - TFTP_DATA_HDR_SIZE
+          : TFTP_DEFAULT_BLKSIZE;
+  if (room < TFTP_MIN_BLKSIZE)
+    room = TFTP_MIN_BLKSIZE;
+  return (uint16_t)(room > TFTP_ETHERNET_BLKSIZE ? TFTP_ETHERNET_BLKSIZE
+                                                 : room);
+}
+
+/* Once the server has answered, to its transfer port (REQ-TFTP-015) */
+static uint16_t server_port(const tftp_client_t *c) {
+  return c->server_tid ? c->server_tid : TFTP_SERVER_PORT;
+}
+
+static net_err_t send_payload(net_t *net, tftp_client_t *c, uint16_t len) {
+  return udp_send_inplace(net, c->server_ip, c->server_mac, c->local_port,
+                          server_port(c), len, NET_DEFAULT_TTL);
+}
+
+static uint16_t put_string(uint8_t *msg, uint16_t pos, const char *s) {
+  size_t len = strlen(s) + 1;
+  memcpy(msg + pos, s, len);
+  return (uint16_t)(pos + len);
+}
+
+/* REQ-TFTP-001..003, 025, 026: filename, "octet", and blksize unless it
+ * is the default */
+static net_err_t send_rrq(net_t *net, tftp_client_t *c) {
+  uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
+  int with_blksize = c->blksize_opt && c->blksize != TFTP_DEFAULT_BLKSIZE;
+  char blksize[NET_U32_DEC_MAX];
+  uint8_t digits = net_u32_to_dec(blksize, c->blksize);
+  uint32_t len = 2 + strlen(c->filename) + 1 + sizeof("octet") +
+                 (with_blksize ? sizeof("blksize") + digits + 1u : 0u);
+  uint16_t pos = 2;
+
+  if (UDP_PAYLOAD_OFFSET + len > net->tx.capacity)
+    return NET_ERR_BUF_TOO_SMALL;
+  net_write16be(msg, TFTP_OP_RRQ);
+  pos = put_string(msg, pos, c->filename);
+  pos = put_string(msg, pos, "octet");
+  if (with_blksize) {
+    pos = put_string(msg, pos, "blksize");
+    pos = put_string(msg, pos, blksize);
+  }
+  return udp_send_inplace(net, c->server_ip, c->server_mac, c->local_port,
+                          TFTP_SERVER_PORT, pos, NET_DEFAULT_TTL);
+}
+
+/* REQ-TFTP-009, 014 */
+static net_err_t send_ack(net_t *net, tftp_client_t *c, uint16_t block) {
+  uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
+  if (net->tx.capacity < UDP_PAYLOAD_OFFSET + 4)
+    return NET_ERR_BUF_TOO_SMALL;
+  net_write16be(msg, TFTP_OP_ACK);
+  net_write16be(msg + 2, block);
+  return send_payload(net, c, 4);
+}
+
 static net_err_t send_error(net_t *net, tftp_client_t *c, uint16_t code,
-                            const char *msg);
-static void finish(tftp_client_t *c, uint8_t ok, uint16_t code,
-                   const char *msg);
+                            const char *text) {
+  uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
+  size_t len = strlen(text);
+  if (len > TFTP_ERROR_MSG_MAX)
+    len = TFTP_ERROR_MSG_MAX;
+  if (net->tx.capacity < UDP_PAYLOAD_OFFSET + 5 + len)
+    return NET_ERR_BUF_TOO_SMALL;
+  net_write16be(msg, TFTP_OP_ERROR);
+  net_write16be(msg + 2, code);
+  memcpy(msg + 4, text, len);
+  msg[4 + len] = '\0';
+  return send_payload(net, c, (uint16_t)(5 + len));
+}
 
-/* ── Init ─────────────────────────────────────────────────────────── */
+static void finish(tftp_client_t *c, uint8_t ok, uint16_t code,
+                   const char *msg) {
+  c->state = ok ? TFTP_STATE_DONE : TFTP_STATE_ERROR;
+  c->timer_ms = 0;
+  if (c->on_done)
+    c->on_done(ok, code, msg, c->cb_ctx);
+}
+
+/* A NUL-terminated string at @p *p before @p end; NULL if unterminated */
+static const char *next_string(const uint8_t **p, const uint8_t *end) {
+  const char *s = (const char *)*p;
+  while (*p < end && **p != '\0')
+    (*p)++;
+  if (*p >= end)
+    return NULL;
+  (*p)++;
+  return s;
+}
+
+static uint32_t parse_decimal(const char *s) {
+  uint32_t v = 0;
+  while (*s >= '0' && *s <= '9' && v <= TFTP_MAX_BLKSIZE)
+    v = v * 10u + (uint32_t)(*s++ - '0');
+  return v;
+}
+
+/* REQ-TFTP-027, 028: the server's blksize, acknowledged with ACK(0) */
+static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
+                       uint16_t len) {
+  const uint8_t *p = data + 2, *end = data + len;
+  const char *name, *value;
+  while ((name = next_string(&p, end)) && (value = next_string(&p, end))) {
+    uint32_t v = parse_decimal(value);
+    if (net_equal_nocase(name, "blksize") && v >= TFTP_MIN_BLKSIZE &&
+        v <= TFTP_MAX_BLKSIZE)
+      c->blksize = (uint16_t)v;
+  }
+  c->state = TFTP_STATE_RECEIVING;
+  send_ack(net, c, 0);
+}
+
+/* REQ-TFTP-009..015, 031 */
+static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
+                       uint16_t len) {
+  uint16_t block, block_len;
+  if (len < TFTP_DATA_HDR_SIZE)
+    return;
+  block = net_read16be(data + 2);
+  block_len = (uint16_t)(len - TFTP_DATA_HDR_SIZE);
+  if (c->state == TFTP_STATE_REQUESTING) { /* blksize option ignored */
+    c->blksize = TFTP_DEFAULT_BLKSIZE;
+    c->state = TFTP_STATE_RECEIVING;
+  }
+  if (block == c->next_block) {
+    if (c->on_data)
+      c->on_data(block, data + TFTP_DATA_HDR_SIZE, block_len, c->cb_ctx);
+    send_ack(net, c, block);
+    if (block_len < c->blksize) { /* the last block is short */
+      finish(c, 1, 0, "");
+      return;
+    }
+    c->next_block++; /* wraps from 65535 to 0 */
+  } else if (block == (uint16_t)(c->next_block - 1u)) {
+    send_ack(net, c, block); /* the server missed our ACK */
+  }
+}
 
 void tftp_client_init(tftp_client_t *c, uint16_t local_port,
                       tftp_data_fn_t on_data, tftp_done_fn_t on_done,
@@ -50,309 +172,79 @@ void tftp_client_init(tftp_client_t *c, uint16_t local_port,
   c->cb_ctx = ctx;
 }
 
-/* ── Get (RRQ) ────────────────────────────────────────────────────── */
-
+/* REQ-TFTP-001..006, 035 */
 net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
                           const uint8_t *server_mac, const char *filename,
                           uint8_t blksize_opt) {
-  /* Allow re-starting from terminal states */
-  if (c->state != TFTP_STATE_IDLE && c->state != TFTP_STATE_DONE &&
-      c->state != TFTP_STATE_ERROR) {
+  size_t name_len = strlen(filename);
+  if (c->state == TFTP_STATE_REQUESTING || c->state == TFTP_STATE_RECEIVING)
     return NET_ERR_INVALID_PARAM;
-  }
-
-  /* REQ-TFTP-037,038: compute max blksize from tx buffer.
-   * tx capacity − ETH(14) − IP(20) − UDP(8) − TFTP DATA header(4). */
-  uint16_t max_blk = TFTP_DEFAULT_BLKSIZE;
-  if (net->tx.capacity > (14u + 20u + 8u + 4u)) {
-    max_blk = (uint16_t)(net->tx.capacity - 14u - 20u - 8u - 4u);
-  }
-  if (max_blk < 8u)
-    max_blk = 8u; /* REQ-TFTP-038 */
-  if (max_blk > 1468u)
-    max_blk = 1468u; /* RFC 2348 max for Ethernet */
-
+  if (name_len >= TFTP_MAX_FILENAME)
+    name_len = TFTP_MAX_FILENAME - 1u;
+  memcpy(c->filename, filename, name_len);
+  c->filename[name_len] = '\0';
   c->server_ip = server_ip;
   memcpy(c->server_mac, server_mac, 6);
   c->server_tid = 0;
   c->next_block = 1;
   c->blksize_opt = blksize_opt;
-  c->blksize = blksize_opt ? max_blk : TFTP_DEFAULT_BLKSIZE;
-
-  /* REQ-TFTP-001: save filename */
-  {
-    size_t flen = strlen(filename);
-    if (flen >= TFTP_MAX_FILENAME)
-      flen = TFTP_MAX_FILENAME - 1u;
-    memcpy(c->filename, filename, flen);
-    c->filename[flen] = '\0';
-  }
-
+  c->blksize = blksize_opt ? largest_blksize(net) : TFTP_DEFAULT_BLKSIZE;
   c->state = TFTP_STATE_REQUESTING;
   c->retries = 0;
   c->timer_ms = TFTP_TIMEOUT_MS;
-
   return send_rrq(net, c);
 }
 
-/* ── Input ────────────────────────────────────────────────────────── */
-
+/* REQ-TFTP-006, 016..018 */
 void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
                        uint16_t src_port, const uint8_t *data, uint16_t len) {
-  if (c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) {
+  uint16_t opcode;
+  if ((c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) ||
+      src_ip != c->server_ip || len < 2)
     return;
-  }
+  opcode = net_read16be(data);
 
-  /* Only accept packets from our server's IP */
-  if (src_ip != c->server_ip)
-    return;
-
-  if (len < 2)
-    return;
-
-  uint16_t opcode = net_read16be(data);
-
-  /* REQ-TFTP-006: record server TID from the first valid packet */
-  if (c->server_tid == 0) {
-    if (opcode == TFTP_OP_DATA || opcode == TFTP_OP_OACK ||
-        opcode == TFTP_OP_ERROR) {
-      c->server_tid = src_port;
-    }
-  }
-
-  /* REQ-TFTP-018: packet from unexpected TID → ERROR(5), keep going */
+  /* The first answer fixes the server's transfer ID (port) */
+  if (c->server_tid == 0 && (opcode == TFTP_OP_DATA || opcode == TFTP_OP_OACK ||
+                             opcode == TFTP_OP_ERROR))
+    c->server_tid = src_port;
   if (c->server_tid != 0 && src_port != c->server_tid) {
     send_error(net, c, TFTP_ERR_UNKNOWN_TID, "Unknown TID");
     return;
   }
-
-  /* Any valid packet resets the retransmit timer */
   c->timer_ms = TFTP_TIMEOUT_MS;
   c->retries = 0;
 
-  /* ── ERROR ─────────────────────────────────────────────────────── */
-  if (opcode == TFTP_OP_ERROR) {
-    /* REQ-TFTP-016,017 */
-    uint16_t code = (len >= 4u) ? net_read16be(data + 2) : 0u;
-    const char *msg = (len > 4u) ? (const char *)(data + 4) : "";
-    finish(c, 0, code, msg);
-    return;
-  }
-
-  /* ── OACK ──────────────────────────────────────────────────────── */
-  if (opcode == TFTP_OP_OACK && c->state == TFTP_STATE_REQUESTING) {
-    /* REQ-TFTP-028: walk option pairs and extract blksize */
-    const uint8_t *p = data + 2;
-    const uint8_t *end = data + len;
-    while (p < end) {
-      const char *name = (const char *)p;
-      while (p < end && *p != '\0')
-        p++;
-      if (p >= end)
-        break;
-      p++; /* skip NUL after name */
-
-      const char *value = (const char *)p;
-      while (p < end && *p != '\0')
-        p++;
-      if (p >= end)
-        break;
-      p++; /* skip NUL after value */
-
-      /* REQ-TFTP-028: parse "blksize" (case-insensitive first char) */
-      if ((name[0] == 'b' || name[0] == 'B') &&
-          (name[1] == 'l' || name[1] == 'L')) {
-        uint32_t v = 0;
-        const char *s = value;
-        while (*s >= '0' && *s <= '9') {
-          v = v * 10u + (uint32_t)(*s++ - '0');
-        }
-        if (v >= 8u && v <= 65464u) {
-          c->blksize = (uint16_t)v;
-        }
-      }
-    }
-    /* REQ-TFTP-027: acknowledge OACK with ACK block 0 */
-    c->state = TFTP_STATE_RECEIVING;
-    send_ack(net, c, 0);
-    return;
-  }
-
-  /* ── DATA ──────────────────────────────────────────────────────── */
-  if (opcode == TFTP_OP_DATA) {
-    if (len < 4u)
-      return;
-
-    uint16_t block = net_read16be(data + 2);
-    uint16_t data_len = (uint16_t)(len - 4u);
-    const uint8_t *payload = data + 4;
-
-    if (c->state == TFTP_STATE_REQUESTING) {
-      /* REQ-TFTP-031: server sent DATA(1) without OACK — fall back */
-      c->blksize = TFTP_DEFAULT_BLKSIZE;
-      c->state = TFTP_STATE_RECEIVING;
-    }
-
-    if (block == c->next_block) {
-      /* REQ-TFTP-012: deliver data to application */
-      if (c->on_data) {
-        c->on_data(block, payload, data_len, c->cb_ctx);
-      }
-
-      /* REQ-TFTP-009,014,015: send ACK to server TID */
-      send_ack(net, c, block);
-
-      /* REQ-TFTP-010: last block has data_len < blksize */
-      if (data_len < c->blksize) {
-        finish(c, 1, 0, "");
-        return;
-      }
-
-      /* Advance; handle block number wrap at 65535 → 0 */
-      c->next_block =
-          (c->next_block == 0xFFFFu) ? 0u : (uint16_t)(c->next_block + 1u);
-
-    } else if (block == (uint16_t)(c->next_block - 1u)) {
-      /* REQ-TFTP-013: duplicate (retransmit from server) — re-ACK */
-      send_ack(net, c, block);
-    }
-    /* Unexpected block numbers are silently discarded */
+  switch (opcode) {
+  case TFTP_OP_ERROR:
+    finish(c, 0, len >= 4 ? net_read16be(data + 2) : 0,
+           len > 4 ? (const char *)(data + 4) : "");
+    break;
+  case TFTP_OP_OACK:
+    if (c->state == TFTP_STATE_REQUESTING)
+      oack_input(net, c, data, len);
+    break;
+  case TFTP_OP_DATA:
+    data_input(net, c, data, len);
+    break;
+  default:
+    break;
   }
 }
 
-/* ── Tick ─────────────────────────────────────────────────────────── */
-
+/* REQ-TFTP-020..024 */
 void tftp_client_tick(net_t *net, tftp_client_t *c, uint32_t ms) {
-  if (c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) {
+  if ((c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) ||
+      !net_countdown(&c->timer_ms, ms))
     return;
-  }
-
-  if (ms >= c->timer_ms) {
-    c->timer_ms = 0;
-  } else {
-    c->timer_ms -= ms;
-  }
-
-  if (c->timer_ms > 0)
-    return;
-
-  /* REQ-TFTP-023: abort after max retries */
   if (c->retries >= TFTP_MAX_RETRIES) {
-    finish(c, 0, 0, "Timeout"); /* REQ-TFTP-024 */
+    finish(c, 0, 0, "Timeout");
     return;
   }
-
   c->retries++;
   c->timer_ms = TFTP_TIMEOUT_MS;
-
-  if (c->state == TFTP_STATE_REQUESTING) {
-    /* REQ-TFTP-021: retransmit RRQ */
+  if (c->state == TFTP_STATE_REQUESTING)
     send_rrq(net, c);
-  } else {
-    /* REQ-TFTP-020: retransmit last ACK */
-    uint16_t last_acked =
-        (c->next_block == 0) ? 0xFFFFu : (uint16_t)(c->next_block - 1u);
-    send_ack(net, c, last_acked);
-  }
-}
-
-/* ── Internal helpers ─────────────────────────────────────────────── */
-
-static net_err_t send_rrq(net_t *net, tftp_client_t *c) {
-  /* RRQ: opcode(2) + filename(\0) + "octet"(\0) [+ blksize option] */
-  uint8_t buf[256];
-  uint16_t pos = 0;
-
-  net_write16be(buf, TFTP_OP_RRQ);
-  pos = 2;
-
-  /* REQ-TFTP-001,003: filename + NUL + "octet" + NUL */
-  {
-    size_t flen = strlen(c->filename);
-    memcpy(buf + pos, c->filename, flen);
-    pos += (uint16_t)flen;
-    buf[pos++] = '\0';
-  }
-  memcpy(buf + pos, "octet", 5);
-  pos += 5;
-  buf[pos++] = '\0';
-
-  /* REQ-TFTP-025,026: blksize option (only when != default) */
-  if (c->blksize_opt && c->blksize != TFTP_DEFAULT_BLKSIZE) {
-    memcpy(buf + pos, "blksize", 7);
-    pos += 7;
-    buf[pos++] = '\0';
-
-    /* Convert blksize to decimal ASCII */
-    {
-      char tmp[8];
-      uint8_t ti = 0;
-      uint16_t v = c->blksize;
-      uint8_t start;
-      if (v == 0) {
-        tmp[ti++] = '0';
-      } else {
-        start = ti;
-        while (v > 0) {
-          tmp[ti++] = (char)('0' + (v % 10u));
-          v /= 10u;
-        }
-        /* reverse the digits */
-        {
-          uint8_t lo = start, hi = (uint8_t)(ti - 1u);
-          while (lo < hi) {
-            char t = tmp[lo];
-            tmp[lo] = tmp[hi];
-            tmp[hi] = t;
-            lo++;
-            hi--;
-          }
-        }
-      }
-      memcpy(buf + pos, tmp, ti);
-      pos += ti;
-      buf[pos++] = '\0';
-    }
-  }
-
-  /* REQ-TFTP-002: send to server port 69 */
-  return udp_send(net, c->server_ip, c->server_mac, c->local_port,
-                  TFTP_SERVER_PORT, buf, pos);
-}
-
-static net_err_t send_ack(net_t *net, tftp_client_t *c, uint16_t block) {
-  /* REQ-TFTP-014: ACK = opcode(4) + block(2) */
-  uint8_t buf[4];
-  net_write16be(buf, TFTP_OP_ACK);
-  net_write16be(buf + 2, block);
-
-  /* REQ-TFTP-015: send to server TID, not port 69 */
-  uint16_t dst = (c->server_tid != 0) ? c->server_tid : TFTP_SERVER_PORT;
-  return udp_send(net, c->server_ip, c->server_mac, c->local_port, dst, buf, 4);
-}
-
-static net_err_t send_error(net_t *net, tftp_client_t *c, uint16_t code,
-                            const char *msg) {
-  uint8_t buf[128];
-  net_write16be(buf, TFTP_OP_ERROR);
-  net_write16be(buf + 2, code);
-  {
-    size_t mlen = msg ? strlen(msg) : 0u;
-    if (mlen > 119u)
-      mlen = 119u;
-    memcpy(buf + 4, msg, mlen);
-    buf[4 + mlen] = '\0';
-    uint16_t dst = (c->server_tid != 0) ? c->server_tid : TFTP_SERVER_PORT;
-    return udp_send(net, c->server_ip, c->server_mac, c->local_port, dst, buf,
-                    (uint16_t)(5u + mlen));
-  }
-}
-
-static void finish(tftp_client_t *c, uint8_t ok, uint16_t code,
-                   const char *msg) {
-  c->state = ok ? TFTP_STATE_DONE : TFTP_STATE_ERROR;
-  c->timer_ms = 0;
-  if (c->on_done) {
-    c->on_done(ok, code, msg, c->cb_ctx);
-  }
+  else
+    send_ack(net, c, (uint16_t)(c->next_block - 1u)); /* the last ACK */
 }

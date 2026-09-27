@@ -83,9 +83,8 @@ static const uint8_t mac_all_routers[6] = {0x33, 0x33, 0, 0, 0, 2};
 /* 2001:db8:1::/64 and our SLAAC address in it */
 static const uint8_t prefix[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 1, 0, 0,
                                    0,    0,    0,    0,    0, 0, 0, 0};
-static const uint8_t our_global[16] = {0x20, 0x01, 0x0D, 0xB8, 0,    1,
-                                       0,    0,    0,    0,    0,    0xFF,
-                                       0xFE, 0xDE, 0xAD, 0x01};
+static const uint8_t our_global[16] = {
+    0x20, 0x01, 0x0D, 0xB8, 0, 1, 0, 0, 0, 0, 0, 0xFF, 0xFE, 0xDE, 0xAD, 0x01};
 static const uint8_t remote_global[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 2, 0, 0,
                                           0,    0,    0,    0,    0, 0, 0, 7};
 static const uint8_t onlink_global[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 1, 0, 0,
@@ -127,8 +126,8 @@ static void setup_quiet(void) {
  *  options: SLLA if slla, a Prefix Information option if pfx. */
 static uint16_t ra_msg(uint8_t *m, uint8_t cur_hop, uint8_t flags,
                        uint16_t router_life, const uint8_t *slla,
-                       const uint8_t *pfx, uint8_t pfx_len,
-                       uint8_t pfx_flags, uint32_t valid, uint32_t preferred) {
+                       const uint8_t *pfx, uint8_t pfx_len, uint8_t pfx_flags,
+                       uint32_t valid, uint32_t preferred) {
   uint16_t len = 16;
   memset(m, 0, 64);
   m[0] = ICMPV6_RA;
@@ -173,8 +172,8 @@ static void deliver(const uint8_t *src, const uint8_t *dst,
 /** A typical RA: hop 64, lifetime 1800 s, SLLA, 2001:db8:1::/64 (L+A). */
 static void send_ra(uint32_t valid, uint32_t preferred) {
   uint8_t m[64];
-  uint16_t n = ra_msg(m, 64, 0, 1800, rtr_mac, prefix, 64, 0xC0, valid,
-                      preferred);
+  uint16_t n =
+      ra_msg(m, 64, 0, 1800, rtr_mac, prefix, 64, 0xC0, valid, preferred);
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255);
 }
 
@@ -243,10 +242,10 @@ TEST(test_ra_sets_router_and_hop_limit) {
   setup_quiet();
   uint16_t n = ra_msg(m, 42, 0, 1800, rtr_mac, NULL, 0, 0, 0, 0);
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255);
-  ASSERT_EQ(net.ip6_hop_limit, 42);
+  ASSERT_EQ(net.ip6.hop_limit, 42);
   ASSERT_NOT_NULL(ipv6_router_mac(&net));
   ASSERT_MEM_EQ(ipv6_router_mac(&net), rtr_mac, 6);
-  ASSERT_MEM_EQ(net.ip6_router, rtr_ll, 16);
+  ASSERT_MEM_EQ(net.ip6.router.addr, rtr_ll, 16);
 }
 
 TEST(test_ra_zero_hop_limit_keeps_ours) {
@@ -254,7 +253,7 @@ TEST(test_ra_zero_hop_limit_keeps_ours) {
   setup_quiet();
   uint16_t n = ra_msg(m, 0, 0, 1800, rtr_mac, NULL, 0, 0, 0, 0);
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255);
-  ASSERT_EQ(net.ip6_hop_limit, NET_IPV6_DEFAULT_HOP_LIMIT);
+  ASSERT_EQ(net.ip6.hop_limit, NET_IPV6_DEFAULT_HOP_LIMIT);
 }
 
 TEST(test_ra_without_slla_uses_frame_source) {
@@ -292,7 +291,7 @@ TEST(test_ra_flags_recorded) {
   setup_quiet();
   uint16_t n = ra_msg(m, 64, 0xC0, 1800, rtr_mac, NULL, 0, 0, 0, 0);
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255);
-  ASSERT_EQ(net.ip6_ra_flags & 0xC0, 0xC0); /* M and O */
+  ASSERT_EQ(net.ip6.ra_flags & 0xC0, 0xC0); /* M and O */
 }
 
 TEST(test_ra_invalid_ignored) {
@@ -300,14 +299,14 @@ TEST(test_ra_invalid_ignored) {
   static const uint8_t global_src[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 0, 0, 0,
                                          0,    0,    0,    0,    0, 0, 0, 1};
   setup_quiet();
-  uint16_t n = ra_msg(m, 42, 0, 1800, rtr_mac, prefix, 64, 0xC0, INFINITE,
-                      INFINITE);
-  deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 254);    /* hop limit */
+  uint16_t n =
+      ra_msg(m, 42, 0, 1800, rtr_mac, prefix, 64, 0xC0, INFINITE, INFINITE);
+  deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 254);     /* hop limit */
   deliver(global_src, all_nodes, mac_all_nodes, m, n, 255); /* not LL src */
   m[1] = 1;
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255); /* code */
   ASSERT_NULL(ipv6_router_mac(&net));
-  ASSERT_EQ(net.ip6_hop_limit, NET_IPV6_DEFAULT_HOP_LIMIT);
+  ASSERT_EQ(net.ip6.hop_limit, NET_IPV6_DEFAULT_HOP_LIMIT);
   ASSERT_EQ(ipv6_addr_state(&net, 1), NET_IP6_NONE);
 }
 
@@ -317,7 +316,7 @@ TEST(test_prefix_forms_global_address) {
   setup_quiet();
   send_ra(86400, 14400);
   ASSERT_EQ(ipv6_addr_state(&net, 1), NET_IP6_TENTATIVE);
-  ASSERT_MEM_EQ(net.ip6[1].addr, our_global, 16);
+  ASSERT_MEM_EQ(net.ip6.addr[1].addr, our_global, 16);
   ASSERT_NULL(ipv6_src_for(&net, remote_global)); /* not yet */
   finish_dad();
   ASSERT_EQ(ipv6_addr_state(&net, 1), NET_IP6_PREFERRED);
@@ -350,8 +349,8 @@ TEST(test_prefix_not_autonomous_ignored) {
 TEST(test_prefix_length_not_64_ignored) {
   uint8_t m[64];
   setup_quiet();
-  uint16_t n = ra_msg(m, 64, 0, 1800, rtr_mac, prefix, 48, 0xC0, INFINITE,
-                      INFINITE);
+  uint16_t n =
+      ra_msg(m, 64, 0, 1800, rtr_mac, prefix, 48, 0xC0, INFINITE, INFINITE);
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255);
   ASSERT_EQ(ipv6_addr_state(&net, 1), NET_IP6_NONE);
 }
@@ -365,8 +364,8 @@ TEST(test_prefix_preferred_above_valid_ignored) {
 TEST(test_link_local_prefix_ignored) {
   uint8_t m[64];
   setup_quiet();
-  uint16_t n = ra_msg(m, 64, 0, 1800, rtr_mac, our_ll, 64, 0xC0, INFINITE,
-                      INFINITE);
+  uint16_t n =
+      ra_msg(m, 64, 0, 1800, rtr_mac, our_ll, 64, 0xC0, INFINITE, INFINITE);
   deliver(rtr_ll, all_nodes, mac_all_nodes, m, n, 255);
   ASSERT_EQ(ipv6_addr_state(&net, 1), NET_IP6_NONE);
 }
@@ -438,14 +437,14 @@ TEST(test_valid_lifetime_two_hour_rule) {
   send_ra(86400, 14400);
   finish_dad();
   send_ra(60, 30);
-  ASSERT_EQ(net.ip6[1].valid_s, TWO_HOURS);
-  ASSERT_EQ(net.ip6[1].preferred_s, 30u);
+  ASSERT_EQ(net.ip6.addr[1].valid_s, TWO_HOURS);
+  ASSERT_EQ(net.ip6.addr[1].preferred_s, 30u);
   send_ra(3 * 3600, 3600);
-  ASSERT_EQ(net.ip6[1].valid_s, 3u * 3600u);
+  ASSERT_EQ(net.ip6.addr[1].valid_s, 3u * 3600u);
   send_ra(60, 30); /* remaining 3 h > 2 h → 2 h */
-  ASSERT_EQ(net.ip6[1].valid_s, TWO_HOURS);
+  ASSERT_EQ(net.ip6.addr[1].valid_s, TWO_HOURS);
   send_ra(60, 30); /* remaining <= 2 h and 60 < remaining → unchanged */
-  ASSERT_EQ(net.ip6[1].valid_s, TWO_HOURS);
+  ASSERT_EQ(net.ip6.addr[1].valid_s, TWO_HOURS);
 }
 
 TEST(test_deprecated_address_preferred_again) {
@@ -484,8 +483,8 @@ TEST(test_on_link) {
 }
 
 TEST(test_echo_to_global_answered_from_global) {
-  uint8_t m[16] = {ICMPV6_ECHO_REQUEST, 0, 0, 0, 0, 1, 0, 1, 'g', 'l', 'o',
-                   'b'};
+  uint8_t m[16] = {
+      ICMPV6_ECHO_REQUEST, 0, 0, 0, 0, 1, 0, 1, 'g', 'l', 'o', 'b'};
   static const uint8_t our_mac_arr[6] = NET_DEFAULT_MAC;
   setup_quiet();
   send_ra(INFINITE, INFINITE);

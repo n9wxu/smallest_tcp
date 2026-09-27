@@ -1,6 +1,7 @@
 # IPv6 — Design (Milestone 12)
 
-**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 8,021 B flash / 780 B RAM for a dual-stack UDP echo (IPv4-only: 2,902 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
+**Status:** implemented (Milestone 12) — stages 1 (IPv6 core, ICMPv6, neighbor discovery responder, DAD), 2 (UDP), 3 (TCP), 4 (router discovery, SLAAC), 5 (DHCPv6) and 6 (MLD, mDNS and HTTP over IPv6).  Cortex-M0: 7,549 B flash / 772 B RAM for a dual-stack UDP echo (IPv4-only: 2,574 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
+**Files:** `include/ipv6.h`, `src/ipv6.c` (packets, addresses, groups); `include/icmpv6.h`, `src/icmpv6.c`; `include/ndp.h`, `src/ndp.c` (Neighbor Discovery, DAD, router discovery, SLAAC); `include/mld.h`, `src/mld.c`; `include/dhcpv6_client.h`, `src/dhcpv6_client.c`.  The interface's IPv6 state is `net_ip6_t` in `include/net.h`.
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8415 (DHCPv6)
 
@@ -20,187 +21,341 @@ ping, UDP, TCP, HTTP by name — without growing IPv4-only builds by a byte.
 
 ## 2. Compile-time selection
 
-`NET_USE_IPV6` (default 0 in `net_config.h`) gates every IPv6 field and the
-Ethernet dispatch.  IPv4-only builds — including every `make arm-size*`
-configuration — compile exactly as before.  CMake has
-`SMALLEST_TCP_IPV6` (default ON): it adds `ipv6.c`, `icmpv6.c` and `ndp.c`
-to the core library and defines `NET_USE_IPV6=1` publicly, so everything
-linked against the core agrees on the `net_t` layout.  `make test` keeps
-building the IPv4-only configuration, except for the IPv6 test suites,
-which compile their own sources with `-DNET_USE_IPV6=1`.  CI therefore
-covers both: Make = IPv4-only, CMake = dual stack.
+`NET_USE_IPV6` (default 0 in `net_config.h`) gates every IPv6 field of
+`net_t` and the Ethernet dispatch; IPv4-only builds carry no IPv6 code or
+state.  CMake has `SMALLEST_TCP_IPV6` (default ON): it adds `ipv6.c`,
+`icmpv6.c`, `ndp.c` and `mld.c` to the core library and defines
+`NET_USE_IPV6` publicly, so everything linked against the core agrees on
+the `net_t` layout; the DHCPv6 client is its own library
+(`smallest_tcp::dhcpv6_client`), built only then.  CI builds and tests both
+ways: the default CMake job is dual stack, `cmake-ipv4-only` sets
+`SMALLEST_TCP_IPV6=OFF`, and `make arm-size-ipv6` measures the dual-stack
+footprint.
 
-## 3. Addresses
+| Setting | Default | Meaning |
+|---|---|---|
+| `NET_IPV6_ADDRS` | 2 | Address slots: the link-local address and one global (SLAAC, DHCPv6 or static) |
+| `NET_MAX_MCAST6_GROUPS` | 1 | Groups `ipv6_mcast_join()` can hold (mDNS needs one for ff02::fb) |
+| `NET_IPV6_DAD_TRANSMITS` | 1 | DAD probes per address |
+| `NET_IPV6_DEFAULT_HOP_LIMIT` | 64 | Until a Router Advertisement says otherwise |
+| `NDP_MAX_RTR_SOLICITATIONS` | 3 | Router Solicitations after start-up; 0 disables router discovery |
+
+## 3. Interface state
 
 IPv6 addresses are 16-byte arrays in network byte order — never converted.
-`net_t` gains (under `NET_USE_IPV6`):
+Everything the stack knows about the interface's IPv6 side is one
+struct, `net->ip6` (`include/net.h`):
 
 ```c
 typedef struct {
   uint8_t addr[16];
-  uint8_t state;      /* NONE, TENTATIVE, PREFERRED, DEPRECATED, DUPLICATE */
-  uint8_t dad_left;   /* DAD probes still to send */
-  uint16_t timer_ms;  /* until the next DAD step */
+  uint8_t state;            /* NET_IP6_NONE, TENTATIVE, PREFERRED, DEPRECATED, DUPLICATE */
+  uint8_t dad_probes_left;
+  uint16_t dad_timer_ms;    /* until the next DAD step */
+  uint32_t valid_s;         /* seconds, or NET_IP6_INFINITE */
+  uint32_t preferred_s;
 } net_ip6_addr_t;
 
-net_ip6_addr_t ip6[NET_IPV6_ADDRS]; /* [0] link-local, [1..] global */
-uint8_t ip6_hop_limit;              /* 64, or Cur Hop Limit from an RA */
-uint32_t ip6_rng;                   /* xorshift32 for protocol jitter */
+typedef struct {
+  net_ip6_addr_t addr[NET_IPV6_ADDRS]; /* [0] link-local, [1..] global */
+  uint8_t hop_limit;                   /* 64, or Cur Hop Limit from an RA */
+  uint8_t ra_flags;                    /* NDP_RA_MANAGED | NDP_RA_OTHER of the last RA */
+  net_ip6_router_t router;             /* default router: addr, mac, lifetime_s */
+  uint8_t router_solicits_left;
+  uint16_t router_solicit_ms;          /* until the next RS */
+  uint16_t lifetime_carry_ms;          /* ms toward the next lifetime second */
+  net_mld_t mld;                       /* query_reply_ms, report_repeat_ms, v1_querier_left_s */
+} net_ip6_t;
 ```
 
-`NET_IPV6_ADDRS` defaults to 2: the link-local address and one global
-address (SLAAC, DHCPv6 or static).  Slot 0 is formed at `net_init()` from the
-MAC as a Modified EUI-64 interface identifier (RFC 4291 App. A) and stays
-`NONE` until `ipv6_start()`.
+**Start.**  `ipv6_start()` clears all of `net->ip6`, sets the default hop
+limit, forms the link-local address in slot 0 — fe80::/64 plus the
+Modified EUI-64 interface identifier of the MAC (RFC 4291 App. A) — with
+infinite lifetimes, and starts DAD on it after a random 0–1 s delay
+(RFC 4862 §5.4.2).  Until then slot 0 is `NONE` and the interface ignores
+IPv6: `ipv6_input()` and `ipv6_mac_accepted()` both test it.  Because the
+reset covers every slot, static global addresses are added *after*
+`ipv6_start()`; calling it again (after a link change, say) starts IPv6
+over, DAD and router discovery included.
 
-Only PREFERRED and DEPRECATED addresses are *ours* for normal traffic.  A
-TENTATIVE address receives nothing but DAD messages and is never a source
-(RFC 4862 §5.4).
+Joined multicast groups are deliberately *outside* `net_ip6_t`, in
+`net->mcast6_groups` (`::` = free slot): a module may join before IPv6 is
+started — `mdns_start()` joins ff02::fb whenever it runs — and the reset
+must not forget the membership.  The MLD report sent before the
+link-local address's first DAD probe announces them (§9).
 
-**Source selection** (RFC 6724, the rules that matter on one interface):
-link-local or link-scope multicast destination → the link-local address;
-any other destination → a PREFERRED global address, else a DEPRECATED one,
-else nothing.
+The well-known addresses `ipv6_unspecified` (::), `ipv6_all_nodes`
+(ff02::1) and `ipv6_all_routers` (ff02::2) are defined once, in `ipv6.c`.
+
+**Address states** (RFC 4862 §2).  Only PREFERRED and DEPRECATED
+addresses are *ours* for normal traffic (`ipv6_is_ours()`).  A TENTATIVE
+address receives nothing but DAD messages and is never a source
+(RFC 4862 §5.4); a DUPLICATE one is never used.  One rule chooses between
+the two usable states, applied when DAD completes and whenever lifetimes
+change: PREFERRED while the preferred lifetime is non-zero, else
+DEPRECATED (still accepted, chosen as a source only when nothing preferred
+fits).
+
+**Lifetimes have one owner.**  `ipv6_addr_set_lifetimes(net, slot,
+valid_s, preferred_s)` stores new lifetimes for an existing address and
+re-applies that rule (a TENTATIVE address stays tentative; DAD applies
+the rule when it finishes).  Every change goes through it:
+
+- aging — `lifetimes_elapse()` in `ipv6.c`, once per whole second; a slot
+  whose valid lifetime reaches 0 is cleared instead;
+- SLAAC — `slaac_prefix()` in `ndp.c`, after the two-hour rule (§7);
+- DHCPv6 — `bind()` in `dhcpv6_client.c`, when a Reply extends a lease
+  for an address that is already configured (§8).
+
+SLAAC and DHCPv6 used to write `valid_s`, `preferred_s` and `state`
+themselves, each with its own idea of when a deprecated address becomes
+preferred again.  A new address gets its lifetimes from `ipv6_addr_add()`
+(static configuration, SLAAC, DHCPv6), which then starts DAD without the
+start-up delay.  `NET_IP6_INFINITE` (0xFFFFFFFF) never counts down.  The
+link-local address is never aged, and `ipv6_addr_remove()` refuses slot 0.
+
+**Source selection** (`ipv6_src_for()`, RFC 6724 rules 2 and 3 for one
+interface): a link-scope destination — link-local unicast, or multicast of
+scope ≤ 2 — gets the link-local address; any other destination a
+PREFERRED global address, else a DEPRECATED one; a wider-scope multicast
+group with no global address falls back to the link-local address.
+Otherwise there is no source and the send fails with
+`NET_ERR_INVALID_PARAM`.
 
 ## 4. Receive path
 
 ```
-eth_input ── 0x86DD ──► ipv6_input ── 58 ─► icmpv6_input ── 133..137 ─► ndp_input
-                                      ├─ 17 ─► udp6_input   (stage 2)
-                                      └─  6 ─► tcp6_input   (stage 3)
+eth_input ── 0x86DD ──► ipv6_input ── 58 ─► icmpv6_input ── 128 ──────────► echo reply
+                                      │                   ├─ 133..137 ────► ndp_input
+                                      │                   └─ 130..132, 143 ► mld_input
+                                      ├─ 17 ─► udp6_input ─► net->udp6_ports handler
+                                      └─  6 ─► tcp6_input
 ```
 
 **Ethernet filter.**  IPv6 multicast maps to `33:33` + the group's low 32
-bits (RFC 2464 §7).  `eth_input` accepts the all-nodes MAC
-(`33:33:00:00:00:01`) and the solicited-node MAC of every configured
-address, tentative ones included (DAD needs them).
+bits (RFC 2464 §7).  Once IPv6 is started, `ipv6_mac_accepted()` (called
+by `eth_input()`) accepts the all-nodes MAC, the solicited-node MAC of
+every configured address — tentative ones included, DAD needs them — and
+the MAC of every joined group.
 
-**`ipv6_parse`** checks the version and that 40 + Payload Length fits the
+**`ipv6_parse()`** checks the version and that 40 + Payload Length fits the
 frame (a longer frame is Ethernet padding), then walks the extension
-headers: Hop-by-Hop (0, only first), Routing (43) and Destination Options
-(60) are skipped by their length; a Fragment header (44) drops the packet —
-there is no reassembly (a documented deviation; hosts on Ethernet rarely
-see fragments); No Next Header (59) ends processing.  The result names the
-upper-layer protocol, its offset and length, and the offset of the Next
-Header field that named it — the Parameter Problem pointer.
+headers: Hop-by-Hop (0, only straight after the fixed header), Routing
+(43) and Destination Options (60) are skipped by their length, without
+looking at the options inside; a Routing header with Segments Left ≠ 0 is
+dropped (it would have us forward, RFC 8200 §4.4); a Fragment header (44)
+is dropped — there is no reassembly (hosts on Ethernet rarely see
+fragments); No Next Header (59) ends processing.  The resulting
+`ipv6_hdr_t` names the upper-layer protocol, its offset and length, and
+`nh_offset`, the offset of the Next Header field that named it — the
+Parameter Problem pointer.
 
-**`ipv6_input`** drops multicast sources and packets from our own
-addresses, accepts destinations that are one of our addresses, all-nodes,
-or a solicited-node group of a configured address, and dispatches.  The
-unspecified source `::` is legal only for DAD Neighbor Solicitations; NDP
-checks that.  An unknown upper-layer protocol draws ICMPv6 Parameter
-Problem code 1 pointing at that Next Header field (RFC 8200 §4).
+**`ipv6_input()`** ignores everything until IPv6 is started, drops
+multicast sources and packets from our own usable addresses, accepts
+destinations that are one of our usable addresses, all-nodes, a joined
+group, or the solicited-node group of a configured address
+(`destination_is_us()`), and dispatches.  It does not reject the
+unspecified source `::`, which DAD probes and MLD reports from a host
+without a usable address legitimately carry; the upper layers decide —
+NDP treats an NS from `::` as a DAD probe, echo requests and errors are
+never answered to `::`, mDNS does not answer a legacy query from it.  An
+unknown upper-layer protocol draws ICMPv6 Parameter Problem code 1
+pointing at that Next Header field (RFC 8200 §4).
 
 ## 5. ICMPv6
 
-- **Checksum** over the IPv6 pseudo-header (RFC 8200 §8.1) — mandatory.
-- **Echo**: reply in place with the request's identifier, sequence and
-  data.  An echo to a multicast group (e.g. `ff02::1`) is answered from our
-  unicast address (RFC 4443 §4.2).
-- **Errors sent** (Destination Unreachable, Parameter Problem) carry as
-  much of the invoking packet as fits in 1280 bytes and the TX buffer.
-  None are sent in response to an ICMPv6 error, to a multicast destination
-  (except Parameter Problem code 2 and Packet Too Big, which we never
-  send), or to a multicast or unspecified source (RFC 4443 §2.4).
-- **Errors received** are logged (as for ICMPv4).  Unknown informational
-  types are dropped.
-- **Rate limiting** (RFC 4443 §2.4(f), SHOULD) is not implemented yet: the
+- **Checksum** over the IPv6 pseudo-header (`ipv6_cksum()`, RFC 8200
+  §8.1) — mandatory; shorter than 4 bytes or a bad checksum is dropped.
+- **Echo** (`echo_reply()`): reply in place with the request's identifier,
+  sequence and data, to the frame's source MAC.  An echo to a multicast
+  group (e.g. ff02::1) is answered from our unicast address for the
+  requester (RFC 4443 §4.2); one from `::` is not answered.
+- **Errors sent** (`icmpv6_send_error()`): Parameter Problem code 1 from
+  `ipv6_input()` and Destination Unreachable code 4 (port unreachable)
+  from `udp6_input()`.  The source is the address the packet was sent to
+  when it is ours, else `ipv6_src_for()`; the error goes to the invoking
+  frame's source MAC and quotes as much of the invoking packet as fits in
+  the 1280-byte minimum MTU and in the TX buffer (`quote_len()`).
+- **When errors are allowed** (`error_allowed()`, RFC 4443 §2.4(e)): not
+  about a packet sent to an IPv6 multicast group or to a link-layer
+  multicast/broadcast address — except Packet Too Big and Parameter
+  Problem code 2, which the stack never sends but the function lets
+  through so that it states the rule as the RFC does; not about a packet
+  from a multicast or unspecified source; not about an ICMPv6 error
+  (`is_icmpv6_error()`: type below 128, or a message too short to tell).
+- **Received errors** and unknown informational types are dropped: there
+  is no path-MTU or reachability state for them to update.
+- **Rate limiting** (RFC 4443 §2.4(f), SHOULD) is not implemented: the
   stack sends at most one error per received packet.
 
 ## 6. Neighbor Discovery
 
-**Validation** (RFC 4861 §7.1): Hop Limit 255, code 0, ICMPv6 length,
-options with non-zero length, target not multicast; an NS from `::` must
-go to a solicited-node group and carry no Source Link-Layer Address option.
+`ndp.c` has three layers: options (`options_valid()` checks that every
+option has a non-zero length and fits; `option_find()` then walks them
+without re-checking), senders that build in place at `ICMPV6_OFFSET`
+(`send_na()`, `ndp_send_ns()`, `send_rs()`), and receivers (`ns_input()`,
+`na_input()`, `ra_input()`) behind `ndp_input()`.  The timers are
+`dad_step()`, `start_router_discovery()` and `ndp_tick()`.
 
-**Neighbor Solicitation → Advertisement.**  For one of our addresses we
-answer with Solicited = 1 (Override = 1, Router = 0) and our MAC in a Target
-Link-Layer Address option, to the solicitor — its SLLA option or, failing
-that, the frame's source MAC.  An NS from `::` (someone's DAD) is defended
-with an unsolicited NA (S = 0) to all-nodes.
+**Validation** (RFC 4861 §6.1, §7.1): every ND message must have Hop Limit
+255 and code 0 — so it came from the link — and be long enough for its
+type, with valid options.  NS and NA targets must not be multicast; an NS
+from `::` must go to the target's solicited-node group and carry no Source
+Link-Layer Address option; an NA to a multicast address must not have S
+set; an RA must come from a link-local address.  RS (we are not a router)
+and Redirect (no per-destination routes, REQ-NDP-053) are ignored.
+
+**NS → NA** (`ns_input()`).  For one of our usable addresses we answer with
+Solicited = 1, Override = 1, Router = 0 and our MAC in a Target
+Link-Layer Address option, from the target address, to the solicitor —
+at its SLLA option's MAC or, failing that, the frame's source MAC.  An NS
+from `::` for a usable address (someone's DAD) is defended with an
+unsolicited NA (S = 0) to all-nodes.  For a TENTATIVE address an NS from
+`::` means another node is probing the same address: DUPLICATE; an NS
+from a unicast source is ignored (RFC 4862 §5.4.3).  DUPLICATE addresses
+are not defended.
+
+**NA** (`na_input()`).  With no neighbour cache, an NA only matters when it
+claims one of our TENTATIVE addresses: DUPLICATE.  After DAD, a
+conflicting NA is ignored (RFC 4862 §5.4.4 leaves the reaction open).
 
 **Distributed cache, as ARP.**  There is no neighbour cache: replies go to
-the MAC the request came from; connections keep their peer's MAC; the
-default router's MAC lives in `net_t` (stage 4).  NUD is simplified to
-"resolved neighbours stay reachable" (REQ-NDP-059).
+the MAC the request came from; TCP connections keep their peer's MAC; the
+default router's MAC is in `net->ip6.router`.  NUD is simplified to
+"resolved neighbours stay reachable" (REQ-NDP-059).  Nothing resolves an
+arbitrary on-link neighbour: `ndp_send_ns()` with `dad = 0` sends the
+solicitation, but answers are not recorded, so an application that opens
+a connection passes the peer's MAC (`tcp6_connect()`), or the router's
+from `ipv6_router_mac()` for an off-link peer.
 
 **Duplicate Address Detection** (RFC 4862 §5.4), per address:
 
 ```
-ipv6_start ─► TENTATIVE ── random 0..1 s ──► NS(src ::, dst solicited-node,
-                                                target = address)
-                  │ RetransTimer (1 s) with no NA/NS for the address
-                  ▼
-              PREFERRED
-   NA for the address, or an NS from :: for it, while TENTATIVE ─► DUPLICATE
+ndp_dad_start() ─► TENTATIVE ── delay: link-local random 0..1 s, others 0 ──►
+       first probe only: MLD report of all our groups
+       NS (src ::, dst the solicited-node group, target the address, no SLLA)
+       × NET_IPV6_DAD_TRANSMITS, RetransTimer (1 s) apart
+                   │ 1 s after the last probe, nothing heard
+                   ▼
+            PREFERRED (DEPRECATED if its preferred lifetime is 0)
+            slot 0: start_router_discovery()
+
+  while TENTATIVE: an NA for the address, or an NS from :: for it ─► DUPLICATE
 ```
 
-A DUPLICATE address is never used — a SLAAC one is not retried either.  For the EUI-64 link-local address that
-means IPv6 is off on the interface (RFC 4862 §5.4.5); the application can
-see it with `ipv6_addr_state()`.  NS for a tentative address from a unicast
-source is ignored.
+The MLD report precedes the first probe so that a snooping switch
+forwards the solicited-node group — and any answer to the probe
+(RFC 4862 §5.4.2).
+
+A DUPLICATE address is never used.  Its slot stays taken until its
+valid lifetime runs out (never, for an infinite static address: remove it
+with `ipv6_addr_remove()`).  Router Advertisements do not refresh a
+DUPLICATE address, so a SLAAC address is formed and probed again only
+once its old valid lifetime has expired.  For the EUI-64 link-local
+address, DUPLICATE means no link-scope packet has a source and router
+discovery never starts; RFC 4862 §5.4.5 asks for IP operation to be
+disabled, and the stack does not otherwise switch IPv6 off.  The
+application can see it with `ipv6_addr_state(net, 0)`.
 
 ## 7. Router discovery and SLAAC (stage 4)
 
-**Router Solicitation.**  Once the link-local address is preferred, after a
-random 0–1 s, up to three RS go to all-routers (ff02::2) 4 s apart, from the
-link-local address with our MAC as SLLA.  The first RA stops them.
+**Router Solicitation** (`start_router_discovery()`, `ndp_tick()`).  Once
+the link-local address is usable, after a random 0–1 s, up to
+`NDP_MAX_RTR_SOLICITATIONS` RS go to all-routers (ff02::2) 4 s apart, from
+the link-local address with our MAC as SLLA.  The first valid RA stops
+them.
 
-**Router Advertisement** (validated: link-local source, Hop Limit 255, code
-0, options): a non-zero Cur Hop Limit replaces ours; M/O are kept in
-`net->ip6_ra_flags` for DHCPv6; a non-zero Router Lifetime makes the sender
-the default router — address, MAC (SLLA option, else the frame source) and
-remaining lifetime in `net_t`; lifetime 0 from that router removes it.
-`ipv6_router_mac()` is the next hop for off-link destinations;
-`ipv6_on_link()` says which are on-link (link-local, or the /64 of one of
-our global addresses).  There is still no neighbour cache: replies go to the
-MAC the request came from, which for off-link peers is the router's.
+**Router Advertisement** (`ra_input()`): a non-zero Cur Hop Limit replaces
+`net->ip6.hop_limit`; M and O are kept in `net->ip6.ra_flags`
+(`NDP_RA_MANAGED`, `NDP_RA_OTHER`) for the application to start DHCPv6
+(§8); a non-zero Router Lifetime makes the sender the default router —
+address, MAC (SLLA option, else the frame source) and lifetime in
+`net->ip6.router`; lifetime 0 from that router removes it.  One router is
+remembered: the last to advertise a non-zero lifetime.  Every Prefix
+Information option goes to `slaac_prefix()`.
 
-**SLAAC** (RFC 4862 §5.5.3), per Prefix Information option with A = 1: a
-/64 that is not link-local, preferred ≤ valid → prefix + the interface
-identifier of the link-local address → `ipv6_addr_add()` → DAD without
-the start-up delay.  A known prefix updates the lifetimes with the
-two-hour rule: a valid lifetime above two hours or above the remaining one
-is taken; otherwise the remaining lifetime drops to two hours if it was
-longer, and stays as it is if not.
+**Next hop.**  `ipv6_on_link()` says which destinations are on-link:
+link-local ones, and those in the /64 of one of our configured global
+addresses (the L flag is not tracked separately).  Off-link destinations
+go to `ipv6_router_mac()`, NULL when there is no default router.  Replies
+still go to the MAC the request came from, which for off-link peers is
+the router's.
 
-**Lifetimes** count down in whole seconds in `ipv6_tick()` (a subtraction
-loop — no division on Cortex-M0).  Preferred → DEPRECATED (still accepted,
-chosen as a source only when nothing preferred fits); valid → the slot is
-freed.  `NET_IP6_INFINITE` (0xFFFFFFFF) never expires.  `ipv6_addr_add()`
-is also the entry point for static addresses and DHCPv6 (stage 5).
+**SLAAC** (`slaac_prefix()`, RFC 4862 §5.5.3).  A Prefix Information
+option is used only with A = 1, a prefix that is not link-local,
+preferred ≤ valid, and a prefix length of 64 (our interface identifier is
+64 bits).  The address is the prefix plus the interface identifier of the
+link-local address:
+
+- not yet configured, valid > 0 → `ipv6_addr_add()` → DAD without the
+  start-up delay (nothing happens when every slot is taken);
+- configured and not DUPLICATE → `ipv6_addr_set_lifetimes()` with the
+  advertised preferred lifetime and the valid lifetime
+  `slaac_valid_lifetime()` returns — the two-hour rule of §5.5.3(e): an
+  advertised valid lifetime above two hours, or above the remaining one,
+  is taken; otherwise the remaining lifetime is cut to two hours if it
+  was longer, and kept if not.  The rule stops an unauthenticated RA from
+  expiring an address quickly.
+
+**Lifetimes** count down in whole seconds (§11).  Preferred reaching 0
+makes the address DEPRECATED; valid reaching 0 frees the slot.
 
 ## 8. DHCPv6 client (stage 5)
 
-`dhcpv6_client.c`, a separate library like the DHCPv4 client, with the same
-shape: an application-owned `dhcpv6_client_t`, `init` / `start` / `tick` /
-`input` (from the application's udp6 port-546 handler) / `release`, and an
-option-handler table for DNS servers and the like.  The application starts
-it when the Router Advertisement asks: M → stateful, O → stateless (the
-dual-stack `tcp_echo_demo` does exactly that).
+`dhcpv6_client.c`, a separate library like the DHCPv4 client, with the
+same shape: an application-owned `dhcpv6_client_t`, `init` / `start` /
+`tick` / `input` / `release`, and an option-handler table for DNS servers
+and the like.  It is wired up like every protocol module
+([integrating-modules.md](../integrating-modules.md)): a udp6 port-546
+handler passes its payload pointer to `dhcpv6_client_input()`.  The
+application starts it when the Router Advertisement asks —
+`net->ip6.ra_flags & NDP_RA_MANAGED` → stateful, `NDP_RA_OTHER` →
+stateless — after a random 1–1001 ms delay (RFC 8415 §18.2.1, §18.2.6);
+the dual-stack `tcp_echo_demo` does exactly that.
 
 - **Identity**: DUID-LL (type 3, Ethernet, MAC) — no clock needed; IAID =
-  the low four MAC bytes.
+  the low four MAC bytes.  The transaction ID is 24 bits of
+  `net_random()`, new for every exchange (`begin()`) and for Release.
 - **Stateless**: Information-Request → Reply; top-level options go to the
   handlers; refreshed after the Information Refresh Time (default 24 h,
   at least 10 min).
 - **Stateful**: Solicit (IA_NA) → first usable Advertise → Request (Server
-  ID, address) → Reply → `ipv6_addr_add()` (so DAD runs) → BOUND.  Renew at
-  T1 to the server, Rebind at T2 to any server, the lease expires at the
-  valid lifetime (address removed, Solicit again).  T1/T2 of 0 become
-  0.5 and 0.8125 of the preferred lifetime (shifts).  A Request that goes
-  unanswered 10 times (REQ_MAX_RC) sends the client back to Solicit.
-- **Validation**: transaction ID, our Client Identifier, a Server
-  Identifier, well-formed options, Status Code success (top level and in
-  the IA_NA), our IAID.
+  ID, address) → Reply → BOUND.  `bind()` installs a new address with
+  `ipv6_addr_add()` (so DAD runs) and refreshes one that is already
+  configured with `ipv6_addr_set_lifetimes()` (§3).  Renew at T1 to the
+  server, Rebind at T2 to any server; the lease expires at the valid
+  lifetime (address removed, `DHCPV6_EVT_EXPIRED`, Solicit again).  T1/T2
+  of 0 become 0.5 and 0.8125 of the preferred lifetime (shifts).  A
+  Request that goes unanswered 10 times (REQ_MAX_RC), or answered without
+  a usable lease, sends the client back to Solicit; an unusable Reply to
+  Renew or Rebind is ignored and the client keeps trying until T2 or
+  expiry.
+- **Two clocks.**  The client keeps its own lease clock (`since_s`,
+  advanced by `net_whole_seconds()` from `sec_ms`) for T1, T2 and expiry;
+  the address's lifetimes age independently in `ipv6.c`.  Both start at
+  the Reply, so they agree; if `ipv6.c` frees the slot first, the
+  client's `ipv6_addr_remove()` at expiry is a no-op.
+- **Validation**: transaction ID, options well-formed, our Client
+  Identifier, a Server Identifier of 1–`DHCPV6_MAX_DUID` (20) bytes,
+  Status Code success (top level and in the IA_NA), our IAID, and an
+  IAADDR with valid > 0 and preferred ≤ valid.  A SOL_MAX_RT or
+  INF_MAX_RT option from the server is honoured within 60–86 400 s.
 - **Retransmission** (RFC 8415 §15): RT = IRT ± 10 %, then 2·RT ± 10 %,
   capped at MRT ± 10 %; the first Solicit waits strictly more than IRT.
-  A tenth is (v · 205) >> 11 — no division on Cortex-M0 — and the random
-  span is kept within 32 bits even for an 86 400 s SOL_MAX_RT from the
-  server, which the client honours (and requests, as §21.24 requires).
+  A tenth is (v · 205) >> 11 (or (v >> 11) · 205 for large v) — no
+  division on Cortex-M0 — and the random span is kept within 32 bits even
+  for an 86 400 s SOL_MAX_RT from the server, which the client honours
+  (and requests, as §21.24 requires).  Elapsed Time counts from the first
+  transmission of an exchange, in hundredths of a second, capped at
+  0xFFFF.
+- **Messages** are built in place in `net->tx.buf` and sent to
+  All_DHCP_Relay_Agents_and_Servers (ff02::1:2) from the link-local
+  address; `send_msg()` needs a TX buffer of `UDP6_PAYLOAD_OFFSET` + 128 =
+  190 bytes and sends nothing with less.
 - **Deviations**: the first Advertise is taken (no collection window, no
   preference); one Release, not up to five; no Confirm, Decline,
-  Reconfigure or Rapid Commit.
+  Reconfigure or Rapid Commit — a leased address that fails DAD stays
+  DUPLICATE until the lease expires.
 
 Interop: `tests/blackbox/dhcpv6_interop.sh` lets dnsmasq (`--enable-ra`
 with a DHCPv6 range) configure the demo — lease, DNS option, host ping and
@@ -210,53 +365,51 @@ TCP echo at the leased address — over both Linux drivers in CI.
 
 `mld.c` makes the host visible to switches that snoop MLD — otherwise they
 may stop forwarding the solicited-node traffic that address resolution
-depends on, and later ff02::fb for mDNS.
+depends on, and ff02::fb for mDNS.  Its timers live in `net->ip6.mld`.
 
-- **Groups**: the solicited-node group of every configured address
-  (deduplicated: a SLAAC address with our interface identifier shares the
-  link-local one's group) plus up to `NET_MAX_MCAST6_GROUPS` joined with
-  `ipv6_mcast_join()`.  All-nodes is never reported.  Joined groups pass the
-  Ethernet filter and the destination check.
-- **Reports**: MLDv2 (type 143) to ff02::16, Hop Limit 1, behind a
-  Hop-by-Hop header with a Router Alert, from the link-local address — or
-  from :: while it is still tentative (RFC 3810 §5.2.13).  A report goes
-  out before each address's first DAD probe and on every join (records
-  CHANGE_TO_EXCLUDE, no sources), and is repeated once after 1 s
-  (Robustness Variable 2).  A leave is one CHANGE_TO_INCLUDE record.
-- **Queries** (Hop Limit 1, link-local source): general or for one of our
-  groups → after a random delay up to the Maximum Response Delay, a report
-  of all groups (MODE_IS_EXCLUDE).  A group-specific query is answered with
-  every group — a simplification that costs a few bytes on the wire, not
-  16 bytes of RAM per pending group.
-- **MLDv1 compatibility** (RFC 3810 §8): a 24-byte query switches reporting
-  to MLDv1 (one Report per group, to the group; Done to ff02::2) for the
-  Older Version Querier Present Timeout, 260 s.  Linux bridges query with
-  MLDv1 by default.
+- **Groups** (`our_groups()`, `is_our_group()`): the solicited-node group of
+  every configured address except DUPLICATE ones, deduplicated (a SLAAC
+  address with our interface identifier shares the link-local one's
+  group), plus the groups joined with `ipv6_mcast_join()`.  All-nodes is
+  never reported (RFC 3810 §6).  Joined groups pass the Ethernet filter
+  and the destination check.
+- **Reports**: MLDv2 (type 143, `send_v2()`) to ff02::16, Hop Limit 1,
+  behind a Hop-by-Hop header with a Router Alert, from the link-local
+  address — or from `::` while it is not yet usable (RFC 3810 §5.2.13).
+  `mld_report_change()` sends one before each address's first DAD probe
+  and on every new join — a record per group, CHANGE_TO_EXCLUDE, no
+  sources (`report_all()`) — and `mld_tick()` repeats it once after 1 s
+  (Robustness Variable 2).  Before `ipv6_start()` it sends nothing: the
+  report before the link-local address's first probe covers every group.
+  A leave (`ipv6_mcast_leave()`) is one CHANGE_TO_INCLUDE record, sent
+  once.  Removing an address sends nothing for its solicited-node group;
+  snooping switches age it out.
+- **Queries** (`mld_input()`: type 130, Hop Limit 1, link-local source,
+  24 bytes or at least 28): a general query, or one for a group of ours,
+  schedules a report of all groups (MODE_IS_EXCLUDE) after a random delay
+  up to the Maximum Response Delay (`max_response_ms()` decodes MLDv2's
+  floating-point code; the delay is capped at 65.535 s).  An earlier
+  pending answer stands.  A group-specific query is answered with every
+  group — a simplification that costs a few bytes on the wire, not 16
+  bytes of RAM per pending group.  Reports and Dones of other listeners
+  need nothing from a host.
+- **MLDv1 compatibility** (RFC 3810 §8): a 24-byte query switches
+  reporting to MLDv1 (`send_v1()`: one Report per group, to the group;
+  Done to ff02::2) for the Older Version Querier Present Timeout, 260 s,
+  counted down in seconds by `mld_seconds_elapse()`.  Linux bridges query
+  with MLDv1 by default.
 
 ## 10. mDNS and HTTP over IPv6 (stages 6b, 6c)
 
-**mDNS** (`mdns.c`, RFC 6762 §6.2, §20), with IPv6 compiled in:
-
-- `mdns_start()` also joins ff02::fb (MLD reports it); `mdns_stop()`
-  leaves it.  The application feeds udp6 port-5353 datagrams to
-  `mdns_input6()`.
-- A `DNS_TYPE_AAAA` record whose `.rdata.aaaa` is NULL stands for every
-  usable (preferred or deprecated, never tentative) IPv6 address of the
-  interface: one AAAA RR each on the wire.  Known answers and conflicts
-  compare against any of them.
-- Probes, announcements and goodbyes go to 224.0.0.251 and to ff02::fb,
-  Hop Limit 255; answers go back on the family the query came on
-  (multicast, QU unicast or legacy unicast), and delayed shared answers
-  remember which families asked.  Responses over either family carry all
-  the interface's addresses (A and AAAA).
-- An A answer adds the name's AAAA records as additionals and vice versa;
-  an SRV answer adds both of its target's.
-- `mdns_readdress6()` re-announces over IPv6 when an address becomes usable
-  (RFC 6762 §8.4) — the demos call it when the link-local, SLAAC or DHCPv6
-  address comes up; during the start-up announcements it adds IPv6 to the
-  running sequence instead, so IPv4 still gets both announcements.
-- IPv4-only builds: +20 bytes (9,292 B for the Cortex-M0 mDNS benchmark),
-  from the family-aware writer.
+**mDNS** (`mdns.c`, RFC 6762 §6.2, §20) is dual stack when IPv6 is
+compiled in: `mdns_start()` also joins ff02::fb (MLD reports it), the
+application feeds udp6 port-5353 datagrams to `mdns_input6()`, a
+`DNS_TYPE_AAAA` record with `.rdata.aaaa = NULL` stands for every usable
+IPv6 address, probes, announcements and goodbyes go to both groups, and
+answers go back on the family the query came on.  `mdns_readdress6()`
+re-announces over IPv6 when an address becomes usable (RFC 6762 §8.4) —
+the demos call it when the link-local, SLAAC or DHCPv6 address comes up.
+The details are in [mdns.md](mdns.md#11-dual-stack-ipv6).
 
 **HTTP**: nothing to do in the server — TCP listeners already accept IPv6.
 `http_request_t` gains `remote_ip6` (NULL over IPv4).  `mdns_demo` and
@@ -265,18 +418,44 @@ and `avahi-resolve -6 -n pyro-dead01.local` work against them in CI.
 
 ## 11. Timers and randomness
 
-`ipv6_tick(net, elapsed_ms)` drives DAD (and RS/lifetimes from stage 4),
-like `tcp_tick()`.  Delays are drawn from `ip6_rng`, an xorshift32 seeded
-from the MAC — no `%` or `/` (Cortex-M0 has no divider).
+The application calls `net_tick(net, elapsed_ms)`, which runs `tcp_tick()`
+and `ipv6_tick()`.  `ipv6_tick()` does, in order:
+
+1. **Whole seconds** — `net_whole_seconds(&net->ip6.lifetime_carry_ms,
+   elapsed_ms)` (a subtraction loop: Cortex-M0 has no divider); if any
+   passed, `lifetimes_elapse()` ages the global addresses (§3), the
+   default router's lifetime and, through `mld_seconds_elapse()`, MLDv1
+   compatibility mode.
+2. **`mld_tick()`** — query answers and the repeat of a change report.
+3. **`ndp_tick()`** — Router Solicitations, then DAD steps.
+
+The order is deliberate: MLD runs before ND, so a report that DAD's first
+probe triggers is repeated a full interval later, not in the same tick;
+Router Solicitations run before DAD, so the solicitation that a completed
+DAD schedules waits for the next tick.  Millisecond timers count down
+with `net_countdown16()`; they are 16-bit (the longest is 4 s, or 65.535 s
+for an MLD answer).
+
+Random delays — the DAD and RS start-up jitter, MLD answer delays,
+DHCPv6 start delay, retransmission jitter and transaction IDs — come from
+the stack's one generator, `net_random()` / `net_random_below()` (xorshift32
+in `net_t`, scaled rather than reduced with `%`).  `net_init()` seeds it
+from the MAC; an application with a real entropy source mixes it in with
+`net_random_seed()`.  The IPv6 code used to keep its own generator
+(`ipv6_random()`), seeded from the MAC at `ipv6_start()`.
 
 ## 12. Dual-stack UDP and TCP (stages 2–3)
 
-- **UDP**: IPv6 ports live in their own table, `udp6_ports`, whose
-  handlers get the source as a 16-byte pointer.  `udp_port_entry_t` is
-  untouched — a third field would make every positional `{port, handler}`
-  initializer warn under `-Wextra` — and a port missing from `udp6_ports`
-  is closed over IPv6 (ICMPv6 Port Unreachable).  `udp6_send()` /
-  `udp6_send_inplace()` mirror the IPv4 calls (`UDP6_PAYLOAD_OFFSET` = 62).
+- **UDP**: IPv6 ports live in their own table, bound with
+  `udp6_set_ports()` and kept in `net_t` (`net->udp6_ports`), whose
+  handlers get the source as a 16-byte pointer and, like the IPv4 ones,
+  the payload as a pointer into `net->rx.buf`, valid during the call.
+  `udp_port_entry_t` is untouched — a third field would make every
+  positional `{port, handler}` initializer warn under `-Wextra` — and a
+  port missing from the IPv6 table is closed over IPv6 (ICMPv6 Port
+  Unreachable).  A zero UDP checksum is invalid over IPv6 (RFC 8200 §8.1).
+  `udp6_send()` / `udp6_send_inplace()` mirror the IPv4 calls
+  (`UDP6_PAYLOAD_OFFSET` = 62), with the source from `ipv6_src_for()`.
 - **TCP**: `tcp_conn_t` gains the IP version, the peer's IPv6 address and
   which of our addresses the peer used (a slot index), so replies keep the
   same source.  Inside `tcp.c` an *endpoint* (peer address + MAC, and our
@@ -296,9 +475,13 @@ from the MAC — no `%` or `/` (Cortex-M0 has no divider).
 | Item | Reason / plan |
 |---|---|
 | No fragment reassembly (RFC 8200 §4.5) | RAM; fragments are dropped |
-| No neighbour cache / NUD | distributed-cache model, as ARP |
+| Hop-by-Hop and Destination Options skipped without looking at the options (no Parameter Problem code 2 for unrecognized ones) | size; hosts rarely receive options |
+| No neighbour cache / NUD; NA answers to our own NS are not recorded | distributed-cache model, as ARP |
 | Redirect ignored (REQ-NDP-053) | no per-destination routes |
 | RA MTU, Reachable Time, Retrans Timer options ignored | Ethernet MTU assumed; fixed 1 s RetransTimer |
+| One default router (the last to advertise) | RAM |
 | On-link = our /64s (L flag not tracked separately) | RAs set L and A together in practice |
-| MLD: group-specific queries answered with all groups; leaves sent once | RAM; see §9 |
+| Duplicate EUI-64 link-local address does not disable IPv6 | no link-scope source and no RS follow from it anyway |
+| MLD: group-specific queries answered with all groups; leaves sent once; no leave for a removed address's solicited-node group | RAM; see §9 |
 | ICMPv6 error rate limiting | not yet; at most one error per packet |
+| DHCPv6: first Advertise, one Release, no Confirm/Decline/Reconfigure/Rapid Commit | see §8 |

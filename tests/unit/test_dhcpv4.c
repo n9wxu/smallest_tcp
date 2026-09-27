@@ -212,8 +212,7 @@ static void setup(void) {
   last_event = 0;
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
            &stub_mac, &dummy_ctx);
-  udp_ports.entries = NULL;
-  udp_ports.count = 0;
+  udp_set_ports(&net, NULL, 0);
 }
 
 /* ══════════════════════════════════════════════════════════════════

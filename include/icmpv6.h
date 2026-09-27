@@ -13,8 +13,6 @@
 #include "net.h"
 #include <stdint.h>
 
-/* ── Header ───────────────────────────────────────────────────────── */
-
 #define ICMPV6_OFF_TYPE 0
 #define ICMPV6_OFF_CODE 1
 #define ICMPV6_OFF_CKSUM 2
@@ -23,8 +21,6 @@
 
 /** Offset of the ICMPv6 message in a frame built by icmpv6_send(). */
 #define ICMPV6_OFFSET (ETH_HDR_SIZE + IPV6_HDR_SIZE)
-
-/* ── Types ────────────────────────────────────────────────────────── */
 
 #define ICMPV6_DEST_UNREACH 1
 #define ICMPV6_PKT_TOO_BIG 2
@@ -38,17 +34,12 @@
 #define ICMPV6_NA 136
 #define ICMPV6_REDIRECT 137
 
-/* ── Codes ────────────────────────────────────────────────────────── */
+#define ICMPV6_CODE_PORT_UNREACH 4        /* Destination Unreachable */
+#define ICMPV6_CODE_UNRECOGNIZED_NH 1     /* Parameter Problem */
+#define ICMPV6_CODE_UNRECOGNIZED_OPTION 2 /* Parameter Problem */
 
-#define ICMPV6_CODE_PORT_UNREACH 4   /* Destination Unreachable */
-#define ICMPV6_CODE_UNRECOGNIZED_NH 1 /* Parameter Problem */
-
-/* ── Functions ────────────────────────────────────────────────────── */
-
-/**
- * Process a received ICMPv6 message: verify the checksum, answer echo
- * requests, hand Neighbor Discovery (133-137) to ndp_input().
- */
+/** Answer echo requests; hand Neighbor Discovery to ndp_input() and MLD
+ *  to mld_input(). */
 void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
 
 /**
@@ -57,7 +48,7 @@ void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
  *
  * @param src        Source address (may be :: for DAD).
  * @param icmp_len   Message length (header + body).
- * @param hop_limit  255 for Neighbor Discovery, else net->ip6_hop_limit.
+ * @param hop_limit  255 for Neighbor Discovery, else net->ip6.hop_limit.
  */
 net_err_t icmpv6_send(net_t *net, const uint8_t *src, const uint8_t *dst,
                       const uint8_t *dst_mac, uint16_t icmp_len,

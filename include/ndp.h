@@ -1,10 +1,7 @@
 /**
  * @file ndp.h
- * @brief Neighbor Discovery for IPv6 (RFC 4861) and Duplicate Address
- *        Detection (RFC 4862 §5.4).
- *
- * Distributed-cache model, as ARP: no neighbour cache.  Solicitations for
- * our addresses are answered to the MAC they came from.
+ * @brief Neighbor Discovery (RFC 4861) for a host without a neighbour
+ *        cache, Duplicate Address Detection and SLAAC (RFC 4862).
  */
 
 #ifndef NDP_H
@@ -17,23 +14,24 @@
 
 #define NDP_HOP_LIMIT 255 /* all ND messages (RFC 4861 §6.1, §7.1) */
 
-/* ── Message layout (offsets in the ICMPv6 message) ───────────────── */
-
-#define NDP_OFF_FLAGS 4   /* NA: R|S|O flags */
-#define NDP_OFF_TARGET 8  /* NS, NA: target address */
-#define NDP_NS_NA_LEN 24  /* NS/NA without options */
-#define NDP_RS_LEN 8      /* RS without options */
-#define NDP_RA_LEN 16     /* RA without options */
+/* Offsets in the ICMPv6 message */
+#define NDP_OFF_FLAGS 4  /* NA: R|S|O flags */
+#define NDP_OFF_TARGET 8 /* NS, NA: target address */
+#define NDP_NS_NA_LEN 24 /* NS/NA without options */
+#define NDP_RS_LEN 8     /* RS without options */
+#define NDP_RA_LEN 16    /* RA without options */
 #define NDP_RA_OFF_HOPLIMIT 4
-#define NDP_RA_OFF_FLAGS 5    /* M (0x80) | O (0x40) */
+#define NDP_RA_OFF_FLAGS 5
 #define NDP_RA_OFF_LIFETIME 6 /* router lifetime, seconds */
+
+#define NDP_RA_MANAGED 0x80 /* M: get addresses from DHCPv6 */
+#define NDP_RA_OTHER 0x40   /* O: get other configuration from DHCPv6 */
 
 #define NDP_NA_FLAG_R 0x80 /* Router */
 #define NDP_NA_FLAG_S 0x40 /* Solicited */
 #define NDP_NA_FLAG_O 0x20 /* Override */
 
-/* ── Options (TLV, length in units of 8 bytes) ────────────────────── */
-
+/* Options: type, length in units of 8 bytes, value */
 #define NDP_OPT_SLLA 1   /* Source Link-Layer Address */
 #define NDP_OPT_TLLA 2   /* Target Link-Layer Address */
 #define NDP_OPT_PREFIX 3 /* Prefix Information */
@@ -43,8 +41,7 @@
 #define NDP_PREFIX_FLAG_L 0x80 /* on-link */
 #define NDP_PREFIX_FLAG_A 0x40 /* autonomous address configuration */
 
-/* ── Protocol constants (RFC 4861 §10) ────────────────────────────── */
-
+/* RFC 4861 §10 */
 #define NDP_RETRANS_TIMER_MS 1000
 #define NDP_MAX_RTR_SOLICITATION_DELAY_MS 1000
 #define NDP_RTR_SOLICITATION_INTERVAL_MS 4000
@@ -53,8 +50,6 @@
 #endif
 
 #define SLAAC_TWO_HOURS_S 7200u /* RFC 4862 §5.5.3(e) */
-
-/* ── Functions ────────────────────────────────────────────────────── */
 
 /**
  * Process a Neighbor Discovery message (ICMPv6 types 133-137) whose

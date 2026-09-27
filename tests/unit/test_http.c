@@ -111,7 +111,8 @@ TEST(test_parse_unimplemented_methods) {
   ASSERT_EQ(parse("PUT / HTTP/1.0\r\n\r\n"), 501);
   ASSERT_EQ(parse("DELETE / HTTP/1.0\r\n\r\n"), 501);
   ASSERT_EQ(parse("OPTIONS * HTTP/1.0\r\n\r\n"), 501);
-  ASSERT_EQ(parse("get / HTTP/1.0\r\n\r\n"), 501); /* methods are case-sensitive */
+  ASSERT_EQ(parse("get / HTTP/1.0\r\n\r\n"),
+            501); /* methods are case-sensitive */
 }
 
 TEST(test_parse_versions) {
@@ -124,11 +125,11 @@ TEST(test_parse_versions) {
 
 /* REQ-HTTP-026: malformed requests → 400 */
 TEST(test_parse_malformed_request_line) {
-  ASSERT_EQ(parse("GET  / HTTP/1.0\r\n\r\n"), 400);        /* double SP */
+  ASSERT_EQ(parse("GET  / HTTP/1.0\r\n\r\n"), 400);         /* double SP */
   ASSERT_EQ(parse("GET index.html HTTP/1.0\r\n\r\n"), 400); /* not a path */
   ASSERT_EQ(parse(" GET / HTTP/1.0\r\n\r\n"), 400);         /* empty method */
   ASSERT_EQ(parse("GET / HTTP/1.0 extra\r\n\r\n"), 400);
-  ASSERT_EQ(parse("G\x01T / HTTP/1.0\r\n\r\n"), 400);       /* not a token */
+  ASSERT_EQ(parse("G\x01T / HTTP/1.0\r\n\r\n"), 400); /* not a token */
 }
 
 /* ══ Headers (REQ-HTTP-007, 009, 012) ═════════════════════════════════ */
@@ -343,10 +344,8 @@ static int page_fail(const http_request_t *rq, http_response_t *rs, void *c) {
 }
 
 static const http_route_t routes[] = {
-    {"/", HTTP_GET, page_root, NULL},
-    {"/big", HTTP_GET, page_big, NULL},
-    {"/echo", HTTP_POST, page_echo, NULL},
-    {"/gen", HTTP_GET, page_gen, NULL},
+    {"/", HTTP_GET, page_root, NULL},      {"/big", HTTP_GET, page_big, NULL},
+    {"/echo", HTTP_POST, page_echo, NULL}, {"/gen", HTTP_GET, page_gen, NULL},
     {"/fail", HTTP_GET, page_fail, NULL},
 };
 
@@ -362,8 +361,7 @@ static void server_setup(void) {
                    sizeof(rx_mem[i]), req_mem[i], REQ_SIZE);
     conn_table[i] = http_conn_tcp(&conns[i]);
   }
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = N_SLOTS;
+  tcp_set_connections(&net, conn_table, N_SLOTS);
   http_server_init(&srv, &net, SRV_PORT, routes,
                    sizeof(routes) / sizeof(routes[0]), conns, N_SLOTS);
   n_frames = 0;
@@ -376,7 +374,7 @@ typedef struct {
   uint32_t seq; /* next sequence number we send */
   uint32_t ack; /* next sequence number we expect from the server */
   uint8_t fin, rst;
-  int scan;     /* next captured frame to look at */
+  int scan; /* next captured frame to look at */
   uint8_t resp[4096];
   uint16_t resp_len;
   int data_segs;
@@ -408,8 +406,8 @@ static void inject_tcp(client_t *c, uint8_t flags, const void *data,
   if (len)
     memcpy(tcp + hlen, data, len);
   net_write16be(tcp + TCP_OFF_CKSUM,
-                tcp_checksum(CLIENT_IP, net.ipv4_addr, tcp,
-                             (uint16_t)(hlen + len)));
+                ipv4_cksum(CLIENT_IP, net.ipv4_addr, IPV4_PROTO_TCP, tcp,
+                           (uint16_t)(hlen + len)));
   ipv4_build(ip, (uint16_t)(hlen + len), IPV4_PROTO_TCP, CLIENT_IP,
              net.ipv4_addr);
   eth_input(&net, frame, (uint16_t)(ETH_HDR_SIZE + IPV4_HDR_SIZE + hlen + len));
@@ -429,8 +427,9 @@ static int client_scan(client_t *c) {
     uint8_t flags = tcp[TCP_OFF_FLAGS];
     uint32_t seq = net_read32be(tcp + TCP_OFF_SEQ);
     uint16_t hlen = (uint16_t)((tcp[TCP_OFF_DOFF] >> 4) * 4);
-    uint16_t plen = (uint16_t)(net_read16be(f + ETH_HDR_SIZE + IPV4_OFF_TOTLEN) -
-                               IPV4_HDR_SIZE - hlen);
+    uint16_t plen =
+        (uint16_t)(net_read16be(f + ETH_HDR_SIZE + IPV4_OFF_TOTLEN) -
+                   IPV4_HDR_SIZE - hlen);
     if (flags & TCP_FLAG_RST)
       c->rst = 1;
     if (flags & TCP_FLAG_SYN) {
@@ -539,8 +538,7 @@ TEST(test_server_head_has_no_body) {
 
 TEST(test_server_post_echo) {
   server_setup();
-  exchange(&cl, 40004,
-           "POST /echo HTTP/1.0\r\nContent-Length: 5\r\n\r\nhello");
+  exchange(&cl, 40004, "POST /echo HTTP/1.0\r\nContent-Length: 5\r\n\r\nhello");
   ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 200 OK\r\n", 17) == 0);
   ASSERT_TRUE(strstr((char *)cl.resp, "Content-Type: text/plain\r\n") != NULL);
   ASSERT_TRUE(strcmp(resp_body(&cl), "hello") == 0);
@@ -550,8 +548,8 @@ TEST(test_server_post_echo) {
 TEST(test_server_post_body_arrives_later) {
   server_setup();
   client_connect(&cl, 40005, 1460);
-  client_send(&cl, "POST /echo HTTP/1.1\r\nHost: h\r\nContent-Length: 6\r\n\r\n",
-              0);
+  client_send(&cl,
+              "POST /echo HTTP/1.1\r\nHost: h\r\nContent-Length: 6\r\n\r\n", 0);
   client_pump(&cl);
   ASSERT_EQ(cl.resp_len, 0); /* still waiting for the body */
   client_send(&cl, "wor", 0);

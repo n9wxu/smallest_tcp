@@ -1,8 +1,12 @@
 # Checksum Design
 
-**Last updated:** 2026-03-19
+**Files:** `include/net_cksum.h`, `src/net_cksum.c`; pseudo-headers in
+`ipv4_cksum()` (`src/ipv4.c`) and `ipv6_cksum()` (`src/ipv6.c`)
+**RFCs:** RFC 1071 (computing the Internet checksum), RFC 1624 (incremental
+update), RFC 768 / RFC 9293 / RFC 8200 §8.1 (pseudo-headers)
+**Last updated:** 2026-09-27
 
-## API
+## 1. API
 
 ```c
 typedef struct { uint32_t sum; } net_cksum_t;
@@ -13,57 +17,165 @@ void     net_cksum_add_u16(net_cksum_t *c, uint16_t val);
 void     net_cksum_add_u32(net_cksum_t *c, uint32_t val);
 uint16_t net_cksum_finalize(net_cksum_t *c);
 
-// Convenience
-uint16_t net_cksum(const uint8_t *data, uint16_t len);
-int      net_cksum_verify(const uint8_t *data, uint16_t len);
+uint16_t net_cksum(const uint8_t *data, uint16_t len);      /* one block */
+int      net_cksum_verify(const uint8_t *data, uint16_t len); /* == 0 */
 
-// Incremental update (RFC 1624)
-uint16_t net_cksum_update(uint16_t old_cksum, uint16_t old_val, uint16_t new_val);
+uint16_t net_cksum_update(uint16_t old_cksum, uint16_t old_val,
+                          uint16_t new_val);                  /* RFC 1624 */
+
+/* Upper-layer checksums over a pseudo-header */
+uint16_t ipv4_cksum(uint32_t src_ip, uint32_t dst_ip, uint8_t protocol,
+                    const uint8_t *data, uint16_t len);
+uint16_t ipv6_cksum(const uint8_t *src, const uint8_t *dst,
+                    uint8_t next_header, const uint8_t *data, uint16_t len);
 ```
 
-## Implementation Strategy
+The incremental form exists so that pseudo-headers and discontiguous pieces
+add up without being copied into one buffer.
 
-- **uint32 accumulator** defers carry folding until `finalize()`. This avoids per-word fold overhead.
-- **16-bit word processing** in the inner loop for speed. Handle odd trailing byte specially.
-- **Unaligned access safe**: read bytes individually and compose 16-bit words, avoiding alignment faults on ARM/RISC-V.
-- **Pseudo-header**: Use `add_u16`/`add_u32` to feed IP addresses and protocol/length without constructing a temporary buffer.
+## 2. Implementation
 
-## Hardware Offload Integration
+- **32-bit accumulator, fold at the end.**  `net_cksum_add()` adds 16-bit
+  big-endian words into a `uint32_t` without folding; `net_cksum_finalize()`
+  folds the carries back in (end-around carry) until the value fits in 16
+  bits, then complements it.  One fold at the end is cheaper than a carry
+  check per word.  The accumulator cannot overflow before about 65,537 words
+  (131 KB) have been added, far beyond any frame.
+- **Byte-wise, alignment-free.**  Each word is composed from two bytes
+  (`data[i] << 8 | data[i + 1]`), so the data may start at any address and
+  the result does not depend on host byte order.  An odd length is padded with
+  a zero byte, as RFC 1071 specifies.  A caller adding pieces must therefore
+  keep every piece but the last an even length; all callers do (pseudo-header
+  fields are 16 or 32 bits, and each message is added in one call).
+- **Host-order word helpers.**  `net_cksum_add_u16()` and
+  `net_cksum_add_u32()` add values in host order as if they had been read
+  big-endian, which is what the pseudo-header needs for addresses and
+  lengths held in host order.
 
-Hardware capabilities are **compile-time `#define`s** (not runtime queries) per the design tenet: prefer compile-time → link-time → run-time. The application's `net_config.h` declares what the MAC hardware supports. Protocol layers use `#if` to select the code path — the compiler eliminates the unused branch entirely:
+## 3. Verifying: why a valid packet sums to 0
+
+Write `+'` for one's complement addition (add, then fold the carry back in)
+and `~` for bitwise complement.
+
+A sender computes `S`, the one's complement sum of every 16-bit word of the
+message with the checksum field set to 0, and stores `C = ~S`.
+
+A receiver sums the message *as received*, checksum field included:
+
+```
+S +' C  =  S +' ~S  =  0xFFFF
+```
+
+because a number plus its complement is all ones — in one's complement
+arithmetic `0xFFFF` is "negative zero".  `net_cksum_finalize()` then returns
+`~0xFFFF = 0x0000`.  So verification is a single comparison with 0, whether
+the checksum covers a header (`net_cksum_verify()` for the IPv4 header and
+ICMPv4) or a pseudo-header and segment (`ipv4_cksum(...) != 0` in
+`udp_input()` and TCP's `parse_segment()`; `ipv6_cksum(...) != 0` in
+`udp6_input()`, `icmpv6_input()` and TCP).
+
+Earlier code accepted a finalized `0xFFFF` as valid too.  That value means
+the folded sum was `0x0000`, which an end-around-carry sum reaches only when
+every word added — checksum field included — is zero: not a correctly
+checksummed message, and impossible anyway once a pseudo-header with a
+non-zero protocol number is part of the sum.  Comparing with 0 is exact.
+
+The same identity is why a computed checksum is written into a field that
+holds 0: the value to store and the verification use the same function.
+
+## 4. Pseudo-headers
+
+TCP and UDP checksums (and ICMPv6's) cover a pseudo-header of IP fields so
+that a segment delivered to the wrong address or protocol fails the check.
+Both functions take the upper-layer data with its checksum field — 0 when
+sending, as received when verifying.
+
+**IPv4** (RFC 768, RFC 9293 §3.1), in `ipv4_cksum()`:
+
+```
++--------+--------+--------+--------+
+|          source address           |   net_cksum_add_u32(src_ip)
+|        destination address        |   net_cksum_add_u32(dst_ip)
+|  zero  |protocol|  upper length   |   net_cksum_add_u16(protocol)
++--------+--------+--------+--------+   net_cksum_add_u16(len)
+then the TCP/UDP header and data        net_cksum_add(data, len)
+```
+
+**IPv6** (RFC 8200 §8.1), in `ipv6_cksum()`:
+
+```
+source address (16)                     net_cksum_add(src, 16)
+destination address (16)                net_cksum_add(dst, 16)
+upper-layer packet length (32 bits)     net_cksum_add_u32(len)
+zero (24 bits) | next header (8 bits)   net_cksum_add_u32(next_header)
+then the upper-layer header and data    net_cksum_add(data, len)
+```
+
+The next header in the IPv6 pseudo-header is the *upper-layer* protocol, not
+the first Next Header of the packet; `ipv6_parse()` returns it after walking
+the extension headers (`ipv6_hdr_t.next_header`).  The length is the
+upper-layer length, which is the UDP Length or the TCP segment length.
+
+Where each checksum is computed:
+
+| Checksum | Covers | Send | Verify |
+|---|---|---|---|
+| IPv4 header | Header incl. options | `ipv4_build_ttl()` / `ipv4_build_router_alert()`: `net_cksum()` | `ipv4_parse()`: `net_cksum_verify()` |
+| ICMPv4 | Message | `icmp_send()`: `net_cksum()` | `icmp_input()`: `net_cksum_verify()` |
+| IGMP | Message | `igmp_send()`: `net_cksum()` | — (IGMP is not received) |
+| UDP / TCP over IPv4 | Pseudo-header + segment | `ipv4_cksum()` | `ipv4_cksum() == 0` |
+| UDP / TCP / ICMPv6 over IPv6 | Pseudo-header + message | `ipv6_cksum()` | `ipv6_cksum() == 0` |
+
+The former `udp_checksum()` and `tcp_checksum()` are gone: both protocols
+use `ipv4_cksum()` / `ipv6_cksum()`.
+
+## 5. The UDP zero rule
+
+A UDP checksum field of 0 means "no checksum was computed" (RFC 768).  So:
+
+- **Sending** (IPv4 and IPv6): if the computed checksum is `0x0000`,
+  `0xFFFF` is sent instead (`udp_wire_cksum()` in `udp.c`).  Both are zero in
+  one's complement, so the receiver's sum is unchanged: the computed 0 means
+  `S` folded to `0xFFFF`, and `0xFFFF +' 0xFFFF = 0xFFFF`, which finalizes
+  to 0 as in §3.
+- **Receiving over IPv4:** a zero field is accepted without verification.
+- **Receiving over IPv6:** a zero field is invalid and the datagram is
+  dropped (RFC 8200 §8.1).
+
+TCP has no such rule; its checksum field is always meaningful.
+
+## 6. Incremental update (RFC 1624)
 
 ```c
-// TX: IPv4 header checksum
-#if NET_MAC_CAP_TX_CKSUM_IPV4
-    net_write16be(hdr + 10, 0x0000);  // MAC fills in
-#else
-    net_write16be(hdr + 10, net_cksum(hdr, 20));  // Software
-#endif
-
-// TX: TCP checksum
-#if NET_MAC_CAP_TX_CKSUM_TCP
-    net_write16be(tcp_hdr + 16, 0x0000);  // MAC fills in
-#else
-    // Compute over pseudo-header + TCP header + payload
-    net_cksum_t c;
-    net_cksum_init(&c);
-    net_cksum_add_u32(&c, src_ip);
-    net_cksum_add_u32(&c, dst_ip);
-    net_cksum_add_u16(&c, htons(6));      // protocol
-    net_cksum_add_u16(&c, htons(tcp_len));
-    net_cksum_add(&c, tcp_hdr, tcp_len);
-    net_write16be(tcp_hdr + 16, net_cksum_finalize(&c));
-#endif
+uint16_t net_cksum_update(uint16_t old_cksum, uint16_t old_val,
+                          uint16_t new_val);
 ```
 
-On RX, if `NET_MAC_CAP_RX_CKSUM_OK` is defined as 1, the protocol layer skips verification:
+When one 16-bit field of a checksummed message changes from `m` to `m'`, the
+new checksum is RFC 1624 equation 3:
 
-```c
-#if !NET_MAC_CAP_RX_CKSUM_OK
-    if (!net_cksum_verify(ip_hdr, ip_hdr_len)) {
-        return;  // bad checksum, discard
-    }
-#endif
+```
+HC' = ~(~HC +' ~m +' m')
 ```
 
-This ensures zero runtime overhead for checksum decisions — the hardware configuration is known at compile time and never changes.
+This is the form that is correct in every case.  The older RFC 1141 form,
+`HC' = HC +' m +' ~m'`, works on the stored checksum directly and can yield
+`0x0000` where the correct checksum is `0xFFFF` — the boundary case RFC 1624
+was written to fix.  Working on `~HC` (the sum itself) and complementing at
+the end avoids the negative-zero problem.
+
+The stack does not use it today: it never forwards packets, so it never
+decrements a TTL, and the one "modify and send back" case — an ICMP echo
+reply, which only changes the type — recomputes the checksum in full, which
+keeps `icmp_send()` shared by echo replies and errors.  It is kept, and unit
+tested, for applications that patch a field of a prebuilt frame.
+
+## 7. Hardware offload (not implemented)
+
+Every checksum is computed and verified in software.  The
+`NET_MAC_CAP_*` switches that earlier documents described never had any
+effect and have been removed from `net_config.h`.  The only offload handling
+is in the Linux raw-socket driver, which *completes* checksums that the local
+kernel left partial, so the stack sees ordinary frames
+([mac-hal.md §6](mac-hal.md#6-bundled-drivers)).  What adding offload would
+take is in [mac-hal.md §8](mac-hal.md#8-future-work).

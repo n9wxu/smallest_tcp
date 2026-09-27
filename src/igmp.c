@@ -1,8 +1,7 @@
 /**
  * @file igmp.c
- * @brief Minimal IGMPv2 host (RFC 2236) — join/leave signalling only.
- *
- * Implements REQ-MDNS-002 (join 224.0.0.251).  See igmp.h for scope.
+ * @brief Minimal IGMPv2 host (RFC 2236): join and leave reports only.
+ *        REQ-MDNS-002.
  */
 
 #include "igmp.h"
@@ -11,48 +10,27 @@
 #include "net_cksum.h"
 #include "net_endian.h"
 
-#define IGMP_IP_HDR_SIZE 24 /* 20-byte header + 4-byte Router Alert */
 #define IGMP_MSG_SIZE 8
-#define IGMP_PROTO 2
 
 static net_err_t igmp_send(net_t *net, uint8_t type, uint32_t dst_ip,
                            uint32_t group) {
   uint8_t dst_mac[6];
+  uint8_t *ip = net->tx.buf + ETH_HDR_SIZE;
+  uint8_t *msg = ip + IPV4_ROUTER_ALERT_HDR_SIZE;
+
   if (net->tx.capacity < IGMP_FRAME_SIZE)
     return NET_ERR_BUF_TOO_SMALL;
-
   ipv4_mcast_mac(dst_ip, dst_mac);
-  uint8_t *ip = eth_build(net->tx.buf, net->tx.capacity, dst_mac, net->mac,
-                          NET_ETHERTYPE_IPV4);
-  if (!ip)
-    return NET_ERR_BUF_TOO_SMALL;
-
-  /* IPv4 header with Router Alert (RFC 2113), TTL 1 (RFC 2236 §2) */
-  ip[IPV4_OFF_VER_IHL] = 0x46;
-  ip[IPV4_OFF_TOS] = 0x00;
-  net_write16be(ip + IPV4_OFF_TOTLEN, IGMP_IP_HDR_SIZE + IGMP_MSG_SIZE);
-  net_write16be(ip + IPV4_OFF_ID, 0);
-  net_write16be(ip + IPV4_OFF_FLAGS_FRAG, IPV4_FLAG_DF);
-  ip[IPV4_OFF_TTL] = 1;
-  ip[IPV4_OFF_PROTO] = IGMP_PROTO;
-  net_write16be(ip + IPV4_OFF_CKSUM, 0);
-  net_write32be(ip + IPV4_OFF_SRC, net->ipv4_addr);
-  net_write32be(ip + IPV4_OFF_DST, dst_ip);
-  ip[20] = 0x94; /* Router Alert: copied flag + option 20 */
-  ip[21] = 0x04;
-  ip[22] = 0x00;
-  ip[23] = 0x00;
-  net_write16be(ip + IPV4_OFF_CKSUM, net_cksum(ip, IGMP_IP_HDR_SIZE));
-
-  uint8_t *msg = ip + IGMP_IP_HDR_SIZE;
+  eth_build(net->tx.buf, net->tx.capacity, dst_mac, net->mac,
+            NET_ETHERTYPE_IPV4);
+  ipv4_build_router_alert(ip, IGMP_MSG_SIZE, IPV4_PROTO_IGMP, net->ipv4_addr,
+                          dst_ip);
   msg[0] = type;
-  msg[1] = 0; /* Max Resp Time: unused in reports/leaves */
+  msg[1] = 0; /* Max Resp Time: queries only */
   net_write16be(msg + 2, 0);
   net_write32be(msg + 4, group);
   net_write16be(msg + 2, net_cksum(msg, IGMP_MSG_SIZE));
-
-  int r = net->mac_driver->send(net->mac_ctx, net->tx.buf, IGMP_FRAME_SIZE);
-  return (r >= 0) ? NET_OK : NET_ERR_NO_FRAME;
+  return net_transmit(net, IGMP_FRAME_SIZE);
 }
 
 net_err_t igmp_report(net_t *net, uint32_t group) {

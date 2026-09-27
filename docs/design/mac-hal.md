@@ -1,190 +1,262 @@
 # MAC Hardware Abstraction Layer — Design
 
-**Last updated:** 2026-03-19
+**Files:** `include/net_mac.h`, `src/net.c` (`net_poll()`, `net_transmit()`),
+`include/driver/*.h`, `src/driver/*.c`
+**Last updated:** 2026-09-27
 
-## Overview
+## 1. Overview
 
-The MAC HAL abstracts the physical network interface, allowing the stack to operate on TAP or a raw socket (Linux), feth+BPF (macOS), ENC28J60 (SPI), CDC-ECM (USB), or any other Ethernet-capable device. The interface uses a vtable (function pointer struct) pattern for C99 compatibility.
+The stack reaches the network hardware through one interface, `net_mac_t`: a
+table of six function pointers.  A driver provides one `const` instance of the
+table per driver *type* (`tap_mac_ops`, `rawsock_mac_ops`, `bpf_mac_ops`,
+`stub_mac_ops`); all of its mutable state lives in a context struct the
+application allocates (`tap_ctx_t`, `rawsock_ctx_t`, `bpf_ctx_t`) and passes
+to `net_init()` as `void *driver_ctx`.  The stack never knows the concrete
+context type, so the tables can live in flash and one driver can serve several
+interfaces.
 
-## Interface
+The stack itself calls only `poll`, `peek` and `discard` (from `net_poll()`)
+and `send` (from `net_transmit()`).  `init` and `close` are for the
+application: **`net_init()` does not open the interface** — call
+`driver->init(ctx)` yourself, and `driver->close(ctx)` on shutdown.
+
+## 2. Interface
 
 ```c
 typedef struct {
-    int      (*init)(void *ctx);
-    int      (*send)(void *ctx, const uint8_t *frame, uint16_t len);
-    int      (*recv)(void *ctx, uint8_t *frame, uint16_t maxlen);
-    int      (*peek)(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len);
-    void     (*discard)(void *ctx);
-    void     (*close)(void *ctx);
+  int  (*init)(void *ctx);
+  int  (*send)(void *ctx, const uint8_t *frame, uint16_t len);
+  int  (*poll)(void *ctx);
+  int  (*peek)(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len);
+  void (*discard)(void *ctx);
+  void (*close)(void *ctx);
 } net_mac_t;
 ```
 
-### Function Semantics
-
-| Function | Returns | Semantics |
+| Function | Returns | Contract |
 |---|---|---|
-| `init` | 0 on success, <0 on error | Initialize hardware, bring link up |
-| `send` | bytes sent, or <0 on error | Transmit a complete Ethernet frame |
-| `recv` | bytes received, or 0 if no frame, <0 on error | Non-blocking receive into caller's buffer |
-| `peek` | bytes copied, or <0 on error | Read bytes from current RX frame at offset without consuming |
-| `discard` | void | Skip/drop current RX frame without full read |
-| `close` | void | Shutdown interface, release resources |
+| `init` | 0, or < 0 on error | Open the interface and bring it up. |
+| `send` | bytes sent, 0 if busy, < 0 on error | Transmit one complete Ethernet frame (no FCS).  `frame` need only stay valid during the call. |
+| `poll` | frame length, 0 if none, < 0 on error | Make the next received frame *current*, without blocking.  Until `discard()` the same frame stays current and `poll()` keeps returning its length. |
+| `peek` | bytes copied (fewer past the end), < 0 if no frame | Copy `len` bytes from `offset` of the current frame into `buf`.  May be called any number of times on the same frame. |
+| `discard` | — | Release the current frame; the next `poll()` moves on. |
+| `close` | — | Shut the interface down and release its resources. |
 
-### Hardware Capabilities — Compile-Time, Not Runtime
+## 3. The receive lifecycle: `net_poll()`
 
-An embedded system does not dynamically reconfigure its MAC hardware. Therefore hardware capabilities are **compile-time `#define`s** in a per-target configuration header (`net_config.h`), not a runtime function call. This follows the design tenet: **prefer compile-time → link-time → run-time error detection.**
+`net_poll()` owns a received frame from start to finish:
 
-```c
-// net_config.h — application provides this, one per target
-#define NET_MAC_CAP_TX_CKSUM_IPV4  0  // 1 = HW computes IPv4 header checksum on TX
-#define NET_MAC_CAP_TX_CKSUM_TCP   0  // 1 = HW computes TCP checksum on TX
-#define NET_MAC_CAP_TX_CKSUM_UDP   0  // 1 = HW computes UDP checksum on TX
-#define NET_MAC_CAP_RX_CKSUM_OK    0  // 1 = HW verified RX checksums are correct
+```
+net_poll(net)
+  len = poll()                       0: nothing waiting, < 0: driver error
+  len = min(len, net->rx.capacity)
+  peek(0, net->rx.buf, len)          the whole frame, one copy
+  eth_input(net, net->rx.buf, len)   dispatch through every layer
+  discard()                          release the frame
+  return len
 ```
 
-Protocol layers use `#if` to select the code path at compile time. The compiler eliminates the unused branch entirely — zero runtime overhead:
+It handles at most one frame per call; drain the MAC with
+`while (net_poll(&net) > 0) {}`.  Nothing in the stack calls `peek()` or
+`discard()` anywhere else, and `eth_input()` no longer discards.
 
-```c
-// In ipv4.c
-#if NET_MAC_CAP_TX_CKSUM_IPV4
-    net_write16be(hdr + 10, 0x0000);  // MAC fills in checksum
-#else
-    net_write16be(hdr + 10, net_cksum(hdr, 20));  // Software checksum
-#endif
-```
+Consequences and invariants:
 
-**Why not a runtime function?** A runtime `capabilities()` call would:
-1. Prevent the compiler from eliminating dead code (both branches compiled).
-2. Add a function pointer call on every packet TX/RX.
-3. Waste flash on code paths that can never execute on a given target.
-4. Be meaningless — the hardware doesn't change at runtime.
+- **One copy.**  Every layer parses the frame in place in `net->rx.buf`;
+  handlers receive pointers into it (`eth_frame_t`, `ipv4_hdr_t`,
+  `ipv6_hdr_t`, the UDP payload pointer, the TCP segment).  The copy from the
+  driver is the only one on the receive path until TCP delivers data into a
+  connection's own buffer.
+- **Pointers are valid only during dispatch.**  Anything a handler is given
+  points into `net->rx.buf` and is overwritten by the next `net_poll()`.
+  Copy out what must outlive the call.
+- **Handlers run before `discard()`.**  The driver's receive slot is held
+  while UDP handlers, TCP event callbacks and module `*_input()` functions
+  run.  Treat them like interrupt handlers: do the minimum, set a flag, act
+  from the main loop.  (TCP's `on_event` additionally must not send or close;
+  see `tcp.h`.)
+- **Poll often enough to drain the MAC.**  TCP data is copied into the
+  connection's RX buffer during `net_poll()` and flow-controlled by the
+  advertised window, so the application may read it later.  The hardware
+  queue has no such protection: a main loop that calls `net_poll()` too
+  rarely lets a small hardware ring (an ENC28J60 has 8 KB) overflow, and
+  frames are lost.
+- **Oversize frames.**  A frame longer than `rx.capacity` is truncated to it.
+  IPv4 and IPv6 then reject it (the datagram's own length exceeds the bytes
+  present), so an undersized RX buffer drops large datagrams rather than
+  delivering partial data.  ARP (42 bytes) still works in any buffer that can
+  hold it.
+- **A short `peek()`.**  `net_poll()` hands `eth_input()` the byte count
+  `peek()` returned, not the length `poll()` reported; a frame with nothing
+  to read is discarded unprocessed.
+- **`rx.buf` and `tx.buf` must not overlap.**  Replies are built in
+  `net->tx.buf` while the request is still being read from `net->rx.buf`
+  (an echo reply copies one into the other).  `net_init()` does not check
+  this.
 
-## peek + discard Pattern
+`eth_input(net, frame, len)` is public, and the unit tests call it directly
+with frames in memory.  A platform whose MAC delivers frames into RAM by DMA
+could do the same and skip the copy, provided the frame stays valid and
+unmodified until `eth_input()` returns and the platform releases the DMA
+buffer itself afterwards.  None of the bundled drivers work that way.
 
-### Basic fast-path filtering
+## 4. Driver models
 
-On hardware MACs (e.g., ENC28J60 via SPI), reading a full frame is expensive.
-For ARP/NDP fast-path filtering, we only need a few bytes (e.g., the ARP target
-IP at offset 38).  `peek()` reads those bytes via SPI without consuming the
-frame.  If the frame isn't for us, `discard()` drops it without the full read.
+`poll`/`peek`/`discard` fit two ways of building a driver; the stack cannot
+tell them apart.
 
-For software MACs (TAP, feth+BPF), `recv()` has already read the full frame
-into the driver's internal buffer.  `peek()` is a `memcpy` from that buffer,
-and `discard()` is a no-op (frame already consumed by `recv`).
+| | Caching driver | Pure-peek driver |
+|---|---|---|
+| Frame storage | Its own RAM buffer | The MAC's SRAM only |
+| `poll()` | Reads the next frame from the device into its buffer (if not already there) and returns its length | Checks the hardware RX pointer and returns the waiting frame's length, touching no MCU RAM |
+| `peek()` | `memcpy` from its buffer | An SPI/DMA read from the MAC's SRAM at `offset` |
+| `discard()` | Marks its buffer empty | Advances the hardware RX pointer, freeing the slot |
+| Examples | `tap.c`, `rawsock.c`, `bpf.c` | ENC28J60 over SPI (not written) |
 
-### Full receive path — peek-based header parsing
+Because `net_poll()` copies the whole frame (up to `rx.capacity`), a
+pure-peek driver still moves every byte across its bus, even for frames
+`eth_input()` then drops as not addressed to us.  The pure-peek model exists so
+that a future receive path could read only the bytes it needs; see
+[§8](#8-future-work).
 
-The `peek` / `discard` idiom extends beyond ARP filtering to the **entire
-receive path**.  Rather than staging the whole frame in `net->rx.buf` before
-dispatch, each protocol layer `peek()`s only its own header:
+## 5. Transmit: `net_transmit()`
 
-| Layer | peek offset | bytes | Purpose |
+Every frame is built in place in `net->tx.buf` — Ethernet header, IP header,
+transport header, payload — and handed over with
+`net_transmit(net, frame_len)`, which calls `send()` once.  A driver may copy
+the frame into its own TX buffer or start a DMA from the caller's buffer, but
+it must be finished with `frame` when `send()` returns: the next frame is
+built in the same memory.
+
+`net_transmit()` returns `NET_OK` for any `send()` result ≥ 0, so **a busy
+driver (0) silently drops the frame**, as a congested wire would.  TCP
+recovers by retransmission; UDP and ICMP do not.  Only a negative return
+becomes `NET_ERR_NO_FRAME`.
+
+## 6. Bundled drivers
+
+| Driver | Platform | Model | Notes |
 |---|---|---|---|
-| Ethernet | 0 | 14 | dst_mac, src_mac, EtherType |
-| IPv4 | 14 | 20 | src_ip, dst_ip, protocol, length |
-| UDP | 14 + ip_hlen | 8 | src_port, dst_port, udp_len, cksum |
-| UDP payload | 14 + ip_hlen + 8 | `payload_len` | passed to port handler as offset |
-| ARP | 14 | 28 | operation, sender/target IP+MAC |
-| ICMP | 14 + 20 | 4 | type, code |
+| `tap.c` | Linux | caching | `/dev/net/tun`, `IFF_TAP \| IFF_NO_PI`, non-blocking; one frame per `read()`.  A TAP fd never reads back its own writes. |
+| `rawsock.c` | Linux | caching | `AF_PACKET` on an existing interface: a NIC or one end of a veth pair.  Needs root or `CAP_NET_RAW`. |
+| `bpf.c` | macOS | caching | `/dev/bpfN` bound to an interface, typically one end of a `feth` pair. |
+| `stub.c` | any | — | Does nothing; links the stack for ARM size measurement (`bench/`). |
 
-The MAC frame is never staged into a large `net->rx.buf`.  `net->rx.buf` can
-therefore shrink from the traditional 1514 bytes down to just enough for the
-largest single header region (typically 20 bytes for the IPv4 header).
+All three real drivers keep a 1514-byte frame buffer in their context (the
+largest Ethernet II frame without FCS).
 
-**UDP port handler contract:** The UDP dispatch layer calls the port handler
-with `(src_ip, src_port, src_mac, payload_offset, payload_len)`.  The handler
-calls `mac_driver->peek(ctx, payload_offset, buf, n)` for only the bytes it
-needs, then returns.  After the handler returns, `udp_input()` calls
-`mac_driver->discard()` to release the frame.  See
-[docs/design/udp.md §4](udp.md#4-receive-path) for the full receive path
-diagram.
-
-### RAM comparison — full-frame staging vs. peek-based dispatch
-
-| Approach | `net->rx.buf` size |
-|---|---|
-| Current (full-frame staging) | 1514 bytes (max Ethernet frame) |
-| Peek-based header parsing | ≤ 20 bytes (largest header region) |
-| Handler's receive buffer | allocated on handler's stack, sized to protocol need |
-
-## Driver Implementations
-
-| Driver | Platform | peek behavior | discard behavior |
-|---|---|---|---|
-| `tap.c` | Linux | memcpy from rx buffer | no-op |
-| `rawsock.c` | Linux (`AF_PACKET` on a NIC or veth end) | memcpy from rx buffer | no-op |
-| `bpf.c` | macOS | memcpy from rx buffer | advance BPF read pointer |
-| `enc28j60.c` | SPI MCU | SPI read at offset | SPI advance RX pointer |
-| `cdc_ecm.c` | USB | memcpy from USB buffer | discard USB buffer |
-
-### Raw-socket driver notes (`rawsock.c`)
+### Raw socket (`rawsock.c`)
 
 An `AF_PACKET` socket sees what the host sees, which differs from a NIC in
 three ways the driver hides from the stack:
 
 - **Its own MAC.**  The stack answers to its configured MAC, not the
-  interface's, so the driver joins `PACKET_MR_PROMISC` for as long as the socket
-  is open (the kernel releases it on close).
-- **Outgoing frames.**  Frames this host transmits on the interface are
-  delivered to packet sockets too (`PACKET_OUTGOING`); a NIC would never
-  receive them.  The driver skips them (and sets `PACKET_IGNORE_OUTGOING` where
-  the kernel has it).
-- **Checksum offload.**  Frames sent by the local kernel — the peer of a veth
-  pair — carry a partial TCP/UDP checksum meant for hardware.  With
-  `PACKET_VNET_HDR` each frame arrives behind a `virtio_net_hdr` that flags this
-  and gives the checksum's position; `rawsock_csum_complete()` finishes it.
-  Super-frames from GRO/GSO (larger than 1514 bytes) are dropped whole and
-  counted in `rx_dropped`, never truncated.
+  interface's, so `init` adds a `PACKET_MR_PROMISC` membership.  The kernel
+  drops it when the socket closes.  The socket is created with protocol 0 so
+  nothing from another interface is queued before `bind()` names this one.
+- **Our own sends.**  Frames this host transmits are delivered to packet
+  sockets too.  `poll()` skips `PACKET_OUTGOING` frames; on Linux 4.20+
+  `PACKET_IGNORE_OUTGOING` stops the kernel queuing them at all.
+- **Checksum offload.**  With `PACKET_VNET_HDR`, every frame arrives behind a
+  `struct virtio_net_hdr`.  Frames the local kernel sent (from the veth peer,
+  or towards a local TAP) can carry a TCP/UDP checksum left *partial* for hardware
+  that will never see it; the header flags this (`VIRTIO_NET_HDR_F_NEEDS_CSUM`)
+  and gives `csum_start` and `csum_offset`.  The kernel has already stored the
+  folded pseudo-header sum in the checksum field, so the Internet checksum of
+  `frame[csum_start..len)`, *including* that field, is the finished checksum;
+  `rawsock_csum_complete()` computes it and writes it in, as the NIC would
+  have.  That function is portable, so it is unit-tested on every platform.
 
-## Scatter-Gather TX Extension (Future Enhancement)
+  GSO/GRO super-frames (`gso_type` set), frames larger than 1514 bytes, and
+  frames whose partial checksum lies outside the frame are dropped whole —
+  never truncated — and counted in `rx_dropped`.  Sends carry
+  an all-zero `virtio_net_hdr`: no offload requested.  `ENOBUFS`/`EAGAIN` on
+  send return 0 (busy).
 
-The current `send(ctx, frame, len)` signature requires the caller to assemble a
-complete, contiguous Ethernet frame before transmitting.  This forces the stack
-to `memcpy` every payload into `net->tx.buf`, meaning the tx buffer must be
-large enough for the full frame including payload (e.g., 618 bytes for DHCP).
+### BPF (`bpf.c`)
 
-For the TFTP bootloader use case — sending 512-byte data blocks that live in
-flash — this represents a significant RAM waste on targets with 1 KB total RAM.
+One `read()` of a BPF descriptor returns a *batch* of frames, each behind a
+`struct bpf_hdr` and padded to `BPF_WORDALIGN`.  The driver reads a batch into
+`read_buf[]` (4 KB) and extracts one frame at a time into `cur_frame[]`:
+`poll()` returns the current frame if there is one, else extracts the next
+from the batch, else reads a new batch.  `discard()` empties `cur_frame[]`, so
+the next `poll()` advances within the batch.  Unlike `rawsock.c`, a captured
+frame longer than 1514 bytes is truncated to it (and then rejected by IP, as
+in §3).
 
-The solution is to add an optional scatter-gather entry to the vtable:
+`init` sets `BIOCIMMEDIATE` (deliver frames as they arrive), `BIOCSHDRCMPLT`
+(we supply the Ethernet source address), `BIOCPROMISC` (the stack's own MAC),
+and `BIOCSSEESENT = 0` (macOS would otherwise deliver our own transmissions,
+which a TAP fd never does).
+
+Creating a `feth` pair (the tests use `feth0`, the demos open `feth1`):
+
+```sh
+sudo ifconfig feth0 create && sudo ifconfig feth1 create
+sudo ifconfig feth0 peer feth1
+sudo ifconfig feth0 inet 10.0.0.1/24 up && sudo ifconfig feth1 up
+```
+
+## 7. Writing a driver
+
+1. Define a context struct holding every piece of mutable state, and one
+   `const net_mac_t` table.
+2. Make `poll()` non-blocking and idempotent: until `discard()`, return the
+   same frame's length.
+3. Make `peek()` bounds-checked: copy at most up to the end of the frame, and
+   return < 0 when there is no current frame.
+4. Drop frames the stack cannot use rather than truncating them, if the
+   hardware allows (as `rawsock.c` does).
+5. Return 0 from `send()` when the hardware is momentarily busy and < 0 only
+   for real failures.
+6. If the MAC has a multicast filter, program it with the groups the
+   application joins: `ipv4_mcast_mac()` for IPv4 groups; for IPv6,
+   `ipv6_mcast_mac()` of all-nodes, of each address's solicited-node group
+   and of each joined group.  The stack filters again in `eth_input()`, so an
+   open (promiscuous or all-multicast) filter is always correct.
+
+Possible future drivers include the ENC28J60 (SPI, pure-peek), USB CDC-ECM
+(the use case `dhcpv4_server` was written for), and MCU EMACs with DMA
+descriptor rings.  None are in the tree.
+
+## 8. Future work
+
+### Checksum offload (not implemented)
+
+There are no capability flags.  Earlier versions of this document and of
+`net_config.h` described compile-time `NET_MAC_CAP_TX_CKSUM_*` /
+`NET_MAC_CAP_RX_CKSUM_OK` switches, but no code ever read them and they have
+been removed.  Every checksum is computed and verified in software.  Adding
+offload would mean, per protocol, a compile-time switch that writes the
+field for the MAC to fill (TX) or skips verification (RX), in
+`ipv4_build_ttl()`, `udp_send_inplace_from()`, `udp6_send_inplace()`, TCP's
+`frame_send()`, `icmpv6_send()`, and the input paths.  A compile-time switch
+rather than a run-time query remains the right shape: a device's MAC does not
+change, and the compiler removes the unused path.
+
+### Scatter-gather transmit
+
+`send(ctx, frame, len)` takes one contiguous frame, so every payload is
+copied into `net->tx.buf` after its headers, and the TX buffer must hold the
+largest frame sent (342 bytes for DHCP; 554 for a 512-byte UDP payload).  An
+optional vtable entry
 
 ```c
-/* Iovec descriptor — one memory region */
-typedef struct {
-    const uint8_t *base;
-    uint16_t       len;
-} net_iov_t;
-
-/* Optional: send from multiple non-contiguous regions (header + payload) */
+typedef struct { const uint8_t *base; uint16_t len; } net_iov_t;
 int (*send_iov)(void *ctx, const net_iov_t *iov, uint8_t iovcnt);
 ```
 
-With `send_iov`, the stack builds only the 42-byte ETH+IP+UDP header into
-`net->tx.buf` and passes the application's payload pointer directly to the
-MAC — no copy.  `net->tx.buf` shrinks from `42 + payload_len` to just 42 bytes.
+would let the stack build only the headers in `tx.buf` and pass the payload —
+possibly in flash — as a second region.  The checksum can still be computed
+across both regions with the incremental API.  TAP could use `writev()`,
+`rawsock.c` already sends with an iovec, an ENC28J60 writes header then
+payload into its SRAM, and DMA EMACs chain descriptors; BPF would need a
+combine buffer.  A NULL `send_iov` would fall back to today's copy.
 
-**Driver implementations:**
-- `tap.c`: use `writev(fd, ...)` — Linux supports scatter-gather on TAP file descriptors
-- `rawsock.c`: already sends with `sendmsg()` and an iovec (virtio header + frame); add the payload as a third entry
-- `bpf.c`: BPF `write()` is single-buffer; driver falls back to a small internal combine buffer
-- ENC28J60 (SPI): write header bytes via SPI, then payload bytes via SPI — naturally sequential, no staging buffer needed
-- DMA MACs (STM32 EMAC, etc.): scatter-gather DMA descriptors natively support multi-region sends
+### Streaming receive
 
-**Backward compatibility:** `send_iov` is an optional vtable field.  When NULL,
-the stack falls back to the current `send()` path with memcpy.  Existing drivers
-continue to work unchanged.
-
-See [docs/design/udp.md §8](udp.md#8-transmit-buffer--current-limitation-and-the-scatter-gather-path) for the full analysis and RAM savings table.
-
-## Context
-
-Each driver defines its own context struct (e.g., `tap_ctx_t`, `bpf_ctx_t`). The application allocates this and passes `void *ctx` to all MAC functions. The stack never knows the concrete type.
-
-```c
-// Example: TAP driver context
-typedef struct {
-    int fd;              // TAP file descriptor
-    uint8_t rx_buf[1514]; // internal read buffer (for peek after recv)
-    uint16_t rx_len;     // bytes in rx_buf
-} tap_ctx_t;
-```
+A pure-peek driver could let `rx.buf` shrink to the size of the largest header
+region, with each layer peeking only its own header and checksums accumulated
+over chunked `peek()` reads.  That needs a different handler interface than
+today's payload pointer; the trade-offs are in the decision record in
+[udp.md §10](udp.md#101-decision-record-payload-pointers-not-frame-offsets).

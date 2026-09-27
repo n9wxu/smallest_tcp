@@ -23,7 +23,7 @@
 
 #define IGMP_ALL_ROUTERS 0xE0000002u /* 224.0.0.2 */
 
-/** Frame size of an IGMP message: ETH + IPv4 with Router Alert + IGMP. */
+/** An IGMP message: Ethernet + IPv4 with Router Alert + 8 bytes. */
 #define IGMP_FRAME_SIZE (14 + 24 + 8)
 
 /**

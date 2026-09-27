@@ -1,53 +1,15 @@
 /**
  * @file mdns.h
- * @brief Multicast DNS responder (RFC 6762) with DNS-SD advertising (RFC 6763).
+ * @brief Multicast DNS responder (RFC 6762) with DNS-SD advertising
+ *        (RFC 6763), over IPv4 and, in dual-stack builds, IPv6.
  *
- * The application owns the record table and the mdns_t state.  The responder
- * probes for its unique names, announces, answers queries on 224.0.0.251:5353
- * and sends goodbye packets on shutdown.  Zero allocation: responses are
- * built directly in net->tx.buf.
- *
- * Typical use:
- *
- *   static const char *const txt[] = {"txtvers=1", "fw=1.2.3", NULL};
- *   static const mdns_record_t records[] = {
- *     {.type = DNS_TYPE_A,   .ttl = MDNS_TTL_HOST,  .name = "pyro-dead01.local",
- *      .rdata.a = 0},                               // 0 = net->ipv4_addr
- *     {.type = DNS_TYPE_PTR, .ttl = MDNS_TTL_OTHER, .name = "_pyro._tcp.local",
- *      .rdata.ptr = "Pyro Unit 1._pyro._tcp.local"},
- *     {.type = DNS_TYPE_SRV, .ttl = MDNS_TTL_HOST,
- *      .name = "Pyro Unit 1._pyro._tcp.local",
- *      .rdata.srv = {0, 0, 80, "pyro-dead01.local"}},
- *     {.type = DNS_TYPE_TXT, .ttl = MDNS_TTL_HOST,
- *      .name = "Pyro Unit 1._pyro._tcp.local", .rdata.txt = txt},
- *   };
- *   static mdns_t mdns;
- *
- *   mdns_init(&mdns, &net, records, 4, on_conflict, NULL);
- *   mdns_start(&mdns);                  // after the IP address is known
- *   // UDP handler for MDNS_PORT: peek the payload, then
- *   mdns_input(&mdns, src_ip, src_mac, src_port, payload, len);
- *   // main loop:
- *   mdns_tick(&mdns, elapsed_ms);
- *   // shutdown:
- *   mdns_stop(&mdns);
- *
- * PTR records are shared (DNS-SD service enumeration); A, SRV and TXT records
- * are unique and are probed for before use.
- *
- * Queries for a type one of our unique names does not have are answered
- * with an NSEC record (RFC 6762 §6.1, restricted form) — without it a
- * dual-stack lookup of the host name waits seconds for an AAAA answer.
- *
- * Dual stack (NET_USE_IPV6): the responder also listens on ff02::fb (feed
- * datagrams from the udp6 port-5353 handler to mdns_input6()), advertises
- * AAAA records (.rdata.aaaa = NULL: every usable IPv6 address), probes,
- * announces and says goodbye on both families, and answers a query on the
- * family it came on.  An answer with A records carries the name's AAAA
- * records as additionals and vice versa (RFC 6762 §6.2).
- *
- * Not implemented: querier/browser, the simultaneous-probe tiebreak
- * (RFC 6762 §8.2) and multi-packet known-answer lists.
+ * The application owns the record table and the mdns_t.  The responder
+ * probes for its unique names (A, AAAA, SRV, TXT), announces, answers
+ * queries — with NSEC for types a name lacks — and says goodbye on
+ * mdns_stop(); PTR records are shared.  It is integrated like the other
+ * protocol modules (docs/integrating-modules.md): UDP handlers for
+ * MDNS_PORT call mdns_input() / mdns_input6(), and mdns_tick() runs from
+ * the main loop.  Scope and design: docs/design/mdns.md.
  */
 
 #ifndef MDNS_H
@@ -62,10 +24,10 @@
 #if NET_USE_IPV6
 extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 #endif
-#define MDNS_IP_TTL 255        /**< RFC 6762 §11: IP TTL of every mDNS packet */
+#define MDNS_IP_TTL 255 /**< RFC 6762 §11: IP TTL of every mDNS packet */
 
-#define MDNS_TTL_HOST 120   /**< A / SRV / TXT record TTL (RFC 6762 §10) */
-#define MDNS_TTL_OTHER 4500 /**< PTR record TTL (RFC 6762 §10) */
+#define MDNS_TTL_HOST 120      /**< A / SRV / TXT record TTL (RFC 6762 §10) */
+#define MDNS_TTL_OTHER 4500    /**< PTR record TTL (RFC 6762 §10) */
 #define MDNS_LEGACY_TTL_MAX 10 /**< TTL cap in legacy unicast responses */
 
 /** DNS-SD service type enumeration name (RFC 6763 §9). */
@@ -74,22 +36,21 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 /** Records per responder (bitmask width). */
 #define MDNS_MAX_RECORDS 32
 
-#define MDNS_PROBE_WAIT_MS 250    /**< Max initial delay + probe spacing */
-#define MDNS_PROBE_COUNT 3        /**< RFC 6762 §8.1 */
-#define MDNS_ANNOUNCE_COUNT 2     /**< RFC 6762 §8.3 */
+#define MDNS_PROBE_WAIT_MS 250 /**< Max initial delay + probe spacing */
+#define MDNS_PROBE_COUNT 3     /**< RFC 6762 §8.1 */
+#define MDNS_ANNOUNCE_COUNT 2  /**< RFC 6762 §8.3 */
 #define MDNS_ANNOUNCE_WAIT_MS 1000
 #define MDNS_RESP_DELAY_MIN_MS 20 /**< Shared-record response delay (§6) */
 #define MDNS_RESP_DELAY_MAX_MS 120
 
-/* ── States ───────────────────────────────────────────────────────── */
-
+/* States */
 #define MDNS_STATE_STOPPED 0
 #define MDNS_STATE_PROBING 1
 #define MDNS_STATE_ANNOUNCING 2
 #define MDNS_STATE_RUNNING 3
 #define MDNS_STATE_CONFLICT 4
 
-/* ── Records ──────────────────────────────────────────────────────── */
+/* Records */
 
 /**
  * One resource record.  Names are dotted strings in the .local. domain;
@@ -100,7 +61,7 @@ typedef struct {
   uint32_t ttl;     /**< Seconds (MDNS_TTL_HOST / MDNS_TTL_OTHER) */
   const char *name; /**< Owner name */
   union {
-    uint32_t a;      /**< IPv4, host byte order; 0 = use net->ipv4_addr */
+    uint32_t a; /**< IPv4, host byte order; 0 = use net->ipv4_addr */
     /** IPv6 address (16 bytes); NULL = every usable IPv6 address of the
      *  interface — one AAAA RR each (RFC 6762 §6.2) */
     const uint8_t *aaaa;
@@ -117,8 +78,7 @@ typedef struct {
   } rdata;
 } mdns_record_t;
 
-/* ── Responder state ──────────────────────────────────────────────── */
-
+/* Responder state */
 typedef struct mdns_s mdns_t;
 
 /**
@@ -127,30 +87,37 @@ typedef struct mdns_s mdns_t;
  * the record table (e.g. "pyro-dead01-2.local") and call mdns_start().
  * @param record_index  Index of the conflicting record in the table.
  */
-typedef void (*mdns_conflict_fn_t)(mdns_t *m, uint8_t record_index,
-                                   void *ctx);
+typedef void (*mdns_conflict_fn_t)(mdns_t *m, uint8_t record_index, void *ctx);
+
+/** Address families, as a bit set */
+#define MDNS_FAMILY_V4 0x01u
+#define MDNS_FAMILY_V6 0x02u
+
+/**
+ * Records owed in one delayed multicast response — answers for shared
+ * records wait 20-120 ms and are aggregated (RFC 6762 §6).  Record sets
+ * are bitmasks: bit i = records[i].
+ */
+typedef struct {
+  uint32_t timer_ms; /**< Until it is sent; 0 = nothing owed */
+  uint32_t answers;
+  uint32_t service_types; /**< Answers to the DNS-SD meta-query */
+  uint32_t nsec;          /**< Names owed a negative answer */
+  uint8_t families;       /**< MDNS_FAMILY_* the queries came on */
+} mdns_pending_t;
 
 struct mdns_s {
   net_t *net;
   const mdns_record_t *records;
   mdns_conflict_fn_t on_conflict;
   void *ctx;
-  uint32_t timer_ms;      /**< Countdown to next probe / announcement */
-  uint32_t resp_timer_ms; /**< Countdown to delayed multicast response */
-  uint32_t resp_answers;  /**< Records owed in the delayed response */
-  uint32_t resp_meta;     /**< Service types owed to a meta-query */
-  uint32_t resp_nsec;     /**< Names owed a negative (NSEC) answer */
-  uint32_t rng;           /**< xorshift32 state for RFC 6762 jitter */
+  uint32_t timer_ms; /**< Until the next probe / announcement */
+  mdns_pending_t pending;
   uint8_t count;
-  uint8_t state; /**< MDNS_STATE_* */
-  uint8_t step;  /**< Probes / announcements sent in the current state */
-#if NET_USE_IPV6
-  uint8_t resp_fam; /**< Families owed the delayed response (bit 0 v4, 1 v6) */
-  uint8_t ann_fam;  /**< Families announcements go to */
-#endif
+  uint8_t state;             /**< MDNS_STATE_* */
+  uint8_t step;              /**< Probes / announcements sent so far */
+  uint8_t announce_families; /**< MDNS_FAMILY_* announcements go to */
 };
-
-/* ── API ──────────────────────────────────────────────────────────── */
 
 /**
  * Initialise a responder (state STOPPED).  Sends nothing.
@@ -162,7 +129,7 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
 /**
  * Join 224.0.0.251 (IGMP) and start probing after a random 0-250 ms delay.
  * Call again after a conflict, a link-up or an address change
- * (REQ-MDNS-024) to re-probe and re-announce.
+ * to re-probe and re-announce.
  */
 void mdns_start(mdns_t *m);
 

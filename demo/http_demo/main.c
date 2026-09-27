@@ -20,36 +20,25 @@
  *
  * Routes:
  *   GET  /            HTML status page
- *   GET  /api/status  JSON, generated per request (uptime, request count, query)
- *   POST /api/echo    echoes the request body as text/plain
- *   GET  /big         8000-byte text body (streams over many segments)
+ *   GET  /api/status  JSON, generated per request (uptime, request count,
+ * query) POST /api/echo    echoes the request body as text/plain GET  /big
+ * 8000-byte text body (streams over many segments)
  */
 
-#define _POSIX_C_SOURCE 200809L
-
-#include "eth.h"
 #include "http.h"
 #include "mdns.h"
 #include "net.h"
-#include "tcp.h"
 #include "udp.h"
-#include <signal.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
-#include "demo_ipv6.h"
-#include "demo_mac.h"
+#include "demo_loop.h"
 
 #define HTTP_PORT 80u
 #define N_SLOTS 2
-#define NET_BUF_SIZE 1514u
 
-/* ── Memory (application-owned) ───────────────────────────────────── */
-
-static uint8_t net_rx_mem[NET_BUF_SIZE];
-static uint8_t net_tx_mem[NET_BUF_SIZE];
 static net_t net;
+static demo_mac_t nic;
 
 static uint8_t tcp_tx[N_SLOTS][1460];
 static uint8_t tcp_rx[N_SLOTS][1024];
@@ -57,20 +46,6 @@ static char req_buf[N_SLOTS][1024];
 static http_conn_t slots[N_SLOTS];
 static tcp_conn_t *conn_table[N_SLOTS];
 static http_server_t http;
-
-static volatile int running = 1;
-static void sig_handler(int s) {
-  (void)s;
-  running = 0;
-}
-
-static uint32_t now_ms(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
-}
-
-/* ── Pages ────────────────────────────────────────────────────────── */
 
 static uint32_t start_ms;
 static uint32_t request_count;
@@ -102,7 +77,7 @@ static int page_status(const http_request_t *rq, http_response_t *rs,
   int n = snprintf((char *)rs->scratch, rs->scratch_size,
                    "{\"uptime_ms\":%lu,\"requests\":%lu,"
                    "\"ip\":\"%u.%u.%u.%u\",\"query\":\"%s\"}\n",
-                   (unsigned long)(now_ms() - start_ms),
+                   (unsigned long)(demo_now_ms() - start_ms),
                    (unsigned long)request_count,
                    (unsigned)((net.ipv4_addr >> 24) & 0xFF),
                    (unsigned)((net.ipv4_addr >> 16) & 0xFF),
@@ -116,8 +91,7 @@ static int page_status(const http_request_t *rq, http_response_t *rs,
   return 0;
 }
 
-static int page_echo(const http_request_t *rq, http_response_t *rs,
-                     void *ctx) {
+static int page_echo(const http_request_t *rq, http_response_t *rs, void *ctx) {
   (void)ctx;
   request_count++;
   rs->content_type = "text/plain";
@@ -143,7 +117,7 @@ static const http_route_t routes[] = {
     {"/big", HTTP_GET, page_big, NULL},
 };
 
-/* ── mDNS: pyro-dead01.local + "Pyro Unit 1" as _http._tcp ────────── */
+/* mDNS: pyro-dead01.local, and "Pyro Unit 1" as an _http._tcp service */
 
 static const char *const txt[] = {"path=/", NULL}; /* DNS-SD _http TXT key */
 
@@ -173,58 +147,42 @@ static const mdns_record_t records[] = {
 };
 static mdns_t mdns;
 
-static void mdns_udp_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                             const uint8_t *src_mac, uint16_t payload_offset,
-                             uint16_t payload_len) {
-  static uint8_t buf[NET_BUF_SIZE];
-  uint16_t copy = (payload_len < sizeof(buf)) ? payload_len
-                                              : (uint16_t)sizeof(buf);
-  int got = n->mac_driver->peek(n->mac_ctx, payload_offset, buf, copy);
-  if (got > 0)
-    mdns_input(&mdns, src_ip, src_mac, src_port, buf, (uint16_t)got);
+static void mdns_udp_input(net_t *n, uint32_t src_ip, uint16_t src_port,
+                           const uint8_t *src_mac, const uint8_t *payload,
+                           uint16_t len) {
+  (void)n;
+  mdns_input(&mdns, src_ip, src_mac, src_port, payload, len);
 }
 
-static const udp_port_entry_t udp_handlers[] = {
-    {MDNS_PORT, mdns_udp_handler},
-};
+static const udp_port_entry_t udp_ports[] = {{MDNS_PORT, mdns_udp_input}};
+
 #if NET_USE_IPV6
-static void mdns_udp6_handler(net_t *n, const uint8_t *src_ip,
-                              uint16_t src_port, const uint8_t *src_mac,
-                              uint16_t payload_offset, uint16_t payload_len) {
-  static uint8_t buf[NET_BUF_SIZE];
-  uint16_t copy = (payload_len < sizeof(buf)) ? payload_len
-                                              : (uint16_t)sizeof(buf);
-  int got = n->mac_driver->peek(n->mac_ctx, payload_offset, buf, copy);
-  if (got > 0)
-    mdns_input6(&mdns, src_ip, src_mac, src_port, buf, (uint16_t)got);
+static void mdns_udp6_input(net_t *n, const uint8_t *src_ip, uint16_t src_port,
+                            const uint8_t *src_mac, const uint8_t *payload,
+                            uint16_t len) {
+  (void)n;
+  mdns_input6(&mdns, src_ip, src_mac, src_port, payload, len);
 }
 
-static const udp6_port_entry_t udp6_handlers[] = {
-    {MDNS_PORT, mdns_udp6_handler},
-};
+static const udp6_port_entry_t udp6_ports[] = {{MDNS_PORT, mdns_udp6_input}};
+
+/* RFC 6762 §8.4: announce the new address */
+static void ipv6_address_ready(void) { mdns_readdress6(&mdns); }
 #endif
 
-/* ── Main ─────────────────────────────────────────────────────────── */
+static void tick(uint32_t elapsed_ms) {
+  mdns_tick(&mdns, elapsed_ms);
+  http_server_tick(&http, elapsed_ms);
+}
+
+static void service(void) { http_server_poll(&http); }
 
 int main(int argc, char *argv[]) {
+  demo_hooks_t hooks = {tick, service, NULL};
   int i;
-  signal(SIGINT, sig_handler);
-  signal(SIGTERM, sig_handler);
 
-  /* ── Platform MAC driver: argv[1] names the interface ───────── */
-  demo_mac_t nic;
-  if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0) {
+  if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "http") != 0)
     return 1;
-  }
-  const net_mac_t *drv = nic.ops;
-
-  net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
-           NULL, drv, &nic.ctx);
-  if (drv->init(&nic.ctx) != 0) {
-    fprintf(stderr, "[http] failed to open MAC driver\n");
-    return 1;
-  }
-
   for (i = 0; i < (int)sizeof(big_page); i++)
     big_page[i] = (uint8_t)((i % 64 == 63) ? '\n' : 'a' + (i % 64) % 26);
 
@@ -233,61 +191,30 @@ int main(int argc, char *argv[]) {
                    sizeof(tcp_rx[i]), req_buf[i], sizeof(req_buf[i]));
     conn_table[i] = http_conn_tcp(&slots[i]);
   }
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = N_SLOTS;
+  tcp_set_connections(&net, conn_table, N_SLOTS);
   http_server_init(&http, &net, HTTP_PORT, routes,
                    sizeof(routes) / sizeof(routes[0]), slots, N_SLOTS);
 
-  udp_ports.entries = udp_handlers;
-  udp_ports.count = 1;
+  udp_set_ports(&net, udp_ports, 1);
 #if NET_USE_IPV6
-  /* Dual stack: link-local address, mDNS on ff02::fb */
-  ipv6_start(&net);
-  udp6_ports.entries = udp6_handlers;
-  udp6_ports.count = 1;
+  udp6_set_ports(&net, udp6_ports, 1);
+  hooks.ipv6_address_ready = ipv6_address_ready;
 #endif
   mdns_init(&mdns, &net, records, sizeof(records) / sizeof(records[0]), NULL,
             NULL);
   mdns_start(&mdns);
 
-  start_ms = now_ms();
-  printf("[http] listening on http://%u.%u.%u.%u:%u/ (pyro-dead01.local), "
-         "%d slots\n",
-         (unsigned)((net.ipv4_addr >> 24) & 0xFF),
-         (unsigned)((net.ipv4_addr >> 16) & 0xFF),
-         (unsigned)((net.ipv4_addr >> 8) & 0xFF),
-         (unsigned)(net.ipv4_addr & 0xFF), HTTP_PORT, N_SLOTS);
+  start_ms = demo_now_ms();
+  printf("[http] listening on http://");
+  demo_print_ipv4(net.ipv4_addr);
+  printf(":%u/ (pyro-dead01.local), %d slots\n", HTTP_PORT, N_SLOTS);
   fflush(stdout);
 
-  uint32_t last_tick = now_ms();
-  while (running) {
-    int got = net_poll(&net);
-    if (got > 0)
-      eth_input(&net, net.rx.buf, net.rx.frame_len);
-    http_server_poll(&http);
-
-    uint32_t now = now_ms();
-    uint32_t elapsed = now - last_tick;
-    if (elapsed >= 5u) {
-      tcp_tick(&net, elapsed);
-      mdns_tick(&mdns, elapsed);
-#if NET_USE_IPV6
-      ipv6_tick(&net, elapsed);
-      if (demo_ipv6_report(&net, "http"))
-        mdns_readdress6(&mdns); /* RFC 6762 §8.4: new address */
-#endif
-      http_server_tick(&http, elapsed);
-      last_tick = now;
-    }
-    if (got <= 0) {
-      struct timespec idle = {0, 500000}; /* 0.5 ms */
-      nanosleep(&idle, NULL);
-    }
-  }
+  demo_run(&net, "http", &hooks);
 
   printf("[http] shutting down\n");
   fflush(stdout);
   mdns_stop(&mdns);
-  drv->close(&nic.ctx);
+  demo_net_close(&nic);
   return 0;
 }

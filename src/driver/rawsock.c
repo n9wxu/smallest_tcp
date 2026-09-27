@@ -1,28 +1,16 @@
 /**
  * @file driver/rawsock.c
- * @brief Linux raw-socket (AF_PACKET) network driver for the MAC HAL.
+ * @brief Linux MAC driver: an AF_PACKET socket.
  *
- * Binds an AF_PACKET socket to an existing interface.  The socket part is
- * only compiled on Linux; rawsock_csum_complete() is portable.
- *
- * Driver model: CACHING, as driver/tap.c.
- * poll() reads the next frame into the driver's internal rx_frame[]
- * buffer.  peek() copies out of it; discard() frees it for the next poll().
- * The caller never receives a pointer to the driver's internal buffer.
- *
- * Every frame is read with a struct virtio_net_hdr in front of it
- * (PACKET_VNET_HDR).  Through it the kernel says that a frame's transport
- * checksum is still partial — left for a NIC that will never see it,
- * because the frame came from this host — and where the checksum is, or
- * that the frame is a GSO/GRO super-frame.  Sends carry an all-zero
- * header: no offload requested.
+ * A caching driver on an existing interface — a NIC or a veth end
+ * (docs/design/mac-hal.md).  The kernel may hand over frames this host
+ * sent with the transport checksum left to offload; it is completed
+ * before the stack sees them.  rawsock_csum_complete() is portable.
  */
 
 #include "driver/rawsock.h"
 #include "net_cksum.h"
 #include <string.h>
-
-/* ── Checksum completion (portable) ───────────────────────────────── */
 
 int rawsock_csum_complete(uint8_t *frame, uint16_t len, uint16_t csum_start,
                           uint16_t csum_offset) {
@@ -52,15 +40,11 @@ int rawsock_csum_complete(uint8_t *frame, uint16_t len, uint16_t csum_start,
 #include <sys/uio.h>
 #include <unistd.h>
 
-/* ── Context init ─────────────────────────────────────────────────── */
-
 void rawsock_ctx_init(rawsock_ctx_t *ctx, const char *ifname) {
   memset(ctx, 0, sizeof(*ctx));
   ctx->fd = -1;
   strncpy(ctx->ifname, ifname ? ifname : "eth0", sizeof(ctx->ifname) - 1);
 }
-
-/* ── MAC operations ───────────────────────────────────────────────── */
 
 static int rawsock_init(void *ctx) {
   rawsock_ctx_t *rs = (rawsock_ctx_t *)ctx;
@@ -151,21 +135,12 @@ static int rawsock_send(void *ctx, const uint8_t *frame, uint16_t len) {
   return (int)(n - (ssize_t)sizeof(vh));
 }
 
-/**
- * poll() — Check for a new RX frame.
- *
- * Reads frames until one is for the stack: our own sends are skipped, and
- * frames that do not fit rx_frame[] are dropped whole (never truncated).
- * A partial transport checksum is completed before the stack sees it.
- * Non-blocking: returns 0 immediately if no frame is pending.
- *
- * @return Frame length in bytes if a frame was read, 0 if no frame
- *         is available, <0 on error.
- */
+/* Our own sends are skipped, and frames too big for rx_frame[] dropped
+ * whole (never truncated) */
 static int rawsock_poll(void *ctx) {
   rawsock_ctx_t *rs = (rawsock_ctx_t *)ctx;
 
-  /* poll() is idempotent until discard() is called. */
+  /* the same frame until discard() */
   if (rs->rx_len > 0) {
     return rs->rx_len;
   }
@@ -194,8 +169,7 @@ static int rawsock_poll(void *ctx) {
       }
       return -1;
     }
-    if (from.sll_pkttype == PACKET_OUTGOING ||
-        n <= (ssize_t)sizeof(vh)) {
+    if (from.sll_pkttype == PACKET_OUTGOING || n <= (ssize_t)sizeof(vh)) {
       continue;
     }
     n -= (ssize_t)sizeof(vh);

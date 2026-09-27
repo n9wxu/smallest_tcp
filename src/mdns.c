@@ -22,9 +22,12 @@
 
 const uint8_t mdns_group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
                                  0,    0,    0, 0, 0, 0, 0, 0xFB};
+#endif
 
-#define FAM_V4 1u
-#define FAM_V6 2u
+#if NET_USE_IPV6
+#define ALL_FAMILIES (MDNS_FAMILY_V4 | MDNS_FAMILY_V6)
+#else
+#define ALL_FAMILIES MDNS_FAMILY_V4
 #endif
 
 #if NET_MAX_MCAST_GROUPS < 1
@@ -32,24 +35,6 @@ const uint8_t mdns_group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
 #endif
 
 #define BIT(i) ((uint32_t)1u << (i))
-
-/* ── Small helpers ────────────────────────────────────────────────── */
-
-/* xorshift32: jitter for probe and response timing (RFC 6762 §6, §8.1) */
-static uint32_t rnd(mdns_t *m) {
-  uint32_t x = m->rng;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  m->rng = x;
-  return x;
-}
-
-/* Uniform value in [0, n) by scaling, not '%': Cortex-M0 has no divide
- * instruction and a modulo would link libgcc's __udivsi3. */
-static uint32_t rnd_below(mdns_t *m, uint32_t n) {
-  return ((rnd(m) & 0xFFFFu) * n) >> 16;
-}
 
 /* PTR records are shared (many hosts advertise the same service type);
  * A, SRV and TXT records are unique to this host (RFC 6762 §2). */
@@ -75,29 +60,13 @@ static uint8_t aaaa_addrs(const mdns_t *m, const mdns_record_t *r,
     return 1;
   }
   for (i = 0; i < NET_IPV6_ADDRS; i++) {
-    const net_ip6_addr_t *a = &m->net->ip6[i];
+    const net_ip6_addr_t *a = &m->net->ip6.addr[i];
     if (a->state == NET_IP6_PREFERRED || a->state == NET_IP6_DEPRECATED)
       out[n++] = a->addr;
   }
   return n;
 }
 #endif
-
-static char lower(char c) {
-  return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
-}
-
-/* Case-insensitive comparison of two dotted names; trailing dot ignored */
-static int names_equal(const char *a, const char *b) {
-  for (;; a++, b++) {
-    char ca = (a[0] == '.' && a[1] == '\0') ? '\0' : lower(a[0]);
-    char cb = (b[0] == '.' && b[1] == '\0') ? '\0' : lower(b[0]);
-    if (ca != cb)
-      return 0;
-    if (ca == '\0')
-      return 1;
-  }
-}
 
 static uint32_t all_mask(const mdns_t *m) {
   return (m->count >= 32) ? 0xFFFFFFFFu : (BIT(m->count) - 1u);
@@ -118,13 +87,13 @@ static uint8_t name_rep(const mdns_t *m, uint8_t i) {
   uint8_t j;
   for (j = 0; j < i; j++) {
     if (!is_shared(&m->records[j]) &&
-        names_equal(m->records[j].name, m->records[i].name))
+        dns_dotted_equal(m->records[j].name, m->records[i].name))
       return j;
   }
   return i;
 }
 
-/* ── Record matching ──────────────────────────────────────────────── */
+/* ── Record matching ── */
 
 static int txt_equals(const char *const *txt, const uint8_t *d, uint16_t n) {
   uint16_t pos = 0;
@@ -178,7 +147,7 @@ static int rr_matches(const mdns_t *m, const mdns_record_t *r,
   }
 }
 
-/* ── Message building ─────────────────────────────────────────────── */
+/* ── Message building ── */
 
 typedef struct {
   uint32_t ip;        /* destination IPv4 */
@@ -208,6 +177,15 @@ static const dest_t mcast_dest = {.ip = MDNS_GROUP, .port = MDNS_PORT};
 static const dest_t mcast6_dest = {.port = MDNS_PORT, .ip6 = mdns_group6};
 #endif
 
+static const dest_t *family_group(uint8_t family) {
+#if NET_USE_IPV6
+  if (family == MDNS_FAMILY_V6)
+    return &mcast6_dest;
+#endif
+  (void)family;
+  return &mcast_dest;
+}
+
 static int pkt_begin(mdns_t *m, pkt_t *p, const dest_t *d, uint16_t id,
                      uint16_t flags) {
   uint16_t off = UDP_PAYLOAD_OFFSET;
@@ -217,9 +195,8 @@ static int pkt_begin(mdns_t *m, pkt_t *p, const dest_t *d, uint16_t id,
 #else
   (void)d;
 #endif
-  uint16_t cap = (m->net->tx.capacity > off)
-                     ? (uint16_t)(m->net->tx.capacity - off)
-                     : 0;
+  uint16_t cap =
+      (m->net->tx.capacity > off) ? (uint16_t)(m->net->tx.capacity - off) : 0;
   dns_writer_init(&p->w, m->net->tx.buf + off, cap);
   p->qd = p->an = p->ns = p->ar = 0;
   return dns_write_header(&p->w, id, flags, 0, 0, 0, 0);
@@ -349,7 +326,7 @@ static int write_nsec(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
   memset(bitmap, 0, sizeof(bitmap));
   for (j = 0; j < m->count; j++) {
     const mdns_record_t *o = &m->records[j];
-    if (is_shared(o) || o->type >= 64 || !names_equal(o->name, r->name))
+    if (is_shared(o) || o->type >= 64 || !dns_dotted_equal(o->name, r->name))
       continue;
     bitmap[o->type >> 3] |= (uint8_t)(0x80u >> (o->type & 7));
     if ((uint8_t)((o->type >> 3) + 1) > used)
@@ -372,7 +349,7 @@ fail:
   return -1;
 }
 
-/* ── Responses (announcements, answers, goodbyes) ─────────────────── */
+/* ── Responses (announcements, answers, goodbyes) ── */
 
 static uint32_t rr_ttl(const resp_opts_t *o, uint32_t ttl) {
   if (o->goodbye)
@@ -447,7 +424,8 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
     if (!(meta & BIT(i)))
       continue;
     for (j = 0; j < i; j++) {
-      if ((meta & BIT(j)) && names_equal(m->records[j].name, m->records[i].name))
+      if ((meta & BIT(j)) &&
+          dns_dotted_equal(m->records[j].name, m->records[i].name))
         break;
     }
     if (j < i)
@@ -485,7 +463,7 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
     for (j = 0; j < m->count; j++) {
       const mdns_record_t *s = &m->records[j];
       if ((s->type == DNS_TYPE_SRV || s->type == DNS_TYPE_TXT) &&
-          names_equal(s->name, r->rdata.ptr))
+          dns_dotted_equal(s->name, r->rdata.ptr))
         add |= BIT(j);
     }
   }
@@ -501,7 +479,7 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
            || s->type == DNS_TYPE_AAAA
 #endif
            ) &&
-          names_equal(s->name, r->rdata.srv.target))
+          dns_dotted_equal(s->name, r->rdata.srv.target))
         add |= BIT(j);
     }
   }
@@ -516,7 +494,7 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
     for (j = 0; j < m->count; j++) {
       const mdns_record_t *s = &m->records[j];
       if ((s->type == DNS_TYPE_A || s->type == DNS_TYPE_AAAA) &&
-          s->type != r->type && names_equal(s->name, r->name))
+          s->type != r->type && dns_dotted_equal(s->name, r->name))
         add |= BIT(j);
     }
   }
@@ -524,26 +502,28 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
   return add & ~answers;
 }
 
-static void announce(mdns_t *m, int goodbye) {
+/* Send a multicast response to the groups of @p families */
+static void send_to_groups(mdns_t *m, uint8_t families, uint32_t answers,
+                           uint32_t service_types, uint32_t nsec,
+                           uint8_t goodbye) {
+  uint8_t family;
   resp_opts_t o;
   memset(&o, 0, sizeof(o));
-  o.goodbye = (uint8_t)goodbye;
-#if NET_USE_IPV6
-  if (m->ann_fam & FAM_V4) {
-    o.dest = &mcast_dest;
-    send_response(m, all_mask(m), 0, 0, 0, &o);
+  o.goodbye = goodbye;
+  for (family = MDNS_FAMILY_V4; family & ALL_FAMILIES; family <<= 1) {
+    if (!(families & family))
+      continue;
+    o.dest = family_group(family);
+    send_response(m, answers, service_types, nsec, additionals_for(m, answers),
+                  &o);
   }
-  if (m->ann_fam & FAM_V6) {
-    o.dest = &mcast6_dest;
-    send_response(m, all_mask(m), 0, 0, 0, &o);
-  }
-#else
-  o.dest = &mcast_dest;
-  send_response(m, all_mask(m), 0, 0, 0, &o);
-#endif
 }
 
-/* ── Probing (RFC 6762 §8.1) ──────────────────────────────────────── */
+static void announce(mdns_t *m, int goodbye) {
+  send_to_groups(m, m->announce_families, all_mask(m), 0, 0, (uint8_t)goodbye);
+}
+
+/* ── Probing (RFC 6762 §8.1) ── */
 
 /* One probe for the unique names whose representative bits are in
  * @p names: an ANY/QU question per name, their records in Authority. */
@@ -603,24 +583,17 @@ static void send_probes_to(mdns_t *m, const dest_t *d) {
 
 /* RFC 6762 §8.1: probe on every family the host answers on */
 static void send_probes(mdns_t *m) {
-  send_probes_to(m, &mcast_dest);
-#if NET_USE_IPV6
-  send_probes_to(m, &mcast6_dest);
-#endif
+  uint8_t family;
+  for (family = MDNS_FAMILY_V4; family & ALL_FAMILIES; family <<= 1)
+    send_probes_to(m, family_group(family));
 }
 
-/* ── State machine ────────────────────────────────────────────────── */
+/* ── State machine ── */
 
 static void enter_conflict(mdns_t *m, uint8_t index) {
   m->state = MDNS_STATE_CONFLICT;
   m->timer_ms = 0;
-  m->resp_timer_ms = 0;
-  m->resp_answers = 0;
-  m->resp_meta = 0;
-  m->resp_nsec = 0;
-#if NET_USE_IPV6
-  m->resp_fam = 0;
-#endif
+  memset(&m->pending, 0, sizeof(m->pending));
   if (m->on_conflict) /* REQ-MDNS-019, 020: may rename and mdns_start() */
     m->on_conflict(m, index, m->ctx);
 }
@@ -647,34 +620,28 @@ static void timer_fired(mdns_t *m) {
   }
 }
 
-static void flush_delayed(mdns_t *m) {
-  resp_opts_t o;
-  uint32_t answers = m->resp_answers;
-  uint32_t meta = m->resp_meta;
-  uint32_t nsec = m->resp_nsec;
-  m->resp_timer_ms = 0;
-  m->resp_answers = 0;
-  m->resp_meta = 0;
-  m->resp_nsec = 0;
-  memset(&o, 0, sizeof(o));
-#if NET_USE_IPV6
-  uint8_t fam = m->resp_fam;
-  m->resp_fam = 0;
-  if (fam & FAM_V4) {
-    o.dest = &mcast_dest;
-    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
-  }
-  if (fam & FAM_V6) {
-    o.dest = &mcast6_dest;
-    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
-  }
-#else
-  o.dest = &mcast_dest;
-  send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
-#endif
+static void send_pending(mdns_t *m) {
+  mdns_pending_t owed = m->pending;
+  memset(&m->pending, 0, sizeof(m->pending));
+  send_to_groups(m, owed.families, owed.answers, owed.service_types, owed.nsec,
+                 0);
 }
 
-/* ── Conflict detection (RFC 6762 §8.1, §9) ───────────────────────── */
+/* Shared records: aggregated and delayed 20-120 ms (RFC 6762 §6) */
+static void owe_response(mdns_t *m, uint8_t family, uint32_t answers,
+                         uint32_t service_types, uint32_t nsec) {
+  mdns_pending_t *p = &m->pending;
+  p->families |= family;
+  p->answers |= answers;
+  p->service_types |= service_types;
+  p->nsec |= nsec;
+  if (!p->timer_ms)
+    p->timer_ms = MDNS_RESP_DELAY_MIN_MS +
+                  net_random_below(m->net, MDNS_RESP_DELAY_MAX_MS -
+                                               MDNS_RESP_DELAY_MIN_MS + 1);
+}
+
+/* ── Conflict detection (RFC 6762 §8.1, §9) ── */
 
 static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
   uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT);
@@ -727,8 +694,6 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
   }
 }
 
-/* ── Public API ───────────────────────────────────────────────────── */
-
 net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx) {
   uint8_t i;
@@ -773,11 +738,6 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
   m->on_conflict = on_conflict;
   m->ctx = ctx;
   m->state = MDNS_STATE_STOPPED;
-  m->rng = 0x6D646E73u ^ ((uint32_t)net->mac[2] << 24) ^
-           ((uint32_t)net->mac[3] << 16) ^ ((uint32_t)net->mac[4] << 8) ^
-           net->mac[5] ^ net->ipv4_addr;
-  if (m->rng == 0)
-    m->rng = 1;
   return NET_OK;
 }
 
@@ -785,190 +745,199 @@ void mdns_start(mdns_t *m) {
   igmp_join(m->net, MDNS_GROUP); /* REQ-MDNS-002 */
 #if NET_USE_IPV6
   ipv6_mcast_join(m->net, mdns_group6); /* RFC 6762 §20, reported by MLD */
-  m->ann_fam = FAM_V4 | FAM_V6;
-  m->resp_fam = 0;
 #endif
+  m->announce_families = ALL_FAMILIES;
+  memset(&m->pending, 0, sizeof(m->pending));
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
-  m->timer_ms = rnd_below(m, MDNS_PROBE_WAIT_MS + 1); /* REQ-MDNS-017 */
-  m->resp_timer_ms = 0;
-  m->resp_answers = 0;
-  m->resp_meta = 0;
-  m->resp_nsec = 0;
+  m->timer_ms = net_random_below(m->net, MDNS_PROBE_WAIT_MS + 1); /* -017 */
+}
+
+static int silent(const mdns_t *m) {
+  return m->state == MDNS_STATE_STOPPED || m->state == MDNS_STATE_CONFLICT;
 }
 
 void mdns_tick(mdns_t *m, uint32_t elapsed_ms) {
-  if (m->state == MDNS_STATE_STOPPED || m->state == MDNS_STATE_CONFLICT)
+  if (silent(m))
     return;
-  if (m->resp_timer_ms) {
-    if (m->resp_timer_ms <= elapsed_ms)
-      flush_delayed(m);
-    else
-      m->resp_timer_ms -= elapsed_ms;
+  if (m->pending.timer_ms && net_countdown(&m->pending.timer_ms, elapsed_ms))
+    send_pending(m);
+  if ((m->state == MDNS_STATE_PROBING || m->state == MDNS_STATE_ANNOUNCING) &&
+      net_countdown(&m->timer_ms, elapsed_ms))
+    timer_fired(m);
+}
+
+/* What a query asks of us; record sets as bitmasks */
+typedef struct {
+  uint32_t answers;
+  uint32_t service_types; /* answers to the DNS-SD meta-query */
+  uint32_t nsec;          /* our unique names, asked for a type they lack */
+  const char *qname;      /* the first question we answer, for legacy */
+  uint16_t qtype;
+  uint8_t all_unicast; /* every question had the QU bit */
+} wanted_t;
+
+static uint8_t from_family(const dest_t *from) {
+#if NET_USE_IPV6
+  if (from->ip6)
+    return MDNS_FAMILY_V6;
+#endif
+  (void)from;
+  return MDNS_FAMILY_V4;
+}
+
+static int is_in_class(uint16_t class_) {
+  uint16_t c = class_ & DNS_CLASS_MASK;
+  return c == DNS_CLASS_IN || c == DNS_CLASS_ANY;
+}
+
+/* One question: our records it asks for, into @p w */
+static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
+                           const dns_question_t *q, wanted_t *w) {
+  uint32_t hit = 0, types = 0, nsec = 0;
+  uint8_t i;
+  for (i = 0; i < m->count; i++) {
+    const mdns_record_t *r = &m->records[i];
+    if ((q->type == DNS_TYPE_ANY || q->type == r->type) &&
+        dns_name_equals(msg, len, q->name_off, r->name))
+      hit |= BIT(i);
   }
-  if (m->state == MDNS_STATE_PROBING || m->state == MDNS_STATE_ANNOUNCING) {
-    if (m->timer_ms <= elapsed_ms) {
-      m->timer_ms = 0;
-      timer_fired(m);
-    } else {
-      m->timer_ms -= elapsed_ms;
+  if ((q->type == DNS_TYPE_PTR || q->type == DNS_TYPE_ANY) &&
+      dns_name_equals(msg, len, q->name_off, MDNS_META_QUERY)) {
+    for (i = 0; i < m->count; i++) {
+      if (is_service_type(&m->records[i]))
+        types |= BIT(i);
+    }
+  }
+  if (!(hit | types) && q->type != DNS_TYPE_ANY) {
+    /* One of our unique names, a type it doesn't have (RFC 6762 §6.1) */
+    for (i = 0; i < m->count && !nsec; i++) {
+      const mdns_record_t *r = &m->records[i];
+      if (!is_shared(r) && dns_name_equals(msg, len, q->name_off, r->name))
+        nsec = BIT(name_rep(m, i));
+    }
+  }
+  if (!(hit | types | nsec))
+    return;
+  w->answers |= hit;
+  w->service_types |= types;
+  w->nsec |= nsec;
+  if (!(q->class_ & DNS_CLASS_TOPBIT))
+    w->all_unicast = 0;
+  if (!w->qname) {
+    w->qtype = q->type;
+    w->qname = MDNS_META_QUERY;
+    for (i = 0; i < m->count; i++) {
+      if ((hit | nsec) & BIT(i)) {
+        w->qname = m->records[i].name;
+        break;
+      }
     }
   }
 }
 
-/* A message from @p from (its address, MAC and port; IPv6 if from->ip6). */
-static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
-                  uint16_t len) {
-  uint32_t answers = 0, meta = 0, nsec = 0;
-  const char *qname = NULL;
-  uint16_t qtype = 0, qd, an, k;
-  int all_qu = 1, off = DNS_HDR_SIZE;
-  uint8_t i;
-  dns_question_t q;
+/* REQ-MDNS-029, RFC 6762 §7.1: drop what the querier already knows, from
+ * the answer section at @p off */
+static void suppress_known_answers(const mdns_t *m, const uint8_t *msg,
+                                   uint16_t len, int off, wanted_t *w) {
+  uint16_t an = net_read16be(msg + DNS_OFF_ANCOUNT), k;
   dns_rr_t rr;
-
-  if (m->state == MDNS_STATE_STOPPED || m->state == MDNS_STATE_CONFLICT)
-    return;
-  if (len < DNS_HDR_SIZE)
-    return;
-  uint16_t flags = net_read16be(msg + DNS_OFF_FLAGS);
-  if (flags & DNS_FLAG_QR) {
-    check_conflicts(m, msg, len);
-    return;
-  }
-  if ((flags & DNS_OPCODE_MASK) != 0 || m->state == MDNS_STATE_PROBING)
-    return; /* never answer for names still being probed */
-
-  /* ── Questions ── */
-  qd = net_read16be(msg + DNS_OFF_QDCOUNT);
-  an = net_read16be(msg + DNS_OFF_ANCOUNT);
-  for (k = 0; k < qd; k++) {
-    uint32_t hit = 0, mhit = 0, nhit = 0;
-    off = dns_read_question(msg, len, (uint16_t)off, &q);
-    if (off < 0)
-      return; /* REQ-MDNS-041: malformed → ignore */
-    uint16_t qclass = q.class_ & DNS_CLASS_MASK;
-    if (qclass != DNS_CLASS_IN && qclass != DNS_CLASS_ANY)
-      continue;
-    for (i = 0; i < m->count; i++) {
-      const mdns_record_t *r = &m->records[i];
-      if ((q.type == DNS_TYPE_ANY || q.type == r->type) &&
-          dns_name_equals(msg, len, q.name_off, r->name))
-        hit |= BIT(i);
-    }
-    if ((q.type == DNS_TYPE_PTR || q.type == DNS_TYPE_ANY) &&
-        dns_name_equals(msg, len, q.name_off, MDNS_META_QUERY)) {
-      for (i = 0; i < m->count; i++) {
-        if (is_service_type(&m->records[i]))
-          mhit |= BIT(i);
-      }
-    }
-    if (!(hit | mhit) && q.type != DNS_TYPE_ANY) {
-      /* One of our unique names, a type it doesn't have (RFC 6762 §6.1) */
-      for (i = 0; i < m->count; i++) {
-        const mdns_record_t *r = &m->records[i];
-        if (!is_shared(r) && dns_name_equals(msg, len, q.name_off, r->name)) {
-          nhit = BIT(name_rep(m, i));
-          break;
-        }
-      }
-    }
-    if (!(hit | mhit | nhit))
-      continue;
-    answers |= hit;
-    meta |= mhit;
-    nsec |= nhit;
-    if (!(q.class_ & DNS_CLASS_TOPBIT))
-      all_qu = 0;
-    if (!qname) {
-      qtype = q.type;
-      qname = MDNS_META_QUERY;
-      for (i = 0; i < m->count; i++) {
-        if ((hit | nhit) & BIT(i)) {
-          qname = m->records[i].name;
-          break;
-        }
-      }
-    }
-  }
-  if (!(answers | meta | nsec))
-    return;
-
-  /* ── Known-answer suppression (REQ-MDNS-029, RFC 6762 §7.1) ── */
+  uint8_t i;
   for (k = 0; k < an; k++) {
-    off = dns_read_rr(msg, len, (uint16_t)off, &rr);
-    if (off < 0)
-      break;
+    if ((off = dns_read_rr(msg, len, (uint16_t)off, &rr)) < 0)
+      return;
     if ((rr.class_ & DNS_CLASS_MASK) != DNS_CLASS_IN)
       continue;
     for (i = 0; i < m->count; i++) {
       const mdns_record_t *r = &m->records[i];
-      if ((answers & BIT(i)) && rr.ttl >= r->ttl / 2 &&
+      if ((w->answers & BIT(i)) && rr.ttl >= r->ttl / 2 &&
           rr_matches(m, r, msg, len, &rr))
-        answers &= ~BIT(i);
+        w->answers &= ~BIT(i);
     }
-    if (meta && rr.type == DNS_TYPE_PTR && rr.ttl >= MDNS_TTL_OTHER / 2 &&
+    if (w->service_types && rr.type == DNS_TYPE_PTR &&
+        rr.ttl >= MDNS_TTL_OTHER / 2 &&
         dns_name_equals(msg, len, rr.name_off, MDNS_META_QUERY)) {
       for (i = 0; i < m->count; i++) {
-        if ((meta & BIT(i)) &&
+        if ((w->service_types & BIT(i)) &&
             dns_name_equals(msg, len, rr.rdata_off, m->records[i].name))
-          meta &= ~BIT(i);
+          w->service_types &= ~BIT(i);
       }
     }
   }
-  if (!(answers | meta | nsec))
-    return;
+}
 
-  resp_opts_t o;
-  const dest_t *group = &mcast_dest;
-  int has_addr = from->ip != 0;
-  memset(&o, 0, sizeof(o));
+static int wants_anything(const wanted_t *w) {
+  return (w->answers | w->service_types | w->nsec) != 0;
+}
+
+static int has_address(const dest_t *from) {
 #if NET_USE_IPV6
-  if (from->ip6) {
-    group = &mcast6_dest;
-    has_addr = !ipv6_is_unspecified(from->ip6);
-  }
+  if (from->ip6)
+    return !ipv6_is_unspecified(from->ip6);
 #endif
+  return from->ip != 0;
+}
+
+/* RFC 6762 §6, §6.7: legacy unicast, unicast (QU), at once, or delayed */
+static void answer(mdns_t *m, const dest_t *from, uint16_t id,
+                   const wanted_t *w) {
+  resp_opts_t o;
+  memset(&o, 0, sizeof(o));
+  o.dest = family_group(from_family(from));
 
   if (from->port != MDNS_PORT) {
-    /* Legacy unicast (RFC 6762 §6.7): reply to the querier's port with its
-     * ID and question, TTL <= 10 s, no cache-flush bits.  A querier with no
-     * address cannot be answered this way. */
-    if (!has_addr)
+    /* Legacy: to the querier's port with its ID and question, TTL <= 10 s,
+     * no cache-flush bits */
+    if (!has_address(from))
       return;
     o.dest = from;
-    o.id = net_read16be(msg + DNS_OFF_ID);
+    o.id = id;
     o.legacy = 1;
-    o.qname = qname;
-    o.qtype = qtype;
-    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
+    o.qname = w->qname;
+    o.qtype = w->qtype;
+  } else if (w->all_unicast && has_address(from)) {
+    o.dest = from; /* REQ-MDNS-028 */
+  } else if (w->service_types || (w->answers & shared_mask(m))) {
+    owe_response(m, from_family(from), w->answers, w->service_types, w->nsec);
     return;
   }
-  if (all_qu && has_addr) {
-    /* REQ-MDNS-028: every question asked for a unicast response (a querier
-     * still at 0.0.0.0 gets the multicast answer instead) */
-    o.dest = from;
-    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
-    return;
+  send_response(m, w->answers, w->service_types, w->nsec,
+                additionals_for(m, w->answers), &o);
+}
+
+/* A query: answered unless malformed (REQ-MDNS-041) or while probing */
+static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
+                        uint16_t len) {
+  uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT), k;
+  int off = DNS_HDR_SIZE;
+  dns_question_t q;
+  wanted_t w;
+
+  memset(&w, 0, sizeof(w));
+  w.all_unicast = 1;
+  for (k = 0; k < qd; k++) {
+    if ((off = dns_read_question(msg, len, (uint16_t)off, &q)) < 0)
+      return;
+    if (is_in_class(q.class_))
+      match_question(m, msg, len, &q, &w);
   }
-  if (!meta && !(answers & shared_mask(m))) {
-    /* Unique records only: answer immediately (RFC 6762 §6), on the
-     * family the query came on */
-    o.dest = group;
-    send_response(m, answers, meta, nsec, additionals_for(m, answers), &o);
+  if (!wants_anything(&w))
     return;
-  }
-  /* Shared records: aggregate and delay 20-120 ms (RFC 6762 §6) */
-#if NET_USE_IPV6
-  m->resp_fam |= from->ip6 ? FAM_V6 : FAM_V4;
-#endif
-  m->resp_answers |= answers;
-  m->resp_meta |= meta;
-  m->resp_nsec |= nsec;
-  if (!m->resp_timer_ms)
-    m->resp_timer_ms =
-        MDNS_RESP_DELAY_MIN_MS +
-        rnd_below(m, MDNS_RESP_DELAY_MAX_MS - MDNS_RESP_DELAY_MIN_MS + 1);
+  suppress_known_answers(m, msg, len, off, &w);
+  if (wants_anything(&w))
+    answer(m, from, net_read16be(msg + DNS_OFF_ID), &w);
+}
+
+static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
+                  uint16_t len) {
+  uint16_t flags;
+  if (silent(m) || len < DNS_HDR_SIZE)
+    return;
+  flags = net_read16be(msg + DNS_OFF_FLAGS);
+  if (flags & DNS_FLAG_QR)
+    check_conflicts(m, msg, len);
+  else if ((flags & DNS_OPCODE_MASK) == 0 && m->state != MDNS_STATE_PROBING)
+    query_input(m, from, msg, len);
 }
 
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
@@ -996,16 +965,14 @@ void mdns_readdress6(mdns_t *m) {
   if (m->state == MDNS_STATE_ANNOUNCING) {
     /* Announce again from the start, IPv6 included, without cutting the
      * sequence other families are in */
-    m->ann_fam |= FAM_V6;
+    m->announce_families |= MDNS_FAMILY_V6;
     m->step = 0;
-    return;
+  } else if (m->state == MDNS_STATE_RUNNING) {
+    m->state = MDNS_STATE_ANNOUNCING;
+    m->step = 0;
+    m->timer_ms = 0;
+    m->announce_families = MDNS_FAMILY_V6;
   }
-  if (m->state != MDNS_STATE_RUNNING)
-    return;
-  m->state = MDNS_STATE_ANNOUNCING;
-  m->step = 0;
-  m->timer_ms = 0;
-  m->ann_fam = FAM_V6;
 }
 #endif
 
@@ -1013,20 +980,14 @@ void mdns_stop(mdns_t *m) {
   if (m->state == MDNS_STATE_STOPPED)
     return;
   /* REQ-MDNS-032, 033, REQ-DNSSD-018: withdraw what was announced */
-#if NET_USE_IPV6
-  m->ann_fam = FAM_V4 | FAM_V6;
-#endif
+  m->announce_families = ALL_FAMILIES;
   if (m->state == MDNS_STATE_ANNOUNCING || m->state == MDNS_STATE_RUNNING)
     announce(m, 1);
   igmp_leave(m->net, MDNS_GROUP);
 #if NET_USE_IPV6
   ipv6_mcast_leave(m->net, mdns_group6);
-  m->resp_fam = 0;
 #endif
   m->state = MDNS_STATE_STOPPED;
   m->timer_ms = 0;
-  m->resp_timer_ms = 0;
-  m->resp_answers = 0;
-  m->resp_meta = 0;
-  m->resp_nsec = 0;
+  memset(&m->pending, 0, sizeof(m->pending));
 }

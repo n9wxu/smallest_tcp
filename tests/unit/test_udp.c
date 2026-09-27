@@ -13,6 +13,13 @@
 #include "udp.h"
 #include <string.h>
 
+/* The UDP checksum as sent: a computed 0 goes out as 0xFFFF */
+static uint16_t udp_cksum(uint32_t src, uint32_t dst, const uint8_t *udp,
+                          uint16_t len) {
+  uint16_t c = ipv4_cksum(src, dst, IPV4_PROTO_UDP, udp, len);
+  return c ? c : 0xFFFF;
+}
+
 /* ── Stub MAC driver ──────────────────────────────────────────────── */
 
 static uint8_t sent_frame[1514];
@@ -72,16 +79,16 @@ static uint16_t handler_data_len;
 static uint8_t handler_data[256];
 
 static void echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                         const uint8_t *src_mac, uint16_t payload_offset,
+                         const uint8_t *src_mac, const uint8_t *payload,
                          uint16_t payload_len) {
+  (void)n;
   (void)src_mac;
   handler_called = 1;
   handler_src_ip = src_ip;
   handler_src_port = src_port;
   handler_data_len = payload_len;
   if (payload_len > 0 && payload_len <= sizeof(handler_data)) {
-    /* Use peek-based interface to read payload from the MAC frame */
-    n->mac_driver->peek(n->mac_ctx, payload_offset, handler_data, payload_len);
+    memcpy(handler_data, payload, payload_len);
   }
 }
 
@@ -102,8 +109,7 @@ static void setup(void) {
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
            &stub_mac_drv, &ctx);
   /* Register port handlers */
-  udp_ports.entries = port_entries;
-  udp_ports.count = 1;
+  udp_set_ports(&net, port_entries, 1);
 }
 
 /* Build Ethernet + IPv4 + UDP frame */
@@ -134,7 +140,7 @@ static uint16_t build_udp_frame(uint8_t *frame, uint32_t src_ip,
     memcpy(udp + UDP_HDR_SIZE, data, data_len);
   }
   /* Compute UDP checksum */
-  uint16_t ck = udp_checksum(src_ip, NET_DEFAULT_IPV4_ADDR, udp, udp_len);
+  uint16_t ck = udp_cksum(src_ip, NET_DEFAULT_IPV4_ADDR, udp, udp_len);
   net_write16be(udp + UDP_OFF_CKSUM, ck);
 
   return ETH_HDR_SIZE + IPV4_HDR_SIZE + udp_len;
@@ -289,13 +295,13 @@ TEST(test_udp_checksum_computation) {
   udp_pkt[11] = 0xEF;
 
   uint16_t ck =
-      udp_checksum(NET_IPV4(10, 0, 0, 2), NET_IPV4(10, 0, 0, 1), udp_pkt, 12);
+      udp_cksum(NET_IPV4(10, 0, 0, 2), NET_IPV4(10, 0, 0, 1), udp_pkt, 12);
   ASSERT_NE(ck, 0); /* Should produce a non-zero checksum */
 
   /* Verify: set the checksum and re-verify */
   net_write16be(udp_pkt + UDP_OFF_CKSUM, ck);
   uint16_t verify =
-      udp_checksum(NET_IPV4(10, 0, 0, 2), NET_IPV4(10, 0, 0, 1), udp_pkt, 12);
+      udp_cksum(NET_IPV4(10, 0, 0, 2), NET_IPV4(10, 0, 0, 1), udp_pkt, 12);
   /* After setting correct checksum, re-computing should give 0xFFFF (valid) */
   ASSERT_TRUE(verify == 0xFFFF || verify == 0x0000);
 }

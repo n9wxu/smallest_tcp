@@ -12,161 +12,111 @@ option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${PROJECT_IS_TOP_
 option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_BUILD_DRIVERS "Build platform MAC drivers" ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_IPV6          "Dual stack: IPv6 + ICMPv6 + NDP in the core" ON)
+option(SMALLEST_TCP_UDP           "UDP in the core, and the applications over it" ON)
+option(SMALLEST_TCP_TCP           "TCP in the core, and the applications over it" ON)
 option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${PROJECT_IS_TOP_LEVEL})
+option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds)" OFF)
+set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
+    "Application configuration header, included first by net_config.h")
 
-# ── Core library (always built) ───────────────────────────────────────
+# ── Libraries ─────────────────────────────────────────────────────────
 #
-# This is the target consumers get via FetchContent:
+# smallest_tcp_<name>, also smallest_tcp::<name>.  Consumers get the core
+# via FetchContent:
 #   target_link_libraries(my_app PRIVATE smallest_tcp::smallest_tcp)
 
-add_library(smallest_tcp_core STATIC
+set(SMALLEST_TCP_WARNINGS -Wall -Wextra -Werror -pedantic)
+
+function(smallest_tcp_library name)
+    cmake_parse_arguments(LIB "" "" "SOURCES;LINKS" ${ARGN})
+    add_library(smallest_tcp_${name} STATIC ${LIB_SOURCES})
+    target_include_directories(smallest_tcp_${name} PUBLIC
+        $<BUILD_INTERFACE:${smallest_tcp_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
+    target_compile_features(smallest_tcp_${name} PUBLIC c_std_99)
+    target_link_libraries(smallest_tcp_${name} PUBLIC ${LIB_LINKS})
+    if(PROJECT_IS_TOP_LEVEL)
+        target_compile_options(smallest_tcp_${name} PRIVATE ${SMALLEST_TCP_WARNINGS})
+    endif()
+    add_library(smallest_tcp::${name} ALIAS smallest_tcp_${name})
+endfunction()
+
+# ── Core ──────────────────────────────────────────────────────────────
+
+smallest_tcp_library(core SOURCES
     src/net.c
     src/net_cksum.c
+    src/net_text.c
     src/eth.c
     src/arp.c
     src/ipv4.c
     src/icmp.c
-    src/udp.c
-    src/tcp.c
-    src/tcp_buf_saw.c
 )
-
-target_include_directories(smallest_tcp_core
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-
-target_compile_features(smallest_tcp_core PUBLIC c_std_99)
-
-# Strict warnings when building this project directly
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_core PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
-endif()
-
-# IPv6 changes the layout of net_t, so the define is PUBLIC: everything
-# linked against the core is compiled the same way.
-if(SMALLEST_TCP_IPV6)
-    target_sources(smallest_tcp_core PRIVATE
-        src/ipv6.c
-        src/icmpv6.c
-        src/ndp.c
-        src/mld.c
-    )
-    target_compile_definitions(smallest_tcp_core PUBLIC NET_USE_IPV6=1)
-endif()
-
-# Create a namespaced alias for FetchContent consumers
 add_library(smallest_tcp::smallest_tcp ALIAS smallest_tcp_core)
 
-# ── DHCPv4 client (optional — link only what you need) ───────────────
-
-add_library(smallest_tcp_dhcpv4_client STATIC
-    src/dhcpv4_client.c
-)
-target_link_libraries(smallest_tcp_dhcpv4_client PUBLIC smallest_tcp_core)
-target_compile_features(smallest_tcp_dhcpv4_client PUBLIC c_std_99)
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_dhcpv4_client PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
+# The configuration changes the layout of net_t, so it is PUBLIC:
+# everything linked against the core is compiled the same way.  The
+# protocol options set NET_USE_*; a configuration file that sets one too
+# is a redefinition error rather than a silent mismatch.
+if(SMALLEST_TCP_CONFIG_FILE)
+    target_compile_definitions(smallest_tcp_core PUBLIC
+        NET_CONFIG_FILE="${SMALLEST_TCP_CONFIG_FILE}")
 endif()
-add_library(smallest_tcp::dhcpv4_client ALIAS smallest_tcp_dhcpv4_client)
-
-# ── TFTP client (optional — link only what you need) ─────────────────
-
-add_library(smallest_tcp_tftp STATIC
-    src/tftp.c
-)
-target_link_libraries(smallest_tcp_tftp PUBLIC smallest_tcp_core)
-target_compile_features(smallest_tcp_tftp PUBLIC c_std_99)
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_tftp PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
+if(SMALLEST_TCP_DEBUG)
+    target_compile_definitions(smallest_tcp_core PUBLIC NET_DEBUG=1)
 endif()
-add_library(smallest_tcp::tftp ALIAS smallest_tcp_tftp)
-
-# ── mDNS + DNS-SD responder (optional) ───────────────────────────────
-
-add_library(smallest_tcp_mdns STATIC
-    src/dns_wire.c
-    src/igmp.c
-    src/mdns.c
-)
-target_link_libraries(smallest_tcp_mdns PUBLIC smallest_tcp_core)
-target_compile_features(smallest_tcp_mdns PUBLIC c_std_99)
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_mdns PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
-endif()
-add_library(smallest_tcp::mdns ALIAS smallest_tcp_mdns)
-
-# ── HTTP/1.0 server (optional) ───────────────────────────────────────
-
-add_library(smallest_tcp_http STATIC
-    src/http.c
-)
-target_link_libraries(smallest_tcp_http PUBLIC smallest_tcp_core)
-target_compile_features(smallest_tcp_http PUBLIC c_std_99)
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_http PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
-endif()
-add_library(smallest_tcp::http ALIAS smallest_tcp_http)
-
-# ── DHCPv4 server (optional) ─────────────────────────────────────────
-
-add_library(smallest_tcp_dhcpv4_server STATIC
-    src/dhcpv4_server.c
-)
-target_link_libraries(smallest_tcp_dhcpv4_server PUBLIC smallest_tcp_core)
-target_compile_features(smallest_tcp_dhcpv4_server PUBLIC c_std_99)
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_dhcpv4_server PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
-endif()
-add_library(smallest_tcp::dhcpv4_server ALIAS smallest_tcp_dhcpv4_server)
-
-# ── DHCPv6 client (optional, dual stack only) ────────────────────────
-
 if(SMALLEST_TCP_IPV6)
-    add_library(smallest_tcp_dhcpv6_client STATIC
-        src/dhcpv6_client.c
-    )
-    target_link_libraries(smallest_tcp_dhcpv6_client PUBLIC smallest_tcp_core)
-    target_compile_features(smallest_tcp_dhcpv6_client PUBLIC c_std_99)
-    if(PROJECT_IS_TOP_LEVEL)
-        target_compile_options(smallest_tcp_dhcpv6_client PRIVATE
-            -Wall -Wextra -Werror -pedantic
-        )
+    target_sources(smallest_tcp_core PRIVATE
+        src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c)
+endif()
+if(SMALLEST_TCP_UDP)
+    target_sources(smallest_tcp_core PRIVATE src/udp.c)
+endif()
+if(SMALLEST_TCP_TCP)
+    target_sources(smallest_tcp_core PRIVATE src/tcp.c src/tcp_buf_saw.c)
+endif()
+target_compile_definitions(smallest_tcp_core PUBLIC
+    NET_USE_IPV6=$<BOOL:${SMALLEST_TCP_IPV6}>
+    NET_USE_UDP=$<BOOL:${SMALLEST_TCP_UDP}>
+    NET_USE_TCP=$<BOOL:${SMALLEST_TCP_TCP}>)
+
+# ── Applications over UDP ─────────────────────────────────────────────
+
+if(SMALLEST_TCP_UDP)
+    smallest_tcp_library(dhcpv4_client SOURCES src/dhcpv4_client.c LINKS smallest_tcp_core)
+    smallest_tcp_library(dhcpv4_server SOURCES src/dhcpv4_server.c LINKS smallest_tcp_core)
+    smallest_tcp_library(tftp SOURCES src/tftp.c LINKS smallest_tcp_core)
+    smallest_tcp_library(mdns
+        SOURCES src/dns_wire.c src/igmp.c src/mdns.c
+        LINKS smallest_tcp_core)
+    if(SMALLEST_TCP_IPV6)
+        smallest_tcp_library(dhcpv6_client SOURCES src/dhcpv6_client.c LINKS smallest_tcp_core)
     endif()
-    add_library(smallest_tcp::dhcpv6_client ALIAS smallest_tcp_dhcpv6_client)
 endif()
 
-# ── TLS 1.3 protocol (optional) — no dependencies: the application
-#    supplies a crypto backend (tls_crypto_t) ────────────────────────────
+# ── TLS 1.3 ───────────────────────────────────────────────────────────
+#
+# The protocol has no dependencies: the application supplies a crypto
+# backend (tls_crypto_t).
 
-add_library(smallest_tcp_tls STATIC
+smallest_tcp_library(tls SOURCES
     src/tls.c
+    src/tls_keys.c
+    src/tls_server.c
+    src/tls_client.c
 )
-target_include_directories(smallest_tcp_tls PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-)
-target_compile_features(smallest_tcp_tls PUBLIC c_std_99)
-if(PROJECT_IS_TOP_LEVEL)
-    target_compile_options(smallest_tcp_tls PRIVATE
-        -Wall -Wextra -Werror -pedantic
-    )
-endif()
-add_library(smallest_tcp::tls ALIAS smallest_tcp_tls)
 
-# ── TLS crypto backend on Mbed TLS (optional) ────────────────────────
+# ── Applications over TCP ─────────────────────────────────────────────
+
+if(SMALLEST_TCP_TCP)
+    smallest_tcp_library(http SOURCES src/http.c LINKS smallest_tcp_core)
+    smallest_tcp_library(tls_tcp SOURCES src/tls_tcp.c
+        LINKS smallest_tcp_tls smallest_tcp_core)
+    smallest_tcp_library(https SOURCES src/http_tls.c
+        LINKS smallest_tcp_http smallest_tcp_tls_tcp)
+endif()
+
+# ── TLS crypto backend on Mbed TLS ────────────────────────────────────
 #
 # Mbed TLS provides the cryptography only (crypto + X.509); the protocol is
 # smallest_tcp's own.  Pinned to the 3.6 LTS release tarball.
@@ -186,63 +136,28 @@ if(SMALLEST_TCP_TLS)
     )
     FetchContent_MakeAvailable(mbedtls)
 
-    add_library(smallest_tcp_tls_mbedtls STATIC
-        src/tls_crypto_mbedtls.c
-    )
-    target_include_directories(smallest_tcp_tls_mbedtls PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    )
-    target_link_libraries(smallest_tcp_tls_mbedtls PUBLIC mbedx509 mbedcrypto)
-    target_compile_features(smallest_tcp_tls_mbedtls PUBLIC c_std_99)
-    if(PROJECT_IS_TOP_LEVEL)
-        target_compile_options(smallest_tcp_tls_mbedtls PRIVATE
-            -Wall -Wextra -Werror -pedantic
-        )
-    endif()
-    add_library(smallest_tcp::tls_mbedtls ALIAS smallest_tcp_tls_mbedtls)
+    smallest_tcp_library(tls_mbedtls SOURCES src/tls_crypto_mbedtls.c
+        LINKS mbedx509 mbedcrypto)
 endif()
 
-# ── Platform MAC drivers (optional) ──────────────────────────────────
+# ── Platform MAC drivers ──────────────────────────────────────────────
 
 if(SMALLEST_TCP_BUILD_DRIVERS)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        add_library(smallest_tcp_driver_tap STATIC
-            src/driver/tap.c
-        )
-        target_link_libraries(smallest_tcp_driver_tap PUBLIC smallest_tcp_core)
-        if(PROJECT_IS_TOP_LEVEL)
-            target_compile_options(smallest_tcp_driver_tap PRIVATE
-                -Wall -Wextra -Werror -pedantic
-            )
-        endif()
-        add_library(smallest_tcp::driver_tap ALIAS smallest_tcp_driver_tap)
-
-        add_library(smallest_tcp_driver_rawsock STATIC
-            src/driver/rawsock.c
-        )
-        target_link_libraries(smallest_tcp_driver_rawsock PUBLIC smallest_tcp_core)
-        if(PROJECT_IS_TOP_LEVEL)
-            target_compile_options(smallest_tcp_driver_rawsock PRIVATE
-                -Wall -Wextra -Werror -pedantic
-            )
-        endif()
-        add_library(smallest_tcp::driver_rawsock ALIAS smallest_tcp_driver_rawsock)
-
+        smallest_tcp_library(driver_tap SOURCES src/driver/tap.c LINKS smallest_tcp_core)
+        smallest_tcp_library(driver_rawsock SOURCES src/driver/rawsock.c LINKS smallest_tcp_core)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        add_library(smallest_tcp_driver_bpf STATIC
-            src/driver/bpf.c
-        )
-        target_link_libraries(smallest_tcp_driver_bpf PUBLIC smallest_tcp_core)
-        if(PROJECT_IS_TOP_LEVEL)
-            target_compile_options(smallest_tcp_driver_bpf PRIVATE
-                -Wall -Wextra -Werror -pedantic
-            )
-        endif()
-        add_library(smallest_tcp::driver_bpf ALIAS smallest_tcp_driver_bpf)
+        smallest_tcp_library(driver_bpf SOURCES src/driver/bpf.c LINKS smallest_tcp_core)
     endif()
 endif()
 
 # ── Unit tests ────────────────────────────────────────────────────────
+
+# The tests and demos exercise the whole stack.
+if(NOT (SMALLEST_TCP_UDP AND SMALLEST_TCP_TCP))
+    set(SMALLEST_TCP_BUILD_TESTS OFF)
+    set(SMALLEST_TCP_BUILD_DEMO OFF)
+endif()
 
 if(SMALLEST_TCP_BUILD_TESTS)
     enable_testing()

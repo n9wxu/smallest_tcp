@@ -138,7 +138,7 @@ Unit tests are in `tests/unit/test_tls_{crypto,keys,server,client}.c`, blackbox 
 | REQ-TLS-003 | — | not implemented (SHOULD) |
 | REQ-TLS-004 | ✅ | `test_ecdhe_shared_secret`, `test_handshake_ecdsa`; `test_tls_030_groups[X25519]` |
 | REQ-TLS-005 | ✅ | `test_p256_shared_secret`, `test_handshake_p256`, `test_hrr_p256_only_server`, `test_p256_client`; `test_tls_030_groups[P-256]`, `test_tls_c31_hello_retry` |
-| REQ-TLS-006 | ✅ | tls.c contains no cryptography (its Cortex-M0 object references only `mem*`/`strlen`); the fixed-randomness backends in `test_tls_server` show every random value comes through the vtable |
+| REQ-TLS-006 | ✅ | tls.c, tls_keys.c, tls_server.c and tls_client.c contain no cryptography (their Cortex-M0 objects reference only each other, `mem*`/`strlen` and libgcc's switch helpers); the fixed-randomness backends in `test_tls_server` show every random value comes through the vtable |
 | REQ-TLS-007 | ✅ | `tls_config_t.crypto`; `test_init_and_accept_checks` |
 | REQ-TLS-008 | ✅ | no allocator calls in tls.c (same object check) |
 | REQ-TLS-009 | ✅ | all state in `tls_conn_t`; client and server connections run side by side in `test_tls_client` |

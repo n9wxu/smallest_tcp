@@ -1,499 +1,331 @@
 # UDP Design
 
-**Protocol:** User Datagram Protocol  
-**Files:** `include/udp.h`, `src/udp.c`  
-**Primary RFC:** RFC 768  
-**Last updated:** 2026-03-22
+**Protocol:** User Datagram Protocol, over IPv4 and IPv6
+**Files:** `include/udp.h`, `src/udp.c`
+**Primary RFC:** RFC 768; RFC 8200 §8.1 (over IPv6); RFC 1122 §4.1
+**Last updated:** 2026-09-27
 
 ---
 
 ## 1. Overview
 
-UDP provides a connectionless, unreliable datagram service over IPv4.  It is the
-foundation for DHCP, DNS, TFTP, NTP, CoAP, and many other protocols used in
-embedded network applications.
+UDP carries DHCP, TFTP, mDNS and most application protocols on small
+devices.  The implementation:
 
-The implementation follows the same principles as the rest of the stack:
+- **allocates nothing** — datagrams are parsed in `net->rx.buf` and built in
+  `net->tx.buf`;
+- **dispatches by a port table** the application owns (usually `const`, in
+  flash) and binds to the interface with `udp_set_ports()`;
+- **hands each handler a pointer** to the payload inside the received frame;
+- **sends from the transmit buffer**, either copying the payload in
+  (`udp_send()`) or sending one the caller wrote in place
+  (`udp_send_inplace*()`).
 
-- **Zero `malloc()`** — no dynamic allocation anywhere in the UDP layer
-- **Zero-copy RX** — the port handler receives a MAC frame offset and calls
-  `peek()` for only the bytes it needs; no full-frame staging buffer required
-- **Static port table** — the application provides a compile-time or
-  init-time array of `{port, callback}` entries; no dynamic registration
-- **Link only what you need** — `udp.c` is a separate compilation unit;
-  a build that omits UDP (e.g., TCP-only) does not link it
+UDP over IPv4 and over IPv6 share the length checks, the header writer and
+the checksum rule, and have separate port tables and entry points.
 
 ---
 
-## 2. UDP Header Format
+## 2. Header
 
 ```
 Offset  Size  Field
-  0      2    Source Port      (big-endian)
-  2      2    Destination Port (big-endian)
-  4      2    Length           (header + data, big-endian, minimum 8)
-  6      2    Checksum         (pseudo-header + UDP, 0 = not computed)
-  8      …    Payload data
+  0      2    Source port
+  2      2    Destination port
+  4      2    Length (header + data, ≥ 8)
+  6      2    Checksum (0 = none, IPv4 only)
+  8      …    Data
 ```
 
-Header constants in `udp.h`:
-
-```c
-#define UDP_OFF_SPORT  0
-#define UDP_OFF_DPORT  2
-#define UDP_OFF_LEN    4
-#define UDP_OFF_CKSUM  6
-#define UDP_HDR_SIZE   8
-```
-
-All header fields are read and written with `net_read16be()` / `net_write16be()`
-from `net_endian.h`, maintaining strict portability to 8-bit MCUs.
+`udp.h` defines `UDP_OFF_SPORT`, `UDP_OFF_DPORT`, `UDP_OFF_LEN`,
+`UDP_OFF_CKSUM` and `UDP_HDR_SIZE`.  Fields are read and written with
+`net_read16be()` / `net_write16be()`.
 
 ---
 
-## 3. Port Dispatch Table
-
-Port handlers are registered via a flat array owned by the application.
-
-### Proposed interface — peek-based dispatch
-
-The handler receives **source information and a MAC frame offset**, not a data
-pointer.  To read payload bytes, the handler calls
-`net->mac_driver->peek(net->mac_ctx, offset, buf, len)` for only the bytes it
-actually needs:
+## 3. Port tables
 
 ```c
-/**
- * Called when a UDP datagram arrives for a registered port.
- *
- * The handler receives where the datagram came from and WHERE the payload
- * begins within the current MAC frame (payload_offset), plus how long it is.
- * To read bytes, call net->mac_driver->peek(net->mac_ctx, payload_offset, buf, n).
- *
- * The handler MUST NOT call discard() — udp_input() does that after returning.
- * The handler MUST NOT retain the payload_offset past its return; the MAC frame
- * is consumed (discard()'d) immediately after the handler returns.
- */
-typedef void (*udp_handler_t)(net_t    *net,
-                              uint32_t  src_ip,
-                              uint16_t  src_port,
-                              const uint8_t *src_mac,     /* 6 bytes */
-                              uint16_t  payload_offset,   /* byte offset in MAC frame */
-                              uint16_t  payload_len);
+typedef void (*udp_handler_t)(net_t *net, uint32_t src_ip, uint16_t src_port,
+                              const uint8_t *src_mac, const uint8_t *payload,
+                              uint16_t payload_len);
 
-typedef struct {
-    uint16_t       port;     /* local port (host byte order) */
-    udp_handler_t  handler;  /* called on matching inbound datagram */
+typedef struct udp_port_entry_s {
+  uint16_t port;          /* local port, host byte order */
+  udp_handler_t handler;
 } udp_port_entry_t;
 
-typedef struct {
-    const udp_port_entry_t *entries;
-    uint8_t                 count;
-} udp_port_table_t;
-
-extern udp_port_table_t udp_ports;   /* application sets this */
+static inline void udp_set_ports(net_t *net, const udp_port_entry_t *ports,
+                                 uint8_t count);
 ```
 
-### Handler example — selective peek
-
-The handler reads only what it needs into its own application-provided buffer:
+The table pointer and count live in `net_t` (`udp_ports`, `udp_port_count`).
+A port absent from the table is closed.  The table must outlive its binding;
+it can be replaced at any time between `net_poll()` calls.
 
 ```c
-static void echo_handler(net_t *net, uint32_t src_ip, uint16_t src_port,
-                          const uint8_t *src_mac,
-                          uint16_t offset, uint16_t len) {
-    uint8_t buf[64];
-    uint16_t n = (len < sizeof(buf)) ? len : sizeof(buf);
-    net->mac_driver->peek(net->mac_ctx, offset, buf, n);   /* only n bytes */
-    udp_send(net, src_ip, src_mac, 7 /* echo */, src_port, buf, n);
+static void echo(net_t *net, uint32_t src_ip, uint16_t src_port,
+                 const uint8_t *src_mac, const uint8_t *payload,
+                 uint16_t len) {
+  udp_send(net, src_ip, src_mac, 7, src_port, payload, len);
 }
 
-static void dhcp_client_handler(net_t *net, uint32_t src_ip, uint16_t src_port,
-                                 const uint8_t *src_mac,
-                                 uint16_t offset, uint16_t len) {
-    uint8_t scratch[576];
-    uint16_t n = (len < sizeof(scratch)) ? len : sizeof(scratch);
-    net->mac_driver->peek(net->mac_ctx, offset, scratch, n);
-    dhcpv4_client_input(&dhcp_cli, src_ip, scratch, n);
-}
+static const udp_port_entry_t ports[] = {{7, echo}};
+
+udp_set_ports(&net, ports, 1);
 ```
 
-Each handler allocates only as much buffer as it needs.  A handler that only
-needs the first 4 bytes of a TFTP header to dispatch on opcode reads 4 bytes,
-not 512.  On ENC28J60 over SPI, only those bytes are transferred over the bus.
+### Handler contract
 
-### Dispatch rules
+- `payload` and `src_mac` point into `net->rx.buf` and are valid **only until
+  the handler returns**.  Copy anything needed later.
+- Addresses and ports are host byte order; `payload_len` comes from the UDP
+  Length field, not the IP length (link padding and trailing bytes are not
+  part of the datagram).
+- The handler runs inside `net_poll()`, before the driver's frame is
+  released (see [mac-hal.md §3](mac-hal.md#3-the-receive-lifecycle-net_poll)):
+  keep it short.
+- The handler **may send**.  `net->tx.buf` is separate from `net->rx.buf`, so
+  `udp_send()` with `payload` as its data (the echo above) is safe, as is
+  building a reply in place.  The application protocol modules answer from
+  inside their handlers this way (mDNS defers some answers to its tick).
 
-- `udp_input()` performs a linear scan over `udp_ports.entries` matching
-  `entry.port == dst_port`
-- First matching entry wins; only one handler is called per datagram
-- After the handler returns, `udp_input()` calls `mac_driver->discard()`
+### Dispatch
 
-### Why not pass a data pointer?
-
-The current implementation passes `const uint8_t *data` pointing into
-`net->rx.buf`.  This requires:
-
-1. The entire Ethernet frame to be read into `net->rx.buf` before any dispatch
-2. `net->rx.buf` to be large enough for a full frame (1514 bytes typically)
-3. On ENC28J60: all 1514 bytes transferred over SPI even if the handler only
-   needs 8 bytes
-
-The peek-based interface eliminates the full-frame staging requirement.
-`net->rx.buf` shrinks from ≥ 1514 bytes to just enough for header parsing
-(54 bytes for ETH+IP+UDP headers), or goes away entirely when all parsing is
-done directly via `peek()`.
-
-See §9 for the complete RX path redesign that accompanies this interface change.
+`udp_input()` scans the table linearly and calls the first entry whose `port`
+matches the destination port; one handler per datagram.  Ports are not bound
+to addresses: a handler receives the port's datagrams sent to our unicast
+address, to broadcast, and to any joined multicast group.  It can tell these
+apart only by what it is given (source address and MAC), not by the
+destination address.
 
 ---
 
-## 4. Receive Path
-
-The revised receive path parses headers by `peek()`-ing small fixed-size
-regions at known offsets.  The MAC frame is **never fully staged in RAM** —
-each protocol layer reads only the bytes it needs.
+## 4. Receive path
 
 ```
 net_poll()
-  └── mac_driver->poll()               frame available?
-  │
-  └── eth_input()
-        └── peek(0, hdr, 14)            read ETH header
-        └── EtherType dispatch
-              │
-              └── IPv4 → ipv4_input()
-                    └── peek(14, hdr, 20)   read IP header
-                    └── src_ip, dst_ip, proto, payload_len, ip_hdr_len
-                    └── protocol dispatch
-                          │
-                          └── UDP (proto=17) → udp_input()
-                                └── peek(14+ip_hlen, udp_hdr, 8)  read UDP header
-                                │
-                                ├── length sanity checks
-                                │   • udp_len < 8              → discard, drop
-                                │   • udp_len > ip payload_len → discard, drop
-                                │
-                                ├── checksum verify (if cksum field ≠ 0)
-                                │   • stream UDP header+payload through
-                                │     cksum accumulator via chunked peek()
-                                │   • bad checksum              → discard, drop
-                                │
-                                ├── port table scan (linear, O(n))
-                                │   • match found
-                                │   │   → handler(net, src_ip, src_port, src_mac,
-                                │   │             payload_offset, payload_len)
-                                │   │     (handler calls peek() for what it needs)
-                                │   │
-                                │   • no match, unicast
-                                │   │   → peek(14, hdr, ip_hlen+8) for ICMP quote
-                                │   │   → icmp_send_dest_unreach()
-                                │   │
-                                │   • no match, broadcast/multicast
-                                │       → silently drop
-                                │
-                                └── mac_driver->discard()   ← always last
+ └─ eth_input()                          MAC filter, EtherType
+     └─ ipv4_input()                     ipv4_parse(): version, lengths, header
+         │                               checksum, no fragments; source and
+         │                               destination checks
+         └─ udp_input()                  protocol 17 (only if NET_USE_UDP)
+             ├─ udp_length()             IP payload ≥ 8, 8 ≤ Length ≤ IP payload
+             │                           → else drop
+             ├─ checksum field ≠ 0 ?     ipv4_cksum() over the datagram must be 0
+             │                           → else drop; a zero field is not checked
+             ├─ port table scan          match → handler(net, src_ip, src_port,
+             │                                    src_mac, payload, len)
+             └─ no match                 icmp_send_dest_unreach(PORT_UNREACH)
 ```
-
-`payload_offset` passed to the handler is `14 + ip_hlen + 8` — the byte
-offset in the raw MAC frame where the UDP payload begins.
-
-### Checksum verification
-
-If the checksum field is **non-zero**, `udp_input()` streams the UDP header +
-payload through the `net_cksum_t` accumulator using chunked `peek()` calls:
-
-```
-Pseudo-header included first:
-  uint32  src_ip
-  uint32  dst_ip
-  uint16  0x0011       (zero + protocol = 17)
-  uint16  udp_length
-Then: peek(udp_offset, chunk, MIN(remaining, CHUNK_SIZE)) in a loop
-```
-
-The result must equal `0x0000` or `0xFFFF`.  If not, the frame is discarded.
-If the checksum field is `0x0000`, verification is skipped.
-
-**Trade-off:** When checksum verification is followed by the handler also
-`peek()`-ing the payload, the payload bytes are read twice from the MAC
-(once for checksum, once for the handler).  On SPI MACs this means two
-sequential SPI read operations over the same region.  This is the cost of
-eliminating the full-frame staging buffer.  For most embedded protocols
-(DHCP, CoAP, TFTP) the payload is small enough that this is acceptable.
-Handlers that are extremely latency-sensitive may disable RX UDP checksum
-verification via `NET_UDP_RX_CKSUM` (compile-time option in `net_config.h`).
 
 ### ICMP Port Unreachable
 
-When a unicast datagram arrives for an unregistered port, `udp_input()`
-peeks the IP header + 8 bytes of UDP header to construct the ICMP
-destination-unreachable quote and calls `icmp_send_dest_unreach()`.
-
-Broadcast and multicast datagrams with no matching handler are silently dropped
-— sending ICMP Port Unreachable to a broadcast address is incorrect per
-RFC 1122 §3.2.2.
+On a port miss `udp_input()` calls
+`icmp_send_dest_unreach(net, ICMP_CODE_PORT_UNREACH, ip, eth)` unconditionally;
+the ICMP layer decides.  It quotes the invoking IP header plus up to 8 bytes
+of its payload (the UDP header), and it **sends nothing** about a datagram
+sent to a broadcast or multicast IP address or received in a
+broadcast/multicast frame (RFC 1122 §3.2.2).  So a broadcast to a closed port
+is dropped silently, and every caller gets the rule for free.
 
 ---
 
-## 5. Transmit Path
+## 5. Transmit path
 
 ```c
-net_err_t udp_send(net_t *net,
-                   uint32_t dst_ip, const uint8_t *dst_mac,
+/* Copy data_len bytes from data; send from net->ipv4_addr, NET_DEFAULT_TTL */
+net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                    uint16_t src_port, uint16_t dst_port,
                    const uint8_t *data, uint16_t data_len);
+
+/* The payload is already at net->tx.buf + UDP_PAYLOAD_OFFSET */
+net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
+                           uint16_t src_port, uint16_t dst_port,
+                           uint16_t data_len, uint8_t ttl);
+
+/* The same, from an explicit IPv4 source address */
+net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
+                                const uint8_t *dst_mac, uint16_t src_port,
+                                uint16_t dst_port, uint16_t data_len,
+                                uint8_t ttl);
 ```
 
-The transmit path builds the complete frame in `net->tx.buf` (the application's
-transmit buffer) from inside out:
+All three end in `udp_send_inplace_from()`, which builds the frame around the
+payload:
 
 ```
-net->tx.buf:
-┌─────────────┬──────────────┬────────────┬──────────┐
-│  ETH header │  IP header   │ UDP header │ payload  │
-│  14 bytes   │  20 bytes    │  8 bytes   │ data_len │
-└─────────────┴──────────────┴────────────┴──────────┘
+net->tx.buf
+┌────────────┬─────────────┬────────────┬──────────────────────┐
+│ Ethernet   │ IPv4        │ UDP        │ payload              │
+│ 14         │ 20          │ 8          │ data_len             │
+└────────────┴─────────────┴────────────┴──────────────────────┘
+                                         ↑ UDP_PAYLOAD_OFFSET = 42
 ```
 
-Steps:
-1. **Size check** — total = 14 + 20 + 8 + `data_len`; if > `net->tx.capacity`
-   return `NET_ERR_BUF_TOO_SMALL`
-2. **Ethernet header** — `eth_build()` writes dst/src MAC + EtherType 0x0800
-3. **UDP header** — source port, destination port, length, checksum = 0
-4. **Payload copy** — `memcpy` payload into position (only copy in the entire path)
-5. **Checksum** — compute over pseudo-header + full UDP segment; store result;
-   if result would be 0x0000, store 0xFFFF (RFC 768)
-6. **IPv4 header** — `ipv4_build()` fills in length, protocol=17, src/dst IP,
-   and computes the IP header checksum in-place
-7. **Send** — `net->mac_driver->send(net->mac_ctx, buf, total)`
+1. Size check: `42 + data_len ≤ tx.capacity`, else `NET_ERR_BUF_TOO_SMALL`.
+2. UDP header, checksum field 0; then the checksum over the pseudo-header,
+   header and payload (`ipv4_cksum()`), a computed 0 written as `0xFFFF`.
+3. Ethernet header to `dst_mac`.
+4. IPv4 header (`ipv4_build_ttl()`: DF set, ID 0, header checksum).
+5. `net_transmit()`.
 
-The payload `data` pointer may point anywhere (including the RX buffer for
-loopback scenarios); the `memcpy` at step 4 is the only allocation-free copy
-in the path.
+Notes:
 
-### Buffer constraint
+- **The caller supplies `dst_mac`.**  UDP does no address resolution; see
+  [arp-resolution.md](arp-resolution.md).  A reply normally uses the
+  `src_mac` its handler was given.
+- **Protocols with larger messages build in place.**  DHCP, TFTP and mDNS
+  write their message at `net->tx.buf + UDP_PAYLOAD_OFFSET` and call
+  `udp_send_inplace*()`, so the payload is never copied.  `udp_send()`'s
+  `data` must not point into `net->tx.buf` itself.
+- **Why `udp_send_inplace_from()`.**  A DHCP client must send from 0.0.0.0
+  until its lease is bound (and from its leased address when renewing), and
+  the DHCP server sends from its configured address.  They pass that address
+  explicitly; previously the modules overwrote `net->ipv4_addr` around each
+  send, which briefly changed the interface's address for everything else.
+- **TTL.**  `udp_send()` uses `NET_DEFAULT_TTL`; mDNS passes 255
+  (RFC 6762 §11).
 
-The application must size its `net_t` transmit buffer to hold the largest UDP
-datagram it intends to send:
-
-```
-tx buffer min size = 14 (ETH) + 20 (IP) + 8 (UDP) + max_payload
-                   = 42 + max_payload
-```
-
-For DHCP (max payload 576 bytes): 42 + 576 = **618 bytes minimum**.
+Buffer sizing: the TX buffer must hold `42 + largest payload` (342 bytes for
+DHCP, whose messages are padded to 300 bytes).  The RX buffer must hold
+`42 + largest datagram` accepted; larger frames are truncated by `net_poll()`
+and then rejected by IPv4.
 
 ---
 
-## 6. Checksum Detail
+## 6. Checksum rules
 
-UDP checksum uses the IPv4 pseudo-header (RFC 768):
-
-```
-+--------+--------+--------+--------+
-|          source address           |  4 bytes
-+--------+--------+--------+--------+
-|        destination address        |  4 bytes
-+--------+--------+--------+--------+
-|  zero  |  proto |   UDP length    |  4 bytes (proto = 17 = 0x11)
-+--------+--------+--------+--------+
-|           UDP header              |  8 bytes
-+--------+--------+--------+--------+
-|           payload data            |  N bytes
-+--------+--------+--------+--------+
-```
-
-Computed using the incremental `net_cksum_t` accumulator from `net_cksum.h`:
-
-```c
-net_cksum_t c;
-net_cksum_init(&c);
-net_cksum_add_u32(&c, src_ip);
-net_cksum_add_u32(&c, dst_ip);
-net_cksum_add_u16(&c, 0x0011);        /* zero + proto 17 */
-net_cksum_add_u16(&c, udp_len);
-net_cksum_add(&c, udp_hdr, udp_len);  /* header + data */
-uint16_t cksum = net_cksum_finalize(&c);
-if (cksum == 0x0000) cksum = 0xFFFF;  /* RFC 768: 0 means "not computed" */
-```
-
-The same logic is used in both `udp_send()` and for RX verification in
-`udp_input()`.  The helper `udp_checksum()` is exposed in `udp.h` for use by
-higher-layer protocols (e.g., DHCP) that need to pre-compute a checksum over
-their own payload.
-
----
-
-## 7. Integration with IPv4 and ICMP
-
-```
-udp_input()  ←── called by ipv4_input() when protocol == 17
-udp_send()   ───► calls ipv4_build() + mac_driver->send()
-                  calls icmp_send_dest_unreach() on port miss (unicast only)
-```
-
-`udp.c` depends on:
-- `ipv4.h` — `ipv4_is_broadcast()`, `ipv4_build()`, `ipv4_hdr_t`
-- `eth.h` — `eth_build()`, `eth_frame_t`, `net_mac_is_broadcast()`
-- `icmp.h` — `icmp_send_dest_unreach()`
-- `net_cksum.h` — `net_cksum_t` and accumulator API
-- `net_endian.h` — `net_read16be()` / `net_write16be()`
-
-Nothing in `udp.c` depends on TCP or any L7 protocol.
-
----
-
-## 8. Transmit Buffer — Current Limitation and the Scatter-Gather Path
-
-### Why the current design needs a full-frame staging buffer
-
-`udp_send()` currently calls:
-
-```c
-mac_driver->send(ctx, net->tx.buf, total_len)
-```
-
-The MAC `send()` interface takes **one contiguous buffer** containing the complete
-Ethernet frame.  Before that call can be made, the stack must assemble the frame
-somewhere, which is `net->tx.buf`.  The payload is `memcpy`'d into that buffer
-after the 42-byte header region:
-
-```
-net->tx.buf (must be ≥ 42 + payload_len):
-┌──────────────────────────┬───────────────────┐
-│  ETH + IP + UDP headers  │  payload (copy)   │
-│       42 bytes           │  data_len bytes   │
-└──────────────────────────┴───────────────────┘
-```
-
-The staging buffer is an **application memory requirement** — on a PIC16 with
-1 KB of total RAM, allocating 618 bytes for a DHCP tx buffer consumes 60% of
-the entire RAM budget.
-
-### What the user can't do today
-
-The application cannot currently say "here is my payload in flash; send it
-without copying it through RAM."  If the application holds a TFTP data block as
-a `const` array in program memory (flash), today it still has to copy it through
-a RAM staging buffer.  For a 512-byte TFTP block: 42 + 512 = 554 bytes of RAM
-required, even though the payload data never changes.
-
-### The scatter-gather fix
-
-The root cause is the MAC `send(ctx, frame, len)` signature accepting a single
-contiguous buffer.  The correct fix is to add **scatter-gather** to the MAC
-send interface:
-
-```c
-/* Two-region iovec — enough for header + payload (most cases have only 2) */
-typedef struct {
-    const uint8_t *base;
-    uint16_t       len;
-} net_iov_t;
-
-/* New MAC vtable entry — replaces or supplements send() */
-int (*send_iov)(void *ctx, const net_iov_t *iov, uint8_t iovcnt);
-```
-
-With scatter-gather, `udp_send()` would:
-
-1. Build ETH + IP + UDP headers (42 bytes) into a **small header-only area** of
-   `net->tx.buf` — just 42 bytes, not 42 + payload_len
-2. Call `mac_driver->send_iov(ctx, [{hdr, 42}, {payload, data_len}], 2)` with
-   the application's payload pointer **as-is, without copying**
-
-```
-net->tx.buf (only 42 bytes needed):
-┌──────────────────────────┐
-│  ETH + IP + UDP headers  │  ← built here
-│       42 bytes           │
-└──────────────────────────┘
-
-Application payload (anywhere — RAM or flash):
-┌───────────────────┐
-│  payload data     │  ← pointer passed directly to MAC, no copy
-│  data_len bytes   │
-└───────────────────┘
-```
-
-### MAC driver scatter-gather implementations
-
-| Driver | send_iov implementation |
-|---|---|
-| `tap.c` (Linux TAP) | `writev(fd, iov, iovcnt)` — Linux `writev` on a TAP fd works natively |
-| `bpf.c` (macOS BPF) | BPF `write()` is single-buffer only; driver allocates a small internal combine buffer or uses `write` twice (BPF BIOCSBLEN can be set small) |
-| ENC28J60 (SPI) | Write header bytes to SPI SRAM, then write payload bytes to SPI SRAM sequentially — natively supports two-phase write |
-| DMA MAC (STM32 EMAC) | Scatter-gather DMA descriptors point to header + payload regions separately — native hardware support |
-
-### RAM savings at each layer
-
-| Protocol | Current tx_buf needed | With scatter-gather |
+| | IPv4 | IPv6 |
 |---|---|---|
-| ARP reply | 42 bytes | 42 bytes (no payload) |
-| ICMP echo | 42 + payload | 42 bytes |
-| UDP echo | 42 + payload | 42 bytes |
-| DHCP (max 576 B payload) | **618 bytes** | **42 bytes** |
-| TFTP (512 B data block from flash) | **554 bytes RAM** | **42 bytes RAM** |
+| Pseudo-header | `ipv4_cksum()`: source, destination, protocol 17, UDP length | `ipv6_cksum()`: source, destination, UDP length, next header 17 |
+| Sending | Always computed; a computed 0 is sent as `0xFFFF` (RFC 768) | Same |
+| Receiving, field = 0 | "No checksum": accepted without verification | Invalid: dropped (RFC 8200 §8.1) |
+| Receiving, field ≠ 0 | The checksum over the datagram as received must be 0 | Same |
 
-### Implementation plan
-
-The MAC interface change is backward-compatible: keep `send()` for drivers that
-cannot support scatter-gather; add `send_iov()` as an optional entry (NULL means
-"fall back to combining into tx_buf and calling send").  The stack checks at
-init time:
-
-```c
-if (net->mac_driver->send_iov)
-    mac_driver->send_iov(ctx, iov, 2);   /* zero-copy */
-else {
-    memcpy(net->tx.buf + hdr_len, payload, payload_len);
-    mac_driver->send(ctx, net->tx.buf, total);   /* copy fallback */
-}
-```
-
-This is tracked as a future enhancement; the current implementation uses the
-single-buffer `send()` path.
+Why "must be 0" and why `0xFFFF` also verifies: see
+[checksum.md §3](checksum.md#3-verifying-why-a-valid-packet-sums-to-0).
 
 ---
 
-## 9. Design Decisions and Trade-offs
+## 7. UDP over IPv6
 
-### Linear port scan vs. hash table
-A hash table or sorted binary search would be faster for large port tables, but
-embedded applications typically register 2–6 ports at most.  A linear scan over
-`uint8_t count` entries adds negligible overhead and zero code/data overhead
-(no hash state, no sorted array maintenance).
+Enabled by `NET_USE_IPV6` (with `NET_USE_UDP`).
 
-### Global `udp_ports` vs. passed-in table
-`udp_ports` is a single global rather than a pointer in `net_t`, because:
-- UDP port assignments are process-global (there is one UDP layer per stack)
-- It matches the pattern used in existing upper-layer protocols (DHCP, echo, etc.)
-- On MCUs, the table lives in flash (read-only) and uses no RAM beyond the pointer
+```c
+typedef void (*udp6_handler_t)(net_t *net, const uint8_t *src_ip,
+                               uint16_t src_port, const uint8_t *src_mac,
+                               const uint8_t *payload, uint16_t payload_len);
+typedef struct udp6_port_entry_s { uint16_t port; udp6_handler_t handler; }
+    udp6_port_entry_t;
 
-If a future multi-stack configuration is needed, `udp_ports` can be moved into
-`net_t` with a one-line change.
+void udp6_set_ports(net_t *net, const udp6_port_entry_t *ports, uint8_t count);
+net_err_t udp6_send(net_t *net, const uint8_t *dst_ip, const uint8_t *dst_mac,
+                    uint16_t src_port, uint16_t dst_port,
+                    const uint8_t *data, uint16_t data_len);
+net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
+                            const uint8_t *dst_mac, uint16_t src_port,
+                            uint16_t dst_port, uint16_t data_len,
+                            uint8_t hop_limit);
+```
 
-### No port binding / port allocation
-The stack has no concept of "binding" a port or allocating an ephemeral source
-port number.  The application chooses source and destination ports explicitly in
-every `udp_send()` call.  For request-response protocols (DHCP, TFTP), the
-source port is fixed per RFC (e.g., 68 for DHCP client); for ad-hoc sends, the
-application picks a suitable value.
+- **A separate table.**  The IPv6 handler gets the 16-byte source address
+  (valid, like the payload, during the call).  A port missing from the IPv6
+  table is closed over IPv6 even if it is open over IPv4; register a handler
+  in both tables to serve both (mDNS does).  Keeping `udp_port_entry_t` at
+  two fields means existing positional `{port, handler}` initializers stay
+  warning-free under `-Wextra`.
+- **Receive.**  `udp6_input()` applies the same length checks, drops a zero
+  checksum, and verifies with `ipv6_cksum()`.  A port miss calls
+  `icmpv6_send_error(ICMPV6_DEST_UNREACH, ICMPV6_CODE_PORT_UNREACH, …)`, which
+  enforces RFC 4443 §2.4(e) itself (nothing about a packet sent to a group, to
+  a link-layer multicast/broadcast address, or from a multicast or unspecified
+  source).
+- **Send.**  The source address is always chosen by `ipv6_src_for()`
+  (RFC 6724, one interface); if no usable address can reach `dst_ip` the send
+  fails with `NET_ERR_INVALID_PARAM`.  There is no `_from` variant: DHCPv6
+  sends from the link-local address, which source selection already picks
+  for its link-scope destination.  `udp6_send()` uses `net->ip6.hop_limit`
+  (from Router Advertisements); `UDP6_PAYLOAD_OFFSET` is 62.
 
-### Zero-copy RX and the peek-based handler interface
-Rather than staging the full frame in `net->rx.buf` and handing a pointer to
-the handler, the stack passes the handler a `payload_offset` (frame offset)
-and `payload_len`.  The handler calls `mac_driver->peek(ctx, offset, buf, n)`
-for exactly the bytes it needs.  This eliminates the large RX staging buffer
-(`net->rx.buf` can shrink from 1514 bytes to ≤ 54 bytes for ETH+IP+UDP header
-parsing).  The handler's receive buffer is stack-allocated inside the handler
-and is exactly as large as the handler requires — not sized to the worst-case
-frame.
+---
 
-**Symmetric with TX scatter-gather:** Together, peek-based RX dispatch (§4)
-and scatter-gather TX (§8) eliminate both the large `net->rx.buf` and the
-large `net->tx.buf` staging buffers.  The remaining memory requirement on the
-application is:
-- **RX:** 54 bytes for header parsing + handler's own application buffer
-- **TX:** 42 bytes for header construction + application payload (in place)
+## 8. Dependencies and composition
+
+`udp.c` uses `ipv4.h` (`ipv4_cksum()`, `ipv4_build_ttl()`), `eth.h`,
+`icmp.h`, `net_cksum.h`, `net_endian.h`, and with IPv6 `ipv6.h` and
+`icmpv6.h`.  Nothing in it depends on TCP or on application protocols.
+
+Whether UDP is in the build is decided at compile time: `ipv4_input()` and
+`ipv6_input()` call `udp_input()` / `udp6_input()` only under
+`NET_USE_UDP`, and `net_t` has its port-table fields only then (`udp.h` does
+not compile without them).  With `NET_USE_UDP=0`, a UDP datagram is answered
+like any unsupported protocol (ICMP Protocol Unreachable; ICMPv6 Parameter
+Problem).  See [configuration.md §5](configuration.md#5-compile-time-protocol-selection).
+
+---
+
+## 9. Not implemented
+
+| Item | Consequence |
+|---|---|
+| Ephemeral port allocation, port binding, connected sockets | The application picks source and destination ports on every send and filters sources in its handler. |
+| Per-address dispatch | A handler cannot see the destination address. |
+| IP fragmentation | Datagrams are limited by the buffers and the MTU; received fragments are dropped. |
+| Receive queues | A datagram is delivered during `net_poll()` or not at all. |
+| ICMP errors to the application | Received ICMP errors are dropped. |
+| UDP-Lite, zero-checksum IPv6 tunnels (RFC 6935) | — |
+
+---
+
+## 10. Design decisions
+
+### 10.1 Decision record: payload pointers, not frame offsets
+
+**Decision.**  Handlers receive `const uint8_t *payload`, a pointer into
+`net->rx.buf`, valid for the duration of the call.
+
+**Previous design.**  Handlers received a *frame offset* and length and were
+expected to call `net->mac_driver->peek(net->mac_ctx, offset, buf, n)` for the
+bytes they needed, so that `net->rx.buf` could shrink to a few header bytes
+and an SPI MAC would transfer only what the handler read.
+
+**Why it changed.**  That design was only half implemented.  The whole frame
+was staged in `net->rx.buf` anyway, because the IP header checksum and the
+UDP/TCP checksums are computed over the bytes in memory; nothing ever streamed
+a checksum through `peek()`.  So every handler made a *second* copy of a
+payload that was already in RAM, into a stack buffer it had to size itself,
+and applications had to call into the MAC driver — an interface that should be
+private to the stack.  TCP already received a pointer.  Passing the pointer is
+the simpler system: one copy per frame, no driver calls in application code,
+and the handler sees the whole datagram.
+
+**Cost.**  `net->rx.buf` must hold the largest datagram the device accepts.
+
+**Possible future.**  A true peek-based receive path — each layer peeking its
+own header, checksums accumulated over chunked `peek()` reads, a small
+`rx.buf` — would suit an ENC28J60-class MAC with frames in its own SRAM.  It
+would read payload bytes twice (once for the checksum, once for the handler)
+and would need the handler interface revisited, since a pointer into a small
+buffer cannot describe a whole datagram.  Nothing in the current code depends
+on the old offset interface.
+
+### 10.2 Port tables in `net_t`
+
+The tables were once globals (`udp_ports`, `udp6_ports`).  They are now
+fields of `net_t`, bound with `udp_set_ports()` / `udp6_set_ports()`, so the
+stack has no global mutable state: two interfaces can have different
+services, and tests can set up independent contexts.
+
+### 10.3 Linear scan
+
+Devices open two to six ports.  A linear scan of an `uint8_t`-counted array
+costs a few comparisons and no RAM; a hash or a sorted table would cost code
+and a rule for keeping it sorted.
+
+### 10.4 Full frame in the transmit buffer
+
+The MAC `send()` takes one contiguous frame, so the payload sits behind the
+headers in `net->tx.buf`.  Building in place avoids a copy for the modules
+that can; removing the TX buffer's payload area would need scatter-gather
+transmit ([mac-hal.md §8](mac-hal.md#8-future-work)).

@@ -23,10 +23,13 @@ function(add_demo_with_driver name)
     endif()
 endfunction()
 
-# ── frame_dump ────────────────────────────────────────────────────────
+# ── frame_dump, echo_server (the smallest demos) ─────────────────────
 
 add_executable(frame_dump frame_dump/main.c)
 add_demo_with_driver(frame_dump)
+
+add_executable(echo_server echo_server/main.c)
+add_demo_with_driver(echo_server)
 
 # ── tcp_echo (TCP echo server on port 7) ──────────────────────────────
 
@@ -66,7 +69,7 @@ if(SMALLEST_TCP_TLS)
     add_executable(tls_echo_demo tls_echo/main.c)
     add_demo_with_driver(tls_echo_demo)
     target_link_libraries(tls_echo_demo PRIVATE
-        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+        smallest_tcp_tls_tcp smallest_tcp_tls_mbedtls)
     target_compile_definitions(tls_echo_demo PRIVATE
         TLS_ECHO_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
         TLS_ECHO_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
@@ -74,7 +77,7 @@ if(SMALLEST_TCP_TLS)
     add_executable(https_demo https_demo/main.c)
     add_demo_with_driver(https_demo)
     target_link_libraries(https_demo PRIVATE
-        smallest_tcp_http smallest_tcp_tls smallest_tcp_tls_mbedtls)
+        smallest_tcp_https smallest_tcp_tls_mbedtls)
     target_compile_definitions(https_demo PRIVATE
         HTTPS_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
         HTTPS_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
@@ -82,7 +85,7 @@ if(SMALLEST_TCP_TLS)
     add_executable(tls_client_demo tls_client/main.c)
     add_demo_with_driver(tls_client_demo)
     target_link_libraries(tls_client_demo PRIVATE
-        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+        smallest_tcp_tls_tcp smallest_tcp_tls_mbedtls)
     target_compile_definitions(tls_client_demo PRIVATE
         TLS_CLIENT_DEFAULT_CA="${PROJECT_SOURCE_DIR}/tests/tls/ca.pem")
 endif()

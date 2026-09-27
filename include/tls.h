@@ -1,172 +1,20 @@
 /**
  * @file tls.h
- * @brief TLS 1.3 (RFC 8446) — record protection and key schedule.
- *
- * The protocol is smallest_tcp's own; every cryptographic primitive comes
- * from the application's tls_crypto_t backend (REQ-TLS-006).  One cipher
- * suite, TLS_AES_128_GCM_SHA256, so every secret and hash is 32 bytes.
- *
- * The building blocks — the key schedule of RFC 8446 §7 and the protected
- * records of §5.2 — are pure functions, tested against the RFC 8448 traces.
- * On them sits the connection: a handshake state machine that consumes and
- * produces ciphertext in application buffers, with no knowledge of the
- * transport (the application moves the bytes, e.g. to and from TCP).
- *
- *   tls_init(&tls, &cfg, rx, sizeof rx, tx, sizeof tx);
- *   tls_accept(&tls);
- *   loop:
- *     n = tcp_recv(&conn, p, tls_rx_space(&tls, &p));  tls_rx_commit(&tls, n);
- *     while ((n = tls_tx_pending(&tls, &q)))  tls_tx_done(&tls,
- *                                               tcp_send(net, &conn, q, n));
- *     tls_read() / tls_write() once tls_state() is TLS_STATE_CONNECTED
+ * @brief TLS 1.3 (RFC 8446) connections, client and server, over any
+ *        transport: the application moves ciphertext between the
+ *        connection's buffers and the transport (tls_tcp.h does it for
+ *        TCP).  One cipher suite, TLS_AES_128_GCM_SHA256; every
+ *        cryptographic primitive comes from a tls_crypto_t backend
+ *.  See docs/design/tls.md.
  */
 
 #ifndef TLS_H
 #define TLS_H
 
-#include "tls_crypto.h"
+#include "tls_keys.h"
 
 #include <stddef.h>
 #include <stdint.h>
-
-/* ── Record layer (RFC 8446 §5) ──────────────────────────────────────── */
-
-/* ContentType */
-#define TLS_CT_CHANGE_CIPHER_SPEC 20
-#define TLS_CT_ALERT 21
-#define TLS_CT_HANDSHAKE 22
-#define TLS_CT_APPLICATION_DATA 23
-
-#define TLS_RECORD_HDR 5 /**< type, legacy_record_version, length */
-/** Bytes a protected record adds to its content: header, type, tag. */
-#define TLS_RECORD_OVERHEAD (TLS_RECORD_HDR + 1 + TLS_AEAD_TAG_LEN)
-#define TLS_MAX_PLAINTEXT 16384u /**< 2^14 */
-#define TLS_MAX_CIPHERTEXT (TLS_MAX_PLAINTEXT + 256u)
-
-/* AlertDescription (RFC 8446 §6) */
-#define TLS_ALERT_CLOSE_NOTIFY 0
-#define TLS_ALERT_UNEXPECTED_MESSAGE 10
-#define TLS_ALERT_BAD_RECORD_MAC 20
-#define TLS_ALERT_RECORD_OVERFLOW 22
-#define TLS_ALERT_HANDSHAKE_FAILURE 40
-#define TLS_ALERT_BAD_CERTIFICATE 42
-#define TLS_ALERT_UNSUPPORTED_CERTIFICATE 43
-#define TLS_ALERT_CERTIFICATE_REVOKED 44
-#define TLS_ALERT_CERTIFICATE_EXPIRED 45
-#define TLS_ALERT_CERTIFICATE_UNKNOWN 46
-#define TLS_ALERT_ILLEGAL_PARAMETER 47
-#define TLS_ALERT_UNKNOWN_CA 48
-#define TLS_ALERT_DECODE_ERROR 50
-#define TLS_ALERT_DECRYPT_ERROR 51
-#define TLS_ALERT_PROTOCOL_VERSION 70
-#define TLS_ALERT_INSUFFICIENT_SECURITY 71
-#define TLS_ALERT_INTERNAL_ERROR 80
-#define TLS_ALERT_MISSING_EXTENSION 109
-#define TLS_ALERT_UNSUPPORTED_EXTENSION 110
-#define TLS_ALERT_UNKNOWN_PSK_IDENTITY 115
-
-/** @brief The keys protecting one direction of records (RFC 8446 §7.3). */
-typedef struct {
-  uint8_t key[TLS_AEAD_KEY_LEN];
-  uint8_t iv[TLS_AEAD_IV_LEN];
-  uint64_t seq; /**< Records protected so far; XORed into the nonce */
-} tls_keys_t;
-
-/**
- * Protect one record in place (RFC 8446 §5.2).
- *
- * @p rec[TLS_RECORD_HDR ..] holds @p len bytes of content of type @p type;
- * the record needs @p len + TLS_RECORD_OVERHEAD bytes.  Writes the header
- * (opaque_type application_data), the inner content type and the tag, and
- * advances @p k->seq.
- * @return The length of the whole record.
- */
-size_t tls_record_seal(const tls_crypto_t *c, tls_keys_t *k, uint8_t type,
-                       uint8_t *rec, size_t len);
-
-/**
- * Remove the protection of one record in place.  @p rec is the whole record
- * (header included, @p rec_len bytes).  On success the content is at
- * @p rec + TLS_RECORD_HDR, @p type receives its content type (the padding is
- * stripped) and @p k->seq advances.
- * @return The content length, or the negated alert to send:
- *         -TLS_ALERT_BAD_RECORD_MAC, -TLS_ALERT_RECORD_OVERFLOW,
- *         -TLS_ALERT_DECODE_ERROR or -TLS_ALERT_UNEXPECTED_MESSAGE.
- */
-int tls_record_open(const tls_crypto_t *c, tls_keys_t *k, uint8_t *rec,
-                    size_t rec_len, uint8_t *type);
-
-/* ── Key schedule (RFC 8446 §7.1) ────────────────────────────────────── */
-
-/**
- * HKDF-Expand-Label(@p secret, "tls13 " + @p label, @p context, @p out_len).
- * @p label is at most 12 characters and @p context at most 32 bytes (the
- * longest TLS 1.3 uses).
- */
-void tls_expand_label(const tls_crypto_t *c, const uint8_t *secret,
-                      const char *label, const uint8_t *context,
-                      size_t context_len, uint8_t *out, size_t out_len);
-
-/**
- * Derive-Secret(@p secret, @p label, Messages) where @p hash is
- * Transcript-Hash(Messages), or NULL for the hash of no messages.
- */
-void tls_derive_secret(const tls_crypto_t *c, const uint8_t *secret,
-                       const char *label, const uint8_t *hash,
-                       uint8_t out[TLS_HASH_LEN]);
-
-/**
- * The Early Secret: HKDF-Extract(0, @p psk), or of 32 zero bytes when
- * @p psk is NULL (no PSK).
- */
-void tls_early_secret(const tls_crypto_t *c, const uint8_t *psk,
-                      size_t psk_len, uint8_t out[TLS_HASH_LEN]);
-
-/**
- * Step the schedule to its next secret in place:
- * HKDF-Extract(Derive-Secret(@p secret, "derived", ""), @p ikm) — Early to
- * Handshake Secret with the (EC)DHE shared secret, Handshake to Master
- * Secret with @p ikm NULL (32 zero bytes).
- */
-void tls_next_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN],
-                     const uint8_t *ikm, size_t ikm_len);
-
-/** The write key and IV of traffic secret @p secret; the sequence is 0. */
-void tls_traffic_keys(const tls_crypto_t *c, const uint8_t *secret,
-                      tls_keys_t *k);
-
-/**
- * Finished verify_data (RFC 8446 §4.4.4): HMAC(finished_key, @p hash) with
- * finished_key = HKDF-Expand-Label(@p base, "finished", "", 32).
- */
-void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
-                      const uint8_t hash[TLS_HASH_LEN],
-                      uint8_t out[TLS_HASH_LEN]);
-
-/**
- * PSK binder (RFC 8446 §4.2.11.2): HMAC under the binder key of the PSK's
- * Early Secret @p early — "res binder" for a @p resumption PSK (from a
- * ticket), "ext binder" for an external one — over @p hash, the transcript
- * hash of the ClientHello up to its binders.
- */
-void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early,
-                    int resumption, const uint8_t hash[TLS_HASH_LEN],
-                    uint8_t out[TLS_HASH_LEN]);
-
-/**
- * After a HelloRetryRequest (RFC 8446 §4.4.1): @p transcript, so far the
- * hash of ClientHello1, restarts as the hash of the message_hash message
- * that stands for it.
- */
-void tls_transcript_hrr(const tls_crypto_t *c, tls_hash_t *transcript);
-
-/** KeyUpdate (RFC 8446 §7.2): the next generation of a traffic secret. */
-void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]);
-
-/** Constant-time comparison: 1 if equal. */
-int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
-
-/* ── Connections ─────────────────────────────────────────────────────── */
 
 /* HandshakeType (RFC 8446 §4) */
 #define TLS_HS_CLIENT_HELLO 1
@@ -186,6 +34,7 @@ int tls_equal(const uint8_t *a, const uint8_t *b, size_t len);
 #define TLS_EXT_SIGNATURE_ALGORITHMS 13
 #define TLS_EXT_PRE_SHARED_KEY 41
 #define TLS_EXT_SUPPORTED_VERSIONS 43
+#define TLS_EXT_COOKIE 44
 #define TLS_EXT_PSK_KEY_EXCHANGE_MODES 45
 #define TLS_EXT_KEY_SHARE 51
 
@@ -234,10 +83,10 @@ typedef struct {
   const uint8_t *const *cert; /**< DER certificates, leaf first */
   const uint16_t *cert_len;
   uint8_t cert_count;
-  const void *key;     /**< Private key, as the backend's sign() takes it */
-  uint16_t sig_scheme; /**< TLS_SIG_* that @ref key signs with */
-  uint8_t groups;      /**< TLS_GROUPS_* for (EC)DHE; 0: both (x25519
-                            preferred) */
+  const void *key;      /**< Private key, as the backend's sign() takes it */
+  uint16_t sig_scheme;  /**< TLS_SIG_* that @ref key signs with */
+  uint8_t groups;       /**< TLS_GROUPS_* for (EC)DHE; 0: both (x25519
+                             preferred) */
   uint8_t max_fragment; /**< Client: TLS_MFL_* to ask the server for (records
                              of at most 512 .. 4096 bytes, so a small rx
                              buffer suffices); 0: none.  A server grants
@@ -245,27 +94,30 @@ typedef struct {
 
   /* A pre-shared key (RFC 8446 §2.2; SHA-256).  A client offers it, a
    * server takes it when the identity matches and the binder checks out,
-   * and neither side then uses certificates (REQ-TLS-023/024). */
-  const uint8_t *psk;      /**< NULL: none */
+   * and neither side then uses certificates. */
+  const uint8_t *psk; /**< NULL: none */
   uint16_t psk_len;
-  const uint8_t *psk_id;   /**< Its identity */
+  const uint8_t *psk_id; /**< Its identity */
   uint16_t psk_id_len;
-  uint8_t psk_modes;       /**< TLS_PSK_KE and/or TLS_PSK_DHE_KE (0: DHE) */
-  uint8_t psk_resumption;  /**< 1: from a ticket ("res binder") */
+  uint8_t psk_modes;      /**< TLS_PSK_KE and/or TLS_PSK_DHE_KE (0: DHE) */
+  uint8_t psk_resumption; /**< 1: from a ticket ("res binder") */
 } tls_config_t;
 
 /**
  * @brief One TLS connection.  The transport (TCP) is the application's:
  * it moves ciphertext between the connection's buffers and the socket.
  */
+struct tls_role_s;
+
 typedef struct tls_conn_s {
   const tls_config_t *cfg;
-  uint8_t state;  /**< tls_state_t */
-  uint8_t alert;  /**< The fatal alert sent or received */
-  uint8_t step;   /**< Handshake step (internal) */
-  uint16_t flags; /**< (internal) */
-  uint16_t group; /**< Negotiated key-exchange group */
-  uint16_t max_frag; /**< Negotiated record size limit (0: 2^14) */
+  const struct tls_role_s *role; /**< Server or client (internal) */
+  uint8_t state;                 /**< tls_state_t */
+  uint8_t alert;                 /**< The fatal alert sent or received */
+  uint8_t step;                  /**< Handshake step (internal) */
+  uint16_t flags;                /**< (internal) */
+  uint16_t group;                /**< Negotiated key-exchange group */
+  uint16_t max_frag;             /**< Negotiated record size limit (0: 2^14) */
   uint8_t sid_len;
   uint8_t sid[32]; /**< Server: the client's legacy_session_id, echoed;
                         client: its random, for a second ClientHello */
@@ -284,13 +136,13 @@ typedef struct tls_conn_s {
   /* Receive buffer: [handshake bytes | records not yet processed] */
   uint8_t *rx;
   uint16_t rx_cap, rx_len;
-  uint16_t hs_len;   /**< Handshake bytes awaiting a whole message */
-  uint16_t hs_off;   /**< .. after a kept message (client: the
-                          Certificate, until CertificateVerify) */
+  uint16_t hs_len;             /**< Handshake bytes awaiting a whole message */
+  uint16_t hs_off;             /**< .. after a kept message (client: the
+                                    Certificate, until CertificateVerify) */
   uint16_t leaf_off, leaf_len; /**< Client: the server's certificate */
-  uint16_t app_off;  /**< Unread application data: offset .. */
-  uint16_t app_len;  /**< .. and length */
-  uint16_t app_rec;  /**< Length of the record holding it */
+  uint16_t app_off;            /**< Unread application data: offset .. */
+  uint16_t app_len;            /**< .. and length */
+  uint16_t app_rec;            /**< Length of the record holding it */
 
   /* Transmit buffer: [sent | unsent records | record being built] */
   uint8_t *tx;

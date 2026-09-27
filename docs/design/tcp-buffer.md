@@ -1,98 +1,257 @@
-# TCP Buffer Abstraction — Design
+# TCP Buffers — Design
 
-**Last updated:** 2026-03-19
+**Files:** `include/tcp_buf.h` (the interface, stop-and-wait declarations), `src/tcp_buf_saw.c`  
+**Requirements:** REQ-TCP-142..147 ([docs/requirements/tcp.md](../requirements/tcp.md))  
+**Status:** stop-and-wait implemented; the ring and packet-list designs (section 5) are not  
+**Last updated:** 2026-09-27
 
-## Motivation
+The protocol side is described in [tcp.md](tcp.md).  Section numbers with §
+refer to RFC 9293.
 
-TCP needs to buffer data for retransmission (TX) and for ordered delivery to the application (RX). Different environments have vastly different memory budgets:
+---
 
-| Target | RAM | Best buffer strategy |
-|---|---|---|
-| PIC16F1454 | 1 KB | Stop-and-wait (1 segment) |
-| CH32X033 | 20 KB | Circular buffer |
-| Linux/macOS | unlimited | Packet list or circular |
+## 1. Why an interface
 
-The TCP state machine MUST NOT know which strategy is in use.
+A connection needs memory in two places: data it has sent, kept until the
+peer acknowledges it (TX), and data it has received, kept until the
+application reads it (RX).  What a target can afford differs by orders of
+magnitude, and the best structure differs with it.  So `tcp.c` never manages
+buffer memory (REQ-TCP-142).  Each connection is given two operation tables
+and their contexts by `tcp_conn_init()`, and `tcp.c` goes through them for
+everything it stores or fetches.  The implementation is chosen per
+connection; each lives in its own source file, so a build links only the ones
+it uses.
 
-## TX Buffer Operations
+There is one implementation, stop-and-wait (`tcp_buf_saw.c`, REQ-TCP-145).
+The ring buffer (REQ-TCP-146) and packet list (REQ-TCP-147) in section 5 are
+designs only; their declarations have been removed from `tcp_buf.h`.
+
+---
+
+## 2. Transmit: `tcp_txbuf_ops_t`
 
 ```c
 typedef struct {
-    // Write data into buffer. Returns bytes accepted (may be less than len if full).
-    uint16_t (*write)(void *ctx, const uint8_t *data, uint16_t len);
-    
-    // Get pointer to next segment to send. Returns segment length (0 = nothing to send).
-    // *data points into the buffer (zero-copy). Segment size ≤ mss.
-    uint16_t (*next_segment)(void *ctx, const uint8_t **data, uint16_t mss);
-    
-    // Mark bytes as acknowledged (advance buffer past ACKed data).
-    void (*ack)(void *ctx, uint32_t bytes_acked);
-    
-    // How many bytes are in-flight (sent but not yet ACKed)?
-    uint16_t (*in_flight)(void *ctx);
-    
-    // How many bytes can the application write (free space)?
-    uint16_t (*writable)(void *ctx);
+  uint16_t (*write)(void *ctx, const uint8_t *data, uint16_t len);
+  uint16_t (*next_segment)(void *ctx, const uint8_t **data, uint16_t mss);
+  void (*ack)(void *ctx, uint32_t bytes_acked);
+  uint16_t (*in_flight)(const void *ctx);
+  uint16_t (*queued)(const void *ctx);
+  uint16_t (*writable)(const void *ctx);
+  void (*mark_retransmit)(void *ctx);
 } tcp_txbuf_ops_t;
 ```
 
-## RX Buffer Operations
+Sequence numbers are not part of the interface.  `tcp.c` keeps SND.UNA and
+SND.NXT, the buffer keeps bytes, and the two stay in step by these rules:
+
+- The buffer's oldest byte is at SND.UNA.  `ack(n)` releases the n oldest
+  bytes, and `tcp.c` advances SND.UNA by n.
+- `next_segment()` returns the bytes after those already handed out, and
+  `tcp.c` sends them at SND.NXT.
+- `mark_retransmit()` makes `next_segment()` start again at the oldest byte;
+  `tcp.c` has set SND.NXT back to SND.UNA first.
+- Our SYN and FIN occupy sequence numbers but are never in the buffer.
+
+| Operation | Called by | Contract |
+|---|---|---|
+| `write` | `tcp_write()`, in ESTABLISHED and CLOSE-WAIT, with `len` > 0 | Copy in what fits; return the count, which may be less than `len` or 0 |
+| `next_segment` | `flush()` with min(SND.WND, `snd_mss`); `probe_zero_window()` with 1 | Return up to `mss` bytes, or 0 if nothing is ready; they are then in flight.  `*data` points into buffer memory and must stay valid until the next call into the buffer — `tcp.c` copies it into the frame at once |
+| `ack` | `take_ack()`, when SEG.ACK advances SND.UNA; `bytes_acked` = SEG.ACK − SND.UNA | Release the bytes.  `bytes_acked` can exceed what the buffer holds — an acknowledged FIN is counted — so clamp it.  Never called for the SYN |
+| `in_flight` | `retransmission_timeout()`, `take_ack()`, `probe_zero_window()` | Bytes handed out and not yet acknowledged.  `tcp.c` reads > 0 as "there is data to resend" |
+| `queued` | `tcp_tx_idle()` | Bytes written and not yet acknowledged, sent or not |
+| `writable` | `take_ack()`, which raises `TCP_EVT_WRITABLE` when it is > 0 | Room for `write` now |
+| `mark_retransmit` | `retransmission_timeout()`, `probe_zero_window()` (also after a probe that failed to send) | The next `next_segment()` returns the in-flight bytes again, from the oldest (REQ-TCP-095) |
+
+One more rule, which comes from `tcp.c` rather than the interface:
+**`next_segment()` must return 0 while anything is in flight.**  `flush()`
+limits a segment to min(SND.WND, MSS) without subtracting bytes in flight, and
+sends at SND.NXT; both are right only when SND.NXT = SND.UNA
+([tcp.md](tcp.md) section 4.3).  A buffer that allows more needs the `tcp.c`
+changes listed in section 5.1.
+
+`tcp.c` calls every operation without a NULL check.  `tcp_saw_tx_ops` is
+initialised by position, so the order of the members matters; a new table is
+safer with designated initialisers.
+
+---
+
+## 3. Receive: `tcp_rxbuf_ops_t`
 
 ```c
 typedef struct {
-    // Deliver received data into buffer. Returns bytes accepted.
-    uint16_t (*deliver)(void *ctx, const uint8_t *data, uint16_t len);
-    
-    // Application reads data from buffer. Returns bytes copied.
-    uint16_t (*read)(void *ctx, uint8_t *dst, uint16_t maxlen);
-    
-    // How many bytes available for reading?
-    uint16_t (*readable)(void *ctx);
-    
-    // How many bytes of free space (for window advertisement)?
-    uint16_t (*available)(void *ctx);
+  uint16_t (*deliver)(void *ctx, const uint8_t *data, uint16_t len);
+  uint16_t (*read)(void *ctx, uint8_t *dst, uint16_t maxlen);
+  uint16_t (*readable)(const void *ctx);
+  uint16_t (*available)(const void *ctx);
 } tcp_rxbuf_ops_t;
 ```
 
-## Reference Implementations
+| Operation | Called by | Contract |
+|---|---|---|
+| `deliver` | `data_input()` | Store bytes; return the count taken.  They are always the next in-order bytes: `tcp.c` has skipped what was already received, trimmed to RCV.WND, and never offers data after a gap.  `data` points into the received frame and is valid only during the call.  RCV.NXT advances by the return value |
+| `read` | `tcp_recv()` | Copy out up to `maxlen` bytes; return the count |
+| `readable` | `tcp_window_update()` | Bytes waiting to be read |
+| `available` | Connection set-up, `data_input()`, `fin_input()`, `tcp_window_update()` | Free space: the receive window (REQ-TCP-083) |
 
-### 1. Stop-and-Wait (Smallest)
+`available()` is RCV.WND, which puts three constraints on an implementation:
 
-- TX: One MSS-sized buffer. `write()` fills it. `next_segment()` returns the whole buffer. `ack()` clears it. Only 1 segment in flight.
-- RX: One MSS-sized buffer. `deliver()` copies in. `read()` copies out. Window = buffer size when empty, 0 when full.
-- **Memory:** 2 × MSS (one TX, one RX). For 536-byte MSS: ~1 KB total.
-- **Throughput:** 1 segment per RTT.
+- It shrinks only in `deliver()`, by what `deliver()` took.  The right edge of
+  the advertised window then never moves back (§3.8.6 discourages shrinking
+  the window), and `tcp.c` can rely on data trimmed to the last advertised
+  window fitting.
+- `available()` + `readable()` is the buffer size.  `tcp_window_update()` uses
+  the sum for its silly-window threshold, min(buffer / 2, MSS)
+  (§3.8.6.2.2).
+- It is at most 65535: the window field is 16 bits and window scaling is not
+  implemented.
 
-### 2. Circular Buffer (Best Balance)
+---
 
-- TX: Ring buffer of N bytes. `write()` appends. `next_segment()` returns up to MSS from unset data. `ack()` advances tail. Multiple segments can be in flight.
-- RX: Ring buffer of N bytes. Window = free space.
-- **Memory:** 2 × N bytes. For 4 KB TX + 4 KB RX: 8 KB total.
-- **Throughput:** Window-sized (limited by buffer and cwnd).
+## 4. Stop-and-wait: `tcp_buf_saw.c`
 
-### 3. Packet List (Most Flexible)
+The application provides the memory and a context for each side and
+initialises them with `tcp_saw_tx_init()` and `tcp_saw_rx_init()`; the shared
+tables are `tcp_saw_tx_ops` and `tcp_saw_rx_ops` (quick start in
+[tcp.md](tcp.md) section 2.3).  Each context is 12 bytes on Cortex-M0.
 
-- TX: Linked list of MSS-sized buffers. Each node is one segment. `ack()` frees nodes.
-- RX: Same structure.
-- **Memory:** N × (MSS + overhead). Application provides the node pool.
-- **Throughput:** Window-sized.
-- **Note:** Requires list management. Best for hosted environments.
+### 4.1 Transmit: one linear buffer
 
-## Application Provides Everything
+`tcp_saw_tx_ctx_t` holds `buf`, `capacity`, `data_len` (written, not yet
+acknowledged) and an `in_flight` flag.  The data always starts at `buf[0]`,
+which is SND.UNA.
 
-```c
-// Application code for stop-and-wait:
-static uint8_t tx_seg[600];
-static uint8_t rx_seg[600];
-static tcp_saw_ctx_t saw_tx, saw_rx;
-static const tcp_txbuf_ops_t saw_tx_ops = { saw_write, saw_next, saw_ack, saw_inflight, saw_writable };
-static const tcp_rxbuf_ops_t saw_rx_ops = { saw_deliver, saw_read, saw_readable, saw_available };
+- `write` returns 0 while `in_flight` is set; otherwise it appends up to
+  `capacity − data_len`.
+- `next_segment` returns nothing if a segment is in flight or the buffer is
+  empty; otherwise `buf` and min(`data_len`, `mss`), and sets `in_flight`.
+  The flag covers the whole buffer even when only `mss` bytes went out:
+  `writable` is 0 and `in_flight` reports all of `data_len` until the ACK.
+- `ack` clamps the count to `data_len`, moves what is left to the front of the
+  buffer and clears `in_flight`.  When the buffer held more than one segment,
+  the remainder is the next segment, and the `flush()` in `take_ack()` sends
+  it at once (in ESTABLISHED and CLOSE-WAIT).  An ACK that covers only part
+  of a segment also lands here; see [tcp.md](tcp.md) section 8.3.
+- `mark_retransmit` clears `in_flight`, so the same bytes, from `buf[0]`, are
+  offered again.
+- `queued` is `data_len`; `writable` is 0 in flight, else `capacity −
+  data_len`.
 
-tcp_conn_init(&conn, &saw_tx_ops, &saw_tx, &saw_rx_ops, &saw_rx);
-```
+The buffer is linear rather than a ring because the unacknowledged data then
+always starts at `buf[0]`: `next_segment` returns one contiguous pointer with
+no wrap to handle.  The price is a `memmove` of the remaining bytes when an ACK
+releases part of the buffer.
 
-The stack provides factory functions for each strategy:
-```c
-void tcp_saw_init(tcp_saw_ctx_t *ctx, uint8_t *buf, uint16_t size);
-void tcp_ring_init(tcp_ring_ctx_t *ctx, uint8_t *buf, uint16_t size);
-```
+### 4.2 Receive: a ring buffer
+
+Nothing about the receive side is stop-and-wait: `tcp_saw_rx_ctx_t` (`buf`,
+`capacity`, `write_pos`, `read_pos`, `data_len`) is a ring that takes any
+number of segments up to its free space.  `capacity` is the largest window
+advertised.
+
+- `deliver` clamps to the free space and copies in at most two pieces: to the
+  end of `buf`, then from its start.  `read` does the same in reverse.
+- `ring_advance()` wraps a position with one comparison and subtraction.  The
+  obvious `%` would link a library divide on Cortex-M0, which has no divide
+  instruction ([size-comparison.md](size-comparison.md): 460 bytes).
+- `available` is `capacity − data_len` and `readable` is `data_len`; their sum
+  is `capacity`, as `tcp_window_update()` expects.
+
+### 4.3 RAM and throughput
+
+A connection costs its `tcp_conn_t` (100 bytes on Cortex-M0, 120 with IPv6),
+two 12-byte contexts, and the TX and RX memory.  The frame buffers in `net_t`
+are separate and shared by every connection.
+
+**Sending** is one segment per round trip.  A segment is at most
+min(TX capacity, the peer's MSS, our MSS, the peer's window), and the next one
+leaves only when the previous one is acknowledged.  The round trip includes the
+peer's ACK delay: with only one segment outstanding, a peer that delays
+acknowledgements (§3.8.6.3 allows up to 500 ms; common stacks use tens to
+hundreds of milliseconds) may hold every ACK for its full delayed-ACK time.  A
+TX buffer larger than one segment lets the application hand over more at once;
+the rest follows a segment per round trip, and the application can write again
+once it has all been acknowledged (or sending stops at a zero window).
+
+**Receiving** is not stop-and-wait.  Every segment is acknowledged at once, so
+the peer can keep a whole receive window in flight — up to the RX capacity per
+round trip, if the application reads promptly and calls
+`tcp_window_update()`.  But out-of-order segments are dropped, so one lost
+segment costs the peer a retransmission of everything it sent after it.
+
+| TX / RX memory | RAM per connection (Cortex-M0, IPv4) | Sending, per round trip | Receiving, per round trip |
+|---|---|---|---|
+| 536 / 536 | 1,196 B | ≤ 536 B | ≤ 536 B |
+| 1460 / 4096 | 5,680 B | ≤ 1,460 B | ≤ 4,096 B |
+
+The trade: the smallest RAM of any design, at the cost of send throughput on
+links with a long round trip.  For a device page, a TLS handshake or a
+configuration API it is rarely the bottleneck; for bulk upload from the device
+it is.
+
+---
+
+## 5. Future designs — not implemented
+
+Nothing in this section exists in the code.  `tcp_buf.h` declares only the
+stop-and-wait buffers; earlier versions also declared ring and packet-list
+contexts that were never written.
+
+### 5.1 Ring buffer (REQ-TCP-146)
+
+- **TX:** a ring with three positions: the oldest unacknowledged byte
+  (SND.UNA), the next byte to send (SND.NXT) and the end of the written data.
+  `write` appends at the end, and keeps accepting while data is in flight;
+  `next_segment` returns up to `mss` bytes from the send position (only up to
+  the physical end of the ring, or it must copy); `ack` advances the oldest
+  position; `mark_retransmit` moves the send position back to it.
+- **RX:** the stop-and-wait receive ring (section 4.2) already is this.
+- **Memory:** TX and RX capacity, chosen freely.  **Throughput:** limited by
+  the peer's window and the congestion window rather than by one segment.
+
+The buffer is the easy part.  Several segments in flight need `tcp.c` to
+change first:
+
+- `flush()` must use the usable window, SND.UNA + SND.WND − SND.NXT, and keep
+  sending while it and the buffer allow.
+- Congestion control (RFC 5681: congestion window, slow start, congestion
+  avoidance, REQ-TCP-101..105), since REQ-TCP-108 no longer covers it; fast
+  retransmit and recovery (REQ-TCP-106, 107) need duplicate-ACK counting.
+- RTT measurement and a computed RTO (REQ-TCP-091, 099, 100).
+- Partial acknowledgements become normal.  After one, `flush()` must keep
+  sending at SND.NXT, from the buffer's send position, not from its oldest
+  byte (see the partial-ACK gap in [tcp.md](tcp.md) section 8.3).
+- Retransmission on a timeout: rewinding SND.NXT to SND.UNA resends
+  everything in flight (go-back-N); with a FIN already sent, the resend must
+  stop short of the FIN's sequence number.
+- `probe_zero_window()` rewinds SND.NXT to SND.UNA whenever `in_flight()` is
+  non-zero, which is right only when the one byte in flight is the probe.
+- `tcp_close()` must queue the FIN behind unsent data (§3.10.4), which will
+  then be common.
+
+### 5.2 Packet list (REQ-TCP-147)
+
+- **TX:** the application provides a pool of nodes `{data pointer, length,
+  next}`.  `write` queues a node that points at the application's own data,
+  so constant pages in flash go out without a copy into RAM; that data must
+  then stay valid until it is acknowledged.  `next_segment` returns a node, or
+  part of one, up to `mss`; `ack` frees whole nodes and must handle an ACK that
+  ends inside one; `mark_retransmit` goes back to the oldest node.
+- **RX:** the same structure, or the ring.
+- **Memory:** the node pool, sized by the application.  **Throughput:** as the
+  ring.
+
+It needs the same `tcp.c` changes as the ring.
+
+---
+
+## 6. Writing another implementation
+
+- Fill every member of both tables.
+- Keep the sequence rules of section 2; clamp `ack()`.
+- Return 0 from `next_segment()` while anything is in flight, until `tcp.c`
+  supports more (section 5.1).
+- Shrink `available()` only in `deliver()`, keep `available()` + `readable()`
+  constant, and stay within 65535.
+- Run `tests/unit/test_tcp.c` with the new tables, and write the equivalent of
+  `tests/unit/test_tcp_buf.c` for the buffer itself.

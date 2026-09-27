@@ -102,8 +102,7 @@ static void reset_sent(void) {
 static void setup_cap(uint16_t tx_cap) {
   int ctx = 0;
   reset_sent();
-  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, tx_cap, NULL, &stub_drv,
-           &ctx);
+  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, tx_cap, NULL, &stub_drv, &ctx);
 }
 
 /** Started, DAD finished: the link-local address is PREFERRED. */
@@ -120,8 +119,7 @@ static void setup_up(void) {
 /** Ethernet + IPv6 header + payload bytes (copied). */
 static uint16_t build_ip6(uint8_t *f, const uint8_t *dst_mac,
                           const uint8_t *src, const uint8_t *dst, uint8_t nh,
-                          uint8_t hlim, const uint8_t *payload,
-                          uint16_t plen) {
+                          uint8_t hlim, const uint8_t *payload, uint16_t plen) {
   memcpy(f, dst_mac, 6);
   memcpy(f + 6, peer_mac, 6);
   net_write16be(f + 12, NET_ETHERTYPE_IPV6);
@@ -356,8 +354,8 @@ TEST(test_parse_no_next_header) {
 TEST(test_parse_hop_by_hop_not_first_is_unrecognized) {
   /* DestOpts -> HBH: HBH is only valid first (RFC 8200 §4.1), so the
    * walk stops there and reports it as the (unknown) upper layer. */
-  uint8_t f[128], p[16] = {IPV6_NH_HOPOPT, 0, 1, 4, 0, 0, 0, 0,
-                           58,             0, 1, 4, 0, 0, 0, 0};
+  uint8_t f[128],
+      p[16] = {IPV6_NH_HOPOPT, 0, 1, 4, 0, 0, 0, 0, 58, 0, 1, 4, 0, 0, 0, 0};
   build_ip6(f, our_mac, peer_ll, our_ll, IPV6_NH_DSTOPTS, 64, p, 16);
   ipv6_hdr_t h;
   ASSERT_EQ(ipv6_parse(f + 14, 56, &h), NET_OK);
@@ -389,8 +387,8 @@ TEST(test_start_forms_tentative_link_local) {
   ASSERT_EQ(ipv6_addr_state(&net, 0), NET_IP6_NONE);
   ipv6_start(&net);
   ASSERT_EQ(ipv6_addr_state(&net, 0), NET_IP6_TENTATIVE);
-  ASSERT_MEM_EQ(net.ip6[0].addr, our_ll, 16);
-  ASSERT_EQ(net.ip6_hop_limit, NET_IPV6_DEFAULT_HOP_LIMIT);
+  ASSERT_MEM_EQ(net.ip6.addr[0].addr, our_ll, 16);
+  ASSERT_EQ(net.ip6.hop_limit, NET_IPV6_DEFAULT_HOP_LIMIT);
   ASSERT_EQ(send_count, 0); /* the probe waits for a tick */
 }
 

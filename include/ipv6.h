@@ -7,8 +7,8 @@
  * Addresses are 16-byte arrays in network byte order.
  *
  * Start IPv6 on an interface with ipv6_start() (forms the link-local
- * address and runs Duplicate Address Detection) and call ipv6_tick()
- * periodically.  See docs/design/ipv6.md.
+ * address and runs Duplicate Address Detection); net_tick() runs its
+ * timers.  See docs/design/ipv6.md.
  */
 
 #ifndef IPV6_H
@@ -20,8 +20,7 @@
 #include <stdint.h>
 #include <string.h>
 
-/* ── Header layout ────────────────────────────────────────────────── */
-
+/* Header layout */
 #define IPV6_OFF_VTF 0  /* Version (4) | Traffic Class (8) | Flow (20) */
 #define IPV6_OFF_PLEN 4 /* Payload Length (2) */
 #define IPV6_OFF_NH 6   /* Next Header (1) */
@@ -32,8 +31,7 @@
 
 #define IPV6_MIN_MTU 1280 /* RFC 8200 §5 */
 
-/* ── Next Header values ───────────────────────────────────────────── */
-
+/* Next Header values */
 #define IPV6_NH_HOPOPT 0
 #define IPV6_NH_TCP 6
 #define IPV6_NH_UDP 17
@@ -43,7 +41,7 @@
 #define IPV6_NH_NONE 59
 #define IPV6_NH_DSTOPTS 60
 
-/* ── Parsed header ────────────────────────────────────────────────── */
+/* Parsed header */
 
 /**
  * @brief An IPv6 packet after the extension-header walk.  Pointers point
@@ -63,15 +61,17 @@ typedef struct {
                              Problem pointer if it is unknown */
 } ipv6_hdr_t;
 
-/* ── Address helpers ──────────────────────────────────────────────── */
+/* Addresses */
+extern const uint8_t ipv6_unspecified[16]; /**< :: */
+extern const uint8_t ipv6_all_nodes[16];   /**< ff02::1 */
+extern const uint8_t ipv6_all_routers[16]; /**< ff02::2 */
 
 static inline int ipv6_addr_equal(const uint8_t *a, const uint8_t *b) {
   return memcmp(a, b, 16) == 0;
 }
 
 static inline int ipv6_is_unspecified(const uint8_t *a) {
-  static const uint8_t zero[16] = {0};
-  return memcmp(a, zero, 16) == 0;
+  return ipv6_addr_equal(a, ipv6_unspecified);
 }
 
 static inline int ipv6_is_multicast(const uint8_t *a) { return a[0] == 0xFF; }
@@ -88,10 +88,9 @@ static inline void ipv6_mcast_mac(const uint8_t *group, uint8_t mac[6]) {
   memcpy(mac + 2, group + 12, 4);
 }
 
-/** Solicited-node group of an address: ff02::1:ff + low 24 bits. */
+/** Solicited-node group of an address: ff02::1:ff00:0/104 + low 24 bits. */
 static inline void ipv6_solicited_node(const uint8_t *addr, uint8_t out[16]) {
-  /* ff02:0:0:0:0:1:ff00::/104 */
-  static const uint8_t prefix[13] = {0xFF, 0x02, 0, 0, 0, 0, 0,
+  static const uint8_t prefix[13] = {0xFF, 0x02, 0, 0, 0, 0,   0,
                                      0,    0,    0, 0, 1, 0xFF};
   memcpy(out, prefix, 13);
   memcpy(out + 13, addr + 13, 3);
@@ -114,7 +113,7 @@ static inline void ipv6_link_local_from_mac(const uint8_t mac[6],
   out[15] = mac[5];
 }
 
-/* ── Packets ──────────────────────────────────────────────────────── */
+/* Packets */
 
 /**
  * Parse an IPv6 header and its extension-header chain in place.
@@ -140,19 +139,15 @@ void ipv6_input(net_t *net, const eth_frame_t *eth);
 void ipv6_build(uint8_t *buf, uint16_t payload_len, uint8_t next_header,
                 const uint8_t *src, const uint8_t *dst, uint8_t hop_limit);
 
-/** Add the IPv6 pseudo-header (RFC 8200 §8.1) to a checksum. */
-void ipv6_pseudo_sum(net_cksum_t *c, const uint8_t *src, const uint8_t *dst,
-                     uint16_t upper_len, uint8_t next_header);
-
 /**
  * Upper-layer checksum (TCP, UDP, ICMPv6) of @p data over the
- * pseudo-header.  With the checksum field zero, this is the value to
- * store; over a received message it is 0 when the checksum is valid.
+ * pseudo-header (RFC 8200 §8.1).  With the checksum field zero, this is the
+ * value to store; over a received message it is 0 when the checksum is valid.
  */
-uint16_t ipv6_cksum(const uint8_t *src, const uint8_t *dst,
-                    uint8_t next_header, const uint8_t *data, uint16_t len);
+uint16_t ipv6_cksum(const uint8_t *src, const uint8_t *dst, uint8_t next_header,
+                    const uint8_t *data, uint16_t len);
 
-/* ── The interface's addresses ────────────────────────────────────── */
+/* The interface's addresses */
 
 /**
  * Form the link-local address from the MAC and start Duplicate Address
@@ -160,7 +155,8 @@ uint16_t ipv6_cksum(const uint8_t *src, const uint8_t *dst,
  */
 void ipv6_start(net_t *net);
 
-/** Advance IPv6 timers (DAD) by @p elapsed_ms. */
+/** Advance DAD, router discovery, MLD and the address lifetimes (called
+ *  by net_tick()). */
 void ipv6_tick(net_t *net, uint32_t elapsed_ms);
 
 /** State (NET_IP6_*) of address slot @p slot. */
@@ -183,9 +179,6 @@ const uint8_t *ipv6_src_for(const net_t *net, const uint8_t *dst);
 /** True if @p mac is all-nodes or the solicited-node group of one of our
  *  configured (incl. tentative) addresses. */
 int ipv6_mac_accepted(const net_t *net, const uint8_t *mac);
-
-/** Next pseudo-random 32-bit value (xorshift32 on net->ip6_rng). */
-uint32_t ipv6_random(net_t *net);
 
 /**
  * Add a global address (static configuration, SLAAC, DHCPv6) and start
@@ -215,6 +208,13 @@ int ipv6_mcast_is_member(const net_t *net, const uint8_t *group);
 
 /** Remove one of our global addresses (no-op if absent). */
 void ipv6_addr_remove(net_t *net, const uint8_t *addr);
+
+/**
+ * New lifetimes for the address in @p slot (SLAAC, DHCPv6 renewal); a
+ * usable address becomes PREFERRED or DEPRECATED to match.
+ */
+void ipv6_addr_set_lifetimes(net_t *net, uint8_t slot, uint32_t valid_s,
+                             uint32_t preferred_s);
 
 /** MAC of the default router, or NULL if none (RA router lifetime). */
 const uint8_t *ipv6_router_mac(const net_t *net);

@@ -25,12 +25,8 @@
 #endif
 
 /* The transcript state lives in tls_hash_t */
-typedef char tls_hash_state_fits[(sizeof(mbedtls_sha256_context) <=
-                                  TLS_HASH_STATE_SIZE)
-                                     ? 1
-                                     : -1];
-
-/* ── SHA-256 ──────────────────────────────────────────────────────── */
+typedef char tls_hash_state_fits
+    [(sizeof(mbedtls_sha256_context) <= TLS_HASH_STATE_SIZE) ? 1 : -1];
 
 static void hash_init(tls_hash_t *h) {
   mbedtls_sha256_context *s = (mbedtls_sha256_context *)(void *)h->bytes;
@@ -45,13 +41,11 @@ static void hash_update(tls_hash_t *h, const uint8_t *data, size_t len) {
 static void hash_peek(const tls_hash_t *h, uint8_t out[TLS_HASH_LEN]) {
   mbedtls_sha256_context tmp;
   mbedtls_sha256_init(&tmp);
-  mbedtls_sha256_clone(&tmp, (const mbedtls_sha256_context *)(const void *)
-                                 h->bytes);
+  mbedtls_sha256_clone(&tmp,
+                       (const mbedtls_sha256_context *)(const void *)h->bytes);
   mbedtls_sha256_finish(&tmp, out);
   mbedtls_sha256_free(&tmp);
 }
-
-/* ── HMAC and HKDF ────────────────────────────────────────────────── */
 
 static const mbedtls_md_info_t *sha256_md(void) {
   return mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
@@ -73,8 +67,6 @@ static void hkdf_expand(const uint8_t prk[TLS_HASH_LEN], const uint8_t *info,
   mbedtls_hkdf_expand(sha256_md(), prk, TLS_HASH_LEN, info, info_len, out,
                       out_len);
 }
-
-/* ── AES-128-GCM ──────────────────────────────────────────────────── */
 
 static void aead_seal(const uint8_t key[TLS_AEAD_KEY_LEN],
                       const uint8_t nonce[TLS_AEAD_IV_LEN], const uint8_t *aad,
@@ -102,8 +94,6 @@ static int aead_open(const uint8_t key[TLS_AEAD_KEY_LEN],
   mbedtls_gcm_free(&g);
   return r == 0 ? 0 : -1;
 }
-
-/* ── (EC)DHE ──────────────────────────────────────────────────────── */
 
 static mbedtls_ecp_group_id group_id(uint16_t group) {
   switch (group) {
@@ -205,11 +195,8 @@ done:
   return r == 0 ? 0 : -1;
 }
 
-/* ── Signatures ───────────────────────────────────────────────────── */
-
-static int sign(void *ctx, const void *key, uint16_t scheme,
-                const uint8_t *msg, size_t len, uint8_t *sig,
-                size_t *sig_len, size_t sig_cap) {
+static int sign(void *ctx, const void *key, uint16_t scheme, const uint8_t *msg,
+                size_t len, uint8_t *sig, size_t *sig_len, size_t sig_cap) {
   tls_mbedtls_t *be = (tls_mbedtls_t *)ctx;
   mbedtls_pk_context *pk = (mbedtls_pk_context *)(uintptr_t)key;
   uint8_t hash[32];
@@ -218,8 +205,8 @@ static int sign(void *ctx, const void *key, uint16_t scheme,
   mbedtls_sha256(msg, len, hash, 0);
   if (scheme == TLS_SIG_ECDSA_SECP256R1_SHA256 &&
       mbedtls_pk_can_do(pk, MBEDTLS_PK_ECDSA))
-    r = mbedtls_pk_sign(pk, MBEDTLS_MD_SHA256, hash, 32, sig, sig_cap,
-                        sig_len, mbedtls_ctr_drbg_random, &be->drbg);
+    r = mbedtls_pk_sign(pk, MBEDTLS_MD_SHA256, hash, 32, sig, sig_cap, sig_len,
+                        mbedtls_ctr_drbg_random, &be->drbg);
   else if (scheme == TLS_SIG_RSA_PSS_RSAE_SHA256 &&
            mbedtls_pk_can_do(pk, MBEDTLS_PK_RSA))
     r = mbedtls_pk_sign_ext(MBEDTLS_PK_RSASSA_PSS, pk, MBEDTLS_MD_SHA256, hash,
@@ -242,8 +229,7 @@ static int verify_pk(mbedtls_pk_context *pk, uint16_t scheme,
         mbedtls_ecp_keypair_get_group_id(mbedtls_pk_ec(*pk)) !=
             MBEDTLS_ECP_DP_SECP256R1)
       return -1;
-    return mbedtls_pk_verify(pk, MBEDTLS_MD_SHA256, hash, 32, sig, sig_len) ==
-                   0
+    return mbedtls_pk_verify(pk, MBEDTLS_MD_SHA256, hash, 32, sig, sig_len) == 0
                ? 0
                : -1;
   }
@@ -254,8 +240,7 @@ static int verify_pk(mbedtls_pk_context *pk, uint16_t scheme,
     opt.mgf1_hash_id = MBEDTLS_MD_SHA256;
     opt.expected_salt_len = 32; /* salt = hash length (RFC 8446 §4.2.3) */
     return mbedtls_pk_verify_ext(MBEDTLS_PK_RSASSA_PSS, &opt, pk,
-                                 MBEDTLS_MD_SHA256, hash, 32, sig,
-                                 sig_len) == 0
+                                 MBEDTLS_MD_SHA256, hash, 32, sig, sig_len) == 0
                ? 0
                : -1;
   }
@@ -311,8 +296,6 @@ static int random_bytes(void *ctx, uint8_t *out, size_t len) {
   tls_mbedtls_t *be = (tls_mbedtls_t *)ctx;
   return mbedtls_ctr_drbg_random(&be->drbg, out, len) == 0 ? 0 : -1;
 }
-
-/* ── Setup ────────────────────────────────────────────────────────── */
 
 int tls_mbedtls_init(tls_mbedtls_t *be, tls_crypto_t *c) {
   static const char pers[] = "smallest_tcp tls";

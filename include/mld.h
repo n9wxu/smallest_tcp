@@ -23,9 +23,9 @@
 #define MLD_V2_REPORT 143
 
 /* MLDv2 Multicast Address Record types (RFC 3810 §5.2.12) */
-#define MLD_MODE_IS_EXCLUDE 2    /* answer to a query: listening */
-#define MLD_CHANGE_TO_INCLUDE 3  /* with no sources: left the group */
-#define MLD_CHANGE_TO_EXCLUDE 4  /* with no sources: joined the group */
+#define MLD_MODE_IS_EXCLUDE 2   /* answer to a query: listening */
+#define MLD_CHANGE_TO_INCLUDE 3 /* with no sources: left the group */
+#define MLD_CHANGE_TO_EXCLUDE 4 /* with no sources: joined the group */
 
 #define MLD_V1_QUERY_LEN 24
 #define MLD_V2_QUERY_MIN_LEN 28
@@ -45,5 +45,8 @@ void mld_report_change(net_t *net, const uint8_t *leaving);
 
 /** Advance query-response and retransmission timers (from ipv6_tick()). */
 void mld_tick(net_t *net, uint32_t elapsed_ms);
+
+/** Count down MLDv1 compatibility mode (from ipv6_tick(), in seconds). */
+void mld_seconds_elapse(net_t *net, uint32_t secs);
 
 #endif /* MLD_H */

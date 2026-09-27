@@ -5,16 +5,8 @@
  * GET, HEAD and POST against an application route table; every response
  * is sent with Connection: close.  The application owns all memory: one
  * http_conn_t per simultaneous connection, each with its TCP buffers and a
- * request buffer.  The server is driven from the main loop (see
- * docs/design/http.md):
- *
- *   http_conn_init(&conns[i], tx[i], sizeof tx[i], rx[i], sizeof rx[i],
- *                  req[i], sizeof req[i]);
- *   conn_table[i] = http_conn_tcp(&conns[i]);   // register with TCP
- *   http_server_init(&srv, &net, 80, routes, n_routes, conns, n_conns);
- *
- *   loop:  net_poll + eth_input;  http_server_poll(&srv);
- *          every ~10 ms: tcp_tick(&net, ms); http_server_tick(&srv, ms);
+ * request buffer; http_server_poll() and http_server_tick() run from the
+ * main loop.  Over TLS too (http_tls.h).  See docs/design/http.md.
  */
 
 #ifndef HTTP_H
@@ -25,13 +17,12 @@
 #include "tcp_buf.h"
 #include <stdint.h>
 
-/* ── Methods (bitmask, also used for route permissions) ───────────── */
-
+/* Methods (bitmask, also used for route permissions) */
 #define HTTP_GET 0x01
 #define HTTP_HEAD 0x02 /**< Allowed automatically on GET routes */
 #define HTTP_POST 0x04
 
-/* ── Tunables ─────────────────────────────────────────────────────── */
+/* Tunables */
 
 /** Largest response header block (formatted on the stack). */
 #ifndef HTTP_HDR_MAX
@@ -46,16 +37,15 @@
 #define HTTP_RESPONSE_TIMEOUT_MS 10000u
 #endif
 
-/* ── Handler API ──────────────────────────────────────────────────── */
-
+/* Handler API */
 typedef struct {
-  uint8_t method;       /**< HTTP_GET, HTTP_HEAD or HTTP_POST */
-  uint8_t version;      /**< 10 (HTTP/1.0) or 11 (HTTP/1.1) */
-  const char *path;     /**< NUL-terminated, without the query */
-  const char *query;    /**< Text after '?', or "" */
-  const uint8_t *body;  /**< POST body (NULL if none) */
+  uint8_t method;      /**< HTTP_GET, HTTP_HEAD or HTTP_POST */
+  uint8_t version;     /**< 10 (HTTP/1.0) or 11 (HTTP/1.1) */
+  const char *path;    /**< NUL-terminated, without the query */
+  const char *query;   /**< Text after '?', or "" */
+  const uint8_t *body; /**< POST body (NULL if none) */
   uint16_t body_len;
-  uint32_t remote_ip;   /**< Client IPv4, host byte order (0 over IPv6) */
+  uint32_t remote_ip; /**< Client IPv4, host byte order (0 over IPv6) */
 #if NET_USE_IPV6
   const uint8_t *remote_ip6; /**< Client IPv6 address, NULL over IPv4 */
 #endif
@@ -66,23 +56,22 @@ typedef struct {
   const char *content_type; /**< Preset to "text/html" */
   const uint8_t *body;      /**< Must stay valid until the response is sent */
   uint32_t body_len;
-  uint8_t *scratch;         /**< Free space for a generated body */
+  uint8_t *scratch; /**< Free space for a generated body */
   uint16_t scratch_size;
 } http_response_t;
 
 /** @return 0 to send the response, < 0 to send 500 instead. */
-typedef int (*http_handler_t)(const http_request_t *req,
-                              http_response_t *resp, void *ctx);
+typedef int (*http_handler_t)(const http_request_t *req, http_response_t *resp,
+                              void *ctx);
 
 typedef struct {
-  const char *path;       /**< Exact path, e.g. "/api/status" */
-  uint8_t methods;        /**< HTTP_GET and/or HTTP_POST */
+  const char *path; /**< Exact path, e.g. "/api/status" */
+  uint8_t methods;  /**< HTTP_GET and/or HTTP_POST */
   http_handler_t handler;
   void *ctx;
 } http_route_t;
 
-/* ── Parser / formatter (used by the server; public for testing) ──── */
-
+/* Parser / formatter (used by the server; public for testing) */
 #define HTTP_PARSE_OK 0
 
 /**
@@ -113,33 +102,56 @@ uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
                             const char *content_type, uint32_t content_length,
                             uint8_t allow);
 
-/* ── Server ───────────────────────────────────────────────────────── */
+/* Server */
+
+struct http_conn_s;
+
+/**
+ * How a slot's bytes travel: plain TCP (the default) or TLS carried over
+ * TCP (http_conn_use_tls(), http_tls.h).  The server keeps the TCP
+ * connection itself; the transport moves the request and response.
+ */
+typedef struct {
+  /** A client connected: start the stream (e.g. a TLS handshake). */
+  void (*accepted)(net_t *net, struct http_conn_s *c);
+  /** Request bytes, if any have arrived. */
+  uint16_t (*read)(net_t *net, struct http_conn_s *c, uint8_t *buf,
+                   uint16_t len);
+  /** Queue response bytes; returns how many were taken. */
+  uint16_t (*write)(struct http_conn_s *c, const uint8_t *data, uint16_t len);
+  /** Send what was queued. */
+  void (*flush)(net_t *net, struct http_conn_s *c);
+  /** The response is complete: end the stream (e.g. close_notify). */
+  void (*finish)(net_t *net, struct http_conn_s *c);
+  /** The client can send nothing more. */
+  int (*client_done)(const struct http_conn_s *c);
+  /** Everything queued has reached the client. */
+  int (*delivered)(struct http_conn_s *c);
+} http_transport_t;
 
 /** One connection slot.  Initialise with http_conn_init(). */
-typedef struct {
+typedef struct http_conn_s {
   tcp_conn_t tcp; /**< The slot's TCP connection (register it) */
   tcp_saw_tx_ctx_t tx_ctx;
   tcp_saw_rx_ctx_t rx_ctx;
-  uint8_t *tx_mem;
-  uint8_t *rx_mem;
-  uint16_t tx_size;
-  uint16_t rx_size;
-  char *req;          /**< Request buffer */
+  const http_transport_t *transport;
+  void *transport_ctx; /**< E.g. the slot's tls_conn_t */
+  char *req;           /**< Request buffer */
   uint16_t req_size;
-  uint16_t req_len;   /**< Bytes received so far */
-  uint16_t hdr_len;   /**< End of the header block, 0 until complete */
+  uint16_t req_len; /**< Bytes received so far */
+  uint16_t hdr_len; /**< End of the header block, 0 until complete */
   uint32_t content_length;
   http_request_t request; /**< Parsed request (valid once hdr_len != 0) */
   uint32_t timer_ms;
   uint8_t state;
-  uint8_t head_only;  /**< HEAD: send the header block only */
-  uint8_t allow;      /**< Allow header for 405 */
+  uint8_t head_only; /**< HEAD: send the header block only */
+  uint8_t allow;     /**< Allow header for 405 */
   uint16_t status;
   const char *content_type;
   const uint8_t *body;
   uint32_t body_len;
   uint16_t resp_hdr_len; /**< Length of the formatted response header */
-  uint32_t sent;      /**< Header + body bytes accepted by TCP */
+  uint32_t sent;         /**< Header + body bytes the transport took */
 } http_conn_t;
 
 typedef struct {
@@ -159,7 +171,7 @@ net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
                          uint8_t *rx_mem, uint16_t rx_size, char *req_buf,
                          uint16_t req_size);
 
-/** The slot's TCP connection, for the application's tcp_connections table. */
+/** The slot's TCP connection, for tcp_set_connections(). */
 static inline tcp_conn_t *http_conn_tcp(http_conn_t *c) { return &c->tcp; }
 
 /** Put every slot in LISTEN on @p port. */

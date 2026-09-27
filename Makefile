@@ -1,390 +1,148 @@
-# Portable Minimal TCP/IP Stack — Makefile
+# smallest_tcp — ARM Cortex-M0 code size measurement.
 #
-# C99, -Wall -Werror. Builds library, unit tests, and demo.
-# Auto-detects Linux (TAP + raw socket) or macOS (BPF) for the driver.
+# The library, tests and demos build with CMake (see the README):
+#   cmake -S . -B build && cmake --build build && ctest --test-dir build
+#
+# This Makefile builds the size benchmark (bench/size_measure.c) with
+# arm-none-eabi-gcc, -Os -mthumb, and checks that no configuration needs a
+# library divide (Cortex-M0 has no divide instruction; docs/design/
+# coding-rules.md).  CI runs `make arm-size-all`.
+#
+#   arm-size        UDP echo (ETH + ARP + IPv4 + ICMP + UDP), -DNET_USE_TCP=0:
+#                   the lwIP UDP-only comparison
+#   arm-size-tcp    UDP echo + TCP echo server
+#   arm-size-mdns   UDP echo + mDNS/DNS-SD responder
+#   arm-size-http   UDP echo + HTTP server (one connection slot)
+#   arm-size-ipv6   UDP echo, dual stack (IPv6, ICMPv6, ND, SLAAC, MLD)
+#   arm-size-tls    the TLS 1.3 protocol code: server only, then client and
+#                   server (the crypto backend is extra and not measured)
+#   arm-check-division  fail if any ARM object calls a library divide
 
-CC       ?= cc
-CFLAGS   := -std=c99 -Wall -Wextra -Werror -pedantic
-CFLAGS   += -Iinclude
-LDFLAGS  :=
-
-# Build directory
-BUILD    := build
-
-# ── Source files ──────────────────────────────────────────────────────
-
-LIB_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
-            src/tcp.c src/tcp_buf_saw.c
-
-# Platform-specific driver
-UNAME_S  := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-  LIB_SRCS += src/driver/tap.c src/driver/rawsock.c
-  DRIVER_DEMO := tap
-else ifeq ($(UNAME_S),Darwin)
-  LIB_SRCS += src/driver/bpf.c
-  DRIVER_DEMO := bpf
-endif
-
-LIB_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(LIB_SRCS))
-
-# ── Unit test executables ─────────────────────────────────────────────
-
-# Core stack sources needed by most tests
-STACK_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
-              src/tcp.c src/tcp_buf_saw.c
-
-TEST_SRCS := tests/unit/test_endian.c \
-             tests/unit/test_checksum.c \
-             tests/unit/test_eth.c \
-             tests/unit/test_net.c \
-             tests/unit/test_arp.c \
-             tests/unit/test_ipv4.c \
-             tests/unit/test_icmp.c \
-             tests/unit/test_udp.c \
-             tests/unit/test_tcp_buf.c \
-             tests/unit/test_tcp.c \
-             tests/unit/test_tftp.c \
-             tests/unit/test_dhcpv4.c \
-             tests/unit/test_dns_wire.c \
-             tests/unit/test_mcast.c \
-             tests/unit/test_mdns.c \
-             tests/unit/test_http.c \
-             tests/unit/test_rawsock.c \
-             tests/unit/test_ipv6.c \
-             tests/unit/test_udp6.c \
-             tests/unit/test_tcp6.c \
-             tests/unit/test_slaac.c \
-             tests/unit/test_dhcpv6.c \
-             tests/unit/test_mld.c \
-             tests/unit/test_mdns6.c
-
-TEST_BINS := $(patsubst tests/unit/%.c,$(BUILD)/tests/%,$(TEST_SRCS))
-
-# ── Demo executables ──────────────────────────────────────────────────
-
-DEMO_SRCS := demo/echo_server/main.c
-
-# ── Targets ───────────────────────────────────────────────────────────
-
-.PHONY: all lib test demo clean
-
-all: lib test demo
-
-# Static library
-lib: $(BUILD)/libnet.a
-
-$(BUILD)/libnet.a: $(LIB_OBJS)
-	@mkdir -p $(dir $@)
-	$(AR) rcs $@ $^
-
-# Compile library sources
-$(BUILD)/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# ── Unit tests ────────────────────────────────────────────────────────
-
-test: $(TEST_BINS)
-	@echo "=== Running unit tests ==="
-	@fail=0; \
-	for t in $(TEST_BINS); do \
-		echo "--- $$t ---"; \
-		$$t || fail=1; \
-	done; \
-	if [ $$fail -eq 0 ]; then \
-		echo ""; \
-		echo "=== ALL TESTS PASSED ==="; \
-	else \
-		echo ""; \
-		echo "=== SOME TESTS FAILED ==="; \
-		exit 1; \
-	fi
-
-# Test for endian (header-only, no lib needed)
-$(BUILD)/tests/test_endian: tests/unit/test_endian.c include/net_endian.h
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ $<
-
-# Test for checksum
-$(BUILD)/tests/test_checksum: tests/unit/test_checksum.c src/net_cksum.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_checksum.c src/net_cksum.c
-
-# Test for eth (needs full stack since eth.c dispatches to arp/ipv4)
-$(BUILD)/tests/test_eth: tests/unit/test_eth.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_eth.c $(STACK_SRCS)
-
-# Test for net
-$(BUILD)/tests/test_net: tests/unit/test_net.c src/net.c src/net_cksum.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_net.c src/net.c src/net_cksum.c
-
-# Test for ARP
-$(BUILD)/tests/test_arp: tests/unit/test_arp.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_arp.c $(STACK_SRCS)
-
-# Test for IPv4
-$(BUILD)/tests/test_ipv4: tests/unit/test_ipv4.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_ipv4.c $(STACK_SRCS)
-
-# Test for ICMP
-$(BUILD)/tests/test_icmp: tests/unit/test_icmp.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_icmp.c $(STACK_SRCS)
-
-# Test for UDP
-$(BUILD)/tests/test_udp: tests/unit/test_udp.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_udp.c $(STACK_SRCS)
-
-# Test for TCP buffer (stop-and-wait)
-$(BUILD)/tests/test_tcp_buf: tests/unit/test_tcp_buf.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tcp_buf.c $(STACK_SRCS)
-
-# Test for TCP state machine
-$(BUILD)/tests/test_tcp: tests/unit/test_tcp.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tcp.c $(STACK_SRCS)
-
-# Test for TFTP client
-$(BUILD)/tests/test_tftp: tests/unit/test_tftp.c src/tftp.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_tftp.c src/tftp.c $(STACK_SRCS)
-
-# Test for DHCPv4 client + server
-$(BUILD)/tests/test_dhcpv4: tests/unit/test_dhcpv4.c src/dhcpv4_client.c src/dhcpv4_server.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_dhcpv4.c \
-		src/dhcpv4_client.c src/dhcpv4_server.c $(STACK_SRCS)
-
-# Test for DNS wire format helpers
-$(BUILD)/tests/test_dns_wire: tests/unit/test_dns_wire.c src/dns_wire.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_dns_wire.c src/dns_wire.c
-
-# Test for IPv4 multicast + IGMP
-$(BUILD)/tests/test_mcast: tests/unit/test_mcast.c src/igmp.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_mcast.c src/igmp.c $(STACK_SRCS)
-
-# Test for the mDNS responder
-MDNS_SRCS := src/mdns.c src/dns_wire.c src/igmp.c
-$(BUILD)/tests/test_mdns: tests/unit/test_mdns.c $(MDNS_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_mdns.c $(MDNS_SRCS) $(STACK_SRCS)
-
-# Test for the HTTP server
-$(BUILD)/tests/test_http: tests/unit/test_http.c src/http.c $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_http.c src/http.c $(STACK_SRCS)
-
-# Test for IPv6 + ICMPv6 + NDP (dual-stack build: its own sources with
-# NET_USE_IPV6=1; the library above stays IPv4-only)
-IPV6_SRCS := src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c
-$(BUILD)/tests/test_ipv6: tests/unit/test_ipv6.c $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_ipv6.c \
-		$(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for UDP over IPv6
-$(BUILD)/tests/test_udp6: tests/unit/test_udp6.c $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_udp6.c \
-		$(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for TCP over IPv6
-$(BUILD)/tests/test_tcp6: tests/unit/test_tcp6.c $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_tcp6.c \
-		$(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for router discovery + SLAAC
-$(BUILD)/tests/test_slaac: tests/unit/test_slaac.c $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_slaac.c \
-		$(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for the DHCPv6 client
-$(BUILD)/tests/test_dhcpv6: tests/unit/test_dhcpv6.c src/dhcpv6_client.c $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_dhcpv6.c \
-		src/dhcpv6_client.c $(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for MLD and IPv6 multicast membership
-$(BUILD)/tests/test_mld: tests/unit/test_mld.c $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_mld.c \
-		$(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for mDNS over IPv6
-$(BUILD)/tests/test_mdns6: tests/unit/test_mdns6.c $(MDNS_SRCS) $(IPV6_SRCS) $(STACK_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DNET_USE_IPV6=1 -Itests/unit -o $@ tests/unit/test_mdns6.c \
-		$(MDNS_SRCS) $(IPV6_SRCS) $(STACK_SRCS)
-
-# Test for the raw-socket driver (live veth tests need root on Linux)
-$(BUILD)/tests/test_rawsock: tests/unit/test_rawsock.c src/driver/rawsock.c src/net_cksum.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Itests/unit -o $@ tests/unit/test_rawsock.c \
-		src/driver/rawsock.c src/net_cksum.c
-
-# ── Demo ──────────────────────────────────────────────────────────────
-
-demo: $(BUILD)/demo/echo_server
-
-$(BUILD)/demo/echo_server: demo/echo_server/main.c $(STACK_SRCS) $(LIB_SRCS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Idemo/common -o $@ demo/echo_server/main.c $(LIB_SRCS)
-
-# ── ARM size measurement ──────────────────────────────────────────────
-
+BUILD      := build
 ARM_CC     := arm-none-eabi-gcc
 ARM_SIZE   := arm-none-eabi-size
-ARM_OBJDUMP:= arm-none-eabi-objdump
+ARM_NM     := arm-none-eabi-nm
 ARM_CFLAGS := -std=c99 -Wall -Wextra -Werror -pedantic \
-              -Os -mthumb -mcpu=cortex-m0 -ffreestanding -ffunction-sections -fdata-sections \
-              -DNET_DEBUG=0 -DNET_ASSERT_ENABLED=0 \
-              -Iinclude
-ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs --specs=nosys.specs -nostartfiles
+              -Os -mthumb -mcpu=cortex-m0 -ffreestanding -ffunction-sections \
+              -fdata-sections -DNET_DEBUG=0 -Iinclude
+ARM_LDFLAGS:= -Wl,--gc-sections -Tbench/cortex-m0.ld --specs=nano.specs \
+              --specs=nosys.specs -nostartfiles
 
-# Three configurations, built into separate object dirs:
-#   arm-size       UDP echo, -DNET_USE_TCP=0 (the lwIP UDP-only comparison)
-#   arm-size-tcp   UDP echo + TCP echo server (adds tcp.c + tcp_buf_saw.c)
-#   arm-size-mdns  UDP echo + mDNS/DNS-SD responder (adds mdns.c, dns_wire.c,
-#                  igmp.c; one multicast group)
-#   arm-size-http  UDP echo + HTTP server, one connection slot (adds tcp.c,
-#                  tcp_buf_saw.c, http.c)
-#   arm-size-ipv6  UDP echo, dual stack
-#   arm-size-tls   tls.c alone (TLS 1.3 client + server protocol code)
-# The first two compile multicast RX out (NET_MAX_MCAST_GROUPS=0): neither
-# app joins a group, and the lwIP build has IGMP off.
+# The UDP-only and TCP builds compile multicast reception out: neither
+# joins a group, and the lwIP build has IGMP off.
 ARM_NOMCAST := -DNET_MAX_MCAST_GROUPS=0
 
-ARM_UDP_SRCS := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c src/icmp.c src/udp.c \
-                src/driver/stub.c bench/size_measure.c
-ARM_TCP_SRCS := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
+ARM_UDP_SRCS  := src/net.c src/net_cksum.c src/eth.c src/arp.c src/ipv4.c \
+                 src/icmp.c src/udp.c src/driver/stub.c bench/size_measure.c
+ARM_TCP_SRCS  := $(ARM_UDP_SRCS) src/tcp.c src/tcp_buf_saw.c
 ARM_MDNS_SRCS := $(ARM_UDP_SRCS) src/mdns.c src/dns_wire.c src/igmp.c
-ARM_HTTP_SRCS := $(ARM_TCP_SRCS) src/http.c
+ARM_HTTP_SRCS := $(ARM_TCP_SRCS) src/http.c src/net_text.c
 ARM_IPV6_SRCS := $(ARM_UDP_SRCS) src/ipv6.c src/icmpv6.c src/ndp.c src/mld.c
-# IPv6 benchmark: dual stack, no IPv4/IPv6 multicast groups to join
+ARM_TLS_SERVER_SRCS := src/tls.c src/tls_keys.c src/tls_server.c
+ARM_TLS_SRCS  := $(ARM_TLS_SERVER_SRCS) src/tls_client.c
+
+ARM_UDP_FLAGS  := $(ARM_NOMCAST) -DNET_USE_TCP=0
+ARM_TCP_FLAGS  := $(ARM_NOMCAST)
+ARM_MDNS_FLAGS := -DNET_USE_TCP=0 -DBENCH_MDNS
+ARM_HTTP_FLAGS := $(ARM_NOMCAST) -DBENCH_HTTP
 ARM_IPV6_FLAGS := $(ARM_NOMCAST) -DNET_USE_TCP=0 -DNET_USE_IPV6=1 \
                   -DNET_MAX_MCAST6_GROUPS=0 -DBENCH_IPV6
+ARM_TLS_FLAGS  :=
 
-ARM_UDP_OBJS := $(patsubst %.c,$(BUILD)/arm/udp/%.o,$(ARM_UDP_SRCS))
-ARM_TCP_OBJS := $(patsubst %.c,$(BUILD)/arm/tcp/%.o,$(ARM_TCP_SRCS))
-ARM_MDNS_OBJS := $(patsubst %.c,$(BUILD)/arm/mdns/%.o,$(ARM_MDNS_SRCS))
-ARM_HTTP_OBJS := $(patsubst %.c,$(BUILD)/arm/http/%.o,$(ARM_HTTP_SRCS))
-ARM_IPV6_OBJS := $(patsubst %.c,$(BUILD)/arm/ipv6/%.o,$(ARM_IPV6_SRCS))
+ARM_CONFIGS := udp tcp mdns http ipv6
 
-.PHONY: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 arm-size-tls
+.PHONY: help arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 \
+        arm-size-tls arm-size-all arm-check-division clean
 
-arm-size: $(BUILD)/arm/udp/size_measure.elf
-	@echo ""
-	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo, -Os -mthumb) ==="
-	@$(ARM_SIZE) $<
-	@echo ""
-	@echo "=== Per-module sizes ==="
-	@$(ARM_SIZE) $(ARM_UDP_OBJS)
-	@echo ""
-	@echo "Flash = .text + .data, RAM = .data + .bss"
+help:
+	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
 
-arm-size-tcp: $(BUILD)/arm/tcp/size_measure.elf
-	@echo ""
-	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP + TCP echo, -Os -mthumb) ==="
-	@$(ARM_SIZE) $<
-	@echo ""
-	@echo "=== Per-module sizes ==="
-	@$(ARM_SIZE) $(ARM_TCP_OBJS)
-	@echo ""
-	@echo "Flash = .text + .data, RAM = .data + .bss"
+# One benchmark configuration: $(1) name, $(2) sources, $(3) flags
+define arm_config
+ARM_$(1)_OBJS := $$(patsubst %.c,$$(BUILD)/arm/$(1)/%.o,$(2))
 
-arm-size-mdns: $(BUILD)/arm/mdns/size_measure.elf
-	@echo ""
-	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo + mDNS/DNS-SD, -Os -mthumb) ==="
-	@$(ARM_SIZE) $<
-	@echo ""
-	@echo "=== Per-module sizes ==="
-	@$(ARM_SIZE) $(ARM_MDNS_OBJS)
-	@echo ""
-	@echo "Flash = .text + .data, RAM = .data + .bss"
+$$(BUILD)/arm/$(1)/%.o: %.c
+	@mkdir -p $$(dir $$@)
+	$$(ARM_CC) $$(ARM_CFLAGS) $(3) -c -o $$@ $$<
 
-$(BUILD)/arm/udp/size_measure.elf: $(ARM_UDP_OBJS)
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DNET_USE_TCP=0 $(ARM_LDFLAGS) -o $@ $^
+$$(BUILD)/arm/$(1)/size_measure.elf: $$(ARM_$(1)_OBJS)
+	$$(ARM_CC) $$(ARM_CFLAGS) $(3) $$(ARM_LDFLAGS) -o $$@ $$^
+endef
 
-$(BUILD)/arm/udp/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DNET_USE_TCP=0 -c -o $@ $<
+$(eval $(call arm_config,udp,$(ARM_UDP_SRCS),$(ARM_UDP_FLAGS)))
+$(eval $(call arm_config,tcp,$(ARM_TCP_SRCS),$(ARM_TCP_FLAGS)))
+$(eval $(call arm_config,mdns,$(ARM_MDNS_SRCS),$(ARM_MDNS_FLAGS)))
+$(eval $(call arm_config,http,$(ARM_HTTP_SRCS),$(ARM_HTTP_FLAGS)))
+$(eval $(call arm_config,ipv6,$(ARM_IPV6_SRCS),$(ARM_IPV6_FLAGS)))
 
-$(BUILD)/arm/tcp/size_measure.elf: $(ARM_TCP_OBJS)
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) $(ARM_LDFLAGS) -o $@ $^
-
-$(BUILD)/arm/tcp/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -c -o $@ $<
-
-arm-size-http: $(BUILD)/arm/http/size_measure.elf
-	@echo ""
-	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo + HTTP server, -Os -mthumb) ==="
-	@$(ARM_SIZE) $<
-	@echo ""
-	@echo "=== Per-module sizes ==="
-	@$(ARM_SIZE) $(ARM_HTTP_OBJS)
-	@echo ""
-	@echo "Flash = .text + .data, RAM = .data + .bss"
-
-$(BUILD)/arm/http/size_measure.elf: $(ARM_HTTP_OBJS)
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DBENCH_HTTP $(ARM_LDFLAGS) -o $@ $^
-
-$(BUILD)/arm/http/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_NOMCAST) -DBENCH_HTTP -c -o $@ $<
-
-$(BUILD)/arm/mdns/size_measure.elf: $(ARM_MDNS_OBJS)
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -DBENCH_MDNS $(ARM_LDFLAGS) -o $@ $^
-
-$(BUILD)/arm/mdns/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_TCP=0 -DBENCH_MDNS -c -o $@ $<
-
-arm-size-ipv6: $(BUILD)/arm/ipv6/size_measure.elf
-	@echo ""
-	@echo "=== smallest_tcp ARM Cortex-M0 Size (UDP echo, dual stack IPv4 + IPv6, -Os -mthumb) ==="
-	@$(ARM_SIZE) $<
-	@echo ""
-	@echo "=== Per-module sizes ==="
-	@$(ARM_SIZE) $(ARM_IPV6_OBJS)
-	@echo ""
-	@echo "Flash = .text + .data, RAM = .data + .bss"
-
-$(BUILD)/arm/ipv6/size_measure.elf: $(ARM_IPV6_OBJS)
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_IPV6_FLAGS) $(ARM_LDFLAGS) -o $@ $^
-
-$(BUILD)/arm/ipv6/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) $(ARM_IPV6_FLAGS) -c -o $@ $<
-
-# TLS 1.3 protocol code alone (client + server).  It needs a crypto backend
-# (tls_crypto_t) for anything to link against; that is not measured here.
-arm-size-tls: $(BUILD)/arm/tls/src/tls.o
-	@echo ""
-	@echo "=== smallest_tcp ARM Cortex-M0 Size (TLS 1.3 protocol, tls.c; the crypto backend is extra) ==="
-	@$(ARM_SIZE) $<
+ARM_TLS_OBJS := $(patsubst %.c,$(BUILD)/arm/tls/%.o,$(ARM_TLS_SRCS))
+ARM_TLS_SERVER_OBJS := $(patsubst %.c,$(BUILD)/arm/tls/%.o,$(ARM_TLS_SERVER_SRCS))
 
 $(BUILD)/arm/tls/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(ARM_CC) $(ARM_CFLAGS) -c -o $@ $<
+	$(ARM_CC) $(ARM_CFLAGS) $(ARM_TLS_FLAGS) -c -o $@ $<
 
-# ── Clean ─────────────────────────────────────────────────────────────
+# $(1) title, $(2) ELF, $(3) objects
+define report
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 size: $(1) ==="
+	@$(ARM_SIZE) $(2)
+	@echo ""
+	@echo "=== Per-module sizes ==="
+	@$(ARM_SIZE) $(3)
+	@echo ""
+	@echo "Flash = .text + .data, RAM = .data + .bss"
+endef
+
+arm-size: $(BUILD)/arm/udp/size_measure.elf
+	$(call report,UDP echo,$<,$(ARM_udp_OBJS))
+
+arm-size-tcp: $(BUILD)/arm/tcp/size_measure.elf
+	$(call report,UDP + TCP echo,$<,$(ARM_tcp_OBJS))
+
+arm-size-mdns: $(BUILD)/arm/mdns/size_measure.elf
+	$(call report,UDP echo + mDNS/DNS-SD,$<,$(ARM_mdns_OBJS))
+
+arm-size-http: $(BUILD)/arm/http/size_measure.elf
+	$(call report,UDP echo + HTTP server,$<,$(ARM_http_OBJS))
+
+arm-size-ipv6: $(BUILD)/arm/ipv6/size_measure.elf
+	$(call report,UDP echo dual stack IPv4 + IPv6,$<,$(ARM_ipv6_OBJS))
+
+arm-size-tls: $(ARM_TLS_OBJS)
+	@echo ""
+	@echo "=== smallest_tcp ARM Cortex-M0 size: TLS 1.3 protocol (crypto backend extra) ==="
+	@$(ARM_SIZE) $(ARM_TLS_OBJS)
+	@echo ""
+	@$(ARM_SIZE) -t $(ARM_TLS_SERVER_OBJS) | tail -1 | \
+	  awk '{print "server only (tls.c, tls_keys.c, tls_server.c): " $$1 " bytes .text"}'
+	@$(ARM_SIZE) -t $(ARM_TLS_OBJS) | tail -1 | \
+	  awk '{print "client and server:                             " $$1 " bytes .text"}'
+
+arm-size-all: arm-size arm-size-tcp arm-size-mdns arm-size-http arm-size-ipv6 \
+              arm-size-tls arm-check-division
+
+# Every stack source (dual stack), compiled only for the division check
+ARM_EVERY_SRCS := $(filter-out src/tls_crypto_mbedtls.c,$(wildcard src/*.c))
+ARM_EVERY_OBJS := $(patsubst %.c,$(BUILD)/arm/every/%.o,$(ARM_EVERY_SRCS))
+
+$(BUILD)/arm/every/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(ARM_CC) $(ARM_CFLAGS) -DNET_USE_IPV6=1 -c -o $@ $<
+
+ARM_ALL_OBJS := $(foreach c,$(ARM_CONFIGS),$(ARM_$(c)_OBJS)) $(ARM_TLS_OBJS) \
+                $(ARM_EVERY_OBJS)
+ARM_DIVIDES  := __aeabi_uidiv|__aeabi_idiv|__aeabi_uidivmod|__aeabi_idivmod|__aeabi_uldivmod|__aeabi_ldivmod|__udivsi3|__divsi3|__umodsi3|__modsi3
+
+arm-check-division: $(ARM_ALL_OBJS)
+	@found=$$(for o in $(ARM_ALL_OBJS); do \
+	    $(ARM_NM) -u $$o | grep -Eq '$(ARM_DIVIDES)' && echo "  $$o"; done); \
+	if [ -n "$$found" ]; then \
+	  echo "These objects call a library divide (no division on Cortex-M0):"; \
+	  echo "$$found"; exit 1; \
+	else \
+	  echo "No ARM object calls a library divide."; \
+	fi
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD)/arm

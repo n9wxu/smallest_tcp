@@ -19,8 +19,15 @@
 #include "udp.h"
 #include <string.h>
 
-#define MDNS_GROUP 0xE00000FBu /* 224.0.0.251 */
+#define MDNS_GROUP 0xE00000FBu  /* 224.0.0.251 */
 #define OTHER_GROUP 0xEF800001u /* 239.128.0.1 */
+
+/* The UDP checksum as sent: a computed 0 goes out as 0xFFFF */
+static uint16_t udp_cksum(uint32_t src, uint32_t dst, const uint8_t *udp,
+                          uint16_t len) {
+  uint16_t c = ipv4_cksum(src, dst, IPV4_PROTO_UDP, udp, len);
+  return c ? c : 0xFFFF;
+}
 
 /* ── Stub MAC driver ──────────────────────────────────────────────── */
 
@@ -79,15 +86,16 @@ static uint8_t handler_data[64];
 static uint16_t handler_len;
 
 static void mdns_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                         const uint8_t *src_mac, uint16_t payload_offset,
+                         const uint8_t *src_mac, const uint8_t *payload,
                          uint16_t payload_len) {
+  (void)n;
   (void)src_ip;
   (void)src_port;
   (void)src_mac;
   handler_called = 1;
   handler_len = payload_len;
   if (payload_len <= sizeof(handler_data))
-    n->mac_driver->peek(n->mac_ctx, payload_offset, handler_data, payload_len);
+    memcpy(handler_data, payload, payload_len);
 }
 
 static const udp_port_entry_t ports[] = {{5353, mdns_handler}};
@@ -96,8 +104,7 @@ static void setup(void) {
   static int ctx;
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
            &stub_mac, &ctx);
-  udp_ports.entries = ports;
-  udp_ports.count = 1;
+  udp_set_ports(&net, ports, 1);
   send_count = 0;
   sent_len = 0;
   handler_called = 0;
@@ -129,7 +136,7 @@ static uint16_t build_udp_frame(const uint8_t *dst_mac, uint32_t dst_ip,
   net_write16be(udp + 4, ulen);
   net_write16be(udp + 6, 0);
   memcpy(udp + 8, data, dlen);
-  net_write16be(udp + 6, udp_checksum(PEER_IP, dst_ip, udp, ulen));
+  net_write16be(udp + 6, udp_cksum(PEER_IP, dst_ip, udp, ulen));
   return build_ip_frame(dst_mac, dst_ip, IPV4_PROTO_UDP, udp, ulen);
 }
 
@@ -287,14 +294,14 @@ TEST(test_udp_send_inplace_ttl_255) {
   uint8_t copy[13];
   memcpy(copy, udp, 13);
   net_write16be(copy + 6, 0);
-  ASSERT_EQ(udp_checksum(net.ipv4_addr, MDNS_GROUP, copy, 13), stored);
+  ASSERT_EQ(udp_cksum(net.ipv4_addr, MDNS_GROUP, copy, 13), stored);
 }
 
 TEST(test_udp_send_inplace_too_big) {
   setup();
-  ASSERT_EQ(udp_send_inplace(&net, MDNS_GROUP, mdns_mac, 5353, 5353,
-                             (uint16_t)(sizeof(tx_buf) - UDP_PAYLOAD_OFFSET + 1),
-                             255),
+  ASSERT_EQ(udp_send_inplace(
+                &net, MDNS_GROUP, mdns_mac, 5353, 5353,
+                (uint16_t)(sizeof(tx_buf) - UDP_PAYLOAD_OFFSET + 1), 255),
             NET_ERR_BUF_TOO_SMALL);
   ASSERT_EQ(send_count, 0);
 }
@@ -316,13 +323,13 @@ static void check_igmp_frame(uint8_t type, uint32_t dst_ip, uint32_t group) {
   ASSERT_MEM_EQ(sent_frame + 6, net.mac, 6);
   ASSERT_EQ(net_read16be(sent_frame + 12), NET_ETHERTYPE_IPV4);
   const uint8_t *ip = sent_frame + 14;
-  ASSERT_EQ(ip[0], 0x46);                        /* IHL 6: Router Alert */
+  ASSERT_EQ(ip[0], 0x46); /* IHL 6: Router Alert */
   ASSERT_EQ(net_read16be(ip + IPV4_OFF_TOTLEN), 32);
-  ASSERT_EQ(ip[IPV4_OFF_TTL], 1);                /* RFC 2236 §2 */
+  ASSERT_EQ(ip[IPV4_OFF_TTL], 1); /* RFC 2236 §2 */
   ASSERT_EQ(ip[IPV4_OFF_PROTO], 2);
   ASSERT_EQ(net_read32be(ip + IPV4_OFF_SRC), net.ipv4_addr);
   ASSERT_EQ(net_read32be(ip + IPV4_OFF_DST), dst_ip);
-  ASSERT_EQ(ip[20], 0x94);                       /* Router Alert option */
+  ASSERT_EQ(ip[20], 0x94); /* Router Alert option */
   ASSERT_EQ(ip[21], 0x04);
   ASSERT_EQ(ip[22], 0x00);
   ASSERT_EQ(ip[23], 0x00);

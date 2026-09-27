@@ -1,18 +1,7 @@
 /**
  * @file driver/bpf.h
- * @brief macOS BPF (Berkeley Packet Filter) network driver for the MAC HAL.
- *
- * Uses /dev/bpfN bound to an feth interface to send/receive
- * raw Ethernet frames in userspace on macOS.
- *
- * Setup (run once before using):
- *   sudo ifconfig feth0 create
- *   sudo ifconfig feth1 create
- *   sudo ifconfig feth0 peer feth1
- *   sudo ifconfig feth0 10.0.0.1/24 up
- *   sudo ifconfig feth1 up
- *
- * The SUT opens feth1 via BPF; the host stack uses feth0.
+ * @brief macOS MAC driver: BPF on an interface such as one end of a feth
+ *        pair (see the README for creating one).
  */
 
 #ifndef DRIVER_BPF_H

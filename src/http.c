@@ -6,13 +6,8 @@
  */
 
 #include "http.h"
+#include "net_text.h"
 #include <string.h>
-
-/* ══ Small string helpers ═════════════════════════════════════════════ */
-
-static char lower(char c) {
-  return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
-}
 
 /* RFC 9110 §5.6.2 token characters */
 static int is_tchar(char c) {
@@ -28,13 +23,13 @@ static int is_ows(char c) { return c == ' ' || c == '\t'; }
 static int eq_ci(const char *a, uint16_t alen, const char *b) {
   uint16_t i;
   for (i = 0; i < alen; i++) {
-    if (b[i] == '\0' || lower(a[i]) != b[i])
+    if (b[i] == '\0' || net_tolower(a[i]) != b[i])
       return 0;
   }
   return b[alen] == '\0';
 }
 
-/* ══ Header block detection ═══════════════════════════════════════════ */
+/* ── Header block detection ── */
 
 uint16_t http_header_end(const char *buf, uint16_t len) {
   uint16_t i = 0;
@@ -52,7 +47,7 @@ uint16_t http_header_end(const char *buf, uint16_t len) {
   return 0;
 }
 
-/* ══ Request parsing ══════════════════════════════════════════════════ */
+/* ── Request parsing ── */
 
 /* Return the next line (NUL-terminated in place, CR/LF stripped) and
  * advance *pos past it.  Lines end at LF; a CR before the LF is dropped. */
@@ -145,7 +140,7 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
   else
     return 501; /* RFC 9110 §15.6.2 */
 
-  /* ── Request target: origin-form, or absolute-form reduced to its path */
+  /* ── Request target: origin-form, or absolute-form reduced to its path ── */
   char *target = line + sp1 + 1;
   const char *path = target;
   line[sp2] = '\0';
@@ -216,7 +211,7 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
   return HTTP_PARSE_OK;
 }
 
-/* ══ Response header ══════════════════════════════════════════════════ */
+/* ── Response header ── */
 
 const char *http_reason(uint16_t status) {
   switch (status) {
@@ -280,25 +275,9 @@ static void put(sbuf_t *b, const char *s) {
   b->n = (uint16_t)(b->n + l);
 }
 
-/* Decimal without division: Cortex-M0 has no divide instruction, and a
- * '/' or '%' would link libgcc's software divide. */
 static void put_u32(sbuf_t *b, uint32_t v) {
-  static const uint32_t pow10[] = {1000000000u, 100000000u, 10000000u,
-                                   1000000u,    100000u,    10000u,
-                                   1000u,       100u,       10u,
-                                   1u};
-  char digits[11];
-  uint8_t n = 0, i;
-  for (i = 0; i < 10; i++) {
-    char d = '0';
-    while (v >= pow10[i]) {
-      v -= pow10[i];
-      d++;
-    }
-    if (d != '0' || n > 0 || i == 9)
-      digits[n++] = d;
-  }
-  digits[n] = '\0';
+  char digits[NET_U32_DEC_MAX];
+  net_u32_to_dec(digits, v);
   put(b, digits);
 }
 
@@ -352,13 +331,54 @@ uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
   return b.n;
 }
 
-/* ══ Server ═══════════════════════════════════════════════════════════ */
+/* ── Transport: plain TCP ── */
+
+static void tcp_accepted(net_t *net, http_conn_t *c) {
+  (void)net;
+  (void)c;
+}
+
+/* The window is advertised again once a read empties the RX buffer */
+static uint16_t tcp_read(net_t *net, http_conn_t *c, uint8_t *buf,
+                         uint16_t len) {
+  uint16_t n = tcp_recv(&c->tcp, buf, len);
+  if (n < len)
+    tcp_window_update(net, &c->tcp);
+  return n;
+}
+
+static uint16_t tcp_write_some(http_conn_t *c, const uint8_t *data,
+                               uint16_t len) {
+  int n = tcp_write(&c->tcp, data, len);
+  return n > 0 ? (uint16_t)n : 0;
+}
+
+static void tcp_flush(net_t *net, http_conn_t *c) { tcp_output(net, &c->tcp); }
+
+static void tcp_finish(net_t *net, http_conn_t *c) {
+  (void)net;
+  (void)c;
+}
+
+static int tcp_client_done(const http_conn_t *c) {
+  return c->tcp.state == TCP_CLOSE_WAIT;
+}
+
+static int tcp_delivered(http_conn_t *c) { return tcp_tx_idle(&c->tcp); }
+
+static const http_transport_t tcp_transport = {
+    tcp_accepted, tcp_read,        tcp_write_some, tcp_flush,
+    tcp_finish,   tcp_client_done, tcp_delivered,
+};
+
+/* ── Server ── */
 
 /* Slot states (http_conn_t.state) */
-#define S_LISTEN 0  /* TCP listening or handshaking */
-#define S_RECV 1    /* reading the request */
-#define S_SEND 2    /* streaming the response */
-#define S_CLOSING 3 /* our FIN sent, waiting for the close to finish */
+#define S_LISTEN 0    /* TCP listening or handshaking */
+#define S_RECV 1      /* reading the request */
+#define S_SEND 2      /* streaming the response */
+#define S_FINISHING 3 /* ending the stream (TLS: close_notify) */
+#define S_CLOSING 4   /* our FIN sent, waiting for the close to finish */
 
 #define HTTP_MIN_REQ 32
 
@@ -369,10 +389,7 @@ net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
       req_size < HTTP_MIN_REQ)
     return NET_ERR_INVALID_PARAM;
   memset(c, 0, sizeof(*c));
-  c->tx_mem = tx_mem;
-  c->tx_size = tx_size;
-  c->rx_mem = rx_mem;
-  c->rx_size = rx_size;
+  c->transport = &tcp_transport;
   c->req = req_buf;
   c->req_size = req_size;
   tcp_saw_tx_init(&c->tx_ctx, tx_mem, tx_size);
@@ -381,11 +398,11 @@ net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
                        &c->rx_ctx, NULL);
 }
 
-/* (Re)arm a slot: fresh TCP state and buffers, LISTEN on the port.  Also
- * how a slot leaves TIME_WAIT at once (docs/design/http.md §7). */
+/* (Re)arm a slot: fresh TCP state and buffers, LISTEN on the port — also
+ * how a slot leaves TIME-WAIT at once (docs/design/http.md) */
 static void slot_listen(http_server_t *s, http_conn_t *c) {
-  tcp_saw_tx_init(&c->tx_ctx, c->tx_mem, c->tx_size);
-  tcp_saw_rx_init(&c->rx_ctx, c->rx_mem, c->rx_size);
+  tcp_saw_tx_init(&c->tx_ctx, c->tx_ctx.buf, c->tx_ctx.capacity);
+  tcp_saw_rx_init(&c->rx_ctx, c->rx_ctx.buf, c->rx_ctx.capacity);
   tcp_conn_init(&c->tcp, &tcp_saw_tx_ops, &c->tx_ctx, &tcp_saw_rx_ops,
                 &c->rx_ctx, NULL);
   tcp_listen(&c->tcp, s->port);
@@ -430,8 +447,8 @@ static void respond(http_conn_t *c, uint16_t status, const char *content_type,
     body = (const uint8_t *)http_reason(500);
     body_len = (uint32_t)strlen((const char *)body);
     allow = 0;
-    c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status,
-                                         content_type, body_len, 0);
+    c->resp_hdr_len =
+        http_format_header(hdr, sizeof(hdr), status, content_type, body_len, 0);
   }
   c->status = status;
   c->content_type = content_type;
@@ -450,10 +467,21 @@ static void respond_error(http_conn_t *c, uint16_t status, uint8_t allow) {
           (uint32_t)strlen(reason), allow);
 }
 
-static void begin_close(http_server_t *s, http_conn_t *c) {
+/* Send our FIN once the stream's last bytes reached the client */
+static void close_when_delivered(http_server_t *s, http_conn_t *c) {
+  c->transport->flush(s->net, c);
+  if (!c->transport->delivered(c))
+    return;
   tcp_close(s->net, &c->tcp);
   c->state = S_CLOSING;
   c->timer_ms = HTTP_RESPONSE_TIMEOUT_MS;
+}
+
+static void end_stream(http_server_t *s, http_conn_t *c) {
+  c->transport->finish(s->net, c);
+  c->state = S_FINISHING;
+  c->timer_ms = HTTP_RESPONSE_TIMEOUT_MS;
+  close_when_delivered(s, c);
 }
 
 static void dispatch(http_server_t *s, http_conn_t *c) {
@@ -496,35 +524,32 @@ static void dispatch(http_server_t *s, http_conn_t *c) {
     respond_error(c, 500, 0); /* REQ-HTTP-027 */
     return;
   }
-  respond(c, rs.status, rs.content_type, rs.body, rs.body ? rs.body_len : 0,
-          0);
+  respond(c, rs.status, rs.content_type, rs.body, rs.body ? rs.body_len : 0, 0);
 }
 
 /* Discard whatever the client still sends once the request has been
- * answered (lingering close, RFC 9112 §9.6): the client can finish
- * transmitting and close instead of stalling on a zero window. */
+ * answered (lingering close, RFC 9112 §9.6), so it can finish sending and
+ * close instead of stalling on a zero window */
 static void drain(http_server_t *s, http_conn_t *c) {
   uint8_t sink[64];
-  while (tcp_recv(&c->tcp, sink, sizeof(sink)) > 0)
+  while (c->transport->read(s->net, c, sink, sizeof(sink)) > 0)
     ;
-  tcp_window_update(s->net, &c->tcp);
 }
 
 static void do_recv(http_server_t *s, http_conn_t *c) {
   uint16_t n;
   while (c->req_len < c->req_size &&
-         (n = tcp_recv(&c->tcp, (uint8_t *)c->req + c->req_len,
-                       (uint16_t)(c->req_size - c->req_len))) > 0)
+         (n = c->transport->read(s->net, c, (uint8_t *)c->req + c->req_len,
+                                 (uint16_t)(c->req_size - c->req_len))) > 0)
     c->req_len = (uint16_t)(c->req_len + n);
-  tcp_window_update(s->net, &c->tcp);
 
   if (c->hdr_len == 0) {
     uint16_t end = http_header_end(c->req, c->req_len);
     if (end == 0) {
       if (c->req_len >= c->req_size) /* REQ-HTTP-039..041 */
         respond_error(c, memchr(c->req, '\n', c->req_len) ? 431 : 414, 0);
-      else if (c->tcp.state == TCP_CLOSE_WAIT)
-        begin_close(s, c); /* peer is done sending; request never ended */
+      else if (c->transport->client_done(c))
+        end_stream(s, c); /* the request never ended */
       return;
     }
     uint16_t status =
@@ -542,15 +567,16 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
   }
 
   if ((uint32_t)c->req_len < (uint32_t)c->hdr_len + c->content_length) {
-    if (c->tcp.state == TCP_CLOSE_WAIT)
-      begin_close(s, c); /* the body can no longer arrive */
+    if (c->transport->client_done(c))
+      end_stream(s, c); /* the body can no longer arrive */
     return;
   }
   dispatch(s, c);
 }
 
-/* Copy as much of header + body into the TCP TX buffer as it accepts, then
- * push one segment.  Close once everything is sent and ACKed. */
+/* Queue as much of header + body as the transport takes, then push it;
+ * end the stream once all of it is delivered (REQ-HTTP-029).  The header
+ * is formatted again on each call rather than kept. */
 static void do_send(http_server_t *s, http_conn_t *c) {
   uint32_t total =
       (uint32_t)c->resp_hdr_len + (c->head_only ? 0u : c->body_len);
@@ -561,25 +587,25 @@ static void do_send(http_server_t *s, http_conn_t *c) {
     char hdr[HTTP_HDR_MAX];
     http_format_header(hdr, sizeof(hdr), c->status, c->content_type,
                        c->body_len, c->allow);
-    int w = tcp_write(&c->tcp, (const uint8_t *)hdr + c->sent,
-                      (uint16_t)(c->resp_hdr_len - c->sent));
-    if (w > 0)
-      c->sent += (uint32_t)w;
+    c->sent += c->transport->write(c, (const uint8_t *)hdr + c->sent,
+                                   (uint16_t)(c->resp_hdr_len - c->sent));
   }
   while (c->sent >= c->resp_hdr_len && c->sent < total) {
     uint32_t off = c->sent - c->resp_hdr_len;
     uint32_t left = c->body_len - off;
-    int w = tcp_write(&c->tcp, c->body + off,
-                      (uint16_t)(left > 0xFFFFu ? 0xFFFFu : left));
-    if (w <= 0)
+    uint16_t w = c->transport->write(
+        c, c->body + off, (uint16_t)(left > 0xFFFFu ? 0xFFFFu : left));
+    if (w == 0)
       break;
-    c->sent += (uint32_t)w;
+    c->sent += w;
   }
-  tcp_output(s->net, &c->tcp);
+  c->transport->flush(s->net, c);
+  if (c->sent >= total && c->transport->delivered(c))
+    end_stream(s, c);
+}
 
-  if (c->sent >= total && c->tx_ctx.data_len == 0 &&
-      c->tcp.snd_una == c->tcp.snd_nxt)
-    begin_close(s, c); /* REQ-HTTP-029 */
+static int tcp_open(const http_conn_t *c) {
+  return c->tcp.state == TCP_ESTABLISHED || c->tcp.state == TCP_CLOSE_WAIT;
 }
 
 void http_server_poll(http_server_t *s) {
@@ -587,40 +613,39 @@ void http_server_poll(http_server_t *s) {
   for (i = 0; i < s->n_conns; i++) {
     http_conn_t *c = &s->conns[i];
     tcp_state_t st = c->tcp.state;
-    int open = (st == TCP_ESTABLISHED || st == TCP_CLOSE_WAIT);
 
+    if (c->state != S_LISTEN && c->state != S_CLOSING && !tcp_open(c)) {
+      slot_listen(s, c); /* RST or unexpected close */
+      continue;
+    }
     switch (c->state) {
     case S_LISTEN:
-      if (open) {
-        c->state = S_RECV;
-        c->timer_ms = HTTP_REQUEST_TIMEOUT_MS;
-      } else {
+      if (!tcp_open(c)) {
         if (st == TCP_CLOSED) /* e.g. RST during the handshake */
           slot_listen(s, c);
         break;
       }
-      /* Data may already be waiting: read it now. */
+      c->state = S_RECV;
+      c->timer_ms = HTTP_REQUEST_TIMEOUT_MS;
+      c->transport->accepted(s->net, c);
+      /* data may be waiting already */
       /* fall through */
     case S_RECV:
-      if (!open) {
-        slot_listen(s, c); /* RST or unexpected close */
-        break;
-      }
       do_recv(s, c);
       if (c->state == S_SEND)
         do_send(s, c);
       break;
     case S_SEND:
-      if (!open) {
-        slot_listen(s, c);
-        break;
-      }
       do_send(s, c);
       break;
+    case S_FINISHING:
+      drain(s, c);
+      close_when_delivered(s, c);
+      break;
     case S_CLOSING:
-      /* Both sides have closed (TIME_WAIT, or CLOSING after a simultaneous
-       * close) or the close is complete: the response was delivered and
-       * ACKed, so recycle now instead of waiting 2xMSL / a FIN resend. */
+      /* Both sides have closed (TIME-WAIT, or CLOSING after a simultaneous
+       * close) or the close is complete: the response was delivered, so
+       * recycle now instead of waiting 2×MSL or for a FIN resend */
       if (st == TCP_TIME_WAIT || st == TCP_CLOSING || st == TCP_CLOSED)
         slot_listen(s, c);
       else
@@ -641,10 +666,8 @@ void http_server_tick(http_server_t *s, uint32_t elapsed_ms) {
       c->timer_ms = HTTP_REQUEST_TIMEOUT_MS; /* idle listener */
       continue;
     }
-    if (c->timer_ms > elapsed_ms) {
-      c->timer_ms -= elapsed_ms;
+    if (!net_countdown(&c->timer_ms, elapsed_ms))
       continue;
-    }
     /* Timed out: free the slot for the next client */
     if (c->tcp.state != TCP_CLOSED && c->tcp.state != TCP_LISTEN)
       tcp_abort(s->net, &c->tcp);

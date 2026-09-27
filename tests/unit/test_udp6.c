@@ -89,25 +89,30 @@ static uint16_t got_sport, got_off, got_len;
 static uint8_t got_data[64];
 
 static void on_v4(net_t *n, uint32_t src_ip, uint16_t sport,
-                  const uint8_t *src_mac, uint16_t off, uint16_t len) {
+                  const uint8_t *src_mac, const uint8_t *payload,
+                  uint16_t len) {
   (void)n;
   (void)src_ip;
   (void)sport;
   (void)src_mac;
-  (void)off;
+  (void)payload;
   (void)len;
   v4_calls++;
 }
 
+static const uint8_t *input_frame;
+
 static void on_v6(net_t *n, const uint8_t *src_ip, uint16_t sport,
-                  const uint8_t *src_mac, uint16_t off, uint16_t len) {
+                  const uint8_t *src_mac, const uint8_t *payload,
+                  uint16_t len) {
+  (void)n;
   v6_calls++;
   memcpy(got_src, src_ip, 16);
   memcpy(got_mac, src_mac, 6);
   got_sport = sport;
-  got_off = off;
+  got_off = (uint16_t)(payload - input_frame);
   got_len = len;
-  n->mac_driver->peek(n->mac_ctx, off, got_data, len < 64 ? len : 64);
+  memcpy(got_data, payload, len < 64 ? len : 64);
 }
 
 static const udp_port_entry_t ports[] = {{7, on_v4}, {9, on_v4}};
@@ -125,10 +130,8 @@ static void setup(void) {
   memset(got_src, 0, sizeof(got_src));
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
            &stub_drv, &ctx);
-  udp_ports.entries = ports;
-  udp_ports.count = 2;
-  udp6_ports.entries = ports6;
-  udp6_ports.count = 1;
+  udp_set_ports(&net, ports, 2);
+  udp6_set_ports(&net, ports6, 1);
   ipv6_start(&net);
   ipv6_tick(&net, 1000);
   ipv6_tick(&net, 1000);
@@ -170,7 +173,10 @@ static uint16_t build_udp6(uint8_t *f, const uint8_t *dst_mac,
   return len;
 }
 
-static void input(uint8_t *f, uint16_t len) { eth_input(&net, f, len); }
+static void input(uint8_t *f, uint16_t len) {
+  input_frame = f;
+  eth_input(&net, f, len);
+}
 
 /* ══ Receive ══════════════════════════════════════════════════════ */
 
@@ -247,9 +253,8 @@ TEST(test_udp6_closed_port_unreachable) {
   ASSERT_MEM_EQ(ip + 8, our_ll, 16);
   ASSERT_MEM_EQ(ip + 24, peer_ll, 16);
   ASSERT_MEM_EQ(m + 8, f + 14, (uint16_t)(len - 14)); /* whole datagram */
-  ASSERT_EQ(ipv6_cksum(ip + 8, ip + 24, IPV6_NH_ICMPV6, m,
-                       net_read16be(ip + 4)),
-            0);
+  ASSERT_EQ(
+      ipv6_cksum(ip + 8, ip + 24, IPV6_NH_ICMPV6, m, net_read16be(ip + 4)), 0);
 }
 
 TEST(test_udp6_ipv4_only_port_is_closed_over_ipv6) {
@@ -272,9 +277,9 @@ TEST(test_udp6_closed_port_multicast_no_error) {
 
 TEST(test_udp6_send_frame) {
   setup();
-  ASSERT_EQ(udp6_send(&net, peer_ll, peer_mac, 7, 40000,
-                      (const uint8_t *)"reply", 5),
-            NET_OK);
+  ASSERT_EQ(
+      udp6_send(&net, peer_ll, peer_mac, 7, 40000, (const uint8_t *)"reply", 5),
+      NET_OK);
   ASSERT_EQ(send_count, 1);
   ASSERT_EQ(sent_len[0], UDP6_PAYLOAD_OFFSET + 5);
   const uint8_t *ip = sent[0] + 14;
@@ -299,9 +304,9 @@ TEST(test_udp6_send_frame) {
 TEST(test_udp6_send_inplace_with_hop_limit) {
   setup();
   memcpy(net.tx.buf + UDP6_PAYLOAD_OFFSET, "zc", 2);
-  ASSERT_EQ(udp6_send_inplace(&net, all_nodes, mac_all_nodes, 5353, 5353, 2,
-                              255),
-            NET_OK);
+  ASSERT_EQ(
+      udp6_send_inplace(&net, all_nodes, mac_all_nodes, 5353, 5353, 2, 255),
+      NET_OK);
   ASSERT_EQ(send_count, 1);
   ASSERT_EQ(sent[0][14 + 7], 255);
   ASSERT_MEM_EQ(sent[0] + 14 + 8, our_ll, 16); /* link-scope group */

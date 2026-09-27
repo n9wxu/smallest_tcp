@@ -45,25 +45,17 @@ static uint8_t rx_buf[300];
 static uint8_t tx_buf[300];
 static net_t net;
 
-/* UDP handler — peeks the payload out of the MAC and echoes it back */
 static void echo_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                         const uint8_t *src_mac, uint16_t payload_offset,
-                         uint16_t payload_len) {
-  uint8_t buf[64];
-  uint16_t len = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
-  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, len);
-  udp_send(n, src_ip, src_mac, 7, src_port, buf, len);
+                         const uint8_t *src_mac, const uint8_t *payload,
+                         uint16_t len) {
+  udp_send(n, src_ip, src_mac, 7, src_port, payload, len);
 }
 
 #ifdef BENCH_IPV6
-/* The same echo over IPv6 */
 static void echo6_handler(net_t *n, const uint8_t *src_ip, uint16_t src_port,
-                          const uint8_t *src_mac, uint16_t payload_offset,
-                          uint16_t payload_len) {
-  uint8_t buf[64];
-  uint16_t len = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
-  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, len);
-  udp6_send(n, src_ip, src_mac, 7, src_port, buf, len);
+                          const uint8_t *src_mac, const uint8_t *payload,
+                          uint16_t len) {
+  udp6_send(n, src_ip, src_mac, 7, src_port, payload, len);
 }
 static const udp6_port_entry_t ports6[] = {{7, echo6_handler}};
 #endif
@@ -72,7 +64,10 @@ static const udp6_port_entry_t ports6[] = {{7, echo6_handler}};
 /* mDNS + DNS-SD: host name plus one advertised service */
 static const char *const txt[] = {"txtvers=1", NULL};
 static const mdns_record_t records[] = {
-    {.type = DNS_TYPE_A, .ttl = MDNS_TTL_HOST, .name = "dev.local", .rdata.a = 0},
+    {.type = DNS_TYPE_A,
+     .ttl = MDNS_TTL_HOST,
+     .name = "dev.local",
+     .rdata.a = 0},
     {.type = DNS_TYPE_PTR,
      .ttl = MDNS_TTL_OTHER,
      .name = "_x._udp.local",
@@ -89,12 +84,10 @@ static const mdns_record_t records[] = {
 static mdns_t mdns;
 
 static void mdns_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                         const uint8_t *src_mac, uint16_t payload_offset,
-                         uint16_t payload_len) {
-  uint8_t buf[256];
-  uint16_t len = (payload_len < sizeof(buf)) ? payload_len : sizeof(buf);
-  n->mac_driver->peek(n->mac_ctx, payload_offset, buf, len);
-  mdns_input(&mdns, src_ip, src_mac, src_port, buf, len);
+                         const uint8_t *src_mac, const uint8_t *payload,
+                         uint16_t len) {
+  (void)n;
+  mdns_input(&mdns, src_ip, src_mac, src_port, payload, len);
 }
 
 static const udp_port_entry_t ports[] = {{7, echo_handler},
@@ -126,7 +119,7 @@ static uint8_t tcp_rx_mem[128];
 static tcp_saw_tx_ctx_t tcp_tx_ctx;
 static tcp_saw_rx_ctx_t tcp_rx_ctx;
 static tcp_conn_t echo_conn;
-static tcp_conn_t *conn_table[] = {&echo_conn};
+static tcp_conn_t *const conn_table[] = {&echo_conn};
 #endif
 
 /* Prevent the compiler from optimizing away the entire program */
@@ -138,12 +131,10 @@ void app_main(void) {
   net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), mac,
            &stub_mac_ops, (void *)0);
 
-  udp_ports.entries = ports;
-  udp_ports.count = sizeof(ports) / sizeof(ports[0]);
+  udp_set_ports(&net, ports, sizeof(ports) / sizeof(ports[0]));
 
 #ifdef BENCH_IPV6
-  udp6_ports.entries = ports6;
-  udp6_ports.count = 1;
+  udp6_set_ports(&net, ports6, 1);
   ipv6_start(&net); /* link-local address, DAD, then router discovery */
 #endif
 
@@ -154,31 +145,25 @@ void app_main(void) {
 #endif
 
 #ifdef BENCH_HTTP
-  http_conn_init(&http_slot, http_tx, sizeof(http_tx), http_rx,
-                 sizeof(http_rx), http_req, sizeof(http_req));
+  http_conn_init(&http_slot, http_tx, sizeof(http_tx), http_rx, sizeof(http_rx),
+                 http_req, sizeof(http_req));
   conn_table[0] = http_conn_tcp(&http_slot);
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = 1;
+  tcp_set_connections(&net, conn_table, 1);
   http_server_init(&http, &net, 80, routes, 1, &http_slot, 1);
 #elif NET_USE_TCP
   tcp_saw_tx_init(&tcp_tx_ctx, tcp_tx_mem, sizeof(tcp_tx_mem));
   tcp_saw_rx_init(&tcp_rx_ctx, tcp_rx_mem, sizeof(tcp_rx_mem));
   tcp_conn_init(&echo_conn, &tcp_saw_tx_ops, &tcp_tx_ctx, &tcp_saw_rx_ops,
                 &tcp_rx_ctx, (void (*)(tcp_conn_t *, uint8_t))0);
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = 1;
+  tcp_set_connections(&net, conn_table, 1);
   tcp_listen(&echo_conn, 7);
 #endif
 
-  /* Simulate receiving a frame */
-  int n = net_poll(&net);
-  if (n > 0) {
-    eth_input(&net, net.rx.buf, net.rx.frame_len);
-  }
+  int n = net_poll(&net); /* receive and process a frame */
 
+  net_tick(&net, 10); /* TCP and IPv6 timers */
 #ifdef BENCH_HTTP
   http_server_poll(&http);
-  tcp_tick(&net, 10);
   http_server_tick(&http, 10);
 #elif NET_USE_TCP
   {
@@ -187,7 +172,6 @@ void app_main(void) {
     if (got > 0) {
       tcp_send(&net, &echo_conn, buf, got);
     }
-    tcp_tick(&net, 10);
   }
 #endif
 
@@ -202,10 +186,6 @@ void app_main(void) {
 #ifdef BENCH_MDNS
   mdns_tick(&mdns, 10);
   mdns_stop(&mdns);
-#endif
-
-#ifdef BENCH_IPV6
-  ipv6_tick(&net, 10); /* DAD, RS, SLAAC lifetimes, MLD */
 #endif
 
   dummy = n;

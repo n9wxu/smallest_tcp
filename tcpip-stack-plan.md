@@ -1,16 +1,20 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-26 (Tasks 1–11 complete + Linux raw-socket driver; Tasks 1–12 complete (Milestone 12: IPv6, dual stack, 8.0 KB for a dual-stack UDP echo on Cortex-M0); 476 unit tests + 127 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers; next: Milestone 13, TLS 1.3)
+**Last updated:** 2026-09-27 (Tasks 1–13 complete: through Milestone 13, TLS 1.3, and the Linux raw-socket driver.  680 unit tests on macOS (691 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers.  Cortex-M0: 2.6 KB for a UDP echo, 7.5 KB dual stack, 7.0 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
+
+This is the original plan, kept as the record of the design decisions and the
+order of work.  Where the implementation departed from it, the text below says
+so; the design documents under [`docs/`](docs/) describe the code as it is.
 
 ## Objective
 
 Build a general-purpose, portable TCP/IP stack in C99 with:
 - Zero dynamic allocation — application provides all memory
 - Application-sized buffers — stack adapts (MSS, TCP window, etc.)
-- Zero-copy where possible — parse/build headers in-place
-- Strict OSI layering — each protocol is a separate compilation unit; unused protocols are not linked
+- Parse and build in place — a received frame is copied once, into the application's receive buffer, and parsed there; replies are built in the transmit buffer
+- Strict OSI layering — each protocol is a separate compilation unit.  As built: the transports (UDP, TCP) and IPv6 are chosen at compile time (`NET_USE_*`, because IP dispatches to them), the application protocols at link time ([configuration.md §5](docs/design/configuration.md#5-compile-time-protocol-selection))
 - Abstract MAC interface — stack is transport-agnostic (TAP, feth+BPF, ENC28J60, CDC-ECM, etc.)
-- Catch errors early — prefer compile-time checks, then link-time, then run-time (hardware capabilities are `#define`s, not runtime queries)
+- Catch errors early — prefer compile-time checks, then link-time, then run-time (configuration is `#define`s; buffer sizes come from the buffers the application passes in)
 
 Primary validation use case: TCP/IP bootloader on small MCUs. But the stack is general-purpose — supports TFTP, HTTP, UDP, DHCP, etc.
 
@@ -28,86 +32,92 @@ The stack must scale from tiny MCUs to hosted environments:
 
 ## Architecture
 
+As built (the original sketch had only IPv4 and planned `feth.c` and
+`enc28j60.c` drivers; macOS uses `bpf.c` on an feth pair, and no ENC28J60
+driver exists yet):
+
 ```
-┌─────────────────────────────────────┐
-│           Application               │
-│  (bootloader, web server, etc.)     │
-│  Owns all buffers and conn state    │
-├─────────────────────────────────────┤
-│  L7: dhcp.c  tftp.c  http.c         │  ← optional, link what you need
-├─────────────────────────────────────┤
-│  L4: udp.c          tcp.c           │  ← optional independently
-├─────────────────────────────────────┤
-│  L3: ipv4.c   icmp.c                │
-├─────────────────────────────────────┤
-│  L2: arp.c                          │
-├─────────────────────────────────────┤
-│  L2: eth.c                          │
-├─────────────────────────────────────┤
-│  MAC driver interface (net_mac.h)   │  ← abstract: function pointers
-├──────────┬──────────┬───────────────┤
-│ tap.c    │ feth.c   │ enc28j60.c    │  ← one per platform
-│ (Linux)  │ (macOS)  │ (PIC/SPI)     │
-└──────────┴──────────┴───────────────┘
+┌──────────────────────────────────────────────┐
+│           Application                        │
+│  (bootloader, web server, etc.)              │
+│  Owns all buffers and conn state             │
+├──────────────────────────────────────────────┤
+│  L7: dhcpv4_client/server  dhcpv6_client     │  ← optional, link what you need
+│      tftp  mdns  http (+ http_tls)           │
+├──────────────────────────────────────────────┤
+│  TLS 1.3: tls*.c over a tcp_conn_t           │  ← optional, link time
+├──────────────────────────────────────────────┤
+│  L4: udp.c          tcp.c                    │  ← optional, compile time
+├──────────────────────────────────────────────┤
+│  L3: ipv4.c icmp.c │ ipv6.c icmpv6.c ndp.c   │  ← IPv6 optional, compile time
+│      arp.c         │ mld.c                   │
+├──────────────────────────────────────────────┤
+│  L2: eth.c                                   │
+├──────────────────────────────────────────────┤
+│  MAC driver interface (net_mac.h)            │  ← abstract: function pointers
+├──────────────┬─────────────┬─────────────────┤
+│ tap.c        │ bpf.c       │ your driver     │  ← one per platform
+│ rawsock.c    │ (macOS,     │ (e.g. ENC28J60  │
+│ (Linux)      │  feth pair) │  over SPI)      │
+└──────────────┴─────────────┴─────────────────┘
 ```
 
 ## Key Design Decisions
 
 ### Memory Model
 
-All memory is owned and provided by the application:
+All memory is owned and provided by the application.  As built
+(`include/net.h`, abbreviated):
 
 ```c
 typedef struct {
     uint8_t *buf;       // frame buffer (rx or tx)
-    uint16_t len;       // buffer capacity
-    uint16_t frame_len; // actual frame length
+    uint16_t capacity;  // its size
 } net_buf_t;
 
 typedef struct {
-    net_buf_t rx;
-    net_buf_t tx;
-    uint32_t ip;
+    net_buf_t rx, tx;               // one frame each way
     uint8_t mac[6];
     const net_mac_t *mac_driver;
     void *mac_ctx;
+    uint32_t rng;                   // net_random() state
+    uint32_t ipv4_addr, subnet_mask, gateway_ipv4;
+    uint8_t gateway_mac[6], gateway_mac_valid;
+    // + multicast groups, the IPv6 state (NET_USE_IPV6), and the
+    //   application's UDP port tables and TCP connection table
 } net_t;
 ```
 
-The stack never calls malloc. Buffer sizes determine protocol parameters:
-- TCP MSS = tx_buf.len - 54 (ETH+IP+TCP headers)
-- TCP window = rx_buf.len - 40 (IP+TCP headers)
+The stack never calls malloc and has no static variables. Buffer sizes
+determine protocol parameters:
+- TCP MSS = TX frame buffer − Ethernet header − IP header − 20, at most 1460
+  (54 bytes of headers over IPv4)
+- TCP window = the free space in the connection's own receive buffer
+
+See [docs/design/memory-model.md](docs/design/memory-model.md).
 
 ### TCP Connection Model
 
-Application-managed: the app passes in a `tcp_conn_t` per connection. The stack has no internal connection pool or table.
-
-```c
-typedef struct {
-    uint8_t state;
-    uint16_t local_port;
-    uint16_t remote_port;
-    uint32_t remote_ip;
-    uint8_t remote_mac[6];
-    uint8_t mac_valid;      // 0 = needs ARP resolution
-    uint32_t seq;
-    uint32_t ack;
-    uint16_t window;
-    // retransmit timer state
-} tcp_conn_t;
-```
+Application-managed: the app declares a `tcp_conn_t` per connection, with
+its own TX and RX buffers, and binds an array of pointers to them with
+`tcp_set_connections(net, table, count)`.  The stack has no internal
+connection pool or table of its own.  The connection carries its peer's
+address and MAC (`remote_ip`, `remote_mac`, `mac_valid`), the RFC 9293
+send and receive sequence variables, the MSS, its timers, its buffer
+operations and an event callback — the full list is in
+[docs/design/tcp.md §2.1](docs/design/tcp.md#21-the-connection).
 
 ### ARP Design — Fast Path + No General Cache
 
 **Problem:** On a live Ethernet network, ARP storms from other devices can overflow small MAC RX buffers (e.g., ENC28J60's 8 KB). The device must drain ARP frames as fast as possible.
 
-**Solution:**
-- No general ARP cache table. ARP entries live in the application's connection structs (each has `{ip, mac, mac_valid}`).
-- Inbound ARP requests: fast-path filter — check target IP (4-byte compare at fixed frame offset 38). Not for us → discard immediately. For us → reply immediately. Don't store anything from the requester.
-- Inbound ARP replies: scan the app's active connections for a matching IP, fill in the MAC.
-- Outbound ARP: only when sending to a connection with `mac_valid == 0`. Send ARP request, defer the data send until reply arrives.
+**Solution (as built — [docs/design/arp-resolution.md](docs/design/arp-resolution.md)):**
+- No ARP cache table.  The one MAC the stack learns from ARP is the gateway's (`net_t.gateway_mac`); a TCP connection keeps its peer's MAC for its life (from the peer's SYN, or given to `tcp_connect()`); replies go to the source MAC of the frame they answer.
+- Inbound ARP requests: check the target IP; not for us → ignore. For us → reply immediately. Don't store anything from the requester.
+- Inbound ARP replies: only one from the gateway's IP is used, to fill in the gateway MAC.
+- Outbound ARP: the stack does not resolve on its own.  The application calls `arp_next_hop()` and `arp_request()` and waits for the MAC before an active open (`tcp_connect()`, `tftp_client_get()`, `udp_send()` to a new peer).
 
-**Fast-path RX drain:** The main loop must prioritize emptying the MAC RX buffer over processing. Drain all pending frames first (filter/discard ARP not for us, dispatch non-ARP), then do application processing.
+**Fast-path RX drain:** The main loop must prioritize emptying the MAC RX buffer over processing: `while (net_poll(&net) > 0) {}` first, then application processing.
 
 ### MAC Driver Interface
 
@@ -122,8 +132,8 @@ typedef struct {
 } net_mac_t;
 ```
 
-- `peek` + `discard`: enables fast ARP filtering on hardware MACs (ENC28J60) — read just the target IP via SPI, discard if not ours, without reading the full frame.
-- For TAP/feth: `poll()` returns the frame length available; `peek` copies from the buffer; `discard` releases the slot.  `net_poll()` in `net.c` wraps poll+peek+discard into a single application-facing call.
+- `peek` + `discard` were meant to allow fast ARP filtering on hardware MACs (ENC28J60) — read just the target IP via SPI, discard if not ours, without reading the full frame.  As built, `net_poll()` in `net.c` uses them more simply: `poll()` for the frame's length, one `peek()` of the whole frame into `net->rx.buf`, dispatch, then `discard()`.  The frame is copied once and every layer parses it in place.  Reading only the needed bytes remains possible future work ([docs/design/mac-hal.md](docs/design/mac-hal.md)).
+- For TAP, raw sockets and BPF the driver caches the frame: `poll()` reads it and returns its length, `peek` copies from the driver's buffer, `discard` releases it.
 
 ### Flash Size Estimates (custom stack on RISC-V/ARM)
 
@@ -134,6 +144,11 @@ typedef struct {
 | TCP minimal | eth + arp + ipv4 + tcp (1 conn) | ~5-7 KB | ~30 bytes state |
 | TCP + HTTP | above + http | ~7-9 KB | ~30 bytes state |
 | Full (UDP+TCP+DHCP+HTTP) | everything | ~10-14 KB | ~50 bytes state |
+
+Measured on Cortex-M0 (2026-09-27, [size-comparison.md](docs/design/size-comparison.md)):
+UDP echo 2,574 B, UDP + TCP 6,130 B, UDP + HTTP (with TCP) 10,510 B, UDP +
+mDNS 8,956 B, dual-stack UDP 7,549 B — with **no** stack-internal static
+state at all: every byte of RAM is application-owned.
 
 ## First Demo Platform
 
@@ -160,21 +175,21 @@ typedef struct {
 - Directory structure: `src/`, `src/driver/`, `include/`, `demo/`
 - Define `net_mac.h` (init, send, poll, peek, discard, close)
 - Implement `tap.c` for Linux
-- Makefile (C99, `-Wall -Werror`)
+- Makefile (C99, `-Wall -Werror`) — since replaced by CMake for the host build; the Makefile now holds only the Cortex-M0 size targets
 - Demo: open TAP, send hardcoded frame, hex-dump received frames
 - Verify with `tcpdump -i tap0`
 
 ### ✅ Task 2: Ethernet frame parsing/building (eth.c) *(DONE)*
 - `eth_parse()` — validate, return ethertype + payload offset, in-place
 - `eth_build()` — write 14-byte header, return payload pointer
-- Zero-copy: operates on app's `net_buf_t`
+- In place: operates on the application's frame buffers (`net_buf_t`)
 - Test: build frame → parse frame → verify roundtrip
 
 ### ✅ Task 3: ARP (arp.c) — fast-path filter + reply *(DONE)*
-- Fast path: check target IP at offset 38, discard if not ours
-- `arp_input()` — reply to requests for our IP; fill connection MACs from replies
-- `arp_resolve()` — send ARP request for a connection's IP
-- No ARP cache table — MACs live in app's connection structs
+- Fast path: check the target IP, ignore if not ours
+- `arp_input()` — reply to requests for our IP; learn the gateway's MAC from its replies
+- `arp_request()` — send an ARP request; `arp_next_hop()` — the peer or the gateway
+- No ARP cache table — the gateway MAC lives in `net_t`, peers' MACs in the app's connection structs
 - Test: `arping -I tap0 10.0.0.2` → get reply
 - Demo: host learns our MAC via ARP
 
@@ -195,25 +210,27 @@ typedef struct {
 - Application-managed `tcp_conn_t`
 - States: LISTEN → SYN_RCVD → ESTABLISHED → FIN_WAIT/CLOSE_WAIT → CLOSED
 - `tcp_listen()`, `tcp_input()`, `tcp_send()`
-- Window = app buffer size. MSS from tx buffer size.
-- Retransmit: simple fixed timeout, single unacked segment
+- Window = free space in the connection's RX buffer. MSS from the TX frame buffer.
+- Retransmit: single unacked segment; the timeout starts at `NET_DEFAULT_TCP_RTO_INIT_MS` and doubles per expiry (no RTT estimation)
 - No Nagle, no slow-start
 - Demo: TCP echo server, `nc 10.0.0.2 7`
+- Design: [docs/design/tcp.md](docs/design/tcp.md), [docs/design/tcp-buffer.md](docs/design/tcp-buffer.md)
 
 ### Task 7: Main event loop + integration demo  ✅ COMPLETE
 - RX drain loop: prioritize emptying MAC over processing
-- Timer tick: `net_tick(net, ms)` for ARP timeout, TCP retransmit
+- Timer tick: `net_tick(net, ms)` for the TCP timers (and, later, IPv6); ARP needs no timer, and application modules have their own `*_tick()`
 - Demo: static IP, ARP + ping + UDP echo + TCP echo all working simultaneously
 
 ### ✅ Task 8: DHCPv4 client + server (dhcpv4_client.c, dhcpv4_server.c) *(DONE)*
 - DISCOVER → OFFER → REQUEST → ACK over UDP port 67/68
-- Sets `net->ip`, populates gateway MAC via ARP
+- Sets `net->ipv4_addr`, `subnet_mask` and `gateway_ipv4` from the lease (the gateway's MAC is learned by ARP when the application asks)
 - Demo: device gets IP from dnsmasq, then ping works
 
 ### ✅ Task 9: TFTP client (tftp.c) *(DONE)*
 - RFC 1350: RRQ → DATA/ACK loop
 - Block size adapts to app buffer
 - Demo: fetch file from TFTP server — proves bootloader data path
+- Design: [docs/design/tftp.md](docs/design/tftp.md)
 
 ### ✅ Task 10: mDNS + DNS-SD (mdns.c, dns_wire.c, igmp.c) *(DONE)*
 - RFC 6762 responder: probe → announce → respond, goodbye packets, conflict handling
@@ -241,14 +258,23 @@ typedef struct {
 - Dual stack is a compile-time choice (`NET_USE_IPV6`, CMake `SMALLEST_TCP_IPV6`); IPv4-only builds are unchanged
 - Design: [docs/design/ipv6.md](docs/design/ipv6.md)
 
-Later milestones (13 TLS 1.3, 14 DTLS 1.3) are tracked in the README roadmap
-and their design docs.
+### ✅ Task 13: TLS 1.3 (tls.c, tls_keys.c, tls_server.c, tls_client.c, tls_tcp.c, http_tls.c) *(DONE)*
+- RFC 8446 client and server, `TLS_AES_128_GCM_SHA256`, x25519 and secp256r1 with HelloRetryRequest
+- Certificates (ECDSA P-256, RSA-PSS) and pre-shared keys (psk_dhe_ke, psk_ke)
+- max_fragment_length for small buffers, KeyUpdate, close_notify
+- Every cryptographic primitive through the `tls_crypto_t` vtable; an Mbed TLS 3.6 backend
+- Each role in its own file, reached through a role pointer, so a server-only build does not link the client
+- `tls_tcp_carry()` moves records between a TLS and a TCP connection; HTTPS is the HTTP server with `http_conn_use_tls()`
+- Design: [docs/design/tls.md](docs/design/tls.md)
+
+### Task 14: DTLS 1.3 — planned
+- Design: [docs/design/dtls.md](docs/design/dtls.md); tracked in the README roadmap
 
 ## Language & Build
 
 - C99 for maximum portability (XC8, GCC, Clang)
 - No compiler extensions required (avoid `__attribute__((packed))` — use manual serialization for portability across PIC16/ARM/RISC-V)
-- Makefile-based build
+- CMake for the host build (libraries, unit tests, demos, FetchContent); the Makefile builds the Cortex-M0 size benchmarks and checks that no object calls a library divide
 
 ## Prior Art / References
 
@@ -263,20 +289,25 @@ Detailed documentation is maintained in `docs/`:
 
 ### Architecture & Design
 - **[docs/architecture.md](docs/architecture.md)** — System architecture, layer interaction, data flow, compilation model
-- **[docs/design/mac-hal.md](docs/design/mac-hal.md)** — MAC Hardware Abstraction Layer (vtable interface, peek+discard)
+- **[docs/integrating-modules.md](docs/integrating-modules.md)** — Wiring the application protocols into a program
+- **[docs/design/coding-rules.md](docs/design/coding-rules.md)** — C99, memory, parsing, no run-time division, comments
+- **[docs/design/mac-hal.md](docs/design/mac-hal.md)** — MAC Hardware Abstraction Layer (vtable; `net_poll()` copies each frame once)
 - **[docs/design/checksum.md](docs/design/checksum.md)** — Internet checksum API and implementation
 - **[docs/design/byte-order.md](docs/design/byte-order.md)** — Byte order handling and 8-bit target strategy
-- **[docs/design/timer-model.md](docs/design/timer-model.md)** — Timer/event model (net_poll, net_tick, tickless)
-- **[docs/design/tcp-buffer.md](docs/design/tcp-buffer.md)** — TCP buffer abstraction (stop-and-wait, circular, packet-list)
-- **[docs/design/arp-resolution.md](docs/design/arp-resolution.md)** — Address resolution (distributed cache, gateway-only mode)
-- **[docs/design/memory-model.md](docs/design/memory-model.md)** — Zero-allocation memory model and factory methods
-- **[docs/design/configuration.md](docs/design/configuration.md)** — Configuration taxonomy (compile-time fixed vs. runtime tunable vs. runtime only)
-- **[docs/design/udp.md](docs/design/udp.md)** — UDP port dispatch, zero-copy RX, checksum, ICMP port unreachable
+- **[docs/design/timer-model.md](docs/design/timer-model.md)** — Timer/event model (net_poll, net_tick, module ticks)
+- **[docs/design/tcp.md](docs/design/tcp.md)** — TCP (Tasks 6–7)
+- **[docs/design/tcp-buffer.md](docs/design/tcp-buffer.md)** — TCP buffer interface; stop-and-wait implemented, ring and packet list designed only
+- **[docs/design/arp-resolution.md](docs/design/arp-resolution.md)** — Address resolution (no cache; gateway MAC; application-driven resolution)
+- **[docs/design/memory-model.md](docs/design/memory-model.md)** — Zero-allocation memory model and init functions
+- **[docs/design/configuration.md](docs/design/configuration.md)** — Configuration taxonomy, compile-time and link-time composition
+- **[docs/design/udp.md](docs/design/udp.md)** — UDP port tables, payload pointers into the receive buffer, checksum, ICMP port unreachable
 - **[docs/design/dhcpv4.md](docs/design/dhcpv4.md)** — DHCPv4 client + server, option handler callback API
+- **[docs/design/tftp.md](docs/design/tftp.md)** — TFTP client (Task 9)
 - **[docs/design/mdns.md](docs/design/mdns.md)** — mDNS + DNS-SD (Task 10, implemented)
-- **[docs/design/http.md](docs/design/http.md)** — HTTP/1.0 server (Task 11, implemented)
+- **[docs/design/http.md](docs/design/http.md)** — HTTP/1.0 server, also over TLS (Task 11, implemented)
 - **[docs/design/ipv6.md](docs/design/ipv6.md)** — IPv6, ICMPv6, NDP, SLAAC, DHCPv6, MLD, mDNS/HTTP over IPv6 (Task 12, implemented)
-- **[docs/design/tls.md](docs/design/tls.md)** / **[docs/design/dtls.md](docs/design/dtls.md)** — TLS 1.3 / DTLS 1.3
+- **[docs/design/tls.md](docs/design/tls.md)** — TLS 1.3 (Task 13, implemented)
+- **[docs/design/dtls.md](docs/design/dtls.md)** — DTLS 1.3 (Task 14, planned)
 
 ### RFC Requirements (~950 total, traced to RFC sections)
 
@@ -309,10 +340,11 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/requirements/dhcpv6.md](docs/requirements/dhcpv6.md)** — DHCPv6 client (44 reqs, RFC 8415)
 
 ### Size Benchmarks
-- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (3.9× smaller; UDP + TCP = 7.1 KB)
+- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (4.1× smaller stack code; UDP + TCP = 6.1 KB)
 
 ### Test Plan
-- **[docs/test-plan.md](docs/test-plan.md)** — Black-box conformance testing with Python/Scapy/pytest, CI strategy, traceability matrix
+- **[docs/test-plan.md](docs/test-plan.md)** — Unit and black-box conformance testing with Python/Scapy/pytest, CI strategy, traceability matrix
+- **[docs/ci-debugging.md](docs/ci-debugging.md)** — Diagnosing CI failures
 
 ## Historical Context
 

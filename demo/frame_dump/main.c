@@ -1,111 +1,45 @@
-#define _POSIX_C_SOURCE 199309L
-
 /**
  * @file demo/frame_dump/main.c
- * @brief Milestone 1 demo: open MAC interface, hex-dump received frames.
+ * @brief Hex dump of every frame received (and the stack's answers to
+ *        ARP and ping).
  *
- * On Linux:  Uses TAP interface (tap0), or a raw socket: frame_dump raw:eth0
- * On macOS: Uses BPF bound to feth1.
- *
- * This demo initializes the network stack, sends a hardcoded ARP-like
- * frame, then loops receiving and hex-dumping any incoming frames.
- *
- * Build: make demo  (or compile directly — see Makefile)
- * Run:   sudo ./build/demo/frame_dump
+ *   sudo ./frame_dump [tap0 | raw:<ifname> | feth1]
  */
 
-#include "eth.h"
 #include "net.h"
-#include <signal.h>
 #include <stdio.h>
-#include <string.h>
-#include <time.h>
 
-#include "demo_mac.h"
+#include "demo_loop.h"
 
-/* ── Hex dump helper ──────────────────────────────────────────────── */
+static net_t net;
+static demo_mac_t nic;
 
-static void hex_dump(const uint8_t *data, uint16_t len) {
-  uint16_t i;
-  for (i = 0; i < len; i++) {
-    if (i > 0 && (i % 16) == 0) {
-      printf("\n");
-    }
-    printf("%02x ", data[i]);
-  }
-  printf("\n");
+static void hex_dump(const uint8_t *data, int len) {
+  int i;
+  for (i = 0; i < len; i++)
+    printf((i & 15) == 15 || i == len - 1 ? "%02x\n" : "%02x ", data[i]);
 }
-
-/* ── Globals ──────────────────────────────────────────────────────── */
-
-static volatile int running = 1;
-
-static void sigint_handler(int sig) {
-  (void)sig;
-  running = 0;
-}
-
-/* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
-  /* Application-owned buffers */
-  static uint8_t rx_buf[1514];
-  static uint8_t tx_buf[1514];
-  static net_t net;
-
-  static const uint8_t mac[] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
-
-  /* ── Platform MAC driver: argv[1] names the interface ───────── */
-  static demo_mac_t nic;
-  if (demo_mac_select(&nic, argc > 1 ? argv[1] : NULL) != 0) {
+  if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "frame_dump") != 0)
     return 1;
-  }
-  const net_mac_t *drv_ops = nic.ops;
+  printf("Listening on ");
+  demo_print_ipv4(net.ipv4_addr);
+  printf(" (Ctrl+C to stop)\n\n");
 
-  /* Initialize network context */
-  net_err_t err = net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf),
-                           mac, drv_ops, &nic.ctx);
-  if (err != NET_OK) {
-    fprintf(stderr, "net_init failed: %d\n", err);
-    return 1;
-  }
-
-  /* Initialize MAC driver */
-  if (drv_ops->init(&nic.ctx) < 0) {
-    fprintf(stderr, "MAC driver init failed\n");
-    return 1;
-  }
-
-  printf("Network stack initialized.\n");
-  printf("  MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", net.mac[0], net.mac[1],
-         net.mac[2], net.mac[3], net.mac[4], net.mac[5]);
-  printf("  IPv4: %u.%u.%u.%u\n", (net.ipv4_addr >> 24) & 0xFF,
-         (net.ipv4_addr >> 16) & 0xFF, (net.ipv4_addr >> 8) & 0xFF,
-         net.ipv4_addr & 0xFF);
-  printf("Listening for frames... (Ctrl+C to stop)\n\n");
-
-  /* Install signal handler for clean exit */
-  signal(SIGINT, sigint_handler);
-
-  /* Main receive loop */
-  while (running) {
-    int n = net_poll(&net);
-    if (n <= 0) {
-      /* No frame available — brief sleep to avoid busy loop */
-      struct timespec ts = {0, 10000000}; /* 10ms */
-      nanosleep(&ts, NULL);
-      continue;
+  while (demo_running) {
+    int n = net_poll(&net); /* the frame stays in net.rx.buf afterwards */
+    if (n > 0) {
+      printf("=== Frame received: %d bytes ===\n", n);
+      hex_dump(net.rx.buf, n);
+      printf("\n");
+    } else {
+      struct timespec idle = {0, 10000000}; /* 10 ms */
+      nanosleep(&idle, NULL);
     }
-
-    printf("=== Frame received: %d bytes ===\n", n);
-    hex_dump(net.rx.buf, net.rx.frame_len);
-
-    /* Parse and dispatch through Ethernet layer */
-    eth_input(&net, net.rx.buf, net.rx.frame_len);
-    printf("\n");
   }
 
   printf("\nShutting down...\n");
-  drv_ops->close(&nic.ctx);
+  demo_net_close(&nic);
   return 0;
 }

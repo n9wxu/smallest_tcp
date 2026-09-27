@@ -1,10 +1,8 @@
 /**
  * @file ndp.c
- * @brief Neighbor Discovery (RFC 4861): the Neighbor Solicitation /
- *        Advertisement responder, and Duplicate Address Detection
- *        (RFC 4862 §5.4).
- *
- * Implements REQ-NDP-001..019, 027..033 and REQ-SLAAC-004..013.
+ * @brief Neighbor Discovery (RFC 4861): answering Neighbor Solicitations,
+ *        router discovery, Duplicate Address Detection and SLAAC
+ *        (RFC 4862).  REQ-NDP-001..053, REQ-SLAAC-004..028.
  */
 
 #include "ndp.h"
@@ -13,272 +11,235 @@
 #include "net_endian.h"
 #include <string.h>
 
-static const uint8_t all_nodes[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
-                                      0,    0,    0, 0, 0, 0, 0, 1};
-static const uint8_t all_nodes_mac[6] = {0x33, 0x33, 0, 0, 0, 1};
-static const uint8_t all_routers[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
-                                        0,    0,    0, 0, 0, 0, 0, 2};
-static const uint8_t all_routers_mac[6] = {0x33, 0x33, 0, 0, 0, 2};
-static const uint8_t unspecified[16] = {0};
+static uint16_t option_len(const uint8_t *opt) {
+  return (uint16_t)(opt[1] * 8u);
+}
 
-/* ── Options (REQ-NDP-004..008) ───────────────────────────────────── */
-
-/** Every option has a non-zero length and fits (RFC 4861 §4.6). */
+/* REQ-NDP-004..008: every option has a length, and fits (RFC 4861 §4.6) */
 static int options_valid(const uint8_t *opt, uint16_t len) {
   while (len > 0) {
-    if (len < 2)
+    if (len < 2 || option_len(opt) == 0 || option_len(opt) > len)
       return 0;
-    uint16_t olen = (uint16_t)(opt[1] * 8u);
-    if (olen == 0 || olen > len)
-      return 0;
-    opt += olen;
-    len = (uint16_t)(len - olen);
+    len = (uint16_t)(len - option_len(opt));
+    opt += option_len(opt);
   }
   return 1;
 }
 
-/** The first option of @p type (in validated options), or NULL. */
+/* The first option of @p type in validated options, or NULL */
 static const uint8_t *option_find(const uint8_t *opt, uint16_t len,
                                   uint8_t type) {
   while (len > 0) {
-    uint16_t olen = (uint16_t)(opt[1] * 8u);
     if (opt[0] == type)
       return opt;
-    opt += olen;
-    len = (uint16_t)(len - olen);
+    len = (uint16_t)(len - option_len(opt));
+    opt += option_len(opt);
   }
   return NULL;
 }
 
-/* ── Send ─────────────────────────────────────────────────────────── */
+/* A link-layer address option carrying our MAC */
+static void write_lla_option(uint8_t *opt, uint8_t type, const net_t *net) {
+  opt[0] = type;
+  opt[1] = NDP_OPT_LLA_LEN / 8;
+  memcpy(opt + 2, net->mac, 6);
+}
 
-/** NA for our address @p target, with our MAC as Target Link-Layer
- *  Address.  The source is the target address itself. */
+/* REQ-NDP-013: an NA for our address @p target, from it, with our MAC */
 static void send_na(net_t *net, const uint8_t *target, const uint8_t *dst,
                     const uint8_t *dst_mac, uint8_t flags) {
   uint8_t *msg = net->tx.buf + ICMPV6_OFFSET;
-
   if (net->tx.capacity < ICMPV6_OFFSET + NDP_NS_NA_LEN + NDP_OPT_LLA_LEN)
     return;
-  memset(msg, 0, NDP_NS_NA_LEN + NDP_OPT_LLA_LEN);
+  memset(msg, 0, NDP_NS_NA_LEN);
   msg[ICMPV6_OFF_TYPE] = ICMPV6_NA;
   msg[NDP_OFF_FLAGS] = flags;
   memcpy(msg + NDP_OFF_TARGET, target, 16);
-  msg[NDP_NS_NA_LEN] = NDP_OPT_TLLA; /* REQ-NDP-013 */
-  msg[NDP_NS_NA_LEN + 1] = 1;
-  memcpy(msg + NDP_NS_NA_LEN + 2, net->mac, 6);
+  write_lla_option(msg + NDP_NS_NA_LEN, NDP_OPT_TLLA, net);
   icmpv6_send(net, target, dst, dst_mac, NDP_NS_NA_LEN + NDP_OPT_LLA_LEN,
               NDP_HOP_LIMIT);
 }
 
+static void send_na_to_all_nodes(net_t *net, const uint8_t *target,
+                                 uint8_t flags) {
+  uint8_t mac[6];
+  ipv6_mcast_mac(ipv6_all_nodes, mac);
+  send_na(net, target, ipv6_all_nodes, mac, flags);
+}
+
+/* REQ-NDP-021..025, REQ-SLAAC-005, 006: to the target's solicited-node
+ * group; a DAD probe comes from :: without our MAC */
 net_err_t ndp_send_ns(net_t *net, const uint8_t *target, int dad) {
   uint8_t group[16], group_mac[6];
   uint8_t *msg = net->tx.buf + ICMPV6_OFFSET;
-  uint16_t len = NDP_NS_NA_LEN;
+  uint16_t len = dad ? NDP_NS_NA_LEN : NDP_NS_NA_LEN + NDP_OPT_LLA_LEN;
+  const uint8_t *src = dad ? ipv6_unspecified : ipv6_src_for(net, target);
 
-  /* REQ-SLAAC-005, REQ-NDP-025: DAD probes come from :: */
-  const uint8_t *src = dad ? unspecified : ipv6_src_for(net, target);
   if (!src)
     return NET_ERR_INVALID_PARAM;
   if (net->tx.capacity < ICMPV6_OFFSET + NDP_NS_NA_LEN + NDP_OPT_LLA_LEN)
     return NET_ERR_BUF_TOO_SMALL;
-
-  /* REQ-NDP-022,023, REQ-SLAAC-006: to the target's solicited-node group */
   ipv6_solicited_node(target, group);
   ipv6_mcast_mac(group, group_mac);
-
-  memset(msg, 0, NDP_NS_NA_LEN + NDP_OPT_LLA_LEN);
+  memset(msg, 0, NDP_NS_NA_LEN);
   msg[ICMPV6_OFF_TYPE] = ICMPV6_NS;
-  memcpy(msg + NDP_OFF_TARGET, target, 16); /* REQ-NDP-021 */
-  if (!dad) {
-    msg[NDP_NS_NA_LEN] = NDP_OPT_SLLA; /* REQ-NDP-024 */
-    msg[NDP_NS_NA_LEN + 1] = 1;
-    memcpy(msg + NDP_NS_NA_LEN + 2, net->mac, 6);
-    len = NDP_NS_NA_LEN + NDP_OPT_LLA_LEN;
-  }
+  memcpy(msg + NDP_OFF_TARGET, target, 16);
+  if (!dad)
+    write_lla_option(msg + NDP_NS_NA_LEN, NDP_OPT_SLLA, net);
   return icmpv6_send(net, src, group, group_mac, len, NDP_HOP_LIMIT);
 }
 
-/** Router Solicitation (REQ-NDP-034..037): from the link-local address
- *  with our MAC in an SLLA option. */
+/* REQ-NDP-034..037 */
 static void send_rs(net_t *net) {
   uint8_t *msg = net->tx.buf + ICMPV6_OFFSET;
+  uint8_t mac[6];
   if (net->tx.capacity < ICMPV6_OFFSET + NDP_RS_LEN + NDP_OPT_LLA_LEN)
     return;
-  memset(msg, 0, NDP_RS_LEN + NDP_OPT_LLA_LEN);
+  memset(msg, 0, NDP_RS_LEN);
   msg[ICMPV6_OFF_TYPE] = ICMPV6_RS;
-  msg[NDP_RS_LEN] = NDP_OPT_SLLA;
-  msg[NDP_RS_LEN + 1] = 1;
-  memcpy(msg + NDP_RS_LEN + 2, net->mac, 6);
-  icmpv6_send(net, net->ip6[0].addr, all_routers, all_routers_mac,
+  write_lla_option(msg + NDP_RS_LEN, NDP_OPT_SLLA, net);
+  ipv6_mcast_mac(ipv6_all_routers, mac);
+  icmpv6_send(net, net->ip6.addr[0].addr, ipv6_all_routers, mac,
               NDP_RS_LEN + NDP_OPT_LLA_LEN, NDP_HOP_LIMIT);
 }
 
-/* ── Receive ──────────────────────────────────────────────────────── */
-
+/* REQ-NDP-012, 014..019, REQ-SLAAC-009 */
 static void ns_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   const uint8_t *msg = ip->payload;
-  uint16_t len = ip->payload_len;
-
-  /* REQ-NDP-014,015 */
-  if (len < NDP_NS_NA_LEN || ipv6_is_multicast(msg + NDP_OFF_TARGET))
-    return;
+  const uint8_t *target = msg + NDP_OFF_TARGET;
   const uint8_t *opts = msg + NDP_NS_NA_LEN;
-  uint16_t opts_len = (uint16_t)(len - NDP_NS_NA_LEN);
-  if (!options_valid(opts, opts_len)) /* REQ-NDP-006 */
-    return;
-  const uint8_t *slla = option_find(opts, opts_len, NDP_OPT_SLLA);
+  uint16_t opts_len = (uint16_t)(ip->payload_len - NDP_NS_NA_LEN);
+  int from_dad_probe = ipv6_is_unspecified(ip->src);
+  const uint8_t *slla;
+  net_ip6_addr_t *a;
+  int slot;
 
-  /* From ::, it is someone's DAD probe: it must go to the target's
-   * solicited-node group and carry no link-layer address (§7.1.1) */
-  int dad = ipv6_is_unspecified(ip->src);
-  if (dad) {
+  if (ip->payload_len < NDP_NS_NA_LEN || ipv6_is_multicast(target) ||
+      !options_valid(opts, opts_len))
+    return;
+  slla = option_find(opts, opts_len, NDP_OPT_SLLA);
+  if (from_dad_probe) { /* RFC 4861 §7.1.1 */
     uint8_t group[16];
-    ipv6_solicited_node(msg + NDP_OFF_TARGET, group);
+    ipv6_solicited_node(target, group);
     if (!ipv6_addr_equal(ip->dst, group) || slla)
       return;
   }
-
-  int slot = ipv6_addr_slot(net, msg + NDP_OFF_TARGET);
-  if (slot < 0)
+  if ((slot = ipv6_addr_slot(net, target)) < 0)
     return;
-  net_ip6_addr_t *a = &net->ip6[slot];
+  a = &net->ip6.addr[slot];
 
-  if (a->state == NET_IP6_TENTATIVE) {
-    /* REQ-SLAAC-009: another node probing the same address.  NS from a
-     * unicast source for a tentative address is ignored (§5.4.3). */
-    if (dad) {
+  switch (a->state) {
+  case NET_IP6_TENTATIVE:
+    /* Someone else probing the same address; a unicast-sourced NS for a
+     * tentative address is ignored (RFC 4862 §5.4.3) */
+    if (from_dad_probe)
       a->state = NET_IP6_DUPLICATE;
-      NET_LOG("ndp: DAD conflict (NS) on slot %d", slot);
-    }
-    return;
-  }
-  if (a->state == NET_IP6_DUPLICATE)
-    return;
-
-  if (dad) {
-    /* REQ-NDP-016,018: defend our address — unsolicited NA to all-nodes */
-    send_na(net, a->addr, all_nodes, all_nodes_mac, NDP_NA_FLAG_O);
-  } else {
-    /* REQ-NDP-012,017,019: answer the solicitor at its link-layer
-     * address (from the option, else the frame) */
-    send_na(net, a->addr, ip->src, slla ? slla + 2 : eth->src_mac,
-            NDP_NA_FLAG_S | NDP_NA_FLAG_O);
+    break;
+  case NET_IP6_DUPLICATE:
+    break;
+  default:
+    if (from_dad_probe) /* defend the address */
+      send_na_to_all_nodes(net, a->addr, NDP_NA_FLAG_O);
+    else
+      send_na(net, a->addr, ip->src, slla ? slla + 2 : eth->src_mac,
+              NDP_NA_FLAG_S | NDP_NA_FLAG_O);
+    break;
   }
 }
 
+/* REQ-NDP-029..033, REQ-SLAAC-008; with no neighbour cache, an NA only
+ * matters when it claims one of our tentative addresses */
 static void na_input(net_t *net, const ipv6_hdr_t *ip) {
   const uint8_t *msg = ip->payload;
-  uint16_t len = ip->payload_len;
+  int slot;
 
-  /* REQ-NDP-029,030 (hop limit checked by ndp_input) */
-  if (len < NDP_NS_NA_LEN || ipv6_is_multicast(msg + NDP_OFF_TARGET))
+  if (ip->payload_len < NDP_NS_NA_LEN ||
+      ipv6_is_multicast(msg + NDP_OFF_TARGET) ||
+      !options_valid(msg + NDP_NS_NA_LEN,
+                     (uint16_t)(ip->payload_len - NDP_NS_NA_LEN)))
     return;
-  if (!options_valid(msg + NDP_NS_NA_LEN, (uint16_t)(len - NDP_NS_NA_LEN)))
-    return;
-  /* §7.1.2: a multicast NA cannot be Solicited */
   if (ipv6_is_multicast(ip->dst) && (msg[NDP_OFF_FLAGS] & NDP_NA_FLAG_S))
-    return;
-
-  int slot = ipv6_addr_slot(net, msg + NDP_OFF_TARGET);
-  if (slot < 0)
-    return; /* REQ-NDP-033: no neighbour cache to update */
-  if (net->ip6[slot].state == NET_IP6_TENTATIVE) {
-    /* REQ-SLAAC-008 */
-    net->ip6[slot].state = NET_IP6_DUPLICATE;
-    NET_LOG("ndp: DAD conflict (NA) on slot %d", slot);
-  } else {
-    /* RFC 4862 §5.4.4: after DAD, just note it */
-    NET_LOG("ndp: another node advertises our address (slot %d)", slot);
-  }
+    return; /* §7.1.2 */
+  slot = ipv6_addr_slot(net, msg + NDP_OFF_TARGET);
+  if (slot >= 0 && net->ip6.addr[slot].state == NET_IP6_TENTATIVE)
+    net->ip6.addr[slot].state = NET_IP6_DUPLICATE;
 }
 
-/**
- * Stateless address autoconfiguration from one Prefix Information option
- * (RFC 4862 §5.5.3, REQ-SLAAC-014..027).
- */
+/* RFC 4862 §5.5.3(e): an advertised valid lifetime below two hours can
+ * only shorten ours to two hours */
+static uint32_t slaac_valid_lifetime(uint32_t advertised, uint32_t current) {
+  if (advertised > SLAAC_TWO_HOURS_S || advertised > current)
+    return advertised;
+  return current > SLAAC_TWO_HOURS_S ? SLAAC_TWO_HOURS_S : current;
+}
+
+/* REQ-SLAAC-014..027: a /64 prefix + our interface identifier */
 static void slaac_prefix(net_t *net, const uint8_t *opt) {
-  uint8_t flags = opt[3];
+  uint8_t prefix_len = opt[2], flags = opt[3];
   uint32_t valid = net_read32be(opt + 4);
   uint32_t preferred = net_read32be(opt + 8);
   const uint8_t *prefix = opt + 16;
   uint8_t addr[16];
+  int slot;
 
   if (!(flags & NDP_PREFIX_FLAG_A) || ipv6_is_link_local(prefix) ||
-      preferred > valid || opt[2] != 64)
-    return; /* (a) not autonomous, (b) link-local, (c), /64 IID only */
-
-  /* Prefix + the interface identifier of our link-local address */
+      preferred > valid || prefix_len != 64)
+    return;
   memcpy(addr, prefix, 8);
-  memcpy(addr + 8, net->ip6[0].addr + 8, 8);
+  memcpy(addr + 8, net->ip6.addr[0].addr + 8, 8);
 
-  int slot = ipv6_addr_slot(net, addr);
+  slot = ipv6_addr_slot(net, addr);
   if (slot < 0) {
-    if (valid > 0) /* (d) */
+    if (valid > 0)
       ipv6_addr_add(net, addr, valid, preferred);
-    return;
+  } else if (net->ip6.addr[slot].state != NET_IP6_DUPLICATE) {
+    ipv6_addr_set_lifetimes(
+        net, (uint8_t)slot,
+        slaac_valid_lifetime(valid, net->ip6.addr[slot].valid_s), preferred);
   }
-  net_ip6_addr_t *a = &net->ip6[slot];
-  if (a->state == NET_IP6_DUPLICATE)
-    return;
-  /* (e): a short valid lifetime cannot cut ours below two hours */
-  if (valid > SLAAC_TWO_HOURS_S || valid > a->valid_s)
-    a->valid_s = valid;
-  else if (a->valid_s > SLAAC_TWO_HOURS_S)
-    a->valid_s = SLAAC_TWO_HOURS_S;
-  a->preferred_s = preferred;
-  if (a->state == NET_IP6_DEPRECATED && preferred > 0)
-    a->state = NET_IP6_PREFERRED;
-  else if (a->state == NET_IP6_PREFERRED && preferred == 0)
-    a->state = NET_IP6_DEPRECATED;
 }
 
-/** Router Advertisement (RFC 4861 §6.3.4, REQ-NDP-039..048). */
+/* REQ-NDP-039..048 */
 static void ra_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   const uint8_t *msg = ip->payload;
-  uint16_t len = ip->payload_len;
-
-  /* REQ-NDP-040: only from a router's link-local address */
-  if (len < NDP_RA_LEN || !ipv6_is_link_local(ip->src))
-    return;
   const uint8_t *opt = msg + NDP_RA_LEN;
-  uint16_t opts_len = (uint16_t)(len - NDP_RA_LEN);
-  if (!options_valid(opt, opts_len))
+  uint16_t opts_len = (uint16_t)(ip->payload_len - NDP_RA_LEN);
+  net_ip6_router_t *router = &net->ip6.router;
+  uint16_t lifetime;
+  const uint8_t *slla;
+
+  if (ip->payload_len < NDP_RA_LEN || !ipv6_is_link_local(ip->src) ||
+      !options_valid(opt, opts_len))
     return;
 
-  net->ip6_rs_left = 0; /* a router answered: stop soliciting */
-  if (msg[NDP_RA_OFF_HOPLIMIT]) /* REQ-NDP-042 */
-    net->ip6_hop_limit = msg[NDP_RA_OFF_HOPLIMIT];
-  net->ip6_ra_flags = msg[NDP_RA_OFF_FLAGS] & 0xC0; /* REQ-NDP-047,048 */
+  net->ip6.router_solicits_left = 0; /* a router answered */
+  if (msg[NDP_RA_OFF_HOPLIMIT])
+    net->ip6.hop_limit = msg[NDP_RA_OFF_HOPLIMIT];
+  net->ip6.ra_flags = msg[NDP_RA_OFF_FLAGS] & (NDP_RA_MANAGED | NDP_RA_OTHER);
 
-  /* REQ-NDP-043,044: the default router and its MAC */
-  uint16_t life = net_read16be(msg + NDP_RA_OFF_LIFETIME);
-  const uint8_t *slla = option_find(opt, opts_len, NDP_OPT_SLLA);
-  if (life) {
-    memcpy(net->ip6_router, ip->src, 16);
-    memcpy(net->ip6_router_mac, slla ? slla + 2 : eth->src_mac, 6);
-    net->ip6_router_life_s = life;
-  } else if (ipv6_addr_equal(net->ip6_router, ip->src)) {
-    net->ip6_router_life_s = 0;
+  lifetime = net_read16be(msg + NDP_RA_OFF_LIFETIME);
+  slla = option_find(opt, opts_len, NDP_OPT_SLLA);
+  if (lifetime) {
+    memcpy(router->addr, ip->src, 16);
+    memcpy(router->mac, slla ? slla + 2 : eth->src_mac, 6);
+    router->lifetime_s = lifetime;
+  } else if (ipv6_addr_equal(router->addr, ip->src)) {
+    router->lifetime_s = 0;
   }
 
-  /* REQ-NDP-045: every Prefix Information option */
-  while (opts_len > 0) {
-    uint16_t olen = (uint16_t)(opt[1] * 8u);
-    if (opt[0] == NDP_OPT_PREFIX && olen == NDP_OPT_PREFIX_LEN)
+  for (; opts_len > 0; opts_len = (uint16_t)(opts_len - option_len(opt)),
+                       opt += option_len(opt)) {
+    if (opt[0] == NDP_OPT_PREFIX && option_len(opt) == NDP_OPT_PREFIX_LEN)
       slaac_prefix(net, opt);
-    opt += olen;
-    opts_len = (uint16_t)(opts_len - olen);
   }
 }
 
+/* REQ-NDP-001, 002, 053: only from the link itself; RS (we are not a
+ * router) and Redirect are ignored */
 void ndp_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   const uint8_t *msg = ip->payload;
-
-  /* REQ-NDP-001,002: only messages from the link itself */
   if (ip->hop_limit != NDP_HOP_LIMIT || msg[ICMPV6_OFF_CODE] != 0)
     return;
-
   switch (msg[ICMPV6_OFF_TYPE]) {
   case ICMPV6_NS:
     ns_input(net, ip, eth);
@@ -290,67 +251,63 @@ void ndp_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
     ra_input(net, ip, eth);
     break;
   default:
-    /* RS: we are not a router.  Redirect: ignored (REQ-NDP-053). */
     break;
   }
 }
 
-/* ── Duplicate Address Detection ──────────────────────────────────── */
-
+/* REQ-SLAAC-011..013: tentative; its solicited-node group is accepted
+ * (ipv6_mac_accepted()) from now on */
 void ndp_dad_start(net_t *net, uint8_t slot, uint16_t delay_ms) {
-  net_ip6_addr_t *a = &net->ip6[slot];
-  /* REQ-SLAAC-011..013: tentative, and its solicited-node group (accepted
-   * by ipv6_mac_accepted()) is joined from now on */
+  net_ip6_addr_t *a = &net->ip6.addr[slot];
   a->state = NET_IP6_TENTATIVE;
-  a->dad_left = NET_IPV6_DAD_TRANSMITS;
-  a->timer_ms = delay_ms;
+  a->dad_probes_left = NET_IPV6_DAD_TRANSMITS;
+  a->dad_timer_ms = delay_ms;
 }
 
+/* REQ-SLAAC-028: routers are solicited once the link-local address is
+ * usable, after a random delay */
+static void start_router_discovery(net_t *net) {
+  if (NDP_MAX_RTR_SOLICITATIONS == 0)
+    return;
+  net->ip6.router_solicits_left = NDP_MAX_RTR_SOLICITATIONS;
+  net->ip6.router_solicit_ms =
+      (uint16_t)net_random_below(net, NDP_MAX_RTR_SOLICITATION_DELAY_MS + 1u);
+}
+
+/* REQ-SLAAC-005..007, 010, 013 */
+static void dad_step(net_t *net, uint8_t slot) {
+  net_ip6_addr_t *a = &net->ip6.addr[slot];
+  if (a->dad_probes_left > 0) {
+    /* Report the solicited-node group before the first probe (RFC 4862
+     * §5.4.2), so a snooping switch delivers any answer */
+    if (a->dad_probes_left == NET_IPV6_DAD_TRANSMITS)
+      mld_report_change(net, NULL);
+    ndp_send_ns(net, a->addr, 1);
+    a->dad_probes_left--;
+    a->dad_timer_ms = NDP_RETRANS_TIMER_MS;
+    return;
+  }
+  /* No one answered: the address is ours */
+  a->state = a->preferred_s ? NET_IP6_PREFERRED : NET_IP6_DEPRECATED;
+  if (slot == 0)
+    start_router_discovery(net);
+}
+
+/* REQ-NDP-034..038; solicitations go before DAD so one scheduled by DAD
+ * waits for the next tick */
 void ndp_tick(net_t *net, uint32_t elapsed_ms) {
+  net_ip6_t *ip6 = &net->ip6;
   uint8_t i;
 
-  /* REQ-NDP-034..038: Router Solicitations, 4 s apart (before DAD, so a
-   * solicitation scheduled below waits for the next tick) */
-  if (net->ip6_rs_left) {
-    if (net->ip6_rs_timer_ms > elapsed_ms) {
-      net->ip6_rs_timer_ms = (uint16_t)(net->ip6_rs_timer_ms - elapsed_ms);
-    } else {
-      send_rs(net);
-      net->ip6_rs_left--;
-      net->ip6_rs_timer_ms = NDP_RTR_SOLICITATION_INTERVAL_MS;
-    }
+  if (ip6->router_solicits_left &&
+      net_countdown16(&ip6->router_solicit_ms, elapsed_ms)) {
+    send_rs(net);
+    ip6->router_solicits_left--;
+    ip6->router_solicit_ms = NDP_RTR_SOLICITATION_INTERVAL_MS;
   }
-
   for (i = 0; i < NET_IPV6_ADDRS; i++) {
-    net_ip6_addr_t *a = &net->ip6[i];
-    if (a->state != NET_IP6_TENTATIVE)
-      continue;
-    if (a->timer_ms > elapsed_ms) {
-      a->timer_ms = (uint16_t)(a->timer_ms - elapsed_ms);
-      continue;
-    }
-    if (a->dad_left > 0) {
-      /* REQ-SLAAC-013: report the solicited-node group before probing
-       * (RFC 4862 §5.4.2), so a snooping switch delivers the answer */
-      if (a->dad_left == NET_IPV6_DAD_TRANSMITS)
-        mld_report_change(net, NULL);
-      /* REQ-SLAAC-005..007 */
-      ndp_send_ns(net, a->addr, 1);
-      a->dad_left--;
-      a->timer_ms = NDP_RETRANS_TIMER_MS;
-    } else {
-      /* REQ-SLAAC-010: no one answered — the address is ours (deprecated
-       * if its preferred lifetime ran out meanwhile) */
-      a->state = a->preferred_s ? NET_IP6_PREFERRED : NET_IP6_DEPRECATED;
-      NET_LOG("ndp: address slot %u usable", i);
-      if (i == 0 && NDP_MAX_RTR_SOLICITATIONS > 0) {
-        /* REQ-SLAAC-028: now look for routers, after a random delay */
-        net->ip6_rs_left = NDP_MAX_RTR_SOLICITATIONS;
-        net->ip6_rs_timer_ms =
-            (uint16_t)(((ipv6_random(net) & 0xFFFFu) *
-                        (NDP_MAX_RTR_SOLICITATION_DELAY_MS + 1u)) >>
-                       16);
-      }
-    }
+    if (ip6->addr[i].state == NET_IP6_TENTATIVE &&
+        net_countdown16(&ip6->addr[i].dad_timer_ms, elapsed_ms))
+      dad_step(net, i);
   }
 }

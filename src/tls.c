@@ -1,456 +1,45 @@
 /**
  * @file tls.c
- * @brief TLS 1.3 (RFC 8446): key schedule and record protection.
+ * @brief TLS 1.3 (RFC 8446) connections: records in and out, handshake
+ *        message framing, alerts, KeyUpdate and the API.  The handshake
+ *        of each role is in tls_server.c and tls_client.c.
  *
- * No cryptography here (REQ-TLS-006) — HKDF, HMAC and AES-GCM come from
- * the tls_crypto_t backend.  No division: this builds for Cortex-M0.
+ * No division: this builds for Cortex-M0.
  */
 
-#include "tls.h"
-
-#include <string.h>
-
-/* SHA-256("") — Transcript-Hash of no messages, for Derive-Secret(.., "") */
-static const uint8_t empty_hash[TLS_HASH_LEN] = {
-    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4,
-    0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b,
-    0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55};
-
-static const uint8_t zeros[TLS_HASH_LEN];
-
-#define LABEL_MAX 12 /* "e exp master" */
-
-static void put16(uint8_t *p, size_t v) {
-  p[0] = (uint8_t)(v >> 8);
-  p[1] = (uint8_t)v;
-}
-
-static void wipe(void *p, size_t n) {
-  volatile uint8_t *v = (volatile uint8_t *)p;
-  while (n--)
-    *v++ = 0;
-}
-
-int tls_equal(const uint8_t *a, const uint8_t *b, size_t len) {
-  uint8_t d = 0;
-  size_t i;
-  for (i = 0; i < len; i++)
-    d |= (uint8_t)(a[i] ^ b[i]);
-  return d == 0;
-}
-
-/* ── Key schedule ─────────────────────────────────────────────────────── */
-
-void tls_expand_label(const tls_crypto_t *c, const uint8_t *secret,
-                      const char *label, const uint8_t *context,
-                      size_t context_len, uint8_t *out, size_t out_len) {
-  /* struct { uint16 length; opaque label<7..255>; opaque context<0..255>; }
-   * HkdfLabel, with label = "tls13 " + Label */
-  uint8_t info[2 + 1 + 6 + LABEL_MAX + 1 + TLS_HASH_LEN];
-  size_t ll = strlen(label), n;
-  if (ll > LABEL_MAX)
-    ll = LABEL_MAX;
-  if (context_len > TLS_HASH_LEN)
-    context_len = TLS_HASH_LEN;
-  put16(info, out_len);
-  info[2] = (uint8_t)(6 + ll);
-  memcpy(info + 3, "tls13 ", 6);
-  memcpy(info + 9, label, ll);
-  n = 9 + ll;
-  info[n++] = (uint8_t)context_len;
-  if (context_len) {
-    memcpy(info + n, context, context_len);
-    n += context_len;
-  }
-  c->hkdf_expand(secret, info, n, out, out_len);
-}
-
-void tls_derive_secret(const tls_crypto_t *c, const uint8_t *secret,
-                       const char *label, const uint8_t *hash,
-                       uint8_t out[TLS_HASH_LEN]) {
-  tls_expand_label(c, secret, label, hash ? hash : empty_hash, TLS_HASH_LEN,
-                   out, TLS_HASH_LEN);
-}
-
-void tls_early_secret(const tls_crypto_t *c, const uint8_t *psk,
-                      size_t psk_len, uint8_t out[TLS_HASH_LEN]) {
-  if (!psk) {
-    psk = zeros;
-    psk_len = TLS_HASH_LEN;
-  }
-  c->hkdf_extract(zeros, TLS_HASH_LEN, psk, psk_len, out);
-}
-
-void tls_next_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN],
-                     const uint8_t *ikm, size_t ikm_len) {
-  uint8_t salt[TLS_HASH_LEN];
-  if (!ikm) {
-    ikm = zeros;
-    ikm_len = TLS_HASH_LEN;
-  }
-  tls_derive_secret(c, secret, "derived", NULL, salt);
-  c->hkdf_extract(salt, TLS_HASH_LEN, ikm, ikm_len, secret);
-  wipe(salt, sizeof(salt));
-}
-
-void tls_traffic_keys(const tls_crypto_t *c, const uint8_t *secret,
-                      tls_keys_t *k) {
-  tls_expand_label(c, secret, "key", NULL, 0, k->key, TLS_AEAD_KEY_LEN);
-  tls_expand_label(c, secret, "iv", NULL, 0, k->iv, TLS_AEAD_IV_LEN);
-  k->seq = 0;
-}
-
-void tls_finished_mac(const tls_crypto_t *c, const uint8_t *base,
-                      const uint8_t hash[TLS_HASH_LEN],
-                      uint8_t out[TLS_HASH_LEN]) {
-  uint8_t fk[TLS_HASH_LEN];
-  tls_expand_label(c, base, "finished", NULL, 0, fk, TLS_HASH_LEN);
-  c->hmac(fk, TLS_HASH_LEN, hash, TLS_HASH_LEN, out);
-  wipe(fk, sizeof(fk));
-}
-
-void tls_psk_binder(const tls_crypto_t *c, const uint8_t *early,
-                    int resumption, const uint8_t hash[TLS_HASH_LEN],
-                    uint8_t out[TLS_HASH_LEN]) {
-  uint8_t bk[TLS_HASH_LEN];
-  tls_derive_secret(c, early, resumption ? "res binder" : "ext binder", NULL,
-                    bk);
-  tls_finished_mac(c, bk, hash, out);
-  wipe(bk, sizeof(bk));
-}
-
-void tls_transcript_hrr(const tls_crypto_t *c, tls_hash_t *transcript) {
-  uint8_t mh[4 + TLS_HASH_LEN] = {254, 0, 0, TLS_HASH_LEN}; /* message_hash */
-  c->hash_peek(transcript, mh + 4);
-  c->hash_init(transcript);
-  c->hash_update(transcript, mh, sizeof(mh));
-}
-
-void tls_update_secret(const tls_crypto_t *c, uint8_t secret[TLS_HASH_LEN]) {
-  uint8_t next[TLS_HASH_LEN];
-  tls_expand_label(c, secret, "traffic upd", NULL, 0, next, TLS_HASH_LEN);
-  memcpy(secret, next, TLS_HASH_LEN);
-  wipe(next, sizeof(next));
-}
-
-/* ── Record protection ────────────────────────────────────────────────── */
-
-/* The per-record nonce: the IV XOR the 64-bit sequence number, big-endian
- * and right-aligned (RFC 8446 §5.3). */
-static void record_nonce(const tls_keys_t *k, uint8_t nonce[TLS_AEAD_IV_LEN]) {
-  uint64_t s = k->seq;
-  int i;
-  memcpy(nonce, k->iv, TLS_AEAD_IV_LEN);
-  for (i = TLS_AEAD_IV_LEN - 1; i >= TLS_AEAD_IV_LEN - 8; i--) {
-    nonce[i] ^= (uint8_t)s;
-    s >>= 8;
-  }
-}
-
-size_t tls_record_seal(const tls_crypto_t *c, tls_keys_t *k, uint8_t type,
-                       uint8_t *rec, size_t len) {
-  uint8_t nonce[TLS_AEAD_IV_LEN];
-  uint8_t *inner = rec + TLS_RECORD_HDR;
-  size_t clen = len + 1 + TLS_AEAD_TAG_LEN;
-
-  inner[len] = type; /* TLSInnerPlaintext: content, type, no padding */
-  rec[0] = TLS_CT_APPLICATION_DATA;
-  rec[1] = 0x03; /* legacy_record_version 0x0303 */
-  rec[2] = 0x03;
-  put16(rec + 3, clen);
-  record_nonce(k, nonce);
-  c->aead_seal(k->key, nonce, rec, TLS_RECORD_HDR, inner, len + 1, inner,
-               inner + len + 1);
-  k->seq++;
-  return TLS_RECORD_HDR + clen;
-}
-
-int tls_record_open(const tls_crypto_t *c, tls_keys_t *k, uint8_t *rec,
-                    size_t rec_len, uint8_t *type) {
-  uint8_t nonce[TLS_AEAD_IV_LEN];
-  uint8_t *inner = rec + TLS_RECORD_HDR;
-  size_t clen, n;
-
-  if (rec_len < TLS_RECORD_HDR)
-    return -TLS_ALERT_DECODE_ERROR;
-  if (rec[0] != TLS_CT_APPLICATION_DATA)
-    return -TLS_ALERT_UNEXPECTED_MESSAGE;
-  clen = ((size_t)rec[3] << 8) | rec[4];
-  if (clen != rec_len - TLS_RECORD_HDR)
-    return -TLS_ALERT_DECODE_ERROR;
-  if (clen < 1 + TLS_AEAD_TAG_LEN)
-    return -TLS_ALERT_BAD_RECORD_MAC;
-  n = clen - TLS_AEAD_TAG_LEN;
-  /* TLSInnerPlaintext may not exceed 2^14 + 1 (§5.4), which also bounds
-   * TLSCiphertext.length by 2^14 + 256 (§5.2) */
-  if (n > TLS_MAX_PLAINTEXT + 1)
-    return -TLS_ALERT_RECORD_OVERFLOW;
-
-  record_nonce(k, nonce);
-  if (c->aead_open(k->key, nonce, rec, TLS_RECORD_HDR, inner, n, inner + n,
-                   inner) != 0)
-    return -TLS_ALERT_BAD_RECORD_MAC;
-  k->seq++;
-
-  while (n > 0 && inner[n - 1] == 0) /* strip the padding */
-    n--;
-  if (n == 0)
-    return -TLS_ALERT_UNEXPECTED_MESSAGE;
-  n--;
-  *type = inner[n];
-  return (int)n;
-}
-
-/* ══ Connections ═══════════════════════════════════════════════════════ */
-
-/* flags */
-#define F_SERVER 0x01u
-#define F_RPROT 0x02u    /* records from the peer are protected */
-#define F_WPROT 0x04u    /* our records are protected */
-#define F_CCS_OK 0x08u   /* a dummy change_cipher_spec may arrive */
-#define F_WCLOSED 0x10u  /* we sent close_notify */
-#define F_KU_OWED 0x20u  /* the peer asked for a KeyUpdate */
-#define F_CERT_REQ 0x40u /* client: the server asked for our certificate */
-#define F_PSK 0x80u      /* a PSK authenticates the handshake */
-#define F_HRR 0x100u     /* a HelloRetryRequest was sent (received) */
-#define F_KU_REQ 0x200u  /* the owed KeyUpdate asks the peer for one */
-
-/* step: where the handshake is */
-enum {
-  ST_NONE,
-  ST_WAIT_CH,  /* server: ClientHello */
-  ST_SEND_CCS, /* server: the flight after ServerHello, one message */
-  ST_SEND_EE,  /*   per step so a small buffer can send it in parts */
-  ST_SEND_CERT,
-  ST_SEND_CV,
-  ST_SEND_FIN,
-  ST_WAIT_FIN, /* server: the client's Finished */
-  ST_DONE,
-  ST_C_WAIT_SH,   /* client: ServerHello */
-  ST_C_WAIT_EE,   /* EncryptedExtensions */
-  ST_C_WAIT_CERT, /* CertificateRequest or Certificate */
-  ST_C_WAIT_CV,   /* CertificateVerify */
-  ST_C_WAIT_FIN,  /* the server's Finished */
-  ST_C_SEND_FIN   /* our (empty Certificate and) Finished */
-};
-
-/* Steps that have output to send */
-#define SENDING(s)                                                            \
-  (((s) >= ST_SEND_CCS && (s) <= ST_SEND_FIN) || (s) == ST_C_SEND_FIN)
-
-/* What on_handshake() says about the message it took */
-#define HS_KEYS 1    /* keys change after it: it must end its record */
-#define HS_KEEP 2    /* keep it (the Certificate, for CertificateVerify) */
-#define HS_RELEASE 3 /* done with it and with the kept one */
-
-#define CHAIN_MAX 6 /* certificates passed to verify_chain */
+#include "tls_internal.h"
 
 #define NO_REC 0xFFFFu
 #define BUF_MIN 256u
 #define BUF_MAX 0xFFFEu
+#define ALERT_WARNING 1
+#define ALERT_FATAL 2
 
-/* The most signature bytes CertificateVerify reserves */
-#define SIG_MAX_ECDSA 72u /* DER ECDSA-P256 */
-#define SIG_MAX_RSA 512u  /* RSA up to 4096 bits */
-
-static const uint8_t cv_server_ctx[] = "TLS 1.3, server CertificateVerify";
-
-/* ServerHello.random of a HelloRetryRequest: SHA-256("HelloRetryRequest") */
-static const uint8_t hrr_random[32] = {
+/* SHA-256("HelloRetryRequest") */
+const uint8_t tls_hrr_random[TLS_RANDOM_LEN] = {
     0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c,
     0x02, 0x1e, 0x65, 0xb8, 0x91, 0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb,
     0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c};
 
-static void put24(uint8_t *p, size_t v) {
-  p[0] = (uint8_t)(v >> 16);
-  p[1] = (uint8_t)(v >> 8);
-  p[2] = (uint8_t)v;
-}
+static const uint8_t cv_server_context[] = "TLS 1.3, server CertificateVerify";
 
-static void event(tls_conn_t *t, uint8_t evt) {
+void tls_notify(tls_conn_t *t, uint8_t events) {
   if (t->on_event)
-    t->on_event(t, evt);
+    t->on_event(t, events);
 }
 
 static void wipe_keys(tls_conn_t *t) {
-  wipe(t->secret, sizeof(t->secret));
-  wipe(t->rsec, sizeof(t->rsec));
-  wipe(t->wsec, sizeof(t->wsec));
-  wipe(&t->rkeys, sizeof(t->rkeys));
-  wipe(&t->wkeys, sizeof(t->wkeys));
+  tls_wipe(t->secret, sizeof(t->secret));
+  tls_wipe(t->rsec, sizeof(t->rsec));
+  tls_wipe(t->wsec, sizeof(t->wsec));
+  tls_wipe(&t->rkeys, sizeof(t->rkeys));
+  tls_wipe(&t->wkeys, sizeof(t->wkeys));
 }
 
-/* ── Reading messages ─────────────────────────────────────────────────── */
+/* ── Shared by both roles ── */
 
-typedef struct {
-  const uint8_t *p;
-  size_t n;
-  uint8_t bad; /* ran past the end */
-} rd_t;
-
-static uint32_t rd_uint(rd_t *r, size_t w) {
-  uint32_t v = 0;
-  if (r->n < w) {
-    r->bad = 1;
-    r->n = 0;
-    return 0;
-  }
-  r->n -= w;
-  while (w--)
-    v = (v << 8) | *r->p++;
-  return v;
-}
-
-static const uint8_t *rd_take(rd_t *r, size_t len) {
-  const uint8_t *p = r->p;
-  if (r->n < len) {
-    r->bad = 1;
-    r->n = 0;
-    return NULL;
-  }
-  r->p += len;
-  r->n -= len;
-  return p;
-}
-
-/* A vector with a @p w byte length prefix, as its own reader */
-static rd_t rd_vec(rd_t *r, size_t w) {
-  rd_t v;
-  size_t len = rd_uint(r, w);
-  v.p = rd_take(r, len);
-  v.n = v.p ? len : 0;
-  v.bad = r->bad;
-  return v;
-}
-
-/* ── Building records ─────────────────────────────────────────────────── */
-
-/* Drop bytes the transport has taken from the front of tx. */
-static void tx_compact(tls_conn_t *t) {
-  if (!t->tx_sent)
-    return;
-  memmove(t->tx, t->tx + t->tx_sent, (size_t)(t->tx_len - t->tx_sent));
-  t->tx_len = (uint16_t)(t->tx_len - t->tx_sent);
-  t->tx_sent = 0;
-}
-
-/* The most content a record of ours may carry */
-static size_t frag_limit(const tls_conn_t *t) {
-  return t->max_frag ? t->max_frag : TLS_MAX_PLAINTEXT;
-}
-
-/* Bytes a record adds to its content */
-static size_t rec_over(const tls_conn_t *t) {
-  return TLS_RECORD_HDR +
-         ((t->flags & F_WPROT) ? 1u + TLS_AEAD_TAG_LEN : 0u);
-}
-
-/* Finish the record being built: header, protection — as several
- * records if a message made it longer than the limit (rec_room() left
- * room for that). */
-static void rec_close(tls_conn_t *t) {
-  size_t limit = frag_limit(t), len, piece, off, n = 1, i;
-  if (t->rec_start == NO_REC)
-    return;
-  len = (size_t)(t->tx_len - t->rec_start - TLS_RECORD_HDR);
-  for (off = limit; off < len; off += limit)
-    n++;
-  /* spread the pieces out, last first: piece i to rec_start + i * stride */
-  for (i = n - 1; i > 0; i--) {
-    off = i * limit;
-    piece = len - off < limit ? len - off : limit;
-    memmove(t->tx + t->rec_start + i * (limit + rec_over(t)) +
-                TLS_RECORD_HDR,
-            t->tx + t->rec_start + TLS_RECORD_HDR + off, piece);
-  }
-  for (i = 0, off = 0; i < n; i++, off += limit) {
-    uint8_t *rec = t->tx + t->rec_start + i * (limit + rec_over(t));
-    piece = len - off < limit ? len - off : limit;
-    if (t->flags & F_WPROT) {
-      tls_record_seal(t->cfg->crypto, &t->wkeys, t->rec_type, rec, piece);
-    } else {
-      rec[0] = t->rec_type;
-      rec[1] = 0x03;
-      rec[2] = 0x03;
-      put16(rec + 3, piece);
-    }
-  }
-  t->tx_len = (uint16_t)(t->rec_start + (n - 1) * (limit + rec_over(t)) +
-                         (len - (n - 1) * limit) + rec_over(t));
-  t->rec_start = NO_REC;
-}
-
-/* Room for @p need more content bytes of @p type: continues the record
- * being built or starts one.  NULL when tx cannot take them yet. */
-static uint8_t *rec_room(tls_conn_t *t, uint8_t type, size_t need) {
-  size_t over = (t->flags & F_WPROT) ? 1 + TLS_AEAD_TAG_LEN : 0;
-  size_t limit = frag_limit(t), n, extra = over;
-  if (t->rec_start != NO_REC) {
-    size_t used = (size_t)(t->tx_len - t->rec_start - TLS_RECORD_HDR);
-    if (t->rec_type == type && used + need <= limit &&
-        t->tx_len + need + over <= t->tx_cap)
-      return t->tx + t->tx_len;
-    rec_close(t);
-  }
-  tx_compact(t);
-  /* a message over the limit leaves as several records */
-  for (n = need; n > limit; n -= limit)
-    extra += TLS_RECORD_HDR + over;
-  if (t->tx_len + TLS_RECORD_HDR + need + extra > t->tx_cap)
-    return NULL;
-  t->rec_start = t->tx_len;
-  t->rec_type = type;
-  t->tx_len = (uint16_t)(t->tx_len + TLS_RECORD_HDR);
-  return t->tx + t->tx_len;
-}
-
-/* A handshake message of at most @p max bytes (header included) */
-static uint8_t *hs_begin(tls_conn_t *t, size_t max) {
-  return rec_room(t, TLS_CT_HANDSHAKE, max);
-}
-
-/* Finish the message at @p m: header, transcript, into the record */
-static void hs_end(tls_conn_t *t, uint8_t *m, uint8_t type, size_t body) {
-  m[0] = type;
-  put24(m + 1, body);
-  t->cfg->crypto->hash_update(&t->transcript, m, 4 + body);
-  t->tx_len = (uint16_t)(t->tx_len + 4 + body);
-}
-
-static int send_alert(tls_conn_t *t, uint8_t level, uint8_t desc) {
-  uint8_t *p = rec_room(t, TLS_CT_ALERT, 2);
-  if (!p)
-    return -1;
-  p[0] = level;
-  p[1] = desc;
-  t->tx_len = (uint16_t)(t->tx_len + 2);
-  rec_close(t);
-  return 0;
-}
-
-/* End the connection with a fatal alert (sent if tx has room). */
-static int fail(tls_conn_t *t, int alert) {
-  if (t->rec_start != NO_REC) { /* drop a half-built record */
-    t->tx_len = t->rec_start;
-    t->rec_start = NO_REC;
-  }
-  (void)send_alert(t, 2, (uint8_t)alert);
-  t->state = TLS_STATE_ERROR;
-  t->alert = (uint8_t)alert;
-  wipe_keys(t);
-  event(t, TLS_EVT_ERROR);
-  return -alert;
-}
-
-/* ── Server handshake ─────────────────────────────────────────────────── */
-
-static size_t sig_max(uint16_t scheme) {
-  return scheme == TLS_SIG_ECDSA_SECP256R1_SHA256 ? SIG_MAX_ECDSA
-                                                   : SIG_MAX_RSA;
-}
-
-/* Extension types seen, to refuse duplicates (types below 64) */
-static int ext_seen(uint32_t seen[2], uint16_t type) {
+/* Extension types seen so far (below 64), to refuse duplicates */
+static int already_seen(uint32_t seen[2], uint16_t type) {
   uint32_t bit;
   if (type >= 64)
     return 0;
@@ -461,894 +50,217 @@ static int ext_seen(uint32_t seen[2], uint16_t type) {
   return 0;
 }
 
-/* A key-exchange group this configuration uses */
-static int group_ok(const tls_config_t *cfg, uint32_t g) {
-  uint8_t mask = cfg->groups ? cfg->groups : TLS_GROUPS_X25519 |
-                                                 TLS_GROUPS_SECP256R1;
-  return (g == TLS_GROUP_X25519 && (mask & TLS_GROUPS_X25519)) ||
-         (g == TLS_GROUP_SECP256R1 && (mask & TLS_GROUPS_SECP256R1));
-}
-
-/* RFC 8446 §4.1.4: no share we can use, but a group we both support —
- * ask for a share of it.  ClientHello1 gives way to message_hash. */
-static int send_hrr(tls_conn_t *t, const uint8_t *m, size_t mlen,
-                    uint16_t group) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t *hr = hs_begin(t, 4 + 2 + 32 + 1 + 32 + 3 + 2 + 6 + 6), *p;
-  if (!hr)
-    return fail(t, TLS_ALERT_INTERNAL_ERROR);
-  c->hash_update(&t->transcript, m, mlen);
-  tls_transcript_hrr(c, &t->transcript);
-  p = hr + 4;
-  put16(p, 0x0303);
-  memcpy(p + 2, hrr_random, 32);
-  p += 34;
-  *p++ = t->sid_len;
-  memcpy(p, t->sid, t->sid_len);
-  p += t->sid_len;
-  put16(p, TLS_AES_128_GCM_SHA256);
-  p[2] = 0;
-  put16(p + 3, 12);
-  put16(p + 5, TLS_EXT_KEY_SHARE); /* selected_group */
-  put16(p + 7, 2);
-  put16(p + 9, group);
-  memcpy(p + 11, "\x00\x2b\x00\x02\x03\x04", 6); /* supported_versions */
-  p += 17;
-  hs_end(t, hr, TLS_HS_SERVER_HELLO, (size_t)(p - hr - 4));
-  rec_close(t);
-  if (t->sid_len) { /* compatibility mode: the dummy CCS goes here */
-    tx_compact(t);
-    if (t->tx_len + 6u <= t->tx_cap) {
-      memcpy(t->tx + t->tx_len, "\x14\x03\x03\x00\x01\x01", 6);
-      t->tx_len = (uint16_t)(t->tx_len + 6);
-    }
-  }
-  t->group = group;
-  t->flags |= F_HRR | F_CCS_OK;
+int tls_next_extension(rd_t *exts, uint32_t seen[2], uint16_t *type,
+                       rd_t *data) {
+  *type = (uint16_t)rd_uint(exts, 2);
+  *data = rd_vec(exts, 2);
+  if (exts->bad)
+    return TLS_ALERT_DECODE_ERROR;
+  if (already_seen(seen, *type))
+    return TLS_ALERT_ILLEGAL_PARAMETER;
   return 0;
 }
 
-/* A pre-shared key offer (RFC 8446 §4.2.11): the index of the identity
- * that is our PSK, or -1 (none, or no PSK configured). */
-static int psk_pick(const tls_config_t *cfg, rd_t ids) {
-  int i = 0, pick = -1;
-  if (ids.n == 0)
-    return -2; /* identities<7..2^16-1> */
-  while (ids.n) {
-    rd_t id = rd_vec(&ids, 2);
-    rd_uint(&ids, 4); /* obfuscated_ticket_age: none for these PSKs */
-    if (ids.bad || id.n == 0)
-      return -2;
-    if (pick < 0 && cfg->psk && id.n == cfg->psk_id_len &&
-        memcmp(id.p, cfg->psk_id, id.n) == 0)
-      pick = i;
-    i++;
-  }
-  return pick;
+uint8_t tls_groups(const tls_config_t *cfg) {
+  return cfg->groups ? cfg->groups : TLS_GROUPS_X25519 | TLS_GROUPS_SECP256R1;
 }
 
-/* RFC 8446 §4.1.2-4.1.3: pick the parameters, answer with ServerHello,
- * and enter the handshake keys.  Returns HS_KEYS, or < 0. */
-static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_config_t *cfg = t->cfg;
-  const tls_crypto_t *c = cfg->crypto;
-  rd_t r, v, ext, ids = {NULL, 0, 0}, binders = {NULL, 0, 0};
-  const uint8_t *share = NULL;
-  size_t share_len = 0, pub_len = 0, trunc = 0;
-  uint16_t group = 0, want = 0;
-  uint32_t seen[2] = {0, 0};
-  int tls13 = 0, suite = 0, sig = 0, have_ks = 0, have_sa = 0;
-  int psk_ext = 0, have_modes = 0, pick = -1;
-  uint8_t cmodes = 0, smodes, mode = 0;
-  uint8_t priv[TLS_KX_PRIV_MAX], pub[TLS_KX_PUB_MAX], z[TLS_HASH_LEN];
-  uint8_t h[TLS_HASH_LEN], *sh, *p;
+int tls_group_allowed(const tls_config_t *cfg, uint32_t group) {
+  uint8_t mask = tls_groups(cfg);
+  return (group == TLS_GROUP_X25519 && (mask & TLS_GROUPS_X25519)) ||
+         (group == TLS_GROUP_SECP256R1 && (mask & TLS_GROUPS_SECP256R1));
+}
 
-  r.p = m + 4;
-  r.n = mlen - 4;
-  r.bad = 0;
-  rd_uint(&r, 2);   /* legacy_version: the extension decides */
-  rd_take(&r, 32);  /* random */
-  v = rd_vec(&r, 1); /* legacy_session_id */
-  if (v.n > sizeof(t->sid))
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  memcpy(t->sid, v.p, v.n);
-  t->sid_len = (uint8_t)v.n;
-  v = rd_vec(&r, 2); /* cipher_suites */
-  while (v.n >= 2)
-    if (rd_uint(&v, 2) == TLS_AES_128_GCM_SHA256)
-      suite = 1;
-  if (v.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  v = rd_vec(&r, 1); /* legacy_compression_methods: exactly null */
-  if (!r.bad && (v.n != 1 || v.p[0] != 0))
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  ext = rd_vec(&r, 2);
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
+void tls_cert_verify_content(const tls_conn_t *t,
+                             uint8_t out[TLS_CV_CONTENT_LEN]) {
+  memset(out, 0x20, 64);
+  memcpy(out + 64, cv_server_context, sizeof(cv_server_context)); /* + 0 */
+  t->cfg->crypto->hash_peek(&t->transcript,
+                            out + 64 + sizeof(cv_server_context));
+}
 
-  while (ext.n) {
-    uint16_t type = (uint16_t)rd_uint(&ext, 2);
-    rd_t d = rd_vec(&ext, 2);
-    if (ext.bad)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-    if (ext_seen(seen, type))
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    switch (type) {
-    case TLS_EXT_SUPPORTED_VERSIONS:
-      v = rd_vec(&d, 1);
-      while (v.n >= 2)
-        if (rd_uint(&v, 2) == 0x0304)
-          tls13 = 1;
-      break;
-    case TLS_EXT_SIGNATURE_ALGORITHMS:
-      have_sa = 1;
-      v = rd_vec(&d, 2);
-      while (v.n >= 2)
-        if (rd_uint(&v, 2) == cfg->sig_scheme)
-          sig = 1;
-      break;
-    case TLS_EXT_SUPPORTED_GROUPS: /* what an HRR could ask for */
-      v = rd_vec(&d, 2);
-      while (v.n >= 2) {
-        uint16_t g = (uint16_t)rd_uint(&v, 2);
-        if (group_ok(cfg, g) && (g == TLS_GROUP_X25519 || !want))
-          want = g;
-      }
-      break;
-    case TLS_EXT_KEY_SHARE:
-      have_ks = 1;
-      v = rd_vec(&d, 2);
-      while (v.n) {
-        uint16_t g = (uint16_t)rd_uint(&v, 2);
-        rd_t k = rd_vec(&v, 2);
-        if (v.bad)
-          return fail(t, TLS_ALERT_DECODE_ERROR);
-        /* x25519 preferred over secp256r1; after an HRR, its group */
-        if (group_ok(cfg, g) &&
-            (!(t->flags & F_HRR) || g == t->group) &&
-            (g == TLS_GROUP_X25519 || group != TLS_GROUP_X25519)) {
-          group = g;
-          share = k.p;
-          share_len = k.n;
-        }
-      }
-      break;
-    case TLS_EXT_MAX_FRAGMENT_LENGTH: /* granted: records of 2^(8+code) */
-      if (d.n != 1)
-        return fail(t, TLS_ALERT_DECODE_ERROR);
-      if (d.p[0] < TLS_MFL_512 || d.p[0] > TLS_MFL_4096)
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      t->max_frag = (uint16_t)(256u << d.p[0]);
-      break;
-    case TLS_EXT_PSK_KEY_EXCHANGE_MODES:
-      have_modes = 1;
-      v = rd_vec(&d, 1);
-      while (v.n) { /* psk_ke (0) → TLS_PSK_KE, psk_dhe_ke (1) → .._DHE_KE */
-        uint32_t k = rd_uint(&v, 1);
-        if (k < 2)
-          cmodes |= (uint8_t)(1u << k);
-      }
-      break;
-    case TLS_EXT_PRE_SHARED_KEY: /* the last extension (§4.2.11) */
-      if (ext.n)
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      psk_ext = 1;
-      ids = rd_vec(&d, 2);
-      trunc = (size_t)(d.p - m); /* the binders are not in their hash */
-      binders = rd_vec(&d, 2);
-      break;
-    default: /* not ours: ignored */
-      break;
-    }
-    if (d.bad)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-  }
+/* ── Building records ── */
 
-  /* REQ-TLS-001: TLS 1.3 only */
-  if (!tls13)
-    return fail(t, TLS_ALERT_PROTOCOL_VERSION);
-  if (!suite)
-    return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
+void tls_tx_compact(tls_conn_t *t) {
+  if (!t->tx_sent)
+    return;
+  memmove(t->tx, t->tx + t->tx_sent, (size_t)(t->tx_len - t->tx_sent));
+  t->tx_len = (uint16_t)(t->tx_len - t->tx_sent);
+  t->tx_sent = 0;
+}
 
-  /* Our PSK, if offered, with a mode both sides allow (DHE preferred) */
-  if (psk_ext) {
-    if (!have_modes)
-      return fail(t, TLS_ALERT_MISSING_EXTENSION);
-    if ((pick = psk_pick(cfg, ids)) == -2)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-  }
-  smodes = cfg->psk_modes ? cfg->psk_modes : TLS_PSK_DHE_KE;
-  if (pick >= 0) {
-    if ((cmodes & smodes & TLS_PSK_DHE_KE) && group)
-      mode = TLS_PSK_DHE_KE;
-    else if (cmodes & smodes & TLS_PSK_KE)
-      mode = TLS_PSK_KE;
-  }
+/* The most content a record of ours may carry */
+static size_t fragment_limit(const tls_conn_t *t) {
+  return t->max_frag ? t->max_frag : TLS_MAX_PLAINTEXT;
+}
 
-  /* No share we can use but a group in common: ask for a share, if this
-   * handshake needs (EC)DHE — once (RFC 8446 §4.1.4) */
-  if (!mode && !group) {
-    int psk_dhe = pick >= 0 && (cmodes & smodes & TLS_PSK_DHE_KE);
-    if (t->flags & F_HRR)
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    if (want && have_ks && (psk_dhe || cfg->cert_count)) {
-      if (!psk_dhe) {
-        if (!have_sa)
-          return fail(t, TLS_ALERT_MISSING_EXTENSION);
-        if (!sig)
-          return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
-      }
-      return send_hrr(t, m, mlen, want);
-    }
-  }
+/* Bytes a record of ours adds to its content */
+static size_t record_overhead(const tls_conn_t *t) {
+  return TLS_RECORD_HDR + ((t->flags & F_WPROT) ? 1u + TLS_AEAD_TAG_LEN : 0u);
+}
 
-  if (!mode) { /* certificates */
-    if (!cfg->cert_count)
-      return fail(t, psk_ext ? TLS_ALERT_UNKNOWN_PSK_IDENTITY
-                             : TLS_ALERT_HANDSHAKE_FAILURE);
-    if (!have_ks || !have_sa ||
-        !(seen[0] & (1ul << TLS_EXT_SUPPORTED_GROUPS)))
-      return fail(t, TLS_ALERT_MISSING_EXTENSION);
-    if (!sig || !group)
-      return fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
-  }
-  if (mode == TLS_PSK_KE)
-    group = 0;
-  if (group && share_len != (group == TLS_GROUP_X25519 ? 32u : 65u))
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-
-  /* The Early Secret; with a PSK, its binder must check out */
-  if (mode) {
-    rd_t b = {NULL, 0, 0};
-    int i;
-    for (i = 0; i <= pick; i++)
-      b = rd_vec(&binders, 1);
-    if (b.n != TLS_HASH_LEN) /* (a malformed list reads as empty) */
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    tls_early_secret(c, cfg->psk, cfg->psk_len, t->secret);
-    c->hash_update(&t->transcript, m, trunc);
-    c->hash_peek(&t->transcript, h);
-    tls_psk_binder(c, t->secret, cfg->psk_resumption, h, z);
-    if (!tls_equal(z, b.p, TLS_HASH_LEN))
-      return fail(t, TLS_ALERT_DECRYPT_ERROR);
-    c->hash_update(&t->transcript, m + trunc, mlen - trunc);
-    t->flags |= F_PSK;
+static void seal_record(tls_conn_t *t, uint8_t *rec, size_t len) {
+  if (t->flags & F_WPROT) {
+    tls_record_seal(t->cfg->crypto, &t->wkeys, t->rec_type, rec, len);
   } else {
-    tls_early_secret(c, NULL, 0, t->secret);
-    c->hash_update(&t->transcript, m, mlen);
-  }
-
-  /* Our share, and the shared secret (the peer's share checked) */
-  if (group) {
-    if (c->kx_keygen(c->ctx, group, priv, pub, &pub_len) != 0)
-      return fail(t, TLS_ALERT_INTERNAL_ERROR);
-    if (c->kx_shared(c->ctx, group, priv, share, share_len, z) != 0) {
-      wipe(priv, sizeof(priv));
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    }
-    wipe(priv, sizeof(priv));
-  }
-  t->group = group;
-
-  /* ServerHello: extensions pre_shared_key, key_share, supported_versions
-   * (the order of RFC 8448) */
-  sh = hs_begin(t, 4 + 2 + 32 + 1 + 32 + 2 + 1 + 2 + 6 + 8 + TLS_KX_PUB_MAX +
-                       6);
-  if (!sh) {
-    wipe(z, sizeof(z));
-    return fail(t, TLS_ALERT_INTERNAL_ERROR);
-  }
-  p = sh + 4;
-  *p++ = 0x03;
-  *p++ = 0x03;
-  if (c->random(c->ctx, p, 32) != 0) {
-    wipe(z, sizeof(z));
-    return fail(t, TLS_ALERT_INTERNAL_ERROR);
-  }
-  p += 32;
-  *p++ = t->sid_len;
-  memcpy(p, t->sid, t->sid_len);
-  p += t->sid_len;
-  put16(p, TLS_AES_128_GCM_SHA256);
-  p[2] = 0; /* legacy_compression_method */
-  p += 3;
-  put16(p, (mode ? 6u : 0u) + (group ? 8 + pub_len : 0u) + 6);
-  p += 2;
-  if (mode) {
-    put16(p, TLS_EXT_PRE_SHARED_KEY);
-    put16(p + 2, 2);
-    put16(p + 4, (size_t)pick);
-    p += 6;
-  }
-  if (group) {
-    put16(p, TLS_EXT_KEY_SHARE);
-    put16(p + 2, 4 + pub_len);
-    put16(p + 4, group);
-    put16(p + 6, pub_len);
-    memcpy(p + 8, pub, pub_len);
-    p += 8 + pub_len;
-  }
-  put16(p, TLS_EXT_SUPPORTED_VERSIONS);
-  put16(p + 2, 2);
-  put16(p + 4, 0x0304);
-  p += 6;
-  hs_end(t, sh, TLS_HS_SERVER_HELLO, (size_t)(p - sh - 4));
-  rec_close(t);
-
-  /* Handshake Secret and traffic keys (RFC 8446 §7.1) */
-  tls_next_secret(c, t->secret, group ? z : NULL, sizeof(z));
-  wipe(z, sizeof(z));
-  c->hash_peek(&t->transcript, h);
-  tls_derive_secret(c, t->secret, "c hs traffic", h, t->rsec);
-  tls_derive_secret(c, t->secret, "s hs traffic", h, t->wsec);
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
-  t->flags |= F_RPROT | F_WPROT | F_CCS_OK;
-  /* A client in middlebox compatibility mode (a session id) gets the
-   * dummy change_cipher_spec (RFC 8446 D.4) */
-  t->step = (t->sid_len && !(t->flags & F_HRR)) ? ST_SEND_CCS : ST_SEND_EE;
-  return HS_KEYS;
-}
-
-/* The server's flight after ServerHello, as far as tx allows. */
-static int pump_server(tls_conn_t *t) {
-  const tls_config_t *cfg = t->cfg;
-  const tls_crypto_t *c = cfg->crypto;
-  uint8_t *m, h[TLS_HASH_LEN];
-  size_t i, n;
-
-  for (;;) {
-    switch (t->step) {
-    case ST_SEND_CCS: /* a plaintext record, outside the transcript */
-      tx_compact(t);
-      if (t->tx_len + 6u > t->tx_cap)
-        return 0;
-      memcpy(t->tx + t->tx_len, "\x14\x03\x03\x00\x01\x01", 6);
-      t->tx_len = (uint16_t)(t->tx_len + 6);
-      t->step = ST_SEND_EE;
-      break;
-
-    case ST_SEND_EE: /* max_fragment_length, if granted */
-      if (!(m = hs_begin(t, 6 + 5)))
-        return 0;
-      put16(m + 4, 0);
-      if (t->max_frag) {
-        uint8_t code = TLS_MFL_512;
-        for (i = 512; i < t->max_frag; i <<= 1)
-          code++;
-        put16(m + 4, 5);
-        put16(m + 6, TLS_EXT_MAX_FRAGMENT_LENGTH);
-        put16(m + 8, 1);
-        m[10] = code;
-      }
-      hs_end(t, m, TLS_HS_ENCRYPTED_EXTENSIONS, t->max_frag ? 7u : 2u);
-      t->step = (t->flags & F_PSK) ? ST_SEND_FIN : ST_SEND_CERT;
-      break;
-
-    case ST_SEND_CERT: /* context "", then each DER cert, no extensions */
-      n = 4 + 1 + 3;
-      for (i = 0; i < cfg->cert_count; i++)
-        n += 3 + (size_t)cfg->cert_len[i] + 2;
-      if (!(m = hs_begin(t, n)))
-        return 0;
-      m[4] = 0;
-      put24(m + 5, n - 8);
-      n = 8;
-      for (i = 0; i < cfg->cert_count; i++) {
-        put24(m + n, cfg->cert_len[i]);
-        memcpy(m + n + 3, cfg->cert[i], cfg->cert_len[i]);
-        n += 3 + (size_t)cfg->cert_len[i];
-        put16(m + n, 0);
-        n += 2;
-      }
-      hs_end(t, m, TLS_HS_CERTIFICATE, n - 4);
-      t->step = ST_SEND_CV;
-      break;
-
-    case ST_SEND_CV: { /* RFC 8446 §4.4.3 */
-      uint8_t content[64 + sizeof(cv_server_ctx) + TLS_HASH_LEN];
-      size_t sig_len = 0, cap = sig_max(cfg->sig_scheme);
-      if (!(m = hs_begin(t, 8 + cap)))
-        return 0;
-      memset(content, 0x20, 64);
-      memcpy(content + 64, cv_server_ctx, sizeof(cv_server_ctx)); /* + 0 */
-      c->hash_peek(&t->transcript, content + 64 + sizeof(cv_server_ctx));
-      if (c->sign(c->ctx, cfg->key, cfg->sig_scheme, content, sizeof(content),
-                  m + 8, &sig_len, cap) != 0 ||
-          sig_len > cap)
-        return fail(t, TLS_ALERT_INTERNAL_ERROR);
-      put16(m + 4, cfg->sig_scheme);
-      put16(m + 6, sig_len);
-      hs_end(t, m, TLS_HS_CERTIFICATE_VERIFY, 4 + sig_len);
-      t->step = ST_SEND_FIN;
-      break;
-    }
-
-    case ST_SEND_FIN: {
-      uint8_t ms[TLS_HASH_LEN];
-      if (!(m = hs_begin(t, 4 + TLS_HASH_LEN)))
-        return 0;
-      c->hash_peek(&t->transcript, h);
-      tls_finished_mac(c, t->wsec, h, m + 4);
-      hs_end(t, m, TLS_HS_FINISHED, TLS_HASH_LEN);
-      rec_close(t);
-      /* Master Secret; ours to use now, the client's once its Finished
-       * checks out */
-      c->hash_peek(&t->transcript, h);
-      memcpy(ms, t->secret, sizeof(ms));
-      tls_next_secret(c, ms, NULL, 0);
-      tls_derive_secret(c, ms, "c ap traffic", h, t->secret);
-      tls_derive_secret(c, ms, "s ap traffic", h, t->wsec);
-      wipe(ms, sizeof(ms));
-      tls_traffic_keys(c, t->wsec, &t->wkeys);
-      t->step = ST_WAIT_FIN;
-      return 0;
-    }
-
-    default:
-      return 0;
-    }
+    rec[0] = t->rec_type;
+    net_write16be(rec + 1, TLS_LEGACY_VERSION);
+    net_write16be(rec + 3, (uint16_t)len);
   }
 }
 
-/* ── Client handshake ─────────────────────────────────────────────────── */
-
-/* A literal IPv4 or IPv6 address is not sent as server_name (RFC 6066 §3) */
-static int ip_literal(const char *h) {
-  int dot_digit_only = 1;
-  for (; *h; h++) {
-    if (*h == ':')
-      return 1;
-    if (*h != '.' && (*h < '0' || *h > '9'))
-      dot_digit_only = 0;
+/* A message longer than the fragment limit leaves as several records:
+ * the pieces are spread out, last first, to their record's place
+ * (tls_rec_room() reserved the room) */
+void tls_rec_close(tls_conn_t *t) {
+  size_t limit = fragment_limit(t), stride = limit + record_overhead(t);
+  size_t len, piece, off, n = 1, i;
+  if (t->rec_start == NO_REC)
+    return;
+  len = (size_t)(t->tx_len - t->rec_start - TLS_RECORD_HDR);
+  for (off = limit; off < len; off += limit)
+    n++;
+  for (i = n - 1; i > 0; i--) {
+    off = i * limit;
+    piece = len - off < limit ? len - off : limit;
+    memmove(t->tx + t->rec_start + i * stride + TLS_RECORD_HDR,
+            t->tx + t->rec_start + TLS_RECORD_HDR + off, piece);
   }
-  return dot_digit_only;
+  for (i = 0, off = 0; i < n; i++, off += limit) {
+    piece = len - off < limit ? len - off : limit;
+    seal_record(t, t->tx + t->rec_start + i * stride, piece);
+  }
+  t->tx_len = (uint16_t)(t->rec_start + (n - 1) * stride +
+                         (len - (n - 1) * limit) + record_overhead(t));
+  t->rec_start = NO_REC;
 }
 
-/* The client's flight after the server's Finished, as tx allows. */
-static int pump_client(tls_conn_t *t) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t *m, h[TLS_HASH_LEN];
-  int cert = (t->flags & F_CERT_REQ) != 0;
-
-  if (t->step != ST_C_SEND_FIN)
-    return 0;
-  if (!(m = hs_begin(t, (cert ? 8u : 0u) + 4 + TLS_HASH_LEN)))
-    return 0;
-  if (cert) { /* no certificate to offer: an empty list (§4.4.2) */
-    memset(m + 4, 0, 4);
-    hs_end(t, m, TLS_HS_CERTIFICATE, 4);
-    m += 8;
+uint8_t *tls_rec_room(tls_conn_t *t, uint8_t type, size_t need) {
+  size_t over = (t->flags & F_WPROT) ? 1 + TLS_AEAD_TAG_LEN : 0;
+  size_t limit = fragment_limit(t), n, extra = over;
+  if (t->rec_start != NO_REC) {
+    size_t used = (size_t)(t->tx_len - t->rec_start - TLS_RECORD_HDR);
+    if (t->rec_type == type && used + need <= limit &&
+        t->tx_len + need + over <= t->tx_cap)
+      return t->tx + t->tx_len;
+    tls_rec_close(t);
   }
-  c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->wsec, h, m + 4);
-  hs_end(t, m, TLS_HS_FINISHED, TLS_HASH_LEN);
-  rec_close(t);
-  memcpy(t->wsec, t->secret, TLS_HASH_LEN);
-  wipe(t->secret, sizeof(t->secret));
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
-  t->step = ST_DONE;
-  t->state = TLS_STATE_CONNECTED;
-  event(t, TLS_EVT_CONNECTED);
+  tls_tx_compact(t);
+  for (n = need; n > limit; n -= limit)
+    extra += TLS_RECORD_HDR + over;
+  if (t->tx_len + TLS_RECORD_HDR + need + extra > t->tx_cap)
+    return NULL;
+  t->rec_start = t->tx_len;
+  t->rec_type = type;
+  t->tx_len = (uint16_t)(t->tx_len + TLS_RECORD_HDR);
+  return t->tx + t->tx_len;
+}
+
+uint8_t *tls_hs_begin(tls_conn_t *t, size_t max) {
+  return tls_rec_room(t, TLS_CT_HANDSHAKE, max);
+}
+
+void tls_hs_end(tls_conn_t *t, uint8_t *m, uint8_t type, size_t body) {
+  m[0] = type;
+  net_write24be(m + 1, (uint32_t)body);
+  t->cfg->crypto->hash_update(&t->transcript, m, HS_HDR + body);
+  t->tx_len = (uint16_t)(t->tx_len + HS_HDR + body);
+}
+
+int tls_queue_ccs(tls_conn_t *t) {
+  static const uint8_t ccs_record[6] = {
+      TLS_CT_CHANGE_CIPHER_SPEC, 3, 3, 0, 1, 1};
+  tls_tx_compact(t);
+  if (t->tx_len + sizeof(ccs_record) > t->tx_cap)
+    return -1;
+  memcpy(t->tx + t->tx_len, ccs_record, sizeof(ccs_record));
+  t->tx_len = (uint16_t)(t->tx_len + sizeof(ccs_record));
   return 0;
 }
 
-static int client_hello(tls_conn_t *t, const uint8_t *cookie,
-                        size_t cookie_len, const uint8_t *mh,
-                        const uint8_t *hrr, size_t hrr_len);
-
-/* RFC 8446 §4.1.4: the server wants another share (or a cookie back):
- * a second ClientHello, once. */
-static int on_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t mh[4 + TLS_HASH_LEN] = {254, 0, 0, TLS_HASH_LEN}; /* message_hash */
-  rd_t r, v, ext, cookie = {NULL, 0, 0};
-  uint32_t seen[2] = {0, 0}, sel = 0;
-  int tls13 = 0;
-
-  if (t->flags & F_HRR)
-    return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-  r.p = m + 4 + 2 + 32;
-  r.n = mlen - (4 + 2 + 32);
-  r.bad = 0;
-  v = rd_vec(&r, 1);
-  if (r.bad)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if (v.n != 0 || rd_uint(&r, 2) != TLS_AES_128_GCM_SHA256 ||
-      rd_uint(&r, 1) != 0)
-    return fail(t, r.bad ? TLS_ALERT_DECODE_ERROR
-                         : TLS_ALERT_ILLEGAL_PARAMETER);
-  ext = rd_vec(&r, 2);
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  while (ext.n) {
-    uint16_t type = (uint16_t)rd_uint(&ext, 2);
-    rd_t d = rd_vec(&ext, 2);
-    if (ext.bad)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-    if (ext_seen(seen, type))
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    switch (type) {
-    case TLS_EXT_SUPPORTED_VERSIONS:
-      if (rd_uint(&d, 2) != 0x0304)
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      tls13 = 1;
-      break;
-    case TLS_EXT_KEY_SHARE: /* selected_group */
-      sel = rd_uint(&d, 2);
-      break;
-    case 44: /* cookie */
-      cookie = rd_vec(&d, 2);
-      if (!cookie.n)
-        return fail(t, TLS_ALERT_DECODE_ERROR);
-      break;
-    default:
-      return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
-    }
-    if (d.bad || d.n)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-  }
-  if (!tls13)
-    return fail(t, TLS_ALERT_PROTOCOL_VERSION);
-  /* it must change something: a group we have, other than our share's */
-  if ((!sel && !cookie.p) ||
-      (sel && (!t->group || sel == t->group || !group_ok(t->cfg, sel))))
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-
-  c->hash_peek(&t->transcript, mh + 4);
-  tls_transcript_hrr(c, &t->transcript);
-  c->hash_update(&t->transcript, m, mlen);
-  if (sel)
-    t->group = (uint16_t)sel;
-  t->flags |= F_HRR;
-  if (client_hello(t, cookie.p, cookie.n, mh, m, mlen) != 0)
-    return fail(t, TLS_ALERT_INTERNAL_ERROR);
+static int send_alert(tls_conn_t *t, uint8_t level, uint8_t desc) {
+  uint8_t *p = tls_rec_room(t, TLS_CT_ALERT, 2);
+  if (!p)
+    return -1;
+  p[0] = level;
+  p[1] = desc;
+  t->tx_len = (uint16_t)(t->tx_len + 2);
+  tls_rec_close(t);
   return 0;
 }
 
-/* RFC 8446 §4.1.3: the server's parameters; enter the handshake keys. */
-static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  rd_t r, v, ext, share = {NULL, 0, 0};
-  const uint8_t *random;
-  uint32_t seen[2] = {0, 0};
-  int tls13 = 0, psk = 0;
-  uint8_t z[TLS_HASH_LEN], h[TLS_HASH_LEN];
-
-  r.p = m + 4;
-  r.n = mlen - 4;
-  r.bad = 0;
-  rd_uint(&r, 2); /* legacy_version */
-  random = rd_take(&r, 32);
-  v = rd_vec(&r, 1); /* legacy_session_id_echo */
-  if (r.bad)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if (memcmp(random, hrr_random, 32) == 0) /* a HelloRetryRequest */
-    return on_hello_retry(t, m, mlen);
-  if (v.n != t->sid_len || memcmp(v.p, t->sid, v.n) != 0)
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  if (rd_uint(&r, 2) != TLS_AES_128_GCM_SHA256 || rd_uint(&r, 1) != 0)
-    return fail(t, r.bad ? TLS_ALERT_DECODE_ERROR
-                         : TLS_ALERT_ILLEGAL_PARAMETER);
-  ext = rd_vec(&r, 2);
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-
-  while (ext.n) {
-    uint16_t type = (uint16_t)rd_uint(&ext, 2);
-    rd_t d = rd_vec(&ext, 2);
-    if (ext.bad)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-    if (ext_seen(seen, type))
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    switch (type) {
-    case TLS_EXT_SUPPORTED_VERSIONS:
-      if (rd_uint(&d, 2) != 0x0304)
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      tls13 = 1;
-      break;
-    case TLS_EXT_KEY_SHARE: /* the group we offered a share for */
-      if (rd_uint(&d, 2) != t->group)
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      share = rd_vec(&d, 2);
-      break;
-    case TLS_EXT_PRE_SHARED_KEY: /* the one identity we offered */
-      if (!t->cfg->psk)
-        return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
-      if (rd_uint(&d, 2) != 0)
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      psk = 1;
-      break;
-    default: /* nothing else was offered for a ServerHello */
-      return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
-    }
-    if (d.bad || d.n)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
+int tls_fail(tls_conn_t *t, int alert) {
+  if (t->rec_start != NO_REC) { /* drop a half-built record */
+    t->tx_len = t->rec_start;
+    t->rec_start = NO_REC;
   }
-  if (!tls13) /* a TLS 1.2 (or older) server */
-    return fail(t, TLS_ALERT_PROTOCOL_VERSION);
-  /* without a share: only the PSK alone, if psk_ke was offered */
-  if (!share.p &&
-      !(psk && t->cfg->psk_modes && (t->cfg->psk_modes & TLS_PSK_KE)))
-    return fail(t, TLS_ALERT_MISSING_EXTENSION);
-  if (share.p &&
-      c->kx_shared(c->ctx, t->group, t->kx_priv, share.p, share.n, z) != 0)
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  wipe(t->kx_priv, sizeof(t->kx_priv));
-  if (!share.p)
-    t->group = 0;
-
-  c->hash_update(&t->transcript, m, mlen);
-  if (psk) /* t->secret: the PSK's Early Secret, from tls_connect() */
-    t->flags |= F_PSK;
-  else
-    tls_early_secret(c, NULL, 0, t->secret);
-  tls_next_secret(c, t->secret, share.p ? z : NULL, sizeof(z));
-  wipe(z, sizeof(z));
-  c->hash_peek(&t->transcript, h);
-  tls_derive_secret(c, t->secret, "s hs traffic", h, t->rsec);
-  tls_derive_secret(c, t->secret, "c hs traffic", h, t->wsec);
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
-  tls_traffic_keys(c, t->wsec, &t->wkeys);
-  t->flags |= F_RPROT | F_WPROT;
-  t->step = ST_C_WAIT_EE;
-  return HS_KEYS;
+  (void)send_alert(t, ALERT_FATAL, (uint8_t)alert); /* if tx has room */
+  t->state = TLS_STATE_ERROR;
+  t->alert = (uint8_t)alert;
+  wipe_keys(t);
+  tls_notify(t, TLS_EVT_ERROR);
+  return -alert;
 }
 
-/* Extensions we offered that the server may answer here: server_name
- * (empty) and supported_groups (its preference, for later) */
-static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
-                                   size_t mlen) {
-  rd_t r, ext;
-  uint32_t seen[2] = {0, 0};
-  r.p = m + 4;
-  r.n = mlen - 4;
-  r.bad = 0;
-  ext = rd_vec(&r, 2);
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  while (ext.n) {
-    uint16_t type = (uint16_t)rd_uint(&ext, 2);
-    rd_t d = rd_vec(&ext, 2);
-    if (ext.bad)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-    if (ext_seen(seen, type))
-      return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-    if (type == TLS_EXT_SERVER_NAME && d.n == 0)
-      continue;
-    if (type == TLS_EXT_MAX_FRAGMENT_LENGTH && t->cfg->max_fragment) {
-      if (d.n != 1 || d.p[0] != t->cfg->max_fragment) /* RFC 6066 §4 */
-        return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-      t->max_frag = (uint16_t)(256u << d.p[0]);
-      continue;
-    }
-    if (type != TLS_EXT_SUPPORTED_GROUPS)
-      return fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
-  }
-  t->cfg->crypto->hash_update(&t->transcript, m, mlen);
-  t->step = (t->flags & F_PSK) ? ST_C_WAIT_FIN : ST_C_WAIT_CERT;
-  return 0;
-}
+/* ── Handshake messages ── */
 
-/* The server wants our certificate; we have none and say so (§4.4.2) */
-static int on_certificate_request(tls_conn_t *t, const uint8_t *m,
-                                  size_t mlen) {
-  rd_t r, v;
-  r.p = m + 4;
-  r.n = mlen - 4;
-  r.bad = 0;
-  v = rd_vec(&r, 1); /* certificate_request_context: empty in a handshake */
-  rd_vec(&r, 2);     /* extensions */
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if (v.n)
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  t->cfg->crypto->hash_update(&t->transcript, m, mlen);
-  t->flags |= F_CERT_REQ;
-  return 0;
-}
-
-/* The server's chain: verified now, the leaf kept for CertificateVerify */
-static int on_certificate(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  const uint8_t *cert[CHAIN_MAX];
-  uint16_t len[CHAIN_MAX];
-  uint8_t count = 0;
-  rd_t r, ctx, list;
-  int a;
-
-  r.p = m + 4;
-  r.n = mlen - 4;
-  r.bad = 0;
-  ctx = rd_vec(&r, 1);
-  list = rd_vec(&r, 3);
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if (ctx.n)
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  while (list.n) {
-    rd_t data = rd_vec(&list, 3);
-    rd_vec(&list, 2); /* CertificateEntry extensions */
-    if (list.bad || data.n == 0)
-      return fail(t, TLS_ALERT_DECODE_ERROR);
-    if (count == CHAIN_MAX || data.n > 0xFFFFu)
-      return fail(t, TLS_ALERT_BAD_CERTIFICATE);
-    cert[count] = data.p;
-    len[count++] = (uint16_t)data.n;
-  }
-  if (!count) /* §4.4.2.4 */
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if ((a = c->verify_chain(c->ctx, cert, len, count, t->host)) != 0)
-    return fail(t, a > 0 ? a : TLS_ALERT_BAD_CERTIFICATE);
-  c->hash_update(&t->transcript, m, mlen);
-  t->leaf_off = (uint16_t)(cert[0] - t->rx);
-  t->leaf_len = len[0];
-  t->step = ST_C_WAIT_CV;
-  return HS_KEEP;
-}
-
-/* RFC 8446 §4.4.3: the server holds the certificate's private key */
-static int on_certificate_verify(tls_conn_t *t, const uint8_t *m,
-                                 size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t content[64 + sizeof(cv_server_ctx) + TLS_HASH_LEN];
-  uint16_t scheme;
-  rd_t r, sig;
-
-  r.p = m + 4;
-  r.n = mlen - 4;
-  r.bad = 0;
-  scheme = (uint16_t)rd_uint(&r, 2);
-  sig = rd_vec(&r, 2);
-  if (r.bad || r.n)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if (scheme != TLS_SIG_ECDSA_SECP256R1_SHA256 &&
-      scheme != TLS_SIG_RSA_PSS_RSAE_SHA256) /* not offered */
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
-  memset(content, 0x20, 64);
-  memcpy(content + 64, cv_server_ctx, sizeof(cv_server_ctx));
-  c->hash_peek(&t->transcript, content + 64 + sizeof(cv_server_ctx));
-  if (c->verify(c->ctx, t->rx + t->leaf_off, t->leaf_len, scheme, content,
-                sizeof(content), sig.p, sig.n) != 0)
-    return fail(t, TLS_ALERT_DECRYPT_ERROR);
-  c->hash_update(&t->transcript, m, mlen);
-  t->step = ST_C_WAIT_FIN;
-  return HS_RELEASE;
-}
-
-/* The server's Finished: its application keys now, ours after our
- * Finished (pump_client) */
-static int on_server_finished(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t h[TLS_HASH_LEN], mac[TLS_HASH_LEN], ms[TLS_HASH_LEN];
-  if (mlen != 4 + TLS_HASH_LEN)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->rsec, h, mac);
-  if (!tls_equal(mac, m + 4, TLS_HASH_LEN))
-    return fail(t, TLS_ALERT_DECRYPT_ERROR);
-  c->hash_update(&t->transcript, m, mlen);
-  c->hash_peek(&t->transcript, h);
-  memcpy(ms, t->secret, sizeof(ms));
-  tls_next_secret(c, ms, NULL, 0);
-  tls_derive_secret(c, ms, "s ap traffic", h, t->rsec);
-  tls_derive_secret(c, ms, "c ap traffic", h, t->secret);
-  wipe(ms, sizeof(ms));
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
-  t->flags &= (uint16_t)~F_CCS_OK;
-  t->step = ST_C_SEND_FIN;
-  return HS_KEYS;
-}
-
-/* Produce whatever output is due; runs after every input and drain. */
-static int pump(tls_conn_t *t) {
-  int r = 0;
-  if (t->state == TLS_STATE_HANDSHAKE)
-    r = (t->flags & F_SERVER) ? pump_server(t) : pump_client(t);
-  if (r == 0 && (t->flags & F_KU_OWED) && !(t->flags & F_WCLOSED)) {
-    uint8_t *m = hs_begin(t, 5);
-    if (m) { /* KeyUpdate, then our next keys */
-      m[4] = (t->flags & F_KU_REQ) ? 1 : 0;
-      hs_end(t, m, TLS_HS_KEY_UPDATE, 1);
-      rec_close(t);
-      tls_update_secret(t->cfg->crypto, t->wsec);
-      tls_traffic_keys(t->cfg->crypto, t->wsec, &t->wkeys);
-      t->flags &= (uint16_t)~(F_KU_OWED | F_KU_REQ);
-    }
-  }
-  rec_close(t);
-  if (r == 0 && t->state == TLS_STATE_HANDSHAKE && SENDING(t->step) &&
-      t->tx_len == t->tx_sent)
-    return fail(t, TLS_ALERT_INTERNAL_ERROR); /* tx too small */
-  return r;
-}
-
-/* The client's Finished (RFC 8446 §4.4.4): the handshake is done. */
-static int on_client_finished(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  const tls_crypto_t *c = t->cfg->crypto;
-  uint8_t h[TLS_HASH_LEN], mac[TLS_HASH_LEN];
-  if (mlen != 4 + TLS_HASH_LEN)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  c->hash_peek(&t->transcript, h);
-  tls_finished_mac(c, t->rsec, h, mac);
-  if (!tls_equal(mac, m + 4, TLS_HASH_LEN))
-    return fail(t, TLS_ALERT_DECRYPT_ERROR);
-  c->hash_update(&t->transcript, m, mlen);
-  memcpy(t->rsec, t->secret, TLS_HASH_LEN);
-  wipe(t->secret, sizeof(t->secret));
-  tls_traffic_keys(c, t->rsec, &t->rkeys);
-  t->flags &= (uint16_t)~F_CCS_OK;
-  t->step = ST_DONE;
-  t->state = TLS_STATE_CONNECTED;
-  event(t, TLS_EVT_CONNECTED);
-  return HS_KEYS;
-}
-
-/* KeyUpdate (RFC 8446 §4.6.3): the peer's next keys; answer if asked. */
+/* RFC 8446 §4.6.3: the peer's next keys; answer if asked */
 static int on_key_update(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  if (mlen != 5)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
-  if (m[4] > 1)
-    return fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+  if (mlen != HS_HDR + 1)
+    return tls_fail(t, TLS_ALERT_DECODE_ERROR);
+  if (m[HS_HDR] > 1)
+    return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   tls_update_secret(t->cfg->crypto, t->rsec);
   tls_traffic_keys(t->cfg->crypto, t->rsec, &t->rkeys);
-  if (m[4])
+  if (m[HS_HDR])
     t->flags |= F_KU_OWED;
   return HS_KEYS;
 }
 
-/* One whole handshake message.  Returns 1 after a key change, 0, or < 0. */
+/* One whole handshake message: HS_*, 0, or < 0 */
 static int on_handshake(tls_conn_t *t, const uint8_t *m, size_t mlen) {
-  uint8_t type = m[0];
-  if (t->state == TLS_STATE_CONNECTED) {
-    if (type == TLS_HS_KEY_UPDATE)
-      return on_key_update(t, m, mlen);
-    /* tickets are for resumption, which a client here does not do */
-    if (type == TLS_HS_NEW_SESSION_TICKET && !(t->flags & F_SERVER))
-      return 0;
-    return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-  }
-  switch (t->step) {
-  case ST_WAIT_CH:
-    if (type == TLS_HS_CLIENT_HELLO)
-      return on_client_hello(t, m, mlen);
-    break;
-  case ST_WAIT_FIN:
-    if (type == TLS_HS_FINISHED)
-      return on_client_finished(t, m, mlen);
-    break;
-  case ST_C_WAIT_SH:
-    if (type == TLS_HS_SERVER_HELLO)
-      return on_server_hello(t, m, mlen);
-    break;
-  case ST_C_WAIT_EE:
-    if (type == TLS_HS_ENCRYPTED_EXTENSIONS)
-      return on_encrypted_extensions(t, m, mlen);
-    break;
-  case ST_C_WAIT_CERT:
-    if (type == TLS_HS_CERTIFICATE_REQUEST && !(t->flags & F_CERT_REQ))
-      return on_certificate_request(t, m, mlen);
-    if (type == TLS_HS_CERTIFICATE)
-      return on_certificate(t, m, mlen);
-    break;
-  case ST_C_WAIT_CV:
-    if (type == TLS_HS_CERTIFICATE_VERIFY)
-      return on_certificate_verify(t, m, mlen);
-    break;
-  case ST_C_WAIT_FIN:
-    if (type == TLS_HS_FINISHED)
-      return on_server_finished(t, m, mlen);
-    break;
-  default:
-    break;
-  }
-  return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+  if (t->state != TLS_STATE_CONNECTED)
+    return t->role->on_message(t, m, mlen);
+  if (m[0] == TLS_HS_KEY_UPDATE)
+    return on_key_update(t, m, mlen);
+  /* tickets are for resumption, which a client here does not do */
+  if (m[0] == TLS_HS_NEW_SESSION_TICKET && !(t->flags & F_SERVER))
+    return 0;
+  return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
 }
 
-/* ── Receiving ────────────────────────────────────────────────────────── */
+static void send_owed_key_update(tls_conn_t *t) {
+  uint8_t *m = tls_hs_begin(t, HS_HDR + 1);
+  if (!m)
+    return; /* once tx has room */
+  m[HS_HDR] = (t->flags & F_KU_REQ) ? 1 : 0;
+  tls_hs_end(t, m, TLS_HS_KEY_UPDATE, 1);
+  tls_rec_close(t);
+  tls_update_secret(t->cfg->crypto, t->wsec);
+  tls_traffic_keys(t->cfg->crypto, t->wsec, &t->wkeys);
+  t->flags &= (uint16_t) ~(F_KU_OWED | F_KU_REQ);
+}
+
+/* Produce whatever output is due; runs after every input and drain */
+static int pump(tls_conn_t *t) {
+  int r = 0;
+  if (t->state == TLS_STATE_HANDSHAKE)
+    r = t->role->pump(t);
+  if (r == 0 && (t->flags & F_KU_OWED) && !(t->flags & F_WCLOSED))
+    send_owed_key_update(t);
+  tls_rec_close(t);
+  if (r == 0 && t->state == TLS_STATE_HANDSHAKE && SENDING(t->step) &&
+      t->tx_len == t->tx_sent)
+    return tls_fail(t, TLS_ALERT_INTERNAL_ERROR); /* tx too small */
+  return r;
+}
+
+/* ── Receiving ── */
+
+/* rx: [handshake bytes (hs_len) | records not yet processed] */
 
 /* Replace the record at rx + hs_len (@p rlen bytes) by the @p n content
- * bytes at its offset @p off. */
+ * bytes at its offset @p off */
 static void rx_keep(tls_conn_t *t, size_t off, size_t n, size_t rlen) {
   uint8_t *rec = t->rx + t->hs_len;
   memmove(rec, rec + off, n);
@@ -1360,74 +272,111 @@ static void rx_keep(tls_conn_t *t, size_t off, size_t n, size_t rlen) {
 static int on_alert(tls_conn_t *t, const uint8_t *a, size_t n, size_t rlen) {
   uint8_t desc;
   if (n != 2)
-    return fail(t, TLS_ALERT_DECODE_ERROR);
+    return tls_fail(t, TLS_ALERT_DECODE_ERROR);
   desc = a[1];
   rx_keep(t, 0, 0, rlen);
-  if (desc == 90) /* user_canceled: close_notify follows */
+  if (desc == TLS_ALERT_USER_CANCELED) /* close_notify follows */
     return 0;
   if (desc == TLS_ALERT_CLOSE_NOTIFY) {
     t->state = TLS_STATE_CLOSED;
-    event(t, TLS_EVT_CLOSED);
+    tls_notify(t, TLS_EVT_CLOSED);
     return 0;
   }
   t->state = TLS_STATE_ERROR;
   t->alert = desc;
   wipe_keys(t);
-  event(t, TLS_EVT_ERROR);
+  tls_notify(t, TLS_EVT_ERROR);
   return -(int)desc;
 }
 
-/* One whole record at rx + hs_len. */
-static int on_record(tls_conn_t *t, size_t rlen) {
-  uint8_t *rec = t->rx + t->hs_len, type = rec[0];
-  size_t len = rlen - TLS_RECORD_HDR;
-  int n;
+/* A protected record: handshake bytes, an alert, or application data */
+static int on_protected_record(tls_conn_t *t, uint8_t *rec, size_t rlen) {
+  uint8_t type;
+  int n = tls_record_open(t->cfg->crypto, &t->rkeys, rec, rlen, &type);
+  if (n < 0)
+    return tls_fail(t, -n);
+  if (type == TLS_CT_HANDSHAKE && n > 0) {
+    rx_keep(t, TLS_RECORD_HDR, (size_t)n, rlen);
+    return 0;
+  }
+  if (type == TLS_CT_ALERT)
+    return on_alert(t, rec + TLS_RECORD_HDR, (size_t)n, rlen);
+  /* application data: only between complete handshake messages */
+  if (type != TLS_CT_APPLICATION_DATA || t->hs_len ||
+      t->state != TLS_STATE_CONNECTED)
+    return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+  if (n == 0) {
+    rx_keep(t, 0, 0, rlen);
+    return 0;
+  }
+  t->app_off = TLS_RECORD_HDR;
+  t->app_len = (uint16_t)n;
+  t->app_rec = (uint16_t)rlen;
+  return 0;
+}
 
-  switch (type) { /* one of the four: process() checked */
+/* One whole record at rx + hs_len (a known content type: process()) */
+static int on_record(tls_conn_t *t, size_t rlen) {
+  uint8_t *rec = t->rx + t->hs_len;
+  size_t len = rlen - TLS_RECORD_HDR;
+
+  switch (rec[0]) {
   case TLS_CT_CHANGE_CIPHER_SPEC: /* RFC 8446 §5: dropped, once allowed */
-    if (!(t->flags & F_CCS_OK) || len != 1 || rec[5] != 0x01)
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+    if (!(t->flags & F_CCS_OK) || len != 1 || rec[TLS_RECORD_HDR] != 0x01)
+      return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
     rx_keep(t, 0, 0, rlen);
     return 0;
   case TLS_CT_ALERT: /* plaintext: before our keys reach the peer */
     if ((t->flags & F_RPROT) && t->state != TLS_STATE_HANDSHAKE)
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+      return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
     return on_alert(t, rec + TLS_RECORD_HDR, len, rlen);
   case TLS_CT_HANDSHAKE:
-    if (t->flags & F_RPROT)
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-    if (len == 0)
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+    if ((t->flags & F_RPROT) || len == 0)
+      return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
     rx_keep(t, TLS_RECORD_HDR, len, rlen);
     return 0;
-  default: /* TLS_CT_APPLICATION_DATA */
+  default:
     if (!(t->flags & F_RPROT))
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-    n = tls_record_open(t->cfg->crypto, &t->rkeys, rec, rlen, &type);
-    if (n < 0)
-      return fail(t, -n);
-    if (type == TLS_CT_HANDSHAKE && n > 0) {
-      rx_keep(t, TLS_RECORD_HDR, (size_t)n, rlen);
-      return 0;
-    }
-    if (type == TLS_CT_ALERT)
-      return on_alert(t, rec + TLS_RECORD_HDR, (size_t)n, rlen);
-    /* application data: only between complete handshake messages */
-    if (type != TLS_CT_APPLICATION_DATA || t->hs_len ||
-        t->state != TLS_STATE_CONNECTED)
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-    if (n == 0) {
-      rx_keep(t, 0, 0, rlen);
-      return 0;
-    }
-    t->app_off = TLS_RECORD_HDR;
-    t->app_len = (uint16_t)n;
-    t->app_rec = (uint16_t)rlen;
-    return 0;
+      return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+    return on_protected_record(t, rec, rlen);
   }
 }
 
-/* Work through rx: whole handshake messages, then whole records. */
+/* The whole handshake messages collected in rx; 0, or < 0 */
+static int process_handshake_messages(tls_conn_t *t) {
+  while (t->hs_len - t->hs_off >= HS_HDR) {
+    uint8_t *m = t->rx + t->hs_off;
+    size_t from, n, mlen = HS_HDR + net_read24be(m + 1);
+    int r;
+    if (mlen > (size_t)(t->rx_cap - t->hs_off))
+      return tls_fail(t, TLS_ALERT_RECORD_OVERFLOW);
+    if ((size_t)(t->hs_len - t->hs_off) < mlen)
+      return 0;
+    if ((r = on_handshake(t, m, mlen)) < 0)
+      return r;
+    if (r == HS_KEEP) {
+      t->hs_off = (uint16_t)(t->hs_off + mlen);
+      continue;
+    }
+    /* drop the message (and the kept one before it, when released) */
+    from = r == HS_RELEASE ? 0 : t->hs_off;
+    n = t->hs_off + mlen - from;
+    memmove(t->rx + from, t->rx + from + n, t->rx_len - from - n);
+    t->hs_len = (uint16_t)(t->hs_len - n);
+    t->rx_len = (uint16_t)(t->rx_len - n);
+    if (r == HS_RELEASE)
+      t->hs_off = 0;
+    /* RFC 8446 §5.1: a key change falls on a record boundary */
+    if (r == HS_KEYS && t->hs_len)
+      return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+    if ((r = pump(t)) < 0)
+      return r;
+  }
+  return 0;
+}
+
+/* Work through rx: whole handshake messages, then whole records.  A
+ * record header is checked before its body is awaited. */
 static int process(tls_conn_t *t) {
   for (;;) {
     const uint8_t *hdr;
@@ -1437,51 +386,22 @@ static int process(tls_conn_t *t) {
       return t->state == TLS_STATE_ERROR ? -(int)t->alert : 0;
     if (t->app_len) /* the reader first */
       return 0;
+    if ((r = process_handshake_messages(t)) < 0)
+      return r;
 
-    while (t->hs_len - t->hs_off >= 4) {
-      uint8_t *m = t->rx + t->hs_off;
-      size_t from, n, mlen = 4 + (((size_t)m[1] << 16) |
-                                  ((size_t)m[2] << 8) | m[3]);
-      if (mlen > (size_t)(t->rx_cap - t->hs_off))
-        return fail(t, TLS_ALERT_RECORD_OVERFLOW);
-      if ((size_t)(t->hs_len - t->hs_off) < mlen)
-        break;
-      r = on_handshake(t, m, mlen);
-      if (r < 0)
-        return r;
-      if (r == HS_KEEP) {
-        t->hs_off = (uint16_t)(t->hs_off + mlen);
-        continue;
-      }
-      /* drop the message (and the kept one before it, when released) */
-      from = r == HS_RELEASE ? 0 : t->hs_off;
-      n = t->hs_off + mlen - from;
-      memmove(t->rx + from, t->rx + from + n, t->rx_len - from - n);
-      t->hs_len = (uint16_t)(t->hs_len - n);
-      t->rx_len = (uint16_t)(t->rx_len - n);
-      if (r == HS_RELEASE)
-        t->hs_off = 0;
-      /* RFC 8446 §5.1: a key change falls on a record boundary */
-      if (r == HS_KEYS && t->hs_len)
-        return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-      if ((r = pump(t)) < 0)
-        return r;
-    }
-
-    /* A record header is checked before its body is awaited */
     avail = (size_t)(t->rx_len - t->hs_len);
     if (avail < TLS_RECORD_HDR)
       return 0;
     hdr = t->rx + t->hs_len;
     if (hdr[0] < TLS_CT_CHANGE_CIPHER_SPEC || hdr[0] > TLS_CT_APPLICATION_DATA)
-      return fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
-    rlen = ((size_t)hdr[3] << 8) | hdr[4];
+      return tls_fail(t, TLS_ALERT_UNEXPECTED_MESSAGE);
+    rlen = net_read16be(hdr + 3);
     if (rlen > (hdr[0] == TLS_CT_APPLICATION_DATA ? TLS_MAX_CIPHERTEXT
                                                   : TLS_MAX_PLAINTEXT))
-      return fail(t, TLS_ALERT_RECORD_OVERFLOW);
+      return tls_fail(t, TLS_ALERT_RECORD_OVERFLOW);
     rlen += TLS_RECORD_HDR;
     if (rlen > (size_t)(t->rx_cap - t->hs_len))
-      return fail(t, TLS_ALERT_RECORD_OVERFLOW);
+      return tls_fail(t, TLS_ALERT_RECORD_OVERFLOW);
     if (avail < rlen)
       return 0;
     if ((r = on_record(t, rlen)) < 0)
@@ -1489,10 +409,8 @@ static int process(tls_conn_t *t) {
   }
 }
 
-/* ── API ──────────────────────────────────────────────────────────────── */
-
-int tls_init(tls_conn_t *t, const tls_config_t *cfg, uint8_t *rx,
-             size_t rx_cap, uint8_t *tx, size_t tx_cap) {
+int tls_init(tls_conn_t *t, const tls_config_t *cfg, uint8_t *rx, size_t rx_cap,
+             uint8_t *tx, size_t tx_cap) {
   if (!t || !cfg || !cfg->crypto || !rx || !tx || rx_cap < BUF_MIN ||
       tx_cap < BUF_MIN)
     return -1;
@@ -1503,188 +421,6 @@ int tls_init(tls_conn_t *t, const tls_config_t *cfg, uint8_t *rx,
   t->tx = tx;
   t->tx_cap = (uint16_t)(tx_cap > BUF_MAX ? BUF_MAX : tx_cap);
   t->rec_start = NO_REC;
-  return 0;
-}
-
-int tls_accept(tls_conn_t *t) {
-  const tls_config_t *cfg = t->cfg;
-  if (t->state != TLS_STATE_IDLE || (!cfg->cert_count && !cfg->psk) ||
-      (cfg->cert_count &&
-       (!cfg->cert || !cfg->cert_len || !cfg->key || !cfg->sig_scheme)) ||
-      (cfg->psk && (!cfg->psk_len || !cfg->psk_id || !cfg->psk_id_len)))
-    return -1;
-  t->flags = F_SERVER;
-  t->state = TLS_STATE_HANDSHAKE;
-  t->step = ST_WAIT_CH;
-  cfg->crypto->hash_init(&t->transcript);
-  return 0;
-}
-
-/* A ClientHello into tx (RFC 8446 §4.1.2): the first, or after an HRR
- * (@p mh its message_hash, @p hrr the HelloRetryRequest) the second — the
- * same random, a share of t->group, the server's cookie, a new binder. */
-static int client_hello(tls_conn_t *t, const uint8_t *cookie,
-                        size_t cookie_len, const uint8_t *mh,
-                        const uint8_t *hrr, size_t hrr_len) {
-  const tls_config_t *cfg = t->cfg;
-  const tls_crypto_t *c = cfg->crypto;
-  uint8_t pub[TLS_KX_PUB_MAX], *m, *p, *ext;
-  size_t pub_len = 0, hl = 0, idl = cfg->psk_id_len, trunc = 0;
-  uint8_t mask = cfg->groups ? cfg->groups
-                             : TLS_GROUPS_X25519 | TLS_GROUPS_SECP256R1;
-  uint8_t ng = (uint8_t)(((mask & TLS_GROUPS_X25519) ? 1 : 0) +
-                         ((mask & TLS_GROUPS_SECP256R1) ? 1 : 0));
-  uint8_t modes = cfg->psk ? (cfg->psk_modes ? cfg->psk_modes
-                                             : TLS_PSK_DHE_KE)
-                           : 0;
-  int sni = t->host && !ip_literal(t->host);
-  uint8_t mfl = cfg->max_fragment;
-
-  if (sni)
-    hl = strlen(t->host);
-  if (t->group &&
-      c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
-    return -1;
-  m = hs_begin(t, 4 + 2 + 32 + 1 + 4 + 2 + 2 + (sni ? 9 + hl : 0) + 7 + 10 +
-                      (t->group ? 6 + 2u * ng + 10 + pub_len : 0) +
-                      (cookie_len ? 6 + cookie_len : 0) + (mfl ? 5 : 0) +
-                      (cfg->psk ? 7 + 4 + 2 + 2 + idl + 4 + 2 + 33 : 0));
-  if (!m)
-    return -1;
-
-  p = m + 4;
-  put16(p, 0x0303);         /* legacy_version */
-  memcpy(p + 2, t->sid, 32); /* random (kept in sid by a client) */
-  p += 34;
-  *p++ = 0; /* legacy_session_id: none (no middlebox compatibility mode) */
-  put16(p, 2);
-  put16(p + 2, TLS_AES_128_GCM_SHA256);
-  p[4] = 1; /* legacy_compression_methods: null */
-  p[5] = 0;
-  p += 6;
-  ext = p;
-  p += 2;
-  if (sni) { /* server_name: one host_name */
-    put16(p, TLS_EXT_SERVER_NAME);
-    put16(p + 2, 5 + hl);
-    put16(p + 4, 3 + hl);
-    p[6] = 0;
-    put16(p + 7, hl);
-    memcpy(p + 9, t->host, hl);
-    p += 9 + hl;
-  }
-  memcpy(p, "\x00\x2b\x00\x03\x02\x03\x04", 7); /* supported_versions */
-  p += 7;
-  put16(p, TLS_EXT_SIGNATURE_ALGORITHMS);
-  put16(p + 2, 6);
-  put16(p + 4, 4);
-  put16(p + 6, TLS_SIG_ECDSA_SECP256R1_SHA256);
-  put16(p + 8, TLS_SIG_RSA_PSS_RSAE_SHA256);
-  p += 10;
-  if (t->group) {
-    put16(p, TLS_EXT_SUPPORTED_GROUPS);
-    put16(p + 2, 2u + 2u * ng);
-    put16(p + 4, 2u * ng);
-    p += 6;
-    if (mask & TLS_GROUPS_X25519) {
-      put16(p, TLS_GROUP_X25519);
-      p += 2;
-    }
-    if (mask & TLS_GROUPS_SECP256R1) {
-      put16(p, TLS_GROUP_SECP256R1);
-      p += 2;
-    }
-    put16(p, TLS_EXT_KEY_SHARE); /* one share */
-    put16(p + 2, 6 + pub_len);
-    put16(p + 4, 4 + pub_len);
-    put16(p + 6, t->group);
-    put16(p + 8, pub_len);
-    memcpy(p + 10, pub, pub_len);
-    p += 10 + pub_len;
-  }
-  if (mfl) {
-    put16(p, TLS_EXT_MAX_FRAGMENT_LENGTH);
-    put16(p + 2, 1);
-    p[4] = mfl;
-    p += 5;
-  }
-  if (cookie_len) { /* the HRR's cookie, back */
-    put16(p, 44);
-    put16(p + 2, 2 + cookie_len);
-    put16(p + 4, cookie_len);
-    memcpy(p + 6, cookie, cookie_len);
-    p += 6 + cookie_len;
-  }
-  if (cfg->psk) {
-    uint8_t n = (uint8_t)(((modes & TLS_PSK_DHE_KE) ? 1 : 0) +
-                          ((modes & TLS_PSK_KE) ? 1 : 0));
-    put16(p, TLS_EXT_PSK_KEY_EXCHANGE_MODES);
-    put16(p + 2, 1u + n);
-    p[4] = n;
-    p += 5;
-    if (modes & TLS_PSK_DHE_KE)
-      *p++ = 1;
-    if (modes & TLS_PSK_KE)
-      *p++ = 0;
-    /* pre_shared_key, the last extension: one identity, one binder */
-    put16(p, TLS_EXT_PRE_SHARED_KEY);
-    put16(p + 2, 2 + 2 + idl + 4 + 2 + 33);
-    put16(p + 4, 2 + idl + 4);
-    put16(p + 6, idl);
-    memcpy(p + 8, cfg->psk_id, idl);
-    memset(p + 8 + idl, 0, 4); /* obfuscated_ticket_age */
-    p += 12 + idl;
-    trunc = (size_t)(p - m);
-    put16(p, 33);
-    p[2] = TLS_HASH_LEN;
-    p += 3 + TLS_HASH_LEN;
-  }
-  put16(ext, (size_t)(p - ext - 2));
-  if (cfg->psk) { /* the binder, over the transcript up to the binders */
-    uint8_t h[TLS_HASH_LEN];
-    tls_hash_t th;
-    m[0] = TLS_HS_CLIENT_HELLO;
-    put24(m + 1, (size_t)(p - m - 4));
-    tls_early_secret(c, cfg->psk, cfg->psk_len, t->secret);
-    c->hash_init(&th);
-    if (mh) {
-      c->hash_update(&th, mh, 4 + TLS_HASH_LEN);
-      c->hash_update(&th, hrr, hrr_len);
-    }
-    c->hash_update(&th, m, trunc);
-    c->hash_peek(&th, h);
-    tls_psk_binder(c, t->secret, cfg->psk_resumption, h, m + trunc + 3);
-  }
-  hs_end(t, m, TLS_HS_CLIENT_HELLO, (size_t)(p - m - 4));
-  rec_close(t);
-  return 0;
-}
-
-int tls_connect(tls_conn_t *t, const char *host) {
-  const tls_config_t *cfg = t->cfg;
-  const tls_crypto_t *c = cfg->crypto;
-  uint8_t mask = cfg->groups ? cfg->groups
-                             : TLS_GROUPS_X25519 | TLS_GROUPS_SECP256R1;
-  int dhe = !cfg->psk || !cfg->psk_modes ||
-            (cfg->psk_modes & TLS_PSK_DHE_KE);
-
-  if (t->state != TLS_STATE_IDLE)
-    return -1;
-  if (host && !ip_literal(host) && strlen(host) > 255)
-    return -1;
-  if (cfg->psk && (!cfg->psk_len || !cfg->psk_id || !cfg->psk_id_len))
-    return -1;
-  t->host = host;
-  t->group = !dhe ? 0
-             : (mask & TLS_GROUPS_X25519) ? TLS_GROUP_X25519
-                                          : TLS_GROUP_SECP256R1;
-  c->hash_init(&t->transcript);
-  if (c->random(c->ctx, t->sid, 32) != 0 ||
-      client_hello(t, NULL, 0, NULL, NULL, 0) != 0)
-    return -1;
-  t->state = TLS_STATE_HANDSHAKE;
-  t->step = ST_C_WAIT_SH;
-  t->flags = F_CCS_OK; /* a server may send the dummy one anyway */
   return 0;
 }
 
@@ -1738,11 +474,15 @@ void tls_tx_done(tls_conn_t *t, size_t n) {
     (void)pump(t);
 }
 
+static int writable(const tls_conn_t *t) {
+  return (t->state == TLS_STATE_CONNECTED || t->state == TLS_STATE_CLOSED) &&
+         !(t->flags & F_WCLOSED);
+}
+
 int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
   uint8_t *p;
   size_t room;
-  if ((t->state != TLS_STATE_CONNECTED && t->state != TLS_STATE_CLOSED) ||
-      (t->flags & F_WCLOSED))
+  if (!writable(t))
     return -1;
   if (t->wkeys.seq >= TLS_KEY_UPDATE_RECORDS) { /* RFC 8446 §5.5 */
     t->flags |= F_KU_OWED;
@@ -1750,19 +490,19 @@ int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
     if (t->flags & F_KU_OWED)
       return 0; /* no room for it yet */
   }
-  tx_compact(t);
+  tls_tx_compact(t);
   room = (size_t)(t->tx_cap - t->tx_len);
   if (room <= TLS_RECORD_OVERHEAD)
     return 0;
   room -= TLS_RECORD_OVERHEAD;
   if (len > room)
     len = room;
-  if (len > frag_limit(t))
-    len = frag_limit(t);
-  p = rec_room(t, TLS_CT_APPLICATION_DATA, len);
+  if (len > fragment_limit(t))
+    len = fragment_limit(t);
+  p = tls_rec_room(t, TLS_CT_APPLICATION_DATA, len);
   memcpy(p, data, len);
   t->tx_len = (uint16_t)(t->tx_len + len);
-  rec_close(t);
+  tls_rec_close(t);
   return (int)len;
 }
 
@@ -1786,8 +526,7 @@ size_t tls_read(tls_conn_t *t, uint8_t *buf, size_t len) {
 int tls_psk_used(const tls_conn_t *t) { return (t->flags & F_PSK) != 0; }
 
 int tls_key_update(tls_conn_t *t, int request) {
-  if ((t->state != TLS_STATE_CONNECTED && t->state != TLS_STATE_CLOSED) ||
-      (t->flags & F_WCLOSED))
+  if (!writable(t))
     return -1;
   t->flags |= F_KU_OWED | (request ? F_KU_REQ : 0u);
   (void)pump(t); /* now, or once tx has room */
@@ -1799,7 +538,7 @@ int tls_close(tls_conn_t *t) {
     return 0;
   if (t->state == TLS_STATE_IDLE || t->state == TLS_STATE_ERROR)
     return -1;
-  if (send_alert(t, 1, TLS_ALERT_CLOSE_NOTIFY) != 0)
+  if (send_alert(t, ALERT_WARNING, TLS_ALERT_CLOSE_NOTIFY) != 0)
     return -1;
   t->flags |= F_WCLOSED;
   return 0;

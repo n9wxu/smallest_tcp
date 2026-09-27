@@ -16,53 +16,25 @@
  *         avahi-resolve -n pyro-dead01.local ; avahi-browse -rt _pyro._tcp
  *         raw socket on an existing interface (NIC or veth end):
  *           sudo ./build/demo/mdns_demo raw:veth-sut
- * macOS:  (feth pair as in demo/echo_server) sudo ./build/demo/mdns_demo feth1
+ * macOS:  (feth pair, see the README) sudo ./build/demo/mdns_demo feth1
  *         dns-sd -B _pyro._tcp local
  */
 
-#define _POSIX_C_SOURCE 200809L
-
-#include "eth.h"
 #include "mdns.h"
 #include "net.h"
-#include "tcp.h"
-#include "tcp_buf.h"
 #include "udp.h"
-#include <signal.h>
 #include <stdio.h>
-#include <string.h>
-#include <time.h>
 
-#include "demo_ipv6.h"
-#include "demo_mac.h"
+#include "demo_echo.h"
+#include "demo_loop.h"
 
 #define SERVICE_PORT 80u
-#define TCP_BUF_SIZE 512u
-#define NET_BUF_SIZE 1514u
 
-/* ── Network + TCP echo state ────────────────────────────────────── */
-
-static uint8_t net_rx_mem[NET_BUF_SIZE];
-static uint8_t net_tx_mem[NET_BUF_SIZE];
 static net_t net;
+static demo_mac_t nic;
+static demo_echo_t echo;
 
-static uint8_t tcp_tx_mem[TCP_BUF_SIZE];
-static uint8_t tcp_rx_mem[TCP_BUF_SIZE];
-static tcp_saw_tx_ctx_t tx_ctx;
-static tcp_saw_rx_ctx_t rx_ctx;
-static tcp_conn_t echo_conn;
-static tcp_conn_t *conn_table[1];
-
-static volatile int running = 1;
-static volatile int want_echo, want_close, want_listen;
-
-static void sig_handler(int s) {
-  (void)s;
-  running = 0;
-}
-
-/* ── mDNS records (names are buffers so a conflict can rename them) ─ */
-
+/* The names are buffers so that a conflict can rename them */
 static char host[64] = "pyro-dead01.local";
 static char inst[96] = "Pyro Unit 1._pyro._tcp.local";
 static int host_n = 1, inst_n = 1;
@@ -86,7 +58,10 @@ static const mdns_record_t records[] = {
      .ttl = MDNS_TTL_HOST,
      .name = inst,
      .rdata.srv = {0, 0, SERVICE_PORT, host}},
-    {.type = DNS_TYPE_TXT, .ttl = MDNS_TTL_HOST, .name = inst, .rdata.txt = txt},
+    {.type = DNS_TYPE_TXT,
+     .ttl = MDNS_TTL_HOST,
+     .name = inst,
+     .rdata.txt = txt},
 };
 
 static mdns_t mdns;
@@ -100,81 +75,35 @@ static void on_conflict(mdns_t *m, uint8_t index, void *ctx) {
     snprintf(host, sizeof(host), "pyro-dead01-%d.local", ++host_n);
     printf("[mdns] conflict on host name, renamed to %s\n", host);
   } else {
-    snprintf(inst, sizeof(inst), "Pyro Unit 1 (%d)._pyro._tcp.local",
-             ++inst_n);
+    snprintf(inst, sizeof(inst), "Pyro Unit 1 (%d)._pyro._tcp.local", ++inst_n);
     printf("[mdns] conflict on service name, renamed to %s\n", inst);
   }
   fflush(stdout);
   want_restart = 1;
 }
 
-/* UDP 5353: copy the message out of the MAC and hand it to the responder */
-static void mdns_udp_handler(net_t *n, uint32_t src_ip, uint16_t src_port,
-                             const uint8_t *src_mac, uint16_t payload_offset,
-                             uint16_t payload_len) {
-  static uint8_t buf[NET_BUF_SIZE];
-  uint16_t copy = (payload_len < sizeof(buf)) ? payload_len
-                                              : (uint16_t)sizeof(buf);
-  int got = n->mac_driver->peek(n->mac_ctx, payload_offset, buf, copy);
-  if (got > 0)
-    mdns_input(&mdns, src_ip, src_mac, src_port, buf, (uint16_t)got);
+static void mdns_udp_input(net_t *n, uint32_t src_ip, uint16_t src_port,
+                           const uint8_t *src_mac, const uint8_t *payload,
+                           uint16_t len) {
+  (void)n;
+  mdns_input(&mdns, src_ip, src_mac, src_port, payload, len);
 }
 
-static const udp_port_entry_t udp_handlers[] = {
-    {MDNS_PORT, mdns_udp_handler},
-};
+static const udp_port_entry_t udp_ports[] = {{MDNS_PORT, mdns_udp_input}};
+
 #if NET_USE_IPV6
-static void mdns_udp6_handler(net_t *n, const uint8_t *src_ip,
-                              uint16_t src_port, const uint8_t *src_mac,
-                              uint16_t payload_offset, uint16_t payload_len) {
-  static uint8_t buf[NET_BUF_SIZE];
-  uint16_t copy = (payload_len < sizeof(buf)) ? payload_len
-                                              : (uint16_t)sizeof(buf);
-  int got = n->mac_driver->peek(n->mac_ctx, payload_offset, buf, copy);
-  if (got > 0)
-    mdns_input6(&mdns, src_ip, src_mac, src_port, buf, (uint16_t)got);
+static void mdns_udp6_input(net_t *n, const uint8_t *src_ip, uint16_t src_port,
+                            const uint8_t *src_mac, const uint8_t *payload,
+                            uint16_t len) {
+  (void)n;
+  mdns_input6(&mdns, src_ip, src_mac, src_port, payload, len);
 }
 
-static const udp6_port_entry_t udp6_handlers[] = {
-    {MDNS_PORT, mdns_udp6_handler},
-};
+static const udp6_port_entry_t udp6_ports[] = {{MDNS_PORT, mdns_udp6_input}};
+
+/* RFC 6762 §8.4: announce the new address */
+static void ipv6_address_ready(void) { mdns_readdress6(&mdns); }
 #endif
-
-/* ── TCP echo on the advertised port ─────────────────────────────── */
-
-static void on_tcp_event(tcp_conn_t *conn, uint8_t events) {
-  (void)conn;
-  if (events & TCP_EVT_DATA)
-    want_echo = 1;
-  if (events & TCP_EVT_CLOSED)
-    want_close = 1;
-  if (events & (TCP_EVT_RESET | TCP_EVT_ERROR))
-    want_listen = 1;
-}
-
-static void do_listen(void) {
-  tcp_saw_tx_init(&tx_ctx, tcp_tx_mem, TCP_BUF_SIZE);
-  tcp_saw_rx_init(&rx_ctx, tcp_rx_mem, TCP_BUF_SIZE);
-  tcp_conn_init(&echo_conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
-                on_tcp_event);
-  tcp_listen(&echo_conn, SERVICE_PORT);
-  want_echo = want_close = want_listen = 0;
-}
-
-static void do_echo(void) {
-  uint8_t buf[256];
-  uint16_t n;
-  while ((n = tcp_recv(&echo_conn, buf, sizeof(buf))) > 0)
-    tcp_send(&net, &echo_conn, buf, n);
-}
-
-/* ── Main ─────────────────────────────────────────────────────────── */
-
-static uint32_t now_ms(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
-}
 
 static const char *state_name(uint8_t s) {
   switch (s) {
@@ -191,106 +120,50 @@ static const char *state_name(uint8_t s) {
   }
 }
 
+static void tick(uint32_t elapsed_ms) { mdns_tick(&mdns, elapsed_ms); }
+
+static void service(void) {
+  static uint8_t last_state = MDNS_STATE_STOPPED;
+  if (want_restart) {
+    want_restart = 0;
+    mdns_start(&mdns);
+  }
+  if (mdns_state(&mdns) != last_state) {
+    last_state = mdns_state(&mdns);
+    printf("[mdns] %s (%s)\n", state_name(last_state), host);
+    fflush(stdout);
+  }
+  demo_echo_service(&net, &echo);
+}
+
 int main(int argc, char *argv[]) {
-  signal(SIGINT, sig_handler);
-  signal(SIGTERM, sig_handler);
+  demo_hooks_t hooks = {tick, service, NULL};
 
-  /* ── Platform MAC driver: argv[1] names the interface ───────── */
-  demo_mac_t nic;
-  if (demo_mac_select(&nic, (argc > 1) ? argv[1] : NULL) != 0) {
+  if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "mdns") != 0)
     return 1;
-  }
-  const net_mac_t *drv = nic.ops;
-
-  net_init(&net, net_rx_mem, sizeof(net_rx_mem), net_tx_mem, sizeof(net_tx_mem),
-           NULL, drv, &nic.ctx);
-  if (drv->init(&nic.ctx) != 0) {
-    fprintf(stderr, "[mdns] failed to open MAC driver\n");
-    return 1;
-  }
-
-  udp_ports.entries = udp_handlers;
-  udp_ports.count = 1;
+  udp_set_ports(&net, udp_ports, 1);
 #if NET_USE_IPV6
-  /* Dual stack: link-local address, mDNS on ff02::fb */
-  ipv6_start(&net);
-  udp6_ports.entries = udp6_handlers;
-  udp6_ports.count = 1;
+  udp6_set_ports(&net, udp6_ports, 1);
+  hooks.ipv6_address_ready = ipv6_address_ready;
 #endif
-  conn_table[0] = &echo_conn;
-  tcp_connections.conns = conn_table;
-  tcp_connections.count = 1;
-  do_listen();
-
+  demo_echo_start(&net, &echo, SERVICE_PORT, "mdns");
   if (mdns_init(&mdns, &net, records, sizeof(records) / sizeof(records[0]),
                 on_conflict, NULL) != NET_OK) {
     fprintf(stderr, "[mdns] invalid record table\n");
     return 1;
   }
-  printf("[mdns] %s -> %u.%u.%u.%u, service \"%s\" port %u\n", host,
-         (unsigned)((net.ipv4_addr >> 24) & 0xFF),
-         (unsigned)((net.ipv4_addr >> 16) & 0xFF),
-         (unsigned)((net.ipv4_addr >> 8) & 0xFF),
-         (unsigned)(net.ipv4_addr & 0xFF), inst, SERVICE_PORT);
+  printf("[mdns] %s -> ", host);
+  demo_print_ipv4(net.ipv4_addr);
+  printf(", service \"%s\" port %u\n", inst, SERVICE_PORT);
   fflush(stdout);
   mdns_start(&mdns);
 
-  uint32_t last_tick = now_ms();
-  uint8_t last_state = MDNS_STATE_STOPPED;
-
-  while (running) {
-    int got = net_poll(&net);
-    if (got > 0)
-      eth_input(&net, net.rx.buf, net.rx.frame_len);
-
-    uint32_t now = now_ms();
-    uint32_t elapsed = now - last_tick;
-    if (elapsed >= 5u) {
-      tcp_tick(&net, elapsed);
-      mdns_tick(&mdns, elapsed);
-#if NET_USE_IPV6
-      ipv6_tick(&net, elapsed);
-      if (demo_ipv6_report(&net, "mdns"))
-        mdns_readdress6(&mdns); /* RFC 6762 §8.4: new address */
-#endif
-      last_tick = now;
-    }
-
-    if (want_restart) {
-      want_restart = 0;
-      mdns_start(&mdns);
-    }
-    if (mdns_state(&mdns) != last_state) {
-      last_state = mdns_state(&mdns);
-      printf("[mdns] %s (%s)\n", state_name(last_state), host);
-      fflush(stdout);
-    }
-
-    if (want_echo) {
-      want_echo = 0;
-      do_echo();
-    }
-    if (want_close) {
-      want_close = 0;
-      if (echo_conn.state == TCP_CLOSE_WAIT)
-        tcp_close(&net, &echo_conn);
-      else if (echo_conn.state == TCP_CLOSED)
-        want_listen = 1;
-    }
-    if (want_listen)
-      do_listen();
-
-    if (got <= 0) {
-      struct timespec idle = {0, 1000000}; /* 1 ms */
-      nanosleep(&idle, NULL);
-    }
-  }
+  demo_run(&net, "mdns", &hooks);
 
   printf("[mdns] shutting down: sending goodbye\n");
   fflush(stdout);
   mdns_stop(&mdns);
-  if (echo_conn.state == TCP_ESTABLISHED || echo_conn.state == TCP_CLOSE_WAIT)
-    tcp_abort(&net, &echo_conn);
-  drv->close(&nic.ctx);
+  demo_echo_stop(&net, &echo);
+  demo_net_close(&nic);
   return 0;
 }

@@ -6,17 +6,16 @@
  *
  * Usage (mirrors dhcpv4_client.h):
  *   1. Declare a dhcpv6_client_t and call dhcpv6_client_init().
- *   2. Register a udp6 port-546 handler that peeks the payload and calls
- *      dhcpv6_client_input().
+ *   2. Register a udp6 port-546 handler that calls dhcpv6_client_input().
  *   3. Once the link-local address is preferred, call dhcpv6_client_start()
  *      — stateful if the Router Advertisement had M set
- *      (net->ip6_ra_flags & 0x80), stateless for O (0x40).
+ *      (net->ip6.ra_flags & NDP_RA_MANAGED), stateless for O
+ *      (NDP_RA_OTHER).
  *   4. Call dhcpv6_client_tick() from the main loop.
  *
  * Addresses are installed with ipv6_addr_add() (DAD included); options
  * such as DNS servers (23) reach the application through the option
  * handler table.  Zero allocation; messages are built in net->tx.buf.
- * REQ-DHCPv6-001..044
  */
 
 #ifndef DHCPV6_CLIENT_H
@@ -25,8 +24,7 @@
 #include "net.h"
 #include <stdint.h>
 
-/* ── Protocol constants (RFC 8415 §7) ─────────────────────────────── */
-
+/* Protocol constants (RFC 8415 §7) */
 #define DHCPV6_CLIENT_PORT 546
 #define DHCPV6_SERVER_PORT 547
 
@@ -58,8 +56,7 @@
 #define DHCPV6_MAX_DUID 20
 #endif
 
-/* ── Client states and events ─────────────────────────────────────── */
-
+/* Client states and events */
 #define DHCPV6_CLI_IDLE 0
 #define DHCPV6_CLI_INFO_REQUEST 1 /**< Stateless: Information-Request sent */
 #define DHCPV6_CLI_INFORMED 2     /**< Stateless: configuration received */
@@ -77,7 +74,7 @@
 #define DHCPV6_EVT_RENEWED 3 /**< Lease extended (Renew or Rebind) */
 #define DHCPV6_EVT_EXPIRED 4 /**< Lease ran out; soliciting again */
 
-/* ── Option handlers (as DHCPv4) ──────────────────────────────────── */
+/* Option handlers (as DHCPv4) */
 
 /**
  * Called for each top-level option of a Reply the application asked for.
@@ -99,34 +96,31 @@ typedef struct {
 
 typedef void (*dhcpv6_event_fn_t)(uint8_t event, void *ctx);
 
-/* ── Client state (application owns) ──────────────────────────────── */
-
+/* Client state (application owns) */
 typedef struct {
   uint8_t state; /**< DHCPV6_CLI_* */
   uint8_t mode;  /**< DHCPV6_MODE_* */
   uint8_t rc;    /**< Transmissions of the current message */
   uint8_t server_id_len;
   uint8_t server_id[DHCPV6_MAX_DUID];
-  uint32_t xid;         /**< Transaction ID (24 bits) */
-  uint32_t timer_ms;    /**< Until the next transmission */
-  uint32_t rt_ms;       /**< Current retransmission timeout */
-  uint32_t elapsed_ms;  /**< Since this exchange began (Elapsed Time) */
-  uint8_t addr[16];     /**< Leased (or offered) address */
-  uint32_t t1_s;        /**< Renew time after the Reply (stateful), or
-                             the information refresh time (stateless) */
-  uint32_t t2_s;        /**< Rebind time after the Reply */
-  uint32_t valid_s;     /**< Valid lifetime of the lease */
-  uint32_t preferred_s; /**< Preferred lifetime of the lease */
-  uint32_t since_s;     /**< Seconds since the last Reply */
-  uint16_t sec_ms;      /**< ms toward the next second */
+  uint32_t xid;           /**< Transaction ID (24 bits) */
+  uint32_t timer_ms;      /**< Until the next transmission */
+  uint32_t rt_ms;         /**< Current retransmission timeout */
+  uint32_t elapsed_ms;    /**< Since this exchange began (Elapsed Time) */
+  uint8_t addr[16];       /**< Leased (or offered) address */
+  uint32_t t1_s;          /**< Renew time after the Reply (stateful), or
+                               the information refresh time (stateless) */
+  uint32_t t2_s;          /**< Rebind time after the Reply */
+  uint32_t valid_s;       /**< Valid lifetime of the lease */
+  uint32_t preferred_s;   /**< Preferred lifetime of the lease */
+  uint32_t since_s;       /**< Seconds since the last Reply */
+  uint16_t sec_ms;        /**< ms toward the next second */
   uint32_t sol_max_rt_ms; /**< SOL_MAX_RT (a server may change it) */
   uint32_t inf_max_rt_ms; /**< INF_MAX_RT (a server may change it) */
   const dhcpv6_opt_table_t *opt_table;
   dhcpv6_event_fn_t on_event;
   void *evt_ctx;
 } dhcpv6_client_t;
-
-/* ── API ──────────────────────────────────────────────────────────── */
 
 void dhcpv6_client_init(dhcpv6_client_t *c, dhcpv6_event_fn_t on_event,
                         void *evt_ctx, const dhcpv6_opt_table_t *opts);

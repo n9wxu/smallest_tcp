@@ -1,420 +1,396 @@
-# Architecture Overview — Portable Minimal TCP/IP Stack
+# Architecture — smallest_tcp
 
-**Last updated:** 2026-03-19 (Milestones 1–5 implemented: Eth, ARP, IPv4, ICMP, UDP)
+**Last updated:** 2026-09-27
 
-## 1. Design Principles
+smallest_tcp is a TCP/IP stack in portable C99 for devices from small
+microcontrollers up to Linux and macOS hosts.  This document describes how
+it is put together and why; the design documents under
+[`design/`](design/) go deeper into each part, and the RFC-traced
+requirements are under [`requirements/`](requirements/).
 
-| Principle | Description |
+## 1. Principles
+
+| Principle | What it means in the code |
 |---|---|
-| **Zero dynamic allocation** | The stack never calls `malloc`. All memory is owned and provided by the application via factory methods. |
-| **Application-sized buffers** | Protocol parameters (MSS, TCP window, etc.) adapt to the buffers the application provides. |
-| **Zero-copy where possible** | Headers are parsed and built in-place in application buffers. |
-| **Strict composability** | Each protocol is a separate compilation unit. Unused protocols are not linked. IPv4 and IPv6 are independently selectable. |
-| **Abstract MAC interface** | The stack is transport-agnostic. A vtable-style HAL adapts to TAP, Linux raw sockets, feth+BPF, ENC28J60, CDC-ECM, etc. |
-| **RFC-driven** | Every protocol behavior is traced to an RFC requirement. All requirements are tested. |
-| **Catch errors early** | Prefer compile-time checks (`#define`, `_Static_assert`), then link-time (unused protocols not linked), then run-time (factory method validation). Hardware capabilities are compile-time `#define`s, not runtime queries. |
-| **Portable C99** | No compiler extensions. Manual serialization (no packed structs). Builds with XC8, GCC, Clang. |
+| **Zero allocation** | The stack never calls `malloc()`.  The application declares every buffer and structure; init functions validate and prepare them ([memory-model.md](design/memory-model.md)). |
+| **No global mutable state** | All state lives in `net_t` or in structures the application passes in.  File-scope data is `const`. |
+| **Application-sized buffers** | Limits follow from the buffers the application provides: TCP MSS from the TX buffer, TFTP block size from the RX buffer, the largest datagram from both. |
+| **Parse and build in place** | A received frame is copied once, from the MAC driver into `net->rx.buf`, and parsed where it lies.  Outgoing frames are built in place in `net->tx.buf`; application data is copied into the frame once (by `udp_send()`, or from a TCP connection's buffer), and modules write their messages there directly. |
+| **Compile-time composition of the core, link-time for the rest** | IPv6 and the two transports are compiled in or out; the application protocols are separate libraries that are linked or not (§2). |
+| **Abstract MAC** | The hardware is reached through one six-function interface, `net_mac_t` ([mac-hal.md](design/mac-hal.md)). |
+| **RFC-driven** | Behaviour is traced to numbered requirements (`REQ-UDP-009`), and those to tests. |
+| **Portable C99** | No compiler extensions, no packed structs, no run-time division ([coding-rules.md](design/coding-rules.md)). |
+| **Single-threaded** | The stack is not reentrant; the application serializes every call (§13). |
 
-## 2. Protocol Composability
+## 2. Composition
 
-The stack is a set of independent libraries that compose at link time:
+The core — Ethernet, ARP, IPv4, ICMP, UDP, TCP, and optionally IPv6 with
+ICMPv6, NDP and MLD — is composed **at compile time**:
+
+- `eth.c` dispatches to ARP/IPv4 under `NET_USE_IPV4` and to IPv6 under
+  `NET_USE_IPV6`;
+- `ipv4.c` and `ipv6.c` dispatch to UDP under `NET_USE_UDP` and to TCP under
+  `NET_USE_TCP`.
+
+Those dispatches are references, so linking IPv4 pulls in `udp.o` and
+`tcp.o` unless the build switches the transport off with `-DNET_USE_UDP=0`
+or `-DNET_USE_TCP=0` and leaves its source out (CMake: the options
+`SMALLEST_TCP_UDP` and `SMALLEST_TCP_TCP`).  For the transport layer,
+"link only what you need" is really "configure what you need".  The same
+switches change `net_t`, so the library and the application must be built
+with the same settings ([configuration.md](design/configuration.md)).
+
+The application protocols — DHCPv4 client and server, DHCPv6 client, TFTP
+client, mDNS/DNS-SD, HTTP, TLS — are composed **at link time**.  The core
+never refers to them; the application calls them and routes their traffic to
+them, and an unused one is simply not linked.  Each is its own CMake library
+(`smallest_tcp::dhcpv4_client`, `::mdns`, `::http`, `::tls`, …).
+
+## 3. Layers
 
 ```
-App links: eth.o + arp.o + ipv4.o + icmpv4.o + udp.o        → IPv4 UDP-only
-App links: eth.o + arp.o + ipv4.o + icmpv4.o + tcp.o        → IPv4 TCP-only
-App links: eth.o + ipv6.o + icmpv6.o + ndp.o + udp.o        → IPv6 UDP-only
-App links: eth.o + arp.o + ipv4.o + ipv6.o + icmpv4.o +     → Dual-stack full
-           icmpv6.o + ndp.o + udp.o + tcp.o
+┌──────────────────────────────────────────────────────────────────────┐
+│ Application — owns net_t, frame buffers, connections, module state   │
+├──────────────────────────────────────────────────────────────────────┤
+│ Application protocols (link-time)                                    │
+│   dhcpv4_client  dhcpv4_server  dhcpv6_client  tftp                  │
+│   mdns (+ dns_wire, igmp)  http (+ http_tls)                         │
+├──────────────────────────────────────────────────────────────────────┤
+│ TLS 1.3 (link-time): over a tcp_conn_t; crypto via tls_crypto_t      │
+├────────────────────────────────┬─────────────────────────────────────┤
+│ udp.c          [NET_USE_UDP]   │ tcp.c, tcp_buf_saw.c  [NET_USE_TCP] │
+├────────────────────────────────┼─────────────────────────────────────┤
+│ IPv4: ipv4.c  icmp.c  arp.c    │ IPv6: ipv6.c icmpv6.c ndp.c mld.c   │
+│       (igmp.c)                 │                     [NET_USE_IPV6]  │
+├────────────────────────────────┴─────────────────────────────────────┤
+│ eth.c — Ethernet II: MAC filter, EtherType dispatch                  │
+├──────────────────────────────────────────────────────────────────────┤
+│ net.c — net_init, net_poll, net_tick, net_transmit, net_random       │
+│ support: net_cksum.c  net_text.c  net_endian.h                       │
+├──────────────────────────────────────────────────────────────────────┤
+│ MAC driver interface — net_mac_t (net_mac.h)                         │
+├─────────────┬─────────────────┬─────────────┬─────────────┬──────────┤
+│ tap.c       │ rawsock.c       │ bpf.c       │ stub.c      │ your     │
+│ Linux TAP   │ Linux AF_PACKET │ macOS BPF   │ size builds │ driver   │
+└─────────────┴─────────────────┴─────────────┴─────────────┴──────────┘
 ```
 
-**Rules:**
-- `eth.c` is always required (Ethernet framing).
-- IPv4 requires `arp.c` for address resolution.
-- IPv6 requires `ndp.c` + `icmpv6.c` for address resolution (NDP runs over ICMPv6).
-- `udp.c` and `tcp.c` work with either or both IP versions.
-- L7 protocols (`dhcpv4_client.c`, `dhcpv4_server.c`, `dhcpv6.c`, `dns.c`, `tftp.c`, `mdns.c`, `http.c`) are independently optional.
-- TLS 1.3 (`tls.c`, [design](design/tls.md)) is optional and independent of the transport: the application moves ciphertext between TCP and the TLS connection's buffers.  All its cryptography comes through a `tls_crypto_t` vtable (a Mbed TLS backend is bundled as its own library).
+`igmp.c` sends IGMP joins and leaves for IPv4 multicast; it is only needed by
+mDNS and ships in the `mdns` library.  An ENC28J60 (SPI) or USB CDC-ECM
+driver would sit beside the bundled ones; none is in the tree.
 
-## 3. Layer Architecture
+## 4. The network context: `net_t`
 
-```
-┌──────────────────────────────────────────────┐
-│              Application                      │
-│  Owns all buffers, connection state, config   │
-│  Uses factory methods to create structures    │
-├──────────────────────────────────────────────┤
-│  L7: dhcpv4  dhcpv6  dns  tftp  mdns  http   │  ← optional, link what you need
-├──────────────────────────────────────────────┤
-│  TLS 1.3: tls ── tls_crypto_t (Mbed TLS …)   │  ← optional, over tcp
-├──────────────────────────────────────────────┤
-│  L4: udp               tcp                    │  ← optional independently
-├──────────┬───────────────────────┬───────────┤
-│  L3 v4:  │                       │  L3 v6:   │
-│  ipv4    │                       │  ipv6     │  ← one or both
-│  icmpv4  │                       │  icmpv6   │
-│          │                       │  ndp      │
-│          │                       │  slaac    │
-├──────────┴───────────────────────┴───────────┤
-│  L2: arp (IPv4)                               │
-├──────────────────────────────────────────────┤
-│  L2: eth                                      │
-├──────────────────────────────────────────────┤
-│  MAC driver interface (net_mac.h)             │
-├───────┬───────────┬───────┬────────┬─────────┤
-│ tap.c │ rawsock.c │ bpf.c │enc28j60│cdc_ecm.c│
-│(Linux)│  (Linux)  │(macOS)│ (SPI)  │  (USB)  │
-└───────┴───────────┴───────┴────────┴─────────┘
-```
+One `net_t` per interface holds everything the core knows:
 
-## 4. Memory Model
-
-### 4.1 Application Owns All Memory
-
-The application declares all buffers and state structures. The stack provides **factory methods** to initialize them correctly:
-
-```c
-// Application code
-static uint8_t rx_buf[600];
-static uint8_t tx_buf[600];
-static net_t net;
-static tcp_conn_t conn;
-
-// Factory methods ensure correct initialization
-net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf));
-tcp_conn_init(&conn, 80);  // listen port 80
-```
-
-### 4.2 Factory Methods and Data Types
-
-Every structure the stack uses has:
-1. **A typedef** with all fields documented.
-2. **A factory/init function** that:
-   - Validates minimum size requirements (e.g., buffer must hold at least ETH+IP+TCP headers).
-   - Zeroes the structure.
-   - Sets default values.
-   - Returns an error code if constraints are violated.
-3. **Compile-time size macros** where applicable:
-   ```c
-   #define NET_MIN_BUF_SIZE  (14 + 20 + 20)  // ETH + IPv4 + TCP minimum
-   #define NET_TCP_MSS(buf_size)  ((buf_size) - 14 - 20 - 20)
-   ```
-
-### 4.3 Core Data Types
-
-```c
-// Network buffer — wraps an application-provided byte array
-typedef struct {
-    uint8_t  *buf;        // pointer to application's buffer
-    uint16_t  capacity;   // buffer size (set at init, never changes)
-    uint16_t  frame_len;  // current frame length (0 = empty)
-} net_buf_t;
-
-// Network context — one per network interface
-typedef struct {
-    net_buf_t           rx;
-    net_buf_t           tx;
-    uint32_t            ipv4_addr;      // 0 = unconfigured
-    uint8_t             ipv6_addr[16];  // all-zero = unconfigured
-    uint8_t             mac[6];
-    const net_mac_t    *mac_driver;
-    void               *mac_ctx;
-    uint32_t            gateway_ipv4;
-    uint8_t             gateway_mac[6];
-    uint8_t             gateway_mac_valid;
-    uint32_t            subnet_mask;
-} net_t;
-
-// IP address — version-tagged union for dual-stack support
-typedef struct {
-    uint8_t version;  // 4 or 6
-    union {
-        uint32_t v4;
-        uint8_t  v6[16];
-    } addr;
-} net_ip_addr_t;
-```
-
-### 4.4 Buffer Sizing Determines Protocol Parameters
-
-The stack adapts to whatever buffer sizes the application provides:
-
-| Parameter | Derived From |
+| Part | Fields |
 |---|---|
-| TCP MSS (outbound) | `tx.capacity - ETH_HDR - IP_HDR - TCP_HDR` |
-| TCP receive window | `rx.capacity - IP_HDR - TCP_HDR` (or TX buffer abstraction) |
-| Max UDP payload | `tx.capacity - ETH_HDR - IP_HDR - UDP_HDR` |
-| DHCP viability | Buffer ≥ 342 bytes (minimum DHCP message) |
+| Buffers | `rx`, `tx` — `{buf, capacity}`, supplied to `net_init()` |
+| Link | `mac`, `mac_driver`, `mac_ctx` |
+| Randomness | `rng` (§9) |
+| IPv4 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` (host byte order), `gateway_mac`, `gateway_mac_valid`, `mcast_groups[]` |
+| IPv6 | `ip6` — address slots with DAD state and lifetimes, hop limit, RA flags, default router, solicitation, lifetime and MLD timers; `mcast6_groups[][16]` |
+| Dispatch | `udp_ports` / `udp_port_count`, `udp6_ports` / `udp6_port_count`, `tcp_conns` / `tcp_conn_count` — tables the application binds with `udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()` |
 
-## 5. MAC Hardware Abstraction Layer (HAL)
+The dispatch tables used to be globals (`udp_ports`, `udp6_ports`,
+`tcp_connections`); in `net_t` they leave the stack with no global mutable
+state.  On Cortex-M0, `net_t` is 64 bytes for a UDP-only IPv4 build, 76 with
+the defaults and 196 dual stack ([memory-model.md](design/memory-model.md)).
 
-See [docs/design/mac-hal.md](design/mac-hal.md) for detailed design.
+## 5. Receive path
 
-```c
-typedef struct {
-    int      (*init)(void *ctx);
-    int      (*send)(void *ctx, const uint8_t *frame, uint16_t len);
-    int      (*recv)(void *ctx, uint8_t *frame, uint16_t maxlen);
-    int      (*peek)(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len);
-    void     (*discard)(void *ctx);
-    void     (*close)(void *ctx);
-} net_mac_t;
+`net_poll(net)` owns a received frame from start to finish:
+
+```
+net_poll(net)
+ ├─ driver->poll()                      a frame waiting? (non-blocking)
+ ├─ driver->peek(0, net->rx.buf, len)   the one copy (len clamped to rx.capacity)
+ ├─ eth_input()                         our MAC, broadcast or a joined group; EtherType
+ │   ├─ arp_input()                     answer requests; learn the gateway's MAC
+ │   ├─ ipv4_input()                    ipv4_parse(); source and destination checks
+ │   │   ├─ icmp_input()                echo replies
+ │   │   ├─ udp_input()                 → port handler (payload pointer)
+ │   │   ├─ tcp_input()                 → state machine; data into the connection's
+ │   │   │                                RX buffer; on_event
+ │   │   └─ other protocols             ICMP Protocol Unreachable
+ │   └─ ipv6_input()                    ipv6_parse(), extension headers, address checks
+ │       ├─ icmpv6_input()              echo; ndp_input(); mld_input()
+ │       ├─ udp6_input(), tcp6_input()
+ │       └─ other next headers          ICMPv6 Parameter Problem
+ └─ driver->discard()                   release the frame
 ```
 
-**Key design:** `peek` + `discard` enables fast ARP/NDP filtering on hardware MACs without reading full frames.
+Every layer parses in place and passes pointers into `net->rx.buf` upward
+(`eth_frame_t`, `ipv4_hdr_t`, `ipv6_hdr_t`).  UDP handlers receive
+`const uint8_t *payload`; TCP copies in-order data into the connection's
+receive buffer.  Everything a handler is given is valid only until it
+returns, and handlers run before `discard()`, so they should be short.
 
-**Hardware capabilities are compile-time, not runtime.** An embedded system does not change its MAC hardware at runtime. Capabilities like checksum offload are `#define`s in `net_config.h`, allowing the compiler to eliminate dead code paths entirely:
+UDP handlers used to receive a frame offset and `peek()` the payload out of
+the MAC driver themselves.  That design was half implemented — the frame was
+staged in `rx.buf` anyway, since checksums are computed over it — so it cost
+a second copy in every handler and exposed the driver to applications.  The
+decision record is in [udp.md §10.1](design/udp.md#101-decision-record-payload-pointers-not-frame-offsets);
+the driver side is in [mac-hal.md §3](design/mac-hal.md#3-the-receive-lifecycle-net_poll).
+
+## 6. Transmit path
+
+Every frame is built in place in `net->tx.buf`, from the payload outwards,
+and sent with `net_transmit(net, len)`:
+
+1. The payload is written at its final offset (`UDP_PAYLOAD_OFFSET`,
+   `UDP6_PAYLOAD_OFFSET`, `ICMPV6_OFFSET`, after the TCP header), either
+   directly by the module or copied by `udp_send()` / `tcp_send()`.
+2. The transport header, with its checksum over the pseudo-header:
+   `ipv4_cksum()` or `ipv6_cksum()` (UDP sends a computed 0 as `0xFFFF`).
+3. `eth_build()`, then `ipv4_build()` / `ipv4_build_ttl()` (20 bytes,
+   DF set, ID 0 — every datagram is atomic, RFC 6864 §4.1 — header checksum),
+   `ipv4_build_router_alert()` (24 bytes with the Router Alert option and
+   TTL 1, for IGMP) or `ipv6_build()`.
+4. `net_transmit()` hands the frame to `driver->send()`.
+
+Source addresses: IPv4 sends from `net->ipv4_addr`, except
+`udp_send_inplace_from()`, which takes the source explicitly (the DHCP client
+sends from 0.0.0.0 before it has a lease; the DHCP server from its configured
+address).  IPv6 picks the source with `ipv6_src_for()` (RFC 6724).
+
+Error reports check their own rules: `icmp_send_dest_unreach()` quotes the
+invoking header and up to 8 bytes of its payload and sends nothing about a
+broadcast or multicast datagram (RFC 1122 §3.2.2); `icmpv6_send_error()`
+applies RFC 4443 §2.4(e).  Callers just report.
+
+`net->tx.buf` holds one frame at a time and is reused by the next send, so
+nothing keeps a built frame: TCP retransmits from the connection's TX buffer,
+and the DHCP, TFTP and mDNS modules rebuild a message to resend it.  Because
+`tx.buf` is separate from `rx.buf`, a handler may send while it still reads
+the request.  There is no IP fragmentation in either direction.
+
+## 7. Address resolution
+
+There is no ARP cache and no IPv6 neighbour cache.  Replies go to the source
+MAC of the frame they answer; broadcast and multicast MACs are computed; the
+gateway's MAC is learned from its ARP replies and the IPv6 router's from its
+Router Advertisements; everything else is supplied by the application when it
+opens a conversation (`udp_send()`, `tcp_connect()`, `tftp_client_get()`),
+using `arp_next_hop()` and `arp_request()`.  The stack does not retry ARP.
+See [arp-resolution.md](design/arp-resolution.md).
+
+## 8. TCP
+
+The application owns each `tcp_conn_t`, binds the set with
+`tcp_set_connections()`, and chooses each connection's buffers through two
+operation tables (`tcp_txbuf_ops_t`, `tcp_rxbuf_ops_t`); `tcp.c` never touches
+buffer memory itself.  The bundled implementation, `tcp_buf_saw.c`, is
+stop-and-wait: one segment in flight, a ring buffer for received data.
+Received data is accepted in order only (no reassembly queue), every data
+segment is acknowledged at once, the retransmission timeout backs off without
+RTT measurement, and the only option is MSS.  Events reach the application
+through `on_event`, which must not send or close.  See
+[tcp.md](design/tcp.md) and [tcp-buffer.md](design/tcp-buffer.md).
+
+## 9. Randomness
+
+The stack has one generator: xorshift32, with its state in `net->rng`.
 
 ```c
-// net_config.h — application provides this per target
-#define NET_MAC_CAP_TX_CKSUM_IPV4  0  // 0 = software checksum, 1 = hardware offload
-#define NET_MAC_CAP_TX_CKSUM_TCP   0
-#define NET_MAC_CAP_TX_CKSUM_UDP   0
-#define NET_MAC_CAP_RX_CKSUM_OK    0
+void     net_random_seed(net_t *net, uint32_t entropy); /* mix entropy in */
+uint32_t net_random(net_t *net);
+uint32_t net_random_below(net_t *net, uint32_t n);     /* [0, n), n ≤ 65536 */
 ```
 
-## 6. Address Resolution Strategy
+`net_init()` seeds it from the last four bytes of the MAC address.
+`net_random_seed()` XORs its argument into the state (avoiding the all-zero
+state, which xorshift never leaves) and steps the generator.
+`net_random_below()` scales rather than takes a remainder (no division on
+Cortex-M0).  It replaced five separate generators in earlier versions.
 
-See [docs/design/arp-resolution.md](design/arp-resolution.md) for detailed design.
+Users: TCP initial sequence numbers (`listen_input()`, `tcp_connect()`),
+DHCPv4 and DHCPv6 transaction IDs, and the randomized delays of mDNS
+(probing, shared-record answers), NDP (DAD, Router Solicitations), MLD
+(query responses) and DHCPv6 (start delay, retransmission jitter).  TLS does
+not use it; its randomness comes from the crypto backend.
 
-**No global ARP/NDP cache table.** Address resolution state is distributed:
+**Seed it.**  The MAC address differs per device but is public, so an
+unseeded device's sequence numbers and transaction IDs are predictable to
+anyone who knows the MAC (RFC 6528 is about exactly this for TCP).  Call
+`net_random_seed()` after `net_init()` with real entropy — a hardware RNG,
+ADC noise, timing jitter — and again whenever more is available.
 
-| Owner | Stores | Used For |
+**Know its limits.**  xorshift32 is not a cryptographic generator, and each
+output *is* its whole 32-bit state: anyone who sees one value (a DHCP
+transaction ID on the wire, a TCP initial sequence number) can compute every
+following value until the next `net_random_seed()`.  Seeding protects against
+an off-path attacker who knows only the MAC, not against one who can observe
+traffic.  RFC 6528's keyed-hash initial sequence numbers are not implemented.
+
+## 10. Timers
+
+`net_tick(net, elapsed_ms)` runs the stack's own timers: `tcp_tick()` if
+TCP is compiled in (retransmission, zero-window probes, TIME-WAIT) and
+`ipv6_tick()` if IPv6 is (DAD, router solicitation, MLD, address and router
+lifetimes).  ARP has none.  Application-owned modules — the DHCP clients,
+TFTP, mDNS, HTTP — keep their own `*_tick()` functions, because the stack
+cannot reach their state; the application calls them with the same elapsed
+time.  Timers are countdown fields with `net_countdown()`,
+`net_countdown16()` and `net_whole_seconds()` as helpers.
+
+There is no `net_next_event_ms()`: tickless operation is not implemented, and
+the device must wake at its tick period.  What adding it would take, and the
+full timer inventory, are in [timer-model.md](design/timer-model.md).
+
+## 11. Configuration
+
+Every setting is an `#ifndef` default in `net_config.h` (or in a module
+header); an application overrides them with `-D` or in a header named by
+`NET_CONFIG_FILE`, included first (CMake: `SMALLEST_TCP_CONFIG_FILE`).
+Several settings change `net_t`'s layout (`NET_USE_IPV6`, `NET_USE_UDP`,
+`NET_USE_TCP`, `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS`,
+`NET_IPV6_ADDRS`), which is why library and application must agree.  Identity
+defaults (`NET_DEFAULT_IPV4_ADDR`, `_SUBNET_MASK`, `_GATEWAY`, `_MAC`) are
+copied into `net_t` by `net_init()` and are ordinary run-time fields after
+that.  There are no hardware-capability switches: checksum offload is not
+implemented.  See [configuration.md](design/configuration.md).
+
+## 12. Checksums and byte order
+
+All checksums are computed in software with an incremental one's complement
+accumulator (`net_cksum.h`); pseudo-headers go through `ipv4_cksum()` and
+`ipv6_cksum()`, and a received segment verifies when its checksum finalizes to
+0 ([checksum.md](design/checksum.md)).  Wire fields are read and written byte
+by byte in network order at any alignment (`net_read16be()` …); addresses are
+held in host order for IPv4 and as 16-byte network-order arrays for IPv6
+([byte-order.md](design/byte-order.md)).
+
+## 13. Errors, debugging, concurrency
+
+- API calls return `net_err_t` (`NET_OK`, `NET_ERR_BUF_TOO_SMALL`,
+  `NET_ERR_INVALID_PARAM`, `NET_ERR_NO_FRAME`).
+- Malformed, unwanted or unsupported packets are dropped silently, as the
+  RFCs require, or answered with the ICMP error the RFCs call for.
+- `NET_DEBUG=1` makes `NET_LOG()` trace to `stderr` on hosted builds; it is
+  off by default.  There are no run-time assertions.
+- The stack is **not reentrant**.  `net_poll()`, `net_tick()`, the module
+  ticks and every sending API call must run in one thread or be serialized
+  by the application, and none may be called from an interrupt handler.
+  Callbacks run inside those calls; TCP's `on_event` must not re-enter the
+  stack to send or close.
+
+## 14. Application protocols
+
+| Module | Files | Design |
 |---|---|---|
-| `net_t` | Gateway MAC | Off-subnet routing |
-| `tcp_conn_t` | Remote MAC | Per-TCP-connection |
-| `udp_peer_t` (optional) | Remote MAC | Persistent UDP peers |
-| Protocol layers (DNS, DHCP) | Server MAC | Protocol-specific caching |
+| DHCPv4 client and single-client server | `dhcpv4_client.c`, `dhcpv4_server.c`, `dhcpv4_wire.h` | [dhcpv4.md](design/dhcpv4.md) |
+| DHCPv6 client (stateless and stateful) | `dhcpv6_client.c` | [ipv6.md](design/ipv6.md), [requirements/dhcpv6.md](requirements/dhcpv6.md) |
+| TFTP client (RFC 1350, blksize) | `tftp.c` | [tftp.md](design/tftp.md) |
+| mDNS responder with DNS-SD | `mdns.c`, `dns_wire.c`, `igmp.c` | [mdns.md](design/mdns.md) |
+| HTTP/1.0 server, also over TLS | `http.c`, `http_tls.c` | [http.md](design/http.md) |
+| TLS 1.3 client and server | `tls*.c`, crypto through `tls_crypto_t` (Mbed TLS backend bundled) | [tls.md](design/tls.md) |
 
-**Minimal mode:** Send all packets to gateway. Legal per RFC (gateway forwards + may send ICMP Redirect). Eliminates per-destination ARP entirely.
+All of them follow one integration recipe — init, route traffic to the
+module's input function, start, tick — described with a working example in
+[integrating-modules.md](integrating-modules.md).  TLS is the exception to
+the UDP pattern: a TLS connection rides on a TCP connection, and the
+application moves ciphertext between the two.  DTLS 1.3 has a design
+([dtls.md](design/dtls.md)) but no implementation.
 
-## 7. TCP Buffer Abstraction
-
-See [docs/design/tcp-buffer.md](design/tcp-buffer.md) for detailed design.
-
-TCP does not manage buffers directly. It calls a **buffer operations vtable** provided by the application:
-
-```c
-typedef struct {
-    uint16_t (*write)(void *ctx, const uint8_t *data, uint16_t len);
-    uint16_t (*next_segment)(void *ctx, const uint8_t **data, uint16_t mss);
-    void     (*ack)(void *ctx, uint32_t bytes_acked);
-    uint16_t (*in_flight)(void *ctx);
-    uint16_t (*window)(void *ctx);
-} tcp_txbuf_ops_t;
-```
-
-**Three reference implementations provided:**
-
-| Strategy | Memory Cost | Throughput | Best For |
-|---|---|---|---|
-| Stop-and-wait | 1 × MSS | 1 segment/RTT | PIC16 (1 KB RAM) |
-| Circular buffer | N bytes | Window-sized | CH32X033 (20 KB RAM) |
-| Packet list | N × MSS chunks | Window-sized | Linux/macOS testing |
-
-## 8. Checksum Architecture
-
-See [docs/design/checksum.md](design/checksum.md) for detailed design.
-
-**Incremental API** (RFC 1071, RFC 1624):
-
-```c
-typedef struct { uint32_t sum; } net_cksum_t;
-
-void     net_cksum_init(net_cksum_t *c);
-void     net_cksum_add(net_cksum_t *c, const uint8_t *data, uint16_t len);
-uint16_t net_cksum_finalize(net_cksum_t *c);
-```
-
-Protocol layers compute checksums in software by default. When a MAC hardware offloads checksums, the corresponding `NET_MAC_CAP_*` compile-time flag is set to 1 in `net_config.h`. The protocol layer uses `#if` to either compute the checksum in software or write 0x0000 for the MAC to fill in. The compiler eliminates the unused code path entirely — no runtime branching.
-
-## 9. Byte Order
-
-See [docs/design/byte-order.md](design/byte-order.md) for detailed design.
-
-```c
-// net_endian.h
-static inline uint16_t net_htons(uint16_t h);
-static inline uint16_t net_ntohs(uint16_t n);
-static inline uint32_t net_htonl(uint32_t h);
-static inline uint32_t net_ntohl(uint32_t n);
-```
-
-**8-bit target strategy:** Store multi-byte fields in network (big-endian) order natively. Helpers become no-ops. This saves code and cycles on architectures with no native 16/32-bit register order.
-
-## 10. Timer and Event Model
-
-See [docs/design/timer-model.md](design/timer-model.md) for detailed design.
-
-**Two entry points into the stack (besides application API):**
-
-1. **`net_poll(net)`** — Process pending MAC frames. Called when MAC signals data ready (interrupt or poll).
-2. **`net_tick(net, elapsed_ms)`** — Advance internal timers (ARP timeout, TCP retransmit, etc.).
-
-**Tickless support:**
-
-```c
-uint32_t net_next_event_ms(net_t *net);
-```
-
-Returns milliseconds until the next scheduled event. The application can sleep this long between ticks. Returns `UINT32_MAX` if nothing is scheduled.
-
-**Supported execution models:**
-
-| Model | How It Works |
-|---|---|
-| Bare-metal tight loop | `while(1) { net_poll(); net_tick(0); app_work(); }` |
-| Bare-metal timer | Sleep until `min(net_next_event_ms(), mac_irq)` |
-| RTOS | Block on MAC semaphore with timeout = `net_next_event_ms()` |
-| Linux/macOS | `select(mac_fd, timeout=net_next_event_ms())` |
-
-## 11. Configuration Model
-
-See [docs/design/configuration.md](design/configuration.md) for detailed design.
-
-Stack configuration falls into three categories:
-
-| Category | Mechanism | Examples |
-|---|---|---|
-| **Compile-time fixed** | `#define` in `net_config.h` | HW checksum offload, protocol inclusion, byte order |
-| **Compile-time default, runtime tunable** | `#define NET_DEFAULT_*` + struct field | IP address, gateway, MAC, TCP timers |
-| **Runtime only** | Struct field, no default | TCP sequence numbers, DHCP lease, ARP-resolved MACs |
-
-The application provides `net_config.h` (one per target/application). Factory methods apply compile-time defaults to struct fields; runtime sources (DHCP, user input, EEPROM) override them.
-
-## 12. Error Handling
-
-- **Invalid inbound packets:** Silently discarded per RFC requirements.
-- **Optional debug tracing:** Compile-time `NET_DEBUG` macro enables printf-style trace output.
-- **Factory method errors:** Return error codes (e.g., `NET_ERR_BUF_TOO_SMALL`).
-- **No assertions in production:** `NET_ASSERT()` macro compiles to nothing in release builds.
-
-## 13. Target Platforms
-
-| Chip | Flash | RAM | Cost | V1 (IPv4) | V2 (+IPv6) |
-|---|---|---|---|---|---|
-| PIC16F1454 | 14 KB | 1 KB | ~$1.20 | UDP only | Too small |
-| CH32X033 | 62 KB | 20 KB | ~$0.20 | Full stack | Likely fits |
-| CH32V203 | 256 KB | 10 KB | ~$0.50 | Full stack | Yes |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | TCP+UDP | Tight |
-| Linux/macOS | unlimited | unlimited | — | Full + tests | Full + tests |
-
-## 14. Project Structure
+## 15. Project structure
 
 ```
 smallest_tcp/
-├── CMakeLists.txt                   ← CMake build (library + tests + demo)
-├── Makefile                         ← GNU Make build (library + tests)
+├── CMakeLists.txt          CMake: core + optional libraries, tests, demos
+├── Makefile                Cortex-M0 size builds and the no-division check
 ├── README.md
-├── tcpip-stack-plan.md              ← high-level overview & task status
-├── docs/
-│   ├── architecture.md              ← this file
-│   ├── test-plan.md
-│   ├── requirements/                ← RFC-traced requirements (~785)
-│   │   ├── ethernet.md  arp.md  checksum.md
-│   │   ├── ipv4.md  icmpv4.md  udp.md  tcp.md
-│   │   ├── dhcpv4.md  dns.md  tftp.md  http.md
-│   │   └── ipv6.md  icmpv6.md  ndp.md  slaac.md  dhcpv6.md
-│   └── design/
-│       ├── mac-hal.md  checksum.md  byte-order.md
-│       ├── timer-model.md  tcp-buffer.md
-│       ├── arp-resolution.md  memory-model.md
-│       ├── configuration.md
-│       └── size-comparison.md       ← ARM size comparison vs lwIP
 ├── include/
-│   ├── net.h                        ← core net_t context, factory, errors
-│   ├── net_config.h                 ← compile-time configuration
-│   ├── net_mac.h                    ← MAC HAL vtable
-│   ├── net_endian.h                 ← byte-order helpers
-│   ├── net_cksum.h                  ← Internet checksum API
-│   ├── eth.h                        ← ✅ Ethernet II parse/build/dispatch
-│   ├── arp.h                        ← ✅ ARP request/reply/next-hop
-│   ├── ipv4.h                       ← ✅ IPv4 parse/build/send/input
-│   ├── icmp.h                       ← ✅ ICMPv4 echo reply, dest unreach
-│   ├── udp.h                        ← ✅ UDP parse/send, port dispatch
-│   ├── ipv6.h                       ← ✅ IPv6 parse/build, ext headers, addresses
-│   ├── icmpv6.h                     ← ✅ ICMPv6 echo, errors
-│   ├── ndp.h                        ← ✅ Neighbor Discovery responder, DAD
-│   └── driver/
-│       ├── tap.h                    ← Linux TAP driver
-│       ├── rawsock.h                ← Linux raw-socket (AF_PACKET) driver
-│       └── bpf.h                    ← macOS BPF driver
+│   ├── net.h               net_t, net_init/poll/tick/transmit, random, timer helpers
+│   ├── net_config.h        compile-time settings
+│   ├── net_mac.h           MAC driver interface
+│   ├── net_endian.h        wire field access, byte order
+│   ├── net_cksum.h         Internet checksum
+│   ├── net_text.h          ASCII helpers: case-insensitive compare, decimal
+│   ├── eth.h  arp.h  ipv4.h  icmp.h  igmp.h  udp.h  tcp.h  tcp_buf.h
+│   ├── ipv6.h  icmpv6.h  ndp.h  mld.h
+│   ├── dhcpv4_client.h  dhcpv4_server.h  dhcpv6_client.h  tftp.h
+│   ├── dns_wire.h  mdns.h  http.h  http_tls.h
+│   ├── tls*.h              TLS 1.3, its crypto interface and Mbed TLS backend
+│   └── driver/             tap.h  rawsock.h  bpf.h  stub.h
 ├── src/
-│   ├── net.c                        ← ✅ net_init, MAC helpers
-│   ├── net_cksum.c                  ← ✅ checksum (incremental + oneshot)
-│   ├── eth.c                        ← ✅ Ethernet + ARP/IPv4 dispatch
-│   ├── arp.c                        ← ✅ ARP reply, gateway MAC learning
-│   ├── ipv4.c                       ← ✅ IPv4 parse/build, protocol dispatch
-│   ├── icmp.c                       ← ✅ ICMP echo reply, port unreach
-│   ├── udp.c                        ← ✅ UDP input/send, pseudo-header cksum
-│   ├── ipv6.c                       ← ✅ IPv6 input, source selection, start/tick
-│   ├── icmpv6.c                     ← ✅ ICMPv6 echo reply, Parameter Problem
-│   ├── ndp.c                        ← ✅ NS/NA, Duplicate Address Detection
-│   └── driver/
-│       ├── tap.c                    ← Linux TAP
-│       ├── rawsock.c                ← Linux raw socket (NIC or veth end)
-│       └── bpf.c                    ← macOS BPF
+│   ├── net.c  net_cksum.c  net_text.c
+│   ├── eth.c  arp.c  ipv4.c  icmp.c  igmp.c  udp.c  tcp.c  tcp_buf_saw.c
+│   ├── ipv6.c  icmpv6.c  ndp.c  mld.c
+│   ├── dhcpv4_client.c  dhcpv4_server.c  dhcpv4_wire.h (private)  dhcpv6_client.c
+│   ├── tftp.c  dns_wire.c  mdns.c  http.c  http_tls.c
+│   ├── tls*.c              TLS 1.3 (see design/tls.md for the file split)
+│   └── driver/             tap.c  rawsock.c  bpf.c  stub.c
+├── demo/                   hosted demos; common/ has the shared main loop
+│   ├── common/             demo_loop.h  demo_mac.h  demo_echo.h  demo_ipv6.h  demo_tls.h
+│   └── dhcp_echo/  echo_server/  frame_dump/  http_demo/  https_demo/
+│       mdns_demo/  tcp_echo/  tftp_client/  tls_client/  tls_echo/
 ├── tests/
-│   ├── CMakeLists.txt               ← CTest definitions
-│   └── unit/
-│       ├── test_main.h              ← minimal C unit test framework
-│       ├── test_endian.c            ← ✅ 10 tests
-│       ├── test_checksum.c          ← ✅ 12 tests
-│       ├── test_eth.c               ← ✅ 11 tests
-│       ├── test_net.c               ← ✅  8 tests
-│       ├── test_arp.c               ← ✅  8 tests
-│       ├── test_ipv4.c              ← ✅ 10 tests
-│       ├── test_icmp.c              ← ✅  4 tests
-│       └── test_udp.c               ← ✅  7 tests
-├── demo/
-│   ├── CMakeLists.txt
-│   └── frame_dump/main.c           ← raw frame hex-dump demo
-├── examples/
-│   └── fetchcontent/                ← CMake FetchContent integration example
-└── .github/
-    └── workflows/ci.yml            ← CI: build + test (Linux + macOS)
+│   ├── unit/               C unit tests (test_main.h framework), per module or feature
+│   ├── blackbox/           pytest + Scapy conformance suites and interop scripts
+│   └── tls/                test certificates and RFC 8448 vector generators
+├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
+├── examples/fetchcontent/  consuming the library with CMake FetchContent
+└── docs/
+    ├── architecture.md     this document
+    ├── integrating-modules.md
+    ├── test-plan.md  ci-debugging.md
+    ├── design/             one document per subsystem
+    └── requirements/       RFC-traced requirements per protocol
 ```
 
-**Implementation status (as of 2026-03-19):** 8 source files, 8 test files, **70 unit tests all passing** with `-Wall -Wextra -Werror -pedantic`. Layers through UDP (Tasks 1–5) are complete. TCP (Task 6) is next.
+## 16. Design documents
 
-> The tree above is from that date.  Since then TCP, DHCPv4/v6, TFTP, mDNS +
-> DNS-SD, HTTP, IPv6 and TLS 1.3 have been added (Milestones 6–13); see the
-> README for the current modules, tests and sizes.
+| Topic | Document |
+|---|---|
+| MAC driver interface, receive lifecycle, drivers | [mac-hal.md](design/mac-hal.md) |
+| Memory ownership, `net_t`, buffer sizing | [memory-model.md](design/memory-model.md) |
+| Settings and composition | [configuration.md](design/configuration.md) |
+| Timers and the main loop | [timer-model.md](design/timer-model.md) |
+| Checksums | [checksum.md](design/checksum.md) |
+| Byte order | [byte-order.md](design/byte-order.md) |
+| Address resolution | [arp-resolution.md](design/arp-resolution.md) |
+| UDP | [udp.md](design/udp.md) |
+| TCP; its buffers | [tcp.md](design/tcp.md); [tcp-buffer.md](design/tcp-buffer.md) |
+| IPv6, NDP, SLAAC, MLD, DHCPv6 | [ipv6.md](design/ipv6.md) |
+| Application protocols | [dhcpv4.md](design/dhcpv4.md), [tftp.md](design/tftp.md), [mdns.md](design/mdns.md), [http.md](design/http.md), [tls.md](design/tls.md) |
+| Coding rules | [coding-rules.md](design/coding-rules.md) |
+| Code size against lwIP | [size-comparison.md](design/size-comparison.md) |
 
-## References
+## 17. References
 
-See individual requirements documents for complete RFC citations.
-
-| RFC | Title | Used By |
+| RFC | Title | Used by |
 |---|---|---|
-| RFC 768 | UDP | udp.c |
-| RFC 791 | IPv4 | ipv4.c |
-| RFC 792 | ICMPv4 | icmpv4.c |
-| RFC 826 | ARP | arp.c |
-| RFC 894 | IP over Ethernet | eth.c |
-| RFC 1035 | DNS | dns_wire.c, dns.c |
-| RFC 1071 | Checksum | net_cksum.c |
-| RFC 1122 | Host Requirements | all layers |
-| RFC 1112 | IP Multicast | ipv4.c |
-| RFC 1350 | TFTP | tftp.c |
-| RFC 1624 | Incremental Checksum | net_cksum.c |
-| RFC 2131/2132 | DHCPv4 | dhcpv4.c |
-| RFC 2236 | IGMPv2 | igmp.c |
-| RFC 2348 | TFTP Blocksize | tftp.c |
-| RFC 4291 | IPv6 Addressing | ipv6.c |
-| RFC 4443 | ICMPv6 | icmpv6.c |
-| RFC 4861 | NDP | ndp.c |
-| RFC 4862 | SLAAC | slaac.c |
-| RFC 5227 | ARP Conflict Detection | arp.c |
-| RFC 5681 | TCP Congestion Control | tcp.c |
-| RFC 6298 | TCP Retransmit Timer | tcp.c |
-| RFC 6585 | HTTP 431 status | http.c |
-| RFC 6762 | Multicast DNS | mdns.c |
-| RFC 6763 | DNS-Based Service Discovery | mdns.c |
-| RFC 6724 | IPv6 Address Selection | ipv6.c |
-| RFC 6864 | IPv4 ID Field | ipv4.c |
-| RFC 7323 | TCP Extensions | tcp.c |
-| RFC 9110 / 9112 | HTTP semantics / HTTP/1.1 syntax | http.c |
-| RFC 8200 | IPv6 | ipv6.c |
-| RFC 8415 | DHCPv6 | dhcpv6.c |
-| RFC 9110 | HTTP Semantics | http.c |
-| RFC 9293 | TCP | tcp.c |
+| RFC 768 | UDP | `udp.c` |
+| RFC 791 | IPv4 | `ipv4.c` |
+| RFC 792 | ICMP | `icmp.c` |
+| RFC 826 | ARP | `arp.c` |
+| RFC 894 | IP over Ethernet | `eth.c` |
+| RFC 1035 | DNS message format | `dns_wire.c` |
+| RFC 1071 | Computing the Internet checksum | `net_cksum.c` |
+| RFC 1112 | IP multicast | `ipv4.c` |
+| RFC 1122 | Host requirements | all layers |
+| RFC 1350, RFC 2348 | TFTP, blksize option | `tftp.c` |
+| RFC 1624 | Incremental checksum update | `net_cksum.c` |
+| RFC 2113 | IP Router Alert | `ipv4.c` |
+| RFC 2131, RFC 2132 | DHCPv4 | `dhcpv4_client.c`, `dhcpv4_server.c` |
+| RFC 2236 | IGMPv2 (joins and leaves) | `igmp.c` |
+| RFC 2464 | IPv6 over Ethernet | `ipv6.h` |
+| RFC 2710, RFC 3810 | MLDv1, MLDv2 | `mld.c` |
+| RFC 4291 | IPv6 addressing | `ipv6.c` |
+| RFC 4443 | ICMPv6 | `icmpv6.c` |
+| RFC 4861 | Neighbor Discovery | `ndp.c` |
+| RFC 4862 | SLAAC, DAD | `ndp.c`, `ipv6.c` |
+| RFC 6724 | IPv6 source address selection | `ipv6.c` |
+| RFC 6762, RFC 6763 | mDNS, DNS-SD | `mdns.c` |
+| RFC 6864 | IPv4 ID field | `ipv4.c` |
+| RFC 8200 | IPv6 | `ipv6.c` |
+| RFC 8415 | DHCPv6 | `dhcpv6_client.c` |
+| RFC 8446 | TLS 1.3 | `tls*.c` |
+| RFC 9110, RFC 9112 | HTTP semantics, HTTP/1.1 syntax | `http.c` |
+| RFC 9293 | TCP | `tcp.c` |
+
+Partly implemented: RFC 6298 (initial RTO and back-off, no RTT estimation)
+and RFC 6528 (random initial sequence numbers, not keyed-hash).  Not
+implemented: ARP address conflict detection (RFC 5227), TCP congestion
+control (RFC 5681) and TCP extensions (RFC 7323).

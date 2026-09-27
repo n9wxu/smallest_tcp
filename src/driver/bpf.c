@@ -1,20 +1,8 @@
 /**
  * @file driver/bpf.c
- * @brief macOS BPF (Berkeley Packet Filter) network driver for the MAC HAL.
+ * @brief macOS MAC driver: BPF on an interface (e.g. a feth pair).
  *
- * Uses /dev/bpfN bound to an feth interface.
- * Only compiled on macOS (Darwin).
- *
- * Driver model: CACHING.
- * A single read() from the BPF fd may return multiple Ethernet frames,
- * each prefixed by a struct bpf_hdr.  poll() reads a batch into the
- * driver's internal read_buf[] and extracts one frame at a time into
- * cur_frame[].  peek() reads from cur_frame[].  discard() clears
- * cur_frame so the next poll() advances to the next frame in the batch
- * (or reads a new batch from the fd if the current batch is exhausted).
- *
- * The caller never receives a pointer to the driver's internal buffers —
- * data is accessed exclusively via peek().
+ * A caching driver (docs/design/mac-hal.md).
  */
 
 #ifdef __APPLE__
@@ -29,8 +17,6 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-/* ── Context init ─────────────────────────────────────────────────── */
-
 void bpf_ctx_init(bpf_ctx_t *ctx, const char *ifname) {
   memset(ctx, 0, sizeof(*ctx));
   ctx->fd = -1;
@@ -40,8 +26,6 @@ void bpf_ctx_init(bpf_ctx_t *ctx, const char *ifname) {
     strncpy(ctx->ifname, "feth1", sizeof(ctx->ifname) - 1);
   }
 }
-
-/* ── Find and open an available /dev/bpfN ─────────────────────────── */
 
 static int bpf_open_dev(void) {
   char path[16];
@@ -61,8 +45,6 @@ static int bpf_open_dev(void) {
   }
   return -1;
 }
-
-/* ── MAC operations ───────────────────────────────────────────────── */
 
 static int bpf_mac_init(void *ctx) {
   bpf_ctx_t *bpf = (bpf_ctx_t *)ctx;
@@ -141,11 +123,8 @@ static int bpf_mac_send(void *ctx, const uint8_t *frame, uint16_t len) {
   return (int)n;
 }
 
-/**
- * Extract the next frame from the BPF read buffer into cur_frame[].
- * BPF reads may return multiple frames, each prefixed with a bpf_hdr.
- * Returns 1 if a frame was extracted, 0 if no more frames in buffer.
- */
+/* One read() returns a batch of frames, each after a bpf_hdr: the next
+ * one into cur_frame[]; 0 when the batch is used up */
 static int bpf_extract_next_frame(bpf_ctx_t *bpf) {
   while (bpf->read_offset < bpf->read_len) {
     /* BPF header is at read_offset */
@@ -183,19 +162,6 @@ static int bpf_extract_next_frame(bpf_ctx_t *bpf) {
   return 0;
 }
 
-/**
- * poll() — Check for a new RX frame.
- *
- * If cur_frame[] already holds a frame (discard() not yet called),
- * returns its length immediately (idempotent).
- *
- * Otherwise: tries to extract the next frame from read_buf[] (which
- * may hold a batch from a previous fd read).  If read_buf[] is empty,
- * reads a new batch from the BPF fd.
- *
- * @return Frame length in bytes if a frame is ready, 0 if no frame
- *         is available, <0 on error.
- */
 static int bpf_mac_poll(void *ctx) {
   bpf_ctx_t *bpf = (bpf_ctx_t *)ctx;
 

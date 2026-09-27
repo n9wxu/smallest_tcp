@@ -1,143 +1,145 @@
 # Memory Model — Design
 
-**Last updated:** 2026-03-19
+**Last updated:** 2026-09-27
 
-## Principles
+## 1. Principles
 
-### Zero Allocation
-The stack NEVER allocates memory. All memory is declared and owned by the application. The stack provides:
-1. **Type definitions** (structs) for all state.
-2. **Factory methods** (init functions) to validate and initialize state.
-3. **Compile-time macros** for sizing.
+- **Zero allocation.**  The stack never calls `malloc()`.  Every object —
+  the interface context, frame buffers, connections, module state — is
+  declared by the application, usually as a `static`.
+- **The application owns everything; the stack owns nothing.**  There is no
+  global mutable state in the stack: all of it lives in `net_t` or in a
+  module structure the application passed in.  What the stack does keep at
+  file scope is `const` (driver tables, well-known addresses such as
+  `ipv6_all_nodes`), which on a microcontroller stays in flash.
+- **Tables are borrowed, not copied.**  The UDP port tables and the TCP
+  connection table are pointers into application memory
+  (`udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()`); so are
+  mDNS record tables, HTTP route tables and DHCP option-handler tables.  They
+  must outlive their use and may be `const`.
+- **Sizes come from the buffers.**  Protocol limits are derived from the
+  buffers the application provides rather than configured separately (§3).
+- **Init functions validate and set defaults.**  Each structure has an init
+  function that zeroes it, sets its defaults and checks what it can
+  (§5).
 
-### Error Detection Hierarchy
+## 2. The interface context, `net_t`
 
-**Prefer compile-time → link-time → run-time error detection.**
+One `net_t` per network interface (`include/net.h`):
 
-| Level | Mechanism | Example |
+| Field(s) | Purpose | Present when |
 |---|---|---|
-| **Compile-time** | `#define` flags, `_Static_assert`, `#if` guards | `NET_MAC_CAP_TX_CKSUM_IPV4` enables/disables checksum code at compile time |
-| **Link-time** | Separate compilation units, unused protocols not linked | Missing `arp.o` → linker error if IPv4 calls `arp_resolve()` |
-| **Run-time** | Factory method validation, error return codes | `net_init()` returns `NET_ERR_BUF_TOO_SMALL` if buffer < minimum |
+| `rx`, `tx` | The frame buffers: `{uint8_t *buf; uint16_t capacity;}` each | always |
+| `mac`, `mac_driver`, `mac_ctx` | Our MAC address; the driver's table and context | always |
+| `rng` | `net_random()` state (xorshift32) | always |
+| `ipv4_addr`, `subnet_mask`, `gateway_ipv4` | IPv4 configuration, host byte order; 0 = unconfigured | always |
+| `gateway_mac`, `gateway_mac_valid` | The gateway's MAC, learned from ARP replies | always |
+| `mcast_groups[]` | Joined IPv4 groups (0 = free slot) | `NET_MAX_MCAST_GROUPS > 0` |
+| `ip6` | Address slots with DAD state and lifetimes, hop limit, RA flags, default router, router-solicitation and lifetime timers, MLD timers | `NET_USE_IPV6` |
+| `mcast6_groups[][16]` | Joined IPv6 groups (`::` = free slot) | `NET_USE_IPV6` and `NET_MAX_MCAST6_GROUPS > 0` |
+| `udp_ports`, `udp_port_count` | The UDP port table | `NET_USE_UDP` |
+| `udp6_ports`, `udp6_port_count` | The UDP-over-IPv6 port table | `NET_USE_UDP` and `NET_USE_IPV6` |
+| `tcp_conns`, `tcp_conn_count` | The TCP connection table (pointers) | `NET_USE_TCP` |
 
-An embedded system does not dynamically reconfigure its hardware. Therefore hardware capabilities (checksum offload, etc.) are compile-time `#define`s in the driver's configuration header — not runtime function calls. This allows the compiler to eliminate dead code paths entirely.
+Size on Cortex-M0 (`arm-none-eabi-gcc -mcpu=cortex-m0`):
 
-```c
-// net_config.h (application provides this)
-#define NET_MAC_CAP_TX_CKSUM_IPV4  0  // Our MAC does not offload IPv4 checksum
-#define NET_MAC_CAP_TX_CKSUM_TCP   0
-#define NET_MAC_CAP_TX_CKSUM_UDP   0
-#define NET_MAC_CAP_RX_CKSUM_OK    0
+| Configuration | `sizeof(net_t)` |
+|---|---|
+| IPv4, UDP only, no multicast (the `make arm-size` build) | 64 bytes |
+| IPv4, UDP + TCP, one multicast group (defaults) | 76 bytes |
+| Dual stack, defaults (`NET_USE_IPV6=1`) | 196 bytes |
 
-// In ipv4.c — compiler eliminates the #else branch entirely
-#if NET_MAC_CAP_TX_CKSUM_IPV4
-    net_write16be(hdr + 10, 0x0000);  // MAC fills in
-#else
-    net_write16be(hdr + 10, net_cksum(hdr, 20));
-#endif
-```
+Because the configuration changes this layout, the library and the
+application must be built with the same settings
+([configuration.md §3](configuration.md#3-library-and-application-must-agree)).
 
-Similarly, use `_Static_assert` for compile-time buffer size validation where possible:
-```c
-_Static_assert(sizeof(rx_buf) >= NET_MIN_BUF_TCP,
-               "RX buffer too small for TCP");
-```
+## 3. Frame buffers
 
-## Factory Method Pattern
+`net_init(net, rx_buf, rx_size, tx_buf, tx_size, mac, driver, ctx)` takes
+two application buffers.  Every received frame is copied into `rx.buf`
+([mac-hal.md §3](mac-hal.md#3-the-receive-lifecycle-net_poll)); every frame
+sent is built in `tx.buf`.  The two must not overlap: replies are built in
+`tx.buf` while the request is still being read from `rx.buf`.
 
-Every structure has an init function that:
-- Validates all constraints (e.g., minimum buffer size).
-- Zeros the structure.
-- Sets default values.
-- Returns `NET_OK` or an error code.
+**Receive buffer.**  Must hold the largest frame the device should accept.
+A longer frame is truncated and then rejected by IPv4/IPv6, so the buffer
+size is the largest datagram the device can receive; 1514 bytes accepts
+everything Ethernet carries.  The TFTP client sizes its requested block to
+it (`largest_blksize()` in `tftp.c`).
 
-```c
-typedef enum {
-    NET_OK = 0,
-    NET_ERR_BUF_TOO_SMALL = -1,
-    NET_ERR_INVALID_PARAM = -2,
-} net_err_t;
+**Transmit buffer.**  Must hold the largest frame the device builds.  A
+message that does not fit is not sent (`NET_ERR_BUF_TOO_SMALL`, or silently
+for automatic replies).
 
-// Factory: initializes net context
-net_err_t net_init(net_t *net,
-                   uint8_t *rx_buf, uint16_t rx_size,
-                   uint8_t *tx_buf, uint16_t tx_size,
-                   const uint8_t mac[6],
-                   const net_mac_t *driver, void *driver_ctx);
+| Frame | TX bytes needed |
+|---|---|
+| ARP reply or request | 42 |
+| IGMP report / leave | 46 |
+| ICMPv4 echo reply | 34 + the request's ICMP message (else no reply) |
+| ICMPv4 Destination Unreachable | 42 + the invoking IP header + up to 8 bytes (70 for an option-less header) |
+| UDP over IPv4 / IPv6 | 42 / 62 + payload |
+| DHCPv4 (client and server) | 342 (messages are padded to 300 bytes) |
+| TCP segment over IPv4 / IPv6 | 54 / 74 + payload (+ 4 on a SYN) |
+| ICMPv6 error | Quotes as much of the invoking packet as fits, up to the 1280-byte minimum MTU |
 
-// Factory: initializes TCP connection
-net_err_t tcp_conn_init(tcp_conn_t *conn,
-                        const tcp_txbuf_ops_t *tx_ops, void *tx_ctx,
-                        const tcp_rxbuf_ops_t *rx_ops, void *rx_ctx);
-```
+**TCP MSS.**  The MSS we advertise and the largest segment we send are
+both derived from the TX buffer: `tx.capacity − 14 − IP header − 20`, capped
+at 1460 (`our_mss()` in `tcp.c`); a peer's larger MSS is clamped to it.  The
+advertised MSS invites the peer to send segments that size, so **keep
+`rx.capacity ≥ tx.capacity`**, or a full-size segment from the peer will be
+truncated and dropped.  The usual choice is two equal buffers.
 
-## Compile-Time Size Macros
+## 4. Per-module memory
 
-```c
-// Minimum buffer sizes
-#define NET_MIN_BUF_ETH         14
-#define NET_MIN_BUF_IPV4        (14 + 20)          // ETH + IPv4
-#define NET_MIN_BUF_IPV6        (14 + 40)          // ETH + IPv6
-#define NET_MIN_BUF_UDP         (14 + 20 + 8)      // ETH + IPv4 + UDP = 42
-#define NET_MIN_BUF_TCP         (14 + 20 + 20)     // ETH + IPv4 + TCP = 54
-#define NET_MIN_BUF_DHCP        576                 // RFC 2131 minimum
+Each connection or module instance is an application structure plus any
+buffers it is given.  Sizes on Cortex-M0, default configuration (dual stack
+in parentheses where it differs):
 
-// Protocol parameter derivation
-#define NET_TCP_MSS_IPV4(buf)   ((buf) - 14 - 20 - 20)  // ETH + IP + TCP
-#define NET_TCP_MSS_IPV6(buf)   ((buf) - 14 - 40 - 20)  // ETH + IPv6 + TCP
-#define NET_UDP_MAX_IPV4(buf)   ((buf) - 14 - 20 - 8)   // ETH + IP + UDP
-```
+| Structure | Size | Plus |
+|---|---|---|
+| `tcp_conn_t` | 100 B (120 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
+| `http_conn_t` (one slot) | about 200 B (230 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
+| `http_server_t` | 24 B | The slot array and a `const` route table |
+| `mdns_t` | 44 B | A `const` record table |
+| `dhcpv4_client_t` | 48 B | An optional option-handler table |
+| `dhcpv4_server_t` | 12 B | A `const dhcpv4_server_cfg_t` |
+| `dhcpv6_client_t` | 100 B | An optional option-handler table |
+| `tftp_client_t` | 172 B | — (128 B of it is the filename) |
 
-## Application Usage Example
+The TCP receive window is the free space in the connection's own RX buffer,
+not in `net->rx.buf`: TCP copies arriving data out of the frame during
+`net_poll()`.
 
-```c
-// Minimal TCP echo server — all memory declared by application
-static uint8_t rx_buf[300];
-static uint8_t tx_buf[300];
-static net_t net;
+Stack (automatic) memory is modest; the largest locals are HTTP's response
+header (`HTTP_HDR_MAX`, 192 bytes), mDNS's DNS writer (about 44 bytes with
+`DNS_COMPRESS_MAX` 16) and MLD's list of reported groups
+(16 × (`NET_IPV6_ADDRS` + `NET_MAX_MCAST6_GROUPS`) bytes).
 
-static uint8_t conn_txbuf[256];
-static uint8_t conn_rxbuf[256];
-static tcp_saw_ctx_t conn_tx_ctx, conn_rx_ctx;
-static tcp_conn_t conn;
+For whole-build flash and RAM figures, see
+[size-comparison.md](size-comparison.md).
 
-// Platform-specific driver context
-static tap_ctx_t tap;
+## 5. Init functions
 
-void app_init(void) {
-    static const uint8_t mac[] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
-    
-    // Init network context
-    net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf),
-             mac, &tap_mac_ops, &tap);
-    net.ipv4_addr = NET_IPv4(10, 0, 0, 2);
-    net.subnet_mask = NET_IPv4(255, 255, 255, 0);
-    
-    // Init TCP buffers
-    tcp_saw_init(&conn_tx_ctx, conn_txbuf, sizeof(conn_txbuf));
-    tcp_saw_init(&conn_rx_ctx, conn_rxbuf, sizeof(conn_rxbuf));
-    
-    // Init TCP connection
-    tcp_conn_init(&conn, &tcp_saw_tx_ops, &conn_tx_ctx,
-                  &tcp_saw_rx_ops, &conn_rx_ctx);
-    tcp_listen(&conn, 7);  // Echo port
-}
-```
+| Function | Validates | Sets |
+|---|---|---|
+| `net_init()` | Non-NULL `net`, buffers and driver; each buffer ≥ 14 bytes (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds `rng` from the MAC.  Does **not** call `driver->init()`. |
+| `tcp_conn_init()` | Non-NULL connection and buffer tables/contexts | CLOSED, initial RTO, default MSS |
+| `tcp_saw_tx_init()`, `tcp_saw_rx_init()` | — | Buffer and capacity |
+| `http_conn_init()` | Buffers present; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |
+| `http_server_init()` | At least one slot, a port, routes if `n_routes` | Every slot LISTENing on the port |
+| `mdns_init()` | Record count 1..`MDNS_MAX_RECORDS`; each record's type and names | STOPPED |
+| `dhcpv4_client_init()`, `dhcpv6_client_init()`, `tftp_client_init()` | — | Zeroed state, callbacks, tables |
+| `dhcpv4_server_init()` | — | Configuration and callback |
 
-## Memory Budget Examples
+Protocol layers that have no state of their own (Ethernet, ARP, IPv4, ICMP,
+UDP) have no init function; their state is in `net_t`.
 
-| Configuration | RX buf | TX buf | TCP state | TCP buffers | Total |
-|---|---|---|---|---|---|
-| UDP only (PIC16) | 300 | 300 | — | — | ~600 bytes |
-| TCP stop-wait (PIC16) | 300 | 300 | ~60 | 2 × 256 | ~1172 bytes |
-| TCP circular (CH32X) | 1500 | 1500 | ~60 | 2 × 4096 | ~11.3 KB |
-| TCP + HTTP (STM32) | 1500 | 1500 | ~60 | 2 × 2048 | ~7.2 KB |
+## 6. Errors
 
-## Error Handling
-
-Factory methods validate all parameters:
-- Buffer too small → `NET_ERR_BUF_TOO_SMALL`
-- NULL pointer → `NET_ERR_INVALID_PARAM`
-- Application MUST check return values
-
-Runtime errors (bad packets, etc.) are silently discarded per RFC requirements. Optional `NET_DEBUG` tracing available at compile time.
+- API calls return `net_err_t`: `NET_OK`, `NET_ERR_BUF_TOO_SMALL`,
+  `NET_ERR_INVALID_PARAM`, `NET_ERR_NO_FRAME` (the driver failed to send).
+  Check them — especially from `net_init()`.
+- Invalid or unwanted received packets are dropped silently, as the RFCs
+  require.  With `NET_DEBUG=1`, `NET_LOG()` traces some of the reasons to
+  `stderr` on hosted builds.
+- There are no run-time assertions (`NET_ASSERT` was removed).
