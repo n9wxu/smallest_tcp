@@ -971,6 +971,82 @@ TEST(test_refuse_short_share) {
   ASSERT_EQ(refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
 }
 
+/* A backend that fails the key exchange after writing some of its output
+ * (a partial key or secret): what it wrote must be somewhere the failure
+ * wipes — in the connection, not on the stack */
+static uint8_t *kx_out; /* where the backend was asked to write */
+
+static int leaky_keygen(void *ctx, uint16_t group, uint8_t *priv, uint8_t *pub,
+                        size_t *pub_len) {
+  (void)ctx;
+  (void)group;
+  (void)pub;
+  (void)pub_len;
+  memset(priv, 0xA5, TLS_KX_PRIV_MAX);
+  kx_out = priv;
+  return -1;
+}
+
+static int leaky_shared(void *ctx, uint16_t group, const uint8_t *priv,
+                        const uint8_t *peer_share, size_t peer_len,
+                        uint8_t shared[TLS_HASH_LEN]) {
+  (void)ctx;
+  (void)group;
+  (void)priv;
+  (void)peer_share;
+  (void)peer_len;
+  memset(shared, 0xA5, TLS_HASH_LEN);
+  kx_out = shared;
+  return -1;
+}
+
+static int inside(const uint8_t *p, size_t n, const tls_conn_t *t) {
+  uintptr_t a = (uintptr_t)p, b = (uintptr_t)t;
+  return a >= b && a + n <= b + sizeof(*t);
+}
+
+static int all_zero(const uint8_t *p, size_t n) {
+  while (n--)
+    if (*p++)
+      return 0;
+  return 1;
+}
+
+/* @p alert from a ClientHello answered through @p crypto; the backend's
+ * output of @p out_len bytes wiped */
+static int kx_failure_wiped(const tls_crypto_t *crypto, uint8_t alert,
+                            size_t out_len) {
+  static uint8_t m[2048];
+  static tls_config_t cfg;
+  tls_conn_t s;
+  ch_opt_t o;
+  size_t n;
+  cfg = cfg_ec;
+  cfg.crypto = crypto;
+  kx_out = NULL;
+  CHECK(server_start(&s, &cfg, sizeof(srv_tx)) == 0);
+  ch_default(&o);
+  peer_init(&peer, &cfg);
+  n = build_ch(&peer, &o, m);
+  send_ch(&s, &peer, m, n);
+  CHECK(tls_state(&s) == TLS_STATE_ERROR && s.alert == alert);
+  CHECK(kx_out && inside(kx_out, out_len, &s));
+  CHECK(all_zero(kx_out, out_len));
+  return 0;
+}
+
+TEST(test_key_exchange_failures_leave_nothing) {
+  static tls_crypto_t leaky;
+  leaky = c;
+  leaky.kx_shared = leaky_shared;
+  ASSERT_EQ(kx_failure_wiped(&leaky, TLS_ALERT_ILLEGAL_PARAMETER, TLS_HASH_LEN),
+            0);
+  leaky = c;
+  leaky.kx_keygen = leaky_keygen;
+  ASSERT_EQ(kx_failure_wiped(&leaky, TLS_ALERT_INTERNAL_ERROR, TLS_KX_PRIV_MAX),
+            0);
+}
+
 TEST(test_refuse_truncated_client_hello) {
   static uint8_t m[2048];
   tls_conn_t s;
@@ -2427,6 +2503,7 @@ int main(void) {
   RUN_TEST(test_refuse_duplicate_extension);
   RUN_TEST(test_refuse_zero_share);
   RUN_TEST(test_refuse_short_share);
+  RUN_TEST(test_key_exchange_failures_leave_nothing);
   RUN_TEST(test_refuse_truncated_client_hello);
   RUN_TEST(test_refuse_long_session_id);
   RUN_TEST(test_refuse_wrong_first_message);

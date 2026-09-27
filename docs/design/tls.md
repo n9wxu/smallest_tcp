@@ -479,7 +479,11 @@ valid max_fragment_length request is granted there and then.  Then
    transcript, the binder is computed and compared in constant time —
    `decrypt_error`; then the rest is added), or from zeros.
 8. Our key pair and the shared secret (`kx_shared` refusing the peer's share
-   is `illegal_parameter`); the private key lives on the stack and is wiped.
+   is `illegal_parameter`).  The private key is kept in `kx_priv` and wiped
+   as soon as the secret is computed, and the secret is computed into
+   `rsec`, which the client's handshake traffic secret then replaces:
+   neither is ever on the stack, and a backend that fails after writing
+   part of either leaves nothing behind, since `tls_fail()` wipes both.
 
 ServerHello carries pre_shared_key, key_share and supported_versions — the
 order of RFC 8448, so with the RFC's randomness our ServerHello to its
@@ -543,9 +547,11 @@ older: `protocol_version`), key_share for the group we sent a share of, and
 pre_shared_key selecting identity 0 if we offered one.  Anything else is
 `unsupported_extension` or `illegal_parameter`.  Without a key_share the
 server may only have chosen psk_ke, and only if we offered it
-(`missing_extension`).  The shared secret is computed, `kx_priv` is wiped,
-and the Handshake Secret is derived — from the PSK's Early Secret if the
-server took the PSK, else from zeros.
+(`missing_extension`).  The shared secret is computed into `rsec` (as on
+the server, it never touches the stack, and the server's handshake traffic
+secret replaces it), `kx_priv` is wiped, and the Handshake Secret is
+derived — from the PSK's Early Secret if the server took the PSK, else from
+zeros.
 
 **EncryptedExtensions** may carry an empty server_name, the
 max_fragment_length we asked for (the same code, `illegal_parameter`
@@ -657,6 +663,7 @@ A connection keeps three secrets and two sets of record keys:
 | Moment | `secret` | `rsec` (the peer's) | `wsec` (ours) |
 |---|---|---|---|
 | Client, ClientHello with a PSK | Early Secret (for the binder) | — | — |
+| Server in the ClientHello / client in the ServerHello, before the Handshake Secret | Early Secret | the (EC)DHE shared secret | — |
 | Server after ClientHello / client after ServerHello | Handshake Secret | peer's handshake traffic secret | our handshake traffic secret |
 | Server after sending Finished | client application secret, not yet in use | client handshake | server application |
 | Server after the client's Finished | wiped | client application | server application |
@@ -690,14 +697,14 @@ The Master Secret exists only on the stack for the moment it is used.
 
 ## 13. Testing
 
-**Unit (210 tests, CMake with `SMALLEST_TCP_TLS`):**
+**Unit (212 tests, CMake with `SMALLEST_TCP_TLS`):**
 
 | Suite | Tests | |
 |---|---:|---|
 | `test_tls_crypto` | 22 | The backend: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, chains (alerts, IP names, other anchors), random |
 | `test_tls_keys` | 34 | Key schedule and records against RFC 8448 §3 (every secret, key, IV, both Finished, all eight protected records byte for byte), §4 (resumption PSK binder, PSK + DHE schedule), §5 (HelloRetryRequest transcript); malformed records |
-| `test_tls_server` | 105 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts |
-| `test_tls_client` | 52 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()`) and against a scripted server that gets each message wrong on purpose |
+| `test_tls_server` | 106 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts, a backend failing the key exchange after writing part of its output |
+| `test_tls_client` | 53 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()`) and against a scripted server that gets each message wrong on purpose |
 
 `tests/tls/gen_rfc8448.py` extracts the RFC 8448 traces into
 `tests/unit/tls_rfc8448.h`, checking every value's stated length;

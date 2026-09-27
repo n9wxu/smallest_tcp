@@ -311,7 +311,8 @@ static int send_server_hello(tls_conn_t *t, uint8_t psk_mode, int pick,
 }
 
 /* Handshake Secret and traffic keys (RFC 8446 §7.1) from the (EC)DHE
- * secret @p shared (NULL for psk_ke) */
+ * secret @p shared (NULL for psk_ke) — which is t->rsec, read before the
+ * peer's handshake traffic secret replaces it */
 static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
   const tls_crypto_t *c = t->cfg->crypto;
   uint8_t h[TLS_HASH_LEN];
@@ -332,7 +333,7 @@ static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
 static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   const tls_config_t *cfg = t->cfg;
   const tls_crypto_t *c = cfg->crypto;
-  uint8_t priv[TLS_KX_PRIV_MAX], pub[TLS_KX_PUB_MAX], shared[TLS_HASH_LEN];
+  uint8_t pub[TLS_KX_PUB_MAX];
   size_t pub_len = 0;
   client_hello_t ch;
   uint8_t psk_mode;
@@ -385,23 +386,23 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   if ((alert = take_early_secret(t, &ch, m, mlen, psk_mode ? pick : -1)))
     return alert;
 
-  /* Our share, and the shared secret (the peer's share checked) */
+  /* Our share, and the shared secret (the peer's share checked).  The key
+   * pair goes in kx_priv and the secret in rsec, which the handshake
+   * traffic secret replaces: nothing is left on the stack, and a failure's
+   * tls_fail() wipes both, whatever the backend wrote before failing. */
   t->group = ch.group;
   if (t->group) {
-    if (c->kx_keygen(c->ctx, t->group, priv, pub, &pub_len) != 0)
+    if (c->kx_keygen(c->ctx, t->group, t->kx_priv, pub, &pub_len) != 0)
       return tls_fail(t, TLS_ALERT_INTERNAL_ERROR);
-    alert = c->kx_shared(c->ctx, t->group, priv, ch.share, ch.share_len,
-                         shared) != 0;
-    tls_wipe(priv, sizeof(priv));
+    alert = c->kx_shared(c->ctx, t->group, t->kx_priv, ch.share, ch.share_len,
+                         t->rsec) != 0;
+    tls_wipe(t->kx_priv, sizeof(t->kx_priv));
     if (alert)
       return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   }
-  if (send_server_hello(t, psk_mode, pick, pub, pub_len) != 0) {
-    tls_wipe(shared, sizeof(shared));
+  if (send_server_hello(t, psk_mode, pick, pub, pub_len) != 0)
     return tls_fail(t, TLS_ALERT_INTERNAL_ERROR);
-  }
-  enter_handshake_keys(t, t->group ? shared : NULL);
-  tls_wipe(shared, sizeof(shared));
+  enter_handshake_keys(t, t->group ? t->rsec : NULL);
   return HS_KEYS;
 }
 

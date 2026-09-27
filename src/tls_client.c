@@ -296,7 +296,8 @@ static int on_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen) {
 }
 
 /* Handshake Secret and traffic keys (RFC 8446 §7.1) from the (EC)DHE
- * secret @p shared (NULL for psk_ke) */
+ * secret @p shared (NULL for psk_ke) — which is t->rsec, read before the
+ * peer's handshake traffic secret replaces it */
 static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
   const tls_crypto_t *c = t->cfg->crypto;
   uint8_t h[TLS_HASH_LEN];
@@ -319,7 +320,6 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   const uint8_t *random;
   uint32_t seen[2] = {0, 0};
   int tls13 = 0, psk = 0, alert;
-  uint8_t shared[TLS_HASH_LEN];
 
   rd_uint(&r, 2); /* legacy_version */
   random = rd_take(&r, TLS_RANDOM_LEN);
@@ -371,8 +371,10 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   /* without a share: only the PSK alone, if psk_ke was offered */
   if (!share.p && !(psk && (t->cfg->psk_modes & TLS_PSK_KE)))
     return tls_fail(t, TLS_ALERT_MISSING_EXTENSION);
-  if (share.p &&
-      c->kx_shared(c->ctx, t->group, t->kx_priv, share.p, share.n, shared) != 0)
+  /* The shared secret goes in rsec, which the handshake traffic secret
+   * replaces: nothing on the stack, and tls_fail() wipes it */
+  if (share.p && c->kx_shared(c->ctx, t->group, t->kx_priv, share.p, share.n,
+                              t->rsec) != 0)
     return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
   tls_wipe(t->kx_priv, sizeof(t->kx_priv));
   if (!share.p)
@@ -381,8 +383,7 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   c->hash_update(&t->transcript, m, mlen);
   if (psk)
     t->flags |= F_PSK;
-  enter_handshake_keys(t, share.p ? shared : NULL);
-  tls_wipe(shared, sizeof(shared));
+  enter_handshake_keys(t, share.p ? t->rsec : NULL);
   return HS_KEYS;
 }
 

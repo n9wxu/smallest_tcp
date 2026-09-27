@@ -300,10 +300,11 @@ starts with a unit test that fails on the current code.
       or closed cleanly with close_notify, keeps its keys and `kx_priv`
       until the next `tls_init()` — `tls_release()`, called by HTTPS; the
       keys also go once close_notify has gone both ways
-- [ ] The `shared` secret on the stack is not wiped when `kx_shared()` fails
+- [x] The `shared` secret on the stack is not wiped when `kx_shared()` fails
       (client `on_server_hello()`, server `on_client_hello()`), nor the
       server's `priv` when `kx_keygen()` fails — matters if a backend writes
-      partial output on failure
+      partial output on failure — both now live in the connection
+      (`kx_priv`, `rsec`), which `tls_fail()` wipes
 - [ ] A crossed KeyUpdate: if the peer's says update_not_requested while our
       `tls_key_update(t, 1)` is pending, ours still asks — allowed by RFC 8446
       §4.6.3, but costs the peer an extra KeyUpdate

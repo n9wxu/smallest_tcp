@@ -853,6 +853,47 @@ TEST(test_key_share_wiped_on_failure) {
   ASSERT_MEM_EQ(t.kx_priv, zero, sizeof(zero));
 }
 
+/* A backend that fails the key exchange after writing part of the shared
+ * secret: what it wrote must be in the connection, which the failure
+ * wipes, not on the stack */
+static uint8_t *kx_out;
+
+static int leaky_shared(void *ctx, uint16_t group, const uint8_t *priv,
+                        const uint8_t *peer, size_t peer_len,
+                        uint8_t shared[TLS_HASH_LEN]) {
+  (void)ctx;
+  (void)group;
+  (void)priv;
+  (void)peer;
+  (void)peer_len;
+  memset(shared, 0xA5, TLS_HASH_LEN);
+  kx_out = shared;
+  return -1;
+}
+
+TEST(test_shared_secret_wiped_on_failure) {
+  static tls_crypto_t leaky;
+  static tls_config_t cfg;
+  static const uint8_t zero[TLS_HASH_LEN];
+  tls_conn_t t;
+  script_t o;
+  uintptr_t out, conn;
+  leaky = c;
+  leaky.kx_shared = leaky_shared;
+  cfg = cli;
+  cfg.crypto = &leaky;
+  memset(&o, 0, sizeof(o));
+  kx_out = NULL;
+  ASSERT_EQ(scripted_as(&cfg, &t, &o), 0);
+  ASSERT_EQ(tls_state(&t), TLS_STATE_ERROR);
+  ASSERT_EQ(t.alert, TLS_ALERT_ILLEGAL_PARAMETER);
+  ASSERT_NOT_NULL(kx_out);
+  out = (uintptr_t)kx_out;
+  conn = (uintptr_t)&t;
+  ASSERT_TRUE(out >= conn && out + TLS_HASH_LEN <= conn + sizeof(t));
+  ASSERT_MEM_EQ(kx_out, zero, TLS_HASH_LEN);
+}
+
 TEST(test_scripted_refusals_encrypted_extensions) {
   script_t o;
   memset(&o, 0, sizeof(o));
@@ -1485,6 +1526,7 @@ int main(void) {
   RUN_TEST(test_scripted_ccs_refused_after_handshake);
   RUN_TEST(test_key_share_wiped);
   RUN_TEST(test_key_share_wiped_on_failure);
+  RUN_TEST(test_shared_secret_wiped_on_failure);
   RUN_TEST(test_scripted_refusals_encrypted_extensions);
   RUN_TEST(test_scripted_refusals_certificate);
   RUN_TEST(test_scripted_refusals_certificate_verify);
