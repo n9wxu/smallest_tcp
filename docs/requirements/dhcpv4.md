@@ -190,9 +190,9 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 | REQ-DHCPv4-066 | SHOULD | DHCPOFFER SHOULD include Router option (3) if `gateway != 0` in the server config | RFC 2132 §3.5 | TEST-DHCPv4-066 |
 | REQ-DHCPv4-067 | SHOULD | DHCPOFFER SHOULD include DNS Server option (6) if `dns != 0` in the server config | RFC 2132 §3.8 | TEST-DHCPv4-067 |
 | REQ-DHCPv4-068 | MUST | On DHCPREQUEST with Requested IP = offered_ip: reply with DHCPACK | RFC 2131 §4.3.2 | TEST-DHCPv4-068 |
-| REQ-DHCPv4-069 | MUST | On DHCPREQUEST with Requested IP ≠ offered_ip: reply with DHCPNAK | RFC 2131 §4.3.2 | TEST-DHCPv4-069 |
+| REQ-DHCPv4-069 | MUST | On DHCPREQUEST with Requested IP ≠ offered_ip: reply with DHCPNAK, carrying only the Message Type and Server Identifier options, ciaddr = yiaddr = siaddr = 0 | RFC 2131 §4.3.2, Table 3 | TEST-DHCPv4-069 |
 | REQ-DHCPv4-070 | MUST | On DHCPRELEASE: ignore silently (no lease table) | RFC 2131 §4.3.4 | TEST-DHCPv4-070 |
-| REQ-DHCPv4-071 | SHOULD | On DHCPINFORM: reply with DHCPACK containing options, yiaddr = 0 (no IP allocation) | RFC 2131 §4.3.5 | TEST-DHCPv4-071 |
+| REQ-DHCPv4-071 | SHOULD | On DHCPINFORM: reply with DHCPACK containing the configuration options but no lease time, yiaddr = 0 (no IP allocation), ciaddr = the client's | RFC 2131 §4.3.5, Table 3 | TEST-DHCPv4-071 |
 | REQ-DHCPv4-072 | MUST | Silently ignore all other DHCP message types | RFC 2131 | TEST-DHCPv4-072 |
 
 #### Server Reply Addressing

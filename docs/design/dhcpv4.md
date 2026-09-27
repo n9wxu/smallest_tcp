@@ -355,10 +355,10 @@ and the magic cookie.
 
 | Incoming | Condition | Response | Sent to |
 |---|---|---|---|
-| DISCOVER | always | OFFER, `yiaddr` = `offered_ip` | broadcast |
+| DISCOVER | always | OFFER | broadcast |
 | REQUEST | requested address (option 50, else `ciaddr`) = `offered_ip` | ACK | client (below) |
-| REQUEST | otherwise | NAK, `yiaddr` = 0 | broadcast |
-| INFORM | always | ACK with options, `yiaddr` = 0 | client (below) |
+| REQUEST | otherwise | NAK | broadcast |
+| INFORM | always | ACK without a lease | client (below) |
 | RELEASE, anything else | — | none (no lease table) | — |
 
 "Broadcast" is 255.255.255.255 at the broadcast MAC.  "Client" is the
@@ -368,9 +368,23 @@ then the reply is unicast to `ciaddr` at the request's source MAC
 with one peer there is no other server to have chosen.
 
 Every reply (`send_reply()`) echoes `xid` and `chaddr`, sets the
-broadcast flag, `siaddr` = `server_ip`, and carries options 53, 54
-(`server_ip`), 51, 1, and 3 and 6 when configured.  It is sent from
-`server_ip` via `udp_send_inplace_from()`, whatever `net->ipv4_addr` is.
+broadcast flag and carries the message type (53) and the Server
+Identifier (54, `server_ip`).  The rest follows RFC 2131 Table 3 and
+§4.3.5:
+
+| | OFFER | ACK to a REQUEST | ACK to an INFORM | NAK |
+|---|---|---|---|---|
+| `ciaddr` | 0 | the request's | the request's | 0 |
+| `yiaddr` | `offered_ip` | `offered_ip` | 0 | 0 |
+| `siaddr` | `server_ip` | `server_ip` | `server_ip` | 0 |
+| Lease time (51): `lease_time_s`, or 0xFFFFFFFF (infinite) for 0 | ✓ | ✓ | — | — |
+| Subnet mask (1); router (3), DNS (6) when configured | ✓ | ✓ | ✓ | — |
+
+A NAK carries no lease and no configuration: it only refuses.  The ACK
+to an INFORM configures a client that already has its address, so it
+assigns none and carries no lease time (`put_parameters()` adds the
+lease only with an address).  A reply is sent from `server_ip` via
+`udp_send_inplace_from()`, whatever `net->ipv4_addr` is.
 
 ---
 
@@ -421,7 +435,7 @@ the halving is a shift: no multiplication and no division.
 | The lease is timed from the ACK, not from the REQUEST it answers (RFC 2131 §4.4.5) | It ends later by the round-trip time |
 | Option Overload (52), `sname`/`file` options | Not parsed |
 | `secs` field always 0 | — |
-| Server: NAK and the ACK to INFORM carry lease time and configuration options (RFC 2131 Table 3 says they must not) | Known; not fixed |
+| Server: replies always set the broadcast flag and leave `giaddr` 0, where RFC 2131 Table 3 copies the client's `flags` and `giaddr` | No relay agent on a point-to-point link; the flag only allows a broadcast reply |
 | Server: no lease table, same address for every MAC | By design (§4.1) |
 
 ---
@@ -439,5 +453,5 @@ place from `net->rx.buf`.
 
 | Suite | Tests | Covers |
 |---|---|---|
-| `tests/unit/test_dhcpv4.c` | 23 | Client: init, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2, NAK, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization, REQUESTING giving up, RENEWING and REBINDING through a whole lease, a renewal restarting the lease, infinite and 30,000,000 s leases.  Server: OFFER, ACK, NAK, RELEASE, bad `op`, bad magic |
+| `tests/unit/test_dhcpv4.c` | 26 | Client: init, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2, NAK, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization, REQUESTING giving up, RENEWING and REBINDING through a whole lease, a renewal restarting the lease, infinite and 30,000,000 s leases.  Server: OFFER, ACK, NAK, RELEASE, bad `op`, bad magic, the NAK's bare fields and options, the ACK to an INFORM, `ciaddr` in a renewal's ACK |
 | `tests/blackbox/test_dhcpv4_conform.py` | 8 | `dhcp_echo_demo` against a Scapy server: DISCOVER, OFFER → REQUEST, ACK binds, NAK → DISCOVER, wrong-xid OFFER ignored, `ciaddr` 0, retransmission, Server ID in REQUEST |

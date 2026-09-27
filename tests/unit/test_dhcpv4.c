@@ -21,6 +21,7 @@
 #define DHCP_OFF_FLAGS 10
 #define DHCP_OFF_CIADDR 12
 #define DHCP_OFF_YIADDR 16
+#define DHCP_OFF_SIADDR 20
 #define DHCP_OFF_CHADDR 28
 #define DHCP_OFF_MAGIC 236
 #define DHCP_OFF_OPTIONS 240
@@ -33,6 +34,7 @@
 #define DHCP_MSG_REQUEST 3
 #define DHCP_MSG_ACK 5
 #define DHCP_MSG_NAK 6
+#define DHCP_MSG_INFORM 8
 #define OPT_SUBNET_MASK 1
 #define OPT_ROUTER 3
 #define OPT_LEASE_TIME 51
@@ -883,6 +885,102 @@ TEST(test_dhcp_server_bad_magic_ignored) {
   ASSERT_EQ(send_count, 0);
 }
 
+/* 1 if every option of the message sent is one of the n codes; says which
+   is not if not */
+static int sent_options_only(const uint8_t *codes, size_t n) {
+  const uint8_t *o = sent_dhcp() + DHCP_OFF_OPTIONS;
+  uint16_t len = sent_dhcp_len() - DHCP_OFF_OPTIONS, i = 0;
+  while (i + 1 < len && o[i] != OPT_END) {
+    if (o[i] != 0 && !memchr(codes, o[i], n)) {
+      fprintf(stderr, "    option %u sent\n", o[i]);
+      return 0;
+    }
+    i = (uint16_t)(i + (o[i] ? 2 + o[i + 1] : 1));
+  }
+  return 1;
+}
+
+/* RFC 2131 Table 3: a DHCPNAK carries only the message type and server
+   identifier; ciaddr, yiaddr and siaddr are 0 */
+TEST(test_dhcp_server_nak_is_bare) {
+  static const uint8_t allowed[] = {OPT_MSG_TYPE, OPT_SERVER_ID};
+  uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x07};
+  uint8_t msg[DHCP_MIN_LEN + 32];
+  uint16_t mlen;
+  const uint8_t *d;
+  setup();
+  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  mlen = make_client_msg(msg, DHCP_MSG_REQUEST, 0x5EED0001u, chaddr, 0,
+                         server_cfg.server_ip);
+  net_write32be(msg + DHCP_OFF_CIADDR, NET_IPV4(192, 168, 1, 100));
+
+  dhcpv4_server_input(&net, &srv, NET_IPV4(192, 168, 1, 100), chaddr, msg,
+                      mlen);
+
+  ASSERT_EQ(last_event, DHCPV4_SRV_EVT_NAK);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_NAK);
+  ASSERT_TRUE(sent_options_only(allowed, sizeof(allowed)));
+  d = sent_dhcp();
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_CIADDR), 0u);
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_YIADDR), 0u);
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_SIADDR), 0u);
+}
+
+/* REQ-DHCPv4-071; RFC 2131 §4.3.5, Table 3: the DHCPACK to a DHCPINFORM
+   carries the configuration but no lease time; yiaddr is 0 and ciaddr the
+   client's, to which it is sent */
+TEST(test_dhcp_server_inform_ack_has_no_lease) {
+  static const uint8_t allowed[] = {OPT_MSG_TYPE, OPT_SERVER_ID,
+                                    OPT_SUBNET_MASK, OPT_ROUTER, 6 /* DNS */};
+  uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x08};
+  uint8_t msg[DHCP_MIN_LEN + 32];
+  uint16_t mlen, opt_len;
+  const uint8_t *d;
+  setup();
+  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  mlen = make_client_msg(msg, DHCP_MSG_INFORM, 0x5EED0002u, chaddr, 0, 0);
+  net_write16be(msg + DHCP_OFF_FLAGS, 0);
+  net_write32be(msg + DHCP_OFF_CIADDR, NET_IPV4(10, 0, 0, 77));
+
+  dhcpv4_server_input(&net, &srv, NET_IPV4(10, 0, 0, 77), chaddr, msg, mlen);
+
+  ASSERT_EQ(last_event, DHCPV4_SRV_EVT_ACK);
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_ACK);
+  ASSERT_TRUE(sent_options_only(allowed, sizeof(allowed)));
+  d = sent_dhcp();
+  opt_len = sent_dhcp_len() - DHCP_OFF_OPTIONS;
+  ASSERT_EQ(find_opt_u32(d + DHCP_OFF_OPTIONS, opt_len, OPT_SUBNET_MASK),
+            server_cfg.subnet_mask);
+  ASSERT_EQ(find_opt_u32(d + DHCP_OFF_OPTIONS, opt_len, OPT_ROUTER),
+            server_cfg.gateway);
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_YIADDR), 0u);
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_CIADDR), NET_IPV4(10, 0, 0, 77));
+  ASSERT_EQ(sent_ip_dst(), NET_IPV4(10, 0, 0, 77));
+}
+
+/* RFC 2131 Table 3: the DHCPACK to a renewing client's DHCPREQUEST echoes
+   its ciaddr, with the lease */
+TEST(test_dhcp_server_renewal_ack_echoes_ciaddr) {
+  uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x09};
+  uint8_t msg[DHCP_MIN_LEN + 32];
+  uint16_t mlen, opt_len;
+  const uint8_t *d;
+  setup();
+  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  mlen = make_client_msg(msg, DHCP_MSG_REQUEST, 0x5EED0003u, chaddr, 0, 0);
+  net_write32be(msg + DHCP_OFF_CIADDR, server_cfg.offered_ip);
+
+  dhcpv4_server_input(&net, &srv, server_cfg.offered_ip, chaddr, msg, mlen);
+
+  ASSERT_EQ(sent_msg_type(), DHCP_MSG_ACK);
+  d = sent_dhcp();
+  opt_len = sent_dhcp_len() - DHCP_OFF_OPTIONS;
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_CIADDR), server_cfg.offered_ip);
+  ASSERT_EQ(net_read32be(d + DHCP_OFF_YIADDR), server_cfg.offered_ip);
+  ASSERT_EQ(find_opt_u32(d + DHCP_OFF_OPTIONS, opt_len, OPT_LEASE_TIME),
+            server_cfg.lease_time_s);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -910,6 +1008,9 @@ int main(void) {
   RUN_TEST(test_dhcp_server_release_ignored);
   RUN_TEST(test_dhcp_server_invalid_op_ignored);
   RUN_TEST(test_dhcp_server_bad_magic_ignored);
+  RUN_TEST(test_dhcp_server_nak_is_bare);
+  RUN_TEST(test_dhcp_server_inform_ack_has_no_lease);
+  RUN_TEST(test_dhcp_server_renewal_ack_echoes_ciaddr);
   TEST_REPORT();
   return test_failures;
 }
