@@ -95,7 +95,9 @@ typedef struct tls_crypto_s {
                 uint16_t scheme, const uint8_t *msg, size_t len,
                 const uint8_t *sig, size_t sig_len);
   /** Verify a chain (leaf first, DER) against the backend's trust anchors
-   *  and, if @p hostname is not NULL, the leaf's names. */
+   *  and, if @p hostname is not NULL, the leaf's names (an address literal
+   *  matches an iPAddress name).  Returns 0, or the TLS alert to send
+   *  (RFC 8446 §6: unknown_ca, certificate_expired, bad_certificate ..). */
   int (*verify_chain)(void *ctx, const uint8_t *const *certs,
                       const uint16_t *lens, uint8_t count,
                       const char *hostname);

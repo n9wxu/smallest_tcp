@@ -9,6 +9,7 @@
  */
 
 #include "tls_crypto_mbedtls.h"
+#include "tls.h" /* alert numbers */
 
 #include <mbedtls/ecdh.h>
 #include <mbedtls/ecp.h>
@@ -274,6 +275,7 @@ static int verify(void *ctx, const uint8_t *cert, size_t cert_len,
   return r;
 }
 
+/* Returns 0, or the alert that says why the chain is refused */
 static int verify_chain(void *ctx, const uint8_t *const *certs,
                         const uint16_t *lens, uint8_t count,
                         const char *hostname) {
@@ -281,10 +283,10 @@ static int verify_chain(void *ctx, const uint8_t *const *certs,
   mbedtls_x509_crt chain;
   uint32_t flags = 0;
   uint8_t i;
-  int r = -1;
+  int r = TLS_ALERT_BAD_CERTIFICATE;
 
   if (be->ca_count == 0 || count == 0)
-    return -1;
+    return TLS_ALERT_UNKNOWN_CA;
   mbedtls_x509_crt_init(&chain);
   for (i = 0; i < count; i++) {
     if (mbedtls_x509_crt_parse_der(&chain, certs[i], lens[i]) != 0)
@@ -294,6 +296,12 @@ static int verify_chain(void *ctx, const uint8_t *const *certs,
                               NULL) == 0 &&
       flags == 0)
     r = 0;
+  else if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED)
+    r = TLS_ALERT_UNKNOWN_CA;
+  else if (flags & (MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE))
+    r = TLS_ALERT_CERTIFICATE_EXPIRED;
+  else if (flags & MBEDTLS_X509_BADCERT_REVOKED)
+    r = TLS_ALERT_CERTIFICATE_REVOKED;
 done:
   mbedtls_x509_crt_free(&chain);
   return r;

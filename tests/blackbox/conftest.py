@@ -96,6 +96,9 @@ def pytest_addoption(parser):
     parser.addoption("--tls-sut-bin", default=None,
                      help="Path to tls_echo_demo; the TLS tests launch it once "
                           "for the module (skipped when not given)")
+    parser.addoption("--tls-client-bin", default=None,
+                     help="Path to tls_client_demo; the TLS client tests run it "
+                          "against servers on --our-ip (skipped when not given)")
 
 
 # ── Context object ─────────────────────────────────────────────────────────────

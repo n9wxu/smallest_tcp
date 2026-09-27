@@ -7,6 +7,7 @@
  */
 
 #include "test_main.h"
+#include "tls.h" /* alert numbers */
 #include "tls_crypto.h"
 #include "tls_crypto_mbedtls.h"
 #include "tls_test_data.h"
@@ -276,19 +277,51 @@ TEST(test_scheme_must_match_key) {
 }
 
 TEST(test_chain_verification) {
+  /* verify_chain returns 0 or the alert to send */
   const uint8_t *chain[1] = {server_der};
   uint16_t lens[1] = {sizeof(server_der)};
   /* no trust anchors yet */
-  ASSERT_NE(c.verify_chain(c.ctx, chain, lens, 1, "pyro-dead01.local"), 0);
+  ASSERT_EQ(c.verify_chain(c.ctx, chain, lens, 1, "pyro-dead01.local"),
+            TLS_ALERT_UNKNOWN_CA);
   ASSERT_EQ(tls_mbedtls_set_ca(&be, (const uint8_t *)ca_pem, sizeof(ca_pem)),
             0);
   ASSERT_EQ(c.verify_chain(c.ctx, chain, lens, 1, "pyro-dead01.local"), 0);
   ASSERT_EQ(c.verify_chain(c.ctx, chain, lens, 1, NULL), 0);
-  ASSERT_NE(c.verify_chain(c.ctx, chain, lens, 1, "evil.example"), 0);
+  ASSERT_EQ(c.verify_chain(c.ctx, chain, lens, 1, "evil.example"),
+            TLS_ALERT_BAD_CERTIFICATE);
   /* a CA certificate is not a server certificate for the name */
   const uint8_t *wrong[1] = {ca_der};
   uint16_t wlens[1] = {sizeof(ca_der)};
-  ASSERT_NE(c.verify_chain(c.ctx, wrong, wlens, 1, "pyro-dead01.local"), 0);
+  ASSERT_EQ(c.verify_chain(c.ctx, wrong, wlens, 1, "pyro-dead01.local"),
+            TLS_ALERT_BAD_CERTIFICATE);
+  /* not a certificate at all */
+  const uint8_t junk[3] = {0x30, 0x01, 0x00};
+  const uint8_t *bad[1] = {junk};
+  uint16_t blens[1] = {sizeof(junk)};
+  ASSERT_EQ(c.verify_chain(c.ctx, bad, blens, 1, NULL),
+            TLS_ALERT_BAD_CERTIFICATE);
+}
+
+TEST(test_chain_ip_address) {
+  /* The subjectAltName iPAddress, when the name is an address literal */
+  const uint8_t *chain[1] = {server_der};
+  uint16_t lens[1] = {sizeof(server_der)};
+  ASSERT_EQ(c.verify_chain(c.ctx, chain, lens, 1, "10.0.0.2"), 0);
+  ASSERT_EQ(c.verify_chain(c.ctx, chain, lens, 1, "10.0.0.3"),
+            TLS_ALERT_BAD_CERTIFICATE);
+}
+
+TEST(test_chain_other_anchor) {
+  /* Trusting only another certificate: the chain leads nowhere */
+  static tls_mbedtls_t be2;
+  tls_crypto_t c2;
+  const uint8_t *chain[1] = {server_der};
+  uint16_t lens[1] = {sizeof(server_der)};
+  ASSERT_EQ(tls_mbedtls_init(&be2, &c2), 0);
+  ASSERT_EQ(tls_mbedtls_set_ca(&be2, rsa_der, sizeof(rsa_der)), 0);
+  ASSERT_EQ(c2.verify_chain(c2.ctx, chain, lens, 1, "pyro-dead01.local"),
+            TLS_ALERT_UNKNOWN_CA);
+  tls_mbedtls_free(&be2);
 }
 
 /* ══ Random ═══════════════════════════════════════════════════════ */
@@ -326,6 +359,8 @@ int main(void) {
   RUN_TEST(test_rsa_pss_verify_openssl_signature);
   RUN_TEST(test_scheme_must_match_key);
   RUN_TEST(test_chain_verification);
+  RUN_TEST(test_chain_ip_address);
+  RUN_TEST(test_chain_other_anchor);
   RUN_TEST(test_random);
   TEST_REPORT();
   tls_mbedtls_free(&be);

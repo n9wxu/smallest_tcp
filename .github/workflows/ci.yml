@@ -586,11 +586,12 @@ jobs:
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  # ── TLS 1.3 server blackbox tests (Linux, once per MAC driver) ──────
-  # Python's ssl module and openssl s_client against tls_echo_demo:
-  # smallest_tcp's TLS 1.3 over its own TCP, Mbed TLS for the crypto.
+  # ── TLS 1.3 blackbox tests (Linux, once per MAC driver) ─────────────
+  # smallest_tcp's TLS 1.3 over its own TCP, Mbed TLS for the crypto:
+  # tls_echo_demo against Python ssl and openssl s_client, tls_client_demo
+  # against Python ssl and openssl s_server.
   blackbox-tls:
-    name: Blackbox — TLS 1.3 server (tls_echo_demo, ${{ matrix.label }})
+    name: Blackbox — TLS 1.3 server + client (${{ matrix.label }})
     runs-on: ubuntu-latest
     needs: cmake-linux
     strategy:
@@ -614,10 +615,10 @@ jobs:
             -r tests/blackbox/requirements.txt \
             pytest-github-actions-annotate-failures
 
-      - name: Build tls_echo_demo
+      - name: Build tls_echo_demo and tls_client_demo
         run: |
           cmake -S . -B build
-          cmake --build build --target tls_echo_demo
+          cmake --build build --target tls_echo_demo tls_client_demo
 
       - name: Set up the SUT link (${{ matrix.label }})
         run: |
@@ -629,17 +630,21 @@ jobs:
           set -o pipefail
           openssl version
           sudo python3 -m pytest tests/blackbox/test_tls_conform.py \
-            --iface       "$TEST_IF"                  \
-            --sut-iface   "$SUT_IF"                   \
-            --sut-ip      10.0.0.2                    \
-            --tls-sut-bin ./build/demo/tls_echo_demo  \
-            -p no:cacheprovider --tb=short -v         \
+            tests/blackbox/test_tls_client_conform.py      \
+            --iface          "$TEST_IF"                    \
+            --sut-iface      "$SUT_IF"                     \
+            --sut-ip         10.0.0.2                      \
+            --our-ip         10.0.0.100                    \
+            --tls-sut-bin    ./build/demo/tls_echo_demo    \
+            --tls-client-bin ./build/demo/tls_client_demo  \
+            -p no:cacheprovider --tb=short -v              \
             2>&1 | tee /tmp/tls_blackbox.out
 
       - name: Tear down the link
         if: always()
         run: |
           sudo pkill -x tls_echo_demo 2>/dev/null || true
+          sudo pkill -x tls_client_demo 2>/dev/null || true
           sudo tests/blackbox/sut_net.sh down ${{ matrix.driver }}
 
       - name: TLS results summary

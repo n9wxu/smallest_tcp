@@ -51,6 +51,8 @@
 #define TLS_ALERT_HANDSHAKE_FAILURE 40
 #define TLS_ALERT_BAD_CERTIFICATE 42
 #define TLS_ALERT_UNSUPPORTED_CERTIFICATE 43
+#define TLS_ALERT_CERTIFICATE_REVOKED 44
+#define TLS_ALERT_CERTIFICATE_EXPIRED 45
 #define TLS_ALERT_CERTIFICATE_UNKNOWN 46
 #define TLS_ALERT_ILLEGAL_PARAMETER 47
 #define TLS_ALERT_UNKNOWN_CA 48
@@ -213,6 +215,9 @@ typedef struct tls_conn_s {
   uint16_t group; /**< Negotiated key-exchange group */
   uint8_t sid_len;
   uint8_t sid[32]; /**< legacy_session_id (the ServerHello echoes it) */
+  uint8_t kx_priv[TLS_KX_PRIV_MAX]; /**< Client: our key share, until the
+                                         ServerHello */
+  const char *host; /**< Client: the name the certificate must carry */
 
   /* Key schedule */
   uint8_t secret[TLS_HASH_LEN]; /**< Handshake Secret, then the peer's
@@ -226,6 +231,9 @@ typedef struct tls_conn_s {
   uint8_t *rx;
   uint16_t rx_cap, rx_len;
   uint16_t hs_len;   /**< Handshake bytes awaiting a whole message */
+  uint16_t hs_off;   /**< .. after a kept message (client: the
+                          Certificate, until CertificateVerify) */
+  uint16_t leaf_off, leaf_len; /**< Client: the server's certificate */
   uint16_t app_off;  /**< Unread application data: offset .. */
   uint16_t app_len;  /**< .. and length */
   uint16_t app_rec;  /**< Length of the record holding it */
@@ -253,6 +261,16 @@ int tls_init(tls_conn_t *tls, const tls_config_t *cfg, uint8_t *rx,
 
 /** Server: wait for a ClientHello. */
 int tls_accept(tls_conn_t *tls);
+
+/**
+ * Client: queue a ClientHello (send it with tls_tx_pending()).  The
+ * server's certificate chain must lead to one of the backend's trust
+ * anchors and name @p host (a DNS name, sent as server_name, or an
+ * address literal); NULL skips the name check.  @p host must stay valid
+ * for the handshake.
+ * @return 0, or -1 (bad state, or no room in tx).
+ */
+int tls_connect(tls_conn_t *tls, const char *host);
 
 /**
  * Space for received ciphertext: copy up to the returned number of bytes
