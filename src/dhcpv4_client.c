@@ -265,6 +265,15 @@ void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   }
 }
 
+/* REQ-DHCPv4-037: a NAK names its server (RFC 2131 Table 3), and only the
+ * server asked may refuse: the one selected, or ours — or, for a
+ * rebinding client, which asked them all, any */
+static int nak_from_server_asked(const dhcpv4_client_t *c, const uint8_t *msg,
+                                 uint16_t len) {
+  uint32_t id = dhcp_option_u32(msg, len, DHCP_OPT_SERVER_ID, 0u);
+  return id != 0u && (c->state == DHCPV4_CLI_REBINDING || id == c->server_ip);
+}
+
 static int awaiting_ack(const dhcpv4_client_t *c) {
   return c->state == DHCPV4_CLI_REQUESTING || c->state == DHCPV4_CLI_RENEWING ||
          c->state == DHCPV4_CLI_REBINDING;
@@ -298,7 +307,7 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
     }
     break;
   case DHCP_MSG_NAK:
-    if (awaiting_ack(c))
+    if (awaiting_ack(c) && nak_from_server_asked(c, data, len))
       lose_address(net, c, DHCPV4_EVT_NAK);
     break;
   default:

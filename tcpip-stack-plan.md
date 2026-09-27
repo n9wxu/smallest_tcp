@@ -317,7 +317,7 @@ starts with a unit test that fails on the current code.
 - [x] Renewing REQUESTs carry the Server Identifier (RFC 2131 §4.3.2: MUST NOT)
 - [x] Unicast renewals are sent to the broadcast MAC — to the source MAC
       of the server's ACK; `dhcpv4_client_input()` takes it
-- [ ] Any NAK with our xid drops the lease; its source is not checked
+- [x] Any NAK with our xid drops the lease; its source is not checked
 - [ ] No event when REQUESTING gives up and discovery restarts (§3.1 SHOULD
       notify the user); adding one changes the API
 - [ ] An ACK without a lease time leaves the client bound for good, like an

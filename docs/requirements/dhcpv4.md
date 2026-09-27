@@ -117,7 +117,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-037 | MUST | On DHCPNAK, transition to INIT and restart discovery | RFC 2131 §4.4.1 | TEST-DHCPv4-037 |
+| REQ-DHCPv4-037 | MUST | On DHCPNAK, transition to INIT and restart discovery — a NAK from the server asked (its Server Identifier; any server while REBINDING); one without a Server Identifier is dropped | RFC 2131 §4.4.1, Table 3 | TEST-DHCPv4-037 |
 | REQ-DHCPv4-038 | MUST | On DHCPNAK, deconfigure current IP address | RFC 2131 §4.4.1 | TEST-DHCPv4-038 |
 
 ### DHCPRELEASE

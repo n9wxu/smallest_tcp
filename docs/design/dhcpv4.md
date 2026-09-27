@@ -234,8 +234,14 @@ address is not checked.  By message type (`dhcp_message_type()`):
   the lease and restarts the lease clock, the frame's source MAC becomes
   `server_mac`, the client enters BOUND, and the event fires (BOUND after
   REQUESTING, RENEWED otherwise).
-- **NAK**, in the same states: `DHCPV4_EVT_NAK`, address cleared,
-  discovery restarts.
+- **NAK**, in the same states, from the server asked
+  (`nak_from_server_asked()`): its Server Identifier must be the server's
+  the client selected (REQUESTING) or holds its lease from (RENEWING); a
+  rebinding client asked every server, so any may refuse it.  A NAK
+  without a Server Identifier — which RFC 2131 Table 3 requires — is
+  dropped.  Then `DHCPV4_EVT_NAK`, address cleared, discovery restarts.
+  Any NAK with our `xid` used to be taken, so another server's refusal
+  of a request it was not asked cost the client its lease.
 
 **`take_lease()`** walks the ACK's options once: `yiaddr` →
 `net->ipv4_addr`; 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (the

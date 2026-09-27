@@ -739,6 +739,60 @@ TEST(test_dhcp_client_server_id_only_when_selecting) {
   ASSERT_EQ(sent_server_id(), 0u);
 }
 
+/* REQ-DHCPv4-037: a NAK must come from the server asked — the one selected
+   (REQUESTING) or ours (RENEWING); rebinding asks every server, and any
+   may refuse.  A NAK names its server (RFC 2131 Table 3): one without is
+   malformed. */
+#define OTHER_SERVER NET_IPV4(10, 0, 0, 9)
+
+static void nak_from(uint32_t server_id) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen = make_server_msg(msg, DHCP_MSG_NAK, cli.xid, 0,
+                                  server_id ? server_id : 1u, 0, 0, 0, 0, 0);
+  if (!server_id) /* no Server Identifier: turn option 54 into another */
+    msg[DHCP_OFF_OPTIONS + 3] = 250;
+  dhcpv4_client_input(&net, &cli, server_id, server_mac, msg, mlen);
+}
+
+TEST(test_dhcp_client_nak_from_the_server_asked) {
+  uint8_t msg[DHCP_MIN_LEN + 64];
+  uint16_t mlen;
+  setup();
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
+  dhcpv4_client_start(&net, &cli);
+  mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
+                         SERVER_IP, 3600, 0, 0, 0, 0);
+  dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  nak_from(OTHER_SERVER);
+  nak_from(0);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_REQUESTING);
+  ASSERT_EQ(event_count, 0);
+  nak_from(SERVER_IP);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
+  ASSERT_EQ(last_event, DHCPV4_EVT_NAK);
+
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(next_sent_is(1800, DHCPV4_CLI_RENEWING, SERVER_IP));
+  event_count = 0;
+  nak_from(OTHER_SERVER);
+  nak_from(0);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_RENEWING);
+  ASSERT_EQ(event_count, 0);
+  ASSERT_EQ(net.ipv4_addr, NET_IPV4(10, 0, 0, 50));
+  nak_from(SERVER_IP);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
+  ASSERT_EQ(net.ipv4_addr, 0u);
+
+  bind_lease(3600, 0, 0);
+  ASSERT_TRUE(is_u32(clock_at_state(DHCPV4_CLI_REBINDING, 1u, 4000u), 3150u));
+  event_count = 0;
+  nak_from(0);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_REBINDING);
+  nak_from(OTHER_SERVER);
+  ASSERT_EQ(cli.state, DHCPV4_CLI_SELECTING);
+  ASSERT_EQ(last_event, DHCPV4_EVT_NAK);
+}
+
 /* REQ-DHCPv4-005, 055: an ACK while RENEWING starts the lease again */
 TEST(test_dhcp_client_renewal_restarts_lease) {
   uint8_t msg[DHCP_MIN_LEN + 64];
@@ -1092,6 +1146,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_renewal_restarts_lease);
   RUN_TEST(test_dhcp_client_unicasts_to_the_server_mac);
   RUN_TEST(test_dhcp_client_server_id_only_when_selecting);
+  RUN_TEST(test_dhcp_client_nak_from_the_server_asked);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_long_lease);
   RUN_TEST(test_dhcp_server_init_checks_buffers);
