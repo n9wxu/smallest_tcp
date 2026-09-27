@@ -226,7 +226,7 @@ if (tls_state(&tls) == TLS_STATE_CONNECTED) {
 | `tls_rx_space()` + `tls_rx_commit()` | Ciphertext in, written straight into rx (`tls_tcp_carry()` passes the space to `tcp_recv()`).  Returns 0 or the negated alert that ended the connection |
 | `tls_input()` | The same, copying from the caller's buffer; returns the bytes taken |
 | `tls_tx_pending()` + `tls_tx_done()` | Ciphertext out |
-| `tls_write()` | Seal up to one record of plaintext; returns the bytes taken — 0 when tx has no room, −1 when the connection is not open for writing |
+| `tls_write()` | Seal up to one record of plaintext; returns the bytes taken — 0 when tx has no room (a KeyUpdate we owe goes first), −1 when the connection is not open for writing |
 | `tls_read()` | Copy out received plaintext — from one record per call; call again for more |
 | `tls_key_update(tls, request)` | New write keys; `request` asks the peer to update too |
 | `tls_close(tls)` | Queue close_notify; nothing more may be written |
@@ -385,7 +385,7 @@ returns its negated code.
   bytes; the handler writes the body; `tls_hs_end()` writes the four-byte
   header, adds the message to the transcript and commits its length.
 - `tls_write()` seals one application-data record of at most the fragment
-  limit and what tx can hold.
+  limit and what tx can hold, once any KeyUpdate we owe has gone (section 9).
 
 ### 7.2 `pump()`
 
@@ -576,11 +576,11 @@ switches our records to the client application keys, and reports
   (`HS_KEYS`).  If it asks for an update, we owe one (`F_KU_OWED`).
   `tls_key_update(tls, request)` owes one too, asking the peer to follow if
   `request` (`F_KU_REQ`).  `pump()` sends an owed KeyUpdate as soon as tx has
-  room, then moves our secret on and installs the new keys.
+  room, then moves our secret on and installs the new keys.  Until it has
+  gone, `tls_write()` accepts nothing: no data follows it under the old key.
 - **The record limit.**  `tls_write()` owes a KeyUpdate itself once
   `TLS_KEY_UPDATE_RECORDS` (2^24) records have been sealed under one key
-  (RFC 8446 §5.5 allows 2^24.5 for AES-GCM), and writes nothing more under
-  the old key until it has been sent.
+  (RFC 8446 §5.5 allows 2^24.5 for AES-GCM).
 - **close_notify.**  `tls_close()` queues it (a warning-level alert) and
   sets `F_WCLOSED`; no KeyUpdate or data follows it.  A received
   close_notify moves to `CLOSED`, in which we may still write until we close.

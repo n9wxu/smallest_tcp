@@ -479,17 +479,24 @@ static int writable(const tls_conn_t *t) {
          !(t->flags & F_WCLOSED);
 }
 
+/* Send the KeyUpdate we owe (RFC 8446 §5.5 owes one after
+ * TLS_KEY_UPDATE_RECORDS records); 1 while it waits for room, since no
+ * data may go before it (§4.6.3) */
+static int key_update_still_owed(tls_conn_t *t) {
+  if (t->wkeys.seq >= TLS_KEY_UPDATE_RECORDS)
+    t->flags |= F_KU_OWED;
+  if (t->flags & F_KU_OWED)
+    (void)pump(t);
+  return (t->flags & F_KU_OWED) != 0;
+}
+
 int tls_write(tls_conn_t *t, const uint8_t *data, size_t len) {
   uint8_t *p;
   size_t room;
   if (!writable(t))
     return -1;
-  if (t->wkeys.seq >= TLS_KEY_UPDATE_RECORDS) { /* RFC 8446 §5.5 */
-    t->flags |= F_KU_OWED;
-    (void)pump(t);
-    if (t->flags & F_KU_OWED)
-      return 0; /* no room for it yet */
-  }
+  if (key_update_still_owed(t))
+    return 0;
   tls_tx_compact(t);
   room = (size_t)(t->tx_cap - t->tx_len);
   if (room <= TLS_RECORD_OVERHEAD)

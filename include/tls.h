@@ -202,8 +202,9 @@ void tls_tx_done(tls_conn_t *tls, size_t n);
 
 /**
  * Encrypt application data into one record.
- * @return Bytes accepted (0 when the transmit buffer is full), or -1 if
- *         the connection is not open for writing.
+ * @return Bytes accepted (0 while tx has no room for them, or for a
+ *         KeyUpdate that must go first), or -1 if the connection is not
+ *         open for writing.
  */
 int tls_write(tls_conn_t *tls, const uint8_t *data, size_t len);
 

@@ -2241,6 +2241,31 @@ TEST(test_no_data_past_key_limit) {
   ASSERT_TRUE(s.wkeys.seq == 1);
 }
 
+TEST(test_no_data_before_owed_key_update) {
+  /* The client asks for a KeyUpdate while tx has room for three bytes of
+   * data but not for the KeyUpdate: the data waits behind it */
+  static uint8_t big[5000], buf[4096];
+  const size_t first = sizeof(srv_tx) - TLS_RECORD_OVERHEAD - 25;
+  tls_conn_t s;
+  uint8_t rec[64], type;
+  size_t n, off = 0;
+  ASSERT_EQ(connected(&s), 0);
+  ASSERT_EQ(tls_write(&s, big, first), (int)first);
+  n = peer_seal(&peer, TLS_CT_HANDSHAKE, "\x18\x00\x00\x01\x01", 5, rec);
+  ASSERT_EQ(tls_input(&s, rec, n), n);
+  ASSERT_EQ(tls_write(&s, (const uint8_t *)"abc", 3), 0);
+  drain(&s);
+  ASSERT_EQ(tls_write(&s, (const uint8_t *)"abc", 3), 3);
+  drain(&s);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), (int)first);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 5);
+  ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
+  tls_update_secret(&c, peer.s_ap);
+  tls_traffic_keys(&c, peer.s_ap, &peer.rd);
+  ASSERT_EQ(peer_open(&peer, &off, &type, buf), 3);
+  ASSERT_MEM_EQ(buf + 5, "abc", 3);
+}
+
 TEST(test_key_update_needs_connection) {
   tls_conn_t s;
   ASSERT_EQ(server_start(&s, &cfg_ec, sizeof(srv_tx)), 0);
@@ -2445,6 +2470,7 @@ int main(void) {
   RUN_TEST(test_key_update_api);
   RUN_TEST(test_key_update_by_itself);
   RUN_TEST(test_no_data_past_key_limit);
+  RUN_TEST(test_no_data_before_owed_key_update);
   RUN_TEST(test_key_update_needs_connection);
 
   RUN_TEST(test_init_and_accept_checks);
