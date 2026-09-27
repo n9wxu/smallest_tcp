@@ -275,10 +275,10 @@ Found while fixing the design review's bugs; none is fixed yet.  Each fix
 starts with a unit test that fails on the current code.
 
 **TCP** ([docs/design/tcp.md](docs/design/tcp.md) §8.3)
-- [ ] The FIN is sent whatever the peer's window and counts toward
+- [x] The FIN is sent whatever the peer's window and counts toward
       `TCP_MAX_RETRANSMITS`: a peer holding its window at zero resets the
       connection after about 4 minutes, where unsent data would be probed
-      indefinitely
+      indefinitely — resends into a zero window are probes now, as in Linux
 - [ ] A busy driver fails `tcp_connect()` / `tcp6_connect()` with
       `NET_ERR_BUSY`, while every later segment treats it as a loss and
       retransmits

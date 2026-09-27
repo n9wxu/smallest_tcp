@@ -105,11 +105,11 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 082/083 | Window advertised > 0 | test_tcp_window_advertised_nonzero | ✅ |
 | 090 | Retransmit on timeout | test_tcp_retransmit_on_timeout | ✅ |
 | 095 | RTO doubles on retry; the rest of a partly ACKed segment and a frame the driver did not send are resent | test_tcp_retransmit_on_timeout, test_tcp_partial_ack_resends_rest_in_place, test_tcp_unsent_frame_is_retransmitted | ✅ |
-| 097/098 | RTO stops on ACK | test_tcp_rto_resets_on_ack | ✅ |
+| 097/098 | RTO stops on ACK; retransmissions counted per segment | test_tcp_rto_resets_on_ack, test_tcp_retransmissions_counted_per_segment | ✅ |
 | 109/111 | NOP/unknown option ignored | test_tcp_options_nop_unknown_ignored | ✅ |
 | 112 | MSS parsed from options | test_tcp_options_nop_unknown_ignored | ✅ |
 | 115 | Unknown option skipped | test_tcp_options_nop_unknown_ignored | ✅ |
-| 085–087 | Zero-window persist timer | `test_tcp_persist_starts_on_zero_window`, `test_tcp_persist_probe_sent_on_timeout`, `test_tcp_persist_stops_when_window_opens`, `test_tcp_085_persist_probe_on_zero_window` (blackbox) | ✅ pass |
+| 085–087 | Zero-window persist timer; data in flight or our FIN resent into a zero window as probes, never given up while the peer answers (RFC 1122 §4.2.2.17) | `test_tcp_persist_starts_on_zero_window`, `test_tcp_persist_probe_sent_on_timeout`, `test_tcp_persist_stops_when_window_opens`, `test_tcp_fin_into_zero_window_waits_while_peer_answers`, `test_tcp_data_into_shrunk_window_waits_while_peer_answers`, `test_tcp_fin_into_zero_window_given_up_when_peer_silent`, `test_tcp_085_persist_probe_on_zero_window` (blackbox) | ✅ pass |
 | 028/029/153 | ISS = 4 µs clock + keyed hash (RFC 6528) | test_tcp_isn_is_clock_plus_keyed_hash, test_tcp_isn_depends_on_secret; `test_tcp_153` (blackbox) | ✅ |
 | 155 | RST rate limiting | (blackbox only) | 🔲 Blackbox |
 

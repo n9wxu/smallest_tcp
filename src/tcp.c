@@ -604,10 +604,12 @@ static void update_send_window(tcp_conn_t *conn, const tcp_seg_t *s) {
 }
 
 /* REQ-TCP-055, 097, 098: SND.UNA advances; the retransmission timer runs
- * while anything — data or our FIN — is unacknowledged */
+ * while anything — data or our FIN — is unacknowledged.  Retransmissions
+ * are counted per segment (§3.8.3), so the next one starts from none. */
 static void take_ack(tcp_conn_t *conn, const tcp_seg_t *s) {
   conn->txbuf_ops->ack(conn->txbuf_ctx, s->ack - conn->snd_una);
   conn->snd_una = s->ack;
+  conn->retransmits = 0;
   if (SEQ_LT(conn->snd_una, conn->snd_nxt))
     retransmit_timer_restart_if_running(conn);
   else
@@ -615,12 +617,17 @@ static void take_ack(tcp_conn_t *conn, const tcp_seg_t *s) {
 }
 
 /* REQ-TCP-055..058: SND.UNA <= SEG.ACK <= SND.NXT.  New data acknowledged
- * or a window update, even of an ACK of nothing new, can let more go. */
+ * or a window update, even of an ACK of nothing new, can let more go.
+ * REQ-TCP-086: while the peer answers with a zero window, what we resend
+ * into it is a window probe, and probing never gives up (RFC 1122
+ * §4.2.2.17). */
 static void send_side_ack(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
   int acked_new = SEQ_GT(s->ack, conn->snd_una);
   if (acked_new)
     take_ack(conn, s);
   update_send_window(conn, s);
+  if (conn->snd_wnd == 0)
+    conn->retransmits = 0;
   flush(net, conn);
   if (acked_new && conn->txbuf_ops->writable(conn->txbuf_ctx) > 0)
     notify(conn, TCP_EVT_WRITABLE);

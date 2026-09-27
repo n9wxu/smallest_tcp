@@ -594,7 +594,9 @@ cannot write after it, since `tcp_write()` needs ESTABLISHED or CLOSE-WAIT.
 The FIN is sent whatever the peer's window; it carries no data.  A receiver
 that applies §3.10.7.4's step 1 strictly takes nothing into a zero window
 (section 3.6); against such a peer the FIN is resent by the retransmission
-timer rather than probed for, and counts toward `TCP_MAX_RETRANSMITS`.
+timer, and each resend is in effect a window probe: while the peer answers
+with a zero window, the resends do not count toward `TCP_MAX_RETRANSMITS`
+(section 5.1).
 
 The FIN is acknowledged only when `fin_sent` is set and SEG.ACK ≥ SND.NXT
 (section 3.6, step 5).  In LISTEN, SYN-SENT and SYN-RECEIVED `tcp_close()` does
@@ -639,7 +641,9 @@ is unacknowledged:
   timer when a segment is sent and it is not running, and does not restart it
   for each segment.
 - An ACK of new data restarts it (if running) while SND.UNA < SND.NXT and
-  stops it otherwise (RFC 6298 §5.2, 5.3); stopping clears `retransmits`.
+  stops it otherwise (RFC 6298 §5.2, 5.3).  Either way it clears
+  `retransmits`: §3.8.3 counts the retransmissions of one segment, and the
+  segment now first in line has had none.
 - Reaching ESTABLISHED or CLOSED stops it; entering TIME-WAIT replaces it.
 
 A zero-window probe does not start it (section 5.2).  Because it follows
@@ -668,11 +672,17 @@ On expiry `retransmission_timeout()`:
      the next expiry resends it;
    - otherwise the FIN alone, at SND.NXT − 1.
 
-A peer that keeps its window at zero while data is in flight answers each
-retransmission with an ACK of nothing new, which does not reset
-`retransmits`, so the connection is given up after `TCP_MAX_RETRANSMITS`
-like an unresponsive one.  Unsent data behind a zero window is different:
-it is probed by the persist timer (section 5.2), which never gives up.
+**A zero window.**  A peer whose window is zero takes nothing we resend —
+data in flight when its window shrank, or our FIN (section 4.7) — and
+answers each resend with an ACK of nothing new.  Every ACK that leaves
+SND.WND at zero clears `retransmits` (`send_side_ack()`): the resend has
+become a window probe, and RFC 1122 §4.2.2.17 keeps a connection open as
+long as the peer answers its probes.  The timeout still doubles up to
+`NET_DEFAULT_TCP_RTO_MAX_MS`, so the resends settle at one a minute, like
+the persist timer's probes for unsent data (section 5.2).  A peer that stops
+answering is given up after `TCP_MAX_RETRANSMITS` as before.  Linux does the
+same: with a zero send window its retransmissions become probes that do not
+time the connection out.
 
 A partial ACK — one that covers only the first part of the segment in flight —
 releases those bytes and restarts the timer.  The rest stay in flight at their
@@ -720,8 +730,8 @@ A probe starts no retransmission timer and does not count toward
 `TCP_MAX_RETRANSMITS`, so probing continues as long as the window stays zero —
 RFC 1122 §4.2.2.17 requires this while the peer answers, and no limit is
 implemented for a peer that has stopped answering.  Our FIN is not probed
-for: it is sent whatever the window and retransmitted like data
-(section 4.7).
+for by this timer: it is sent whatever the window, and its retransmissions
+serve as probes (sections 4.7 and 5.1).
 
 ### 5.3 TIME-WAIT
 
@@ -836,23 +846,18 @@ With `NET_USE_IPV6` 0 the IPv6 members and branches compile out.
   told of repeated retransmissions before the connection is given up (§3.8.3's
   R1).
 
-### 8.3 Known gaps
-
-- **A zero window after our FIN.**  The FIN is sent whatever the peer's
-  window, and counts toward `TCP_MAX_RETRANSMITS`: a peer that holds its
-  window at zero and drops the FIN has the connection reset after about four
-  minutes, where unsent data in ESTABLISHED would be probed indefinitely.
-
 ---
 
 ## 9. Tests and files
 
-- **Unit:** `tests/unit/test_tcp.c` (57 tests: handshakes, `tcp_write()` /
+- **Unit:** `tests/unit/test_tcp.c` (61 tests: handshakes, `tcp_write()` /
   `tcp_output()`, in-order delivery with gaps, overlaps, duplicates and FIN
   placement, window updates including pure ones, active and passive close,
   the FIN queued behind unsent data, RST, retransmission of SYN, data and FIN,
-  partial ACKs, frames the driver did not send, TIME-WAIT, MSS from the RX
-  and TX buffers, RFC 6528 initial sequence numbers, persist),
+  partial ACKs, a zero window that outlasts the retransmission limit while
+  the peer answers, retransmissions counted per segment, frames the driver
+  did not send, TIME-WAIT, MSS from the RX and TX buffers, RFC 6528 initial
+  sequence numbers, persist),
   `tests/unit/test_tcp6.c` (19: IPv6, dual-stack listeners, source address,
   MSS within the Ethernet MTU), `tests/unit/test_tcp_buf.c` (22: the
   stop-and-wait buffers).

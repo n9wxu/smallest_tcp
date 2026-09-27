@@ -975,6 +975,91 @@ TEST(test_tcp_retransmission_after_fin_keeps_data) {
   ASSERT_EQ(conn.state, TCP_FIN_WAIT_2);
 }
 
+/* ── A zero window longer than TCP_MAX_RETRANSMITS (RFC 1122 §4.2.2.17:
+ *    probing goes on as long as the peer answers) ── */
+
+static void expire_retransmission(void) { tcp_tick(&net, conn.timer_ms); }
+
+TEST(test_tcp_fin_into_zero_window_waits_while_peer_answers) {
+  uint32_t fin_seq;
+  int i;
+  setup();
+  establish();
+  inject_ack_with_window(conn.snd_nxt, 0);
+  tcp_close(&net, &conn);
+  fin_seq = sent_tcp_seq(0);
+  for (i = 0; i < 20; i++) {
+    send_count = 0;
+    expire_retransmission();
+    ASSERT_EQ(send_count, 1);
+    ASSERT_TRUE(sent_tcp_flags(0) & TCP_FLAG_FIN);
+    ASSERT_EQ(sent_tcp_seq(0), fin_seq);
+    inject_ack_with_window(fin_seq, 0); /* not taken: the window is zero */
+  }
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1);
+  ASSERT_EQ(evt_error, 0);
+  inject_ack_with_window(fin_seq + 1u, 8192);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_2);
+}
+
+TEST(test_tcp_data_into_shrunk_window_waits_while_peer_answers) {
+  uint8_t data[100];
+  uint32_t seq;
+  int i;
+  fill_counting(data, sizeof(data));
+  setup();
+  establish();
+  tcp_send(&net, &conn, data, sizeof(data));
+  seq = sent_tcp_seq(0);
+  inject_ack_with_window(seq, 0);
+  for (i = 0; i < 20; i++) {
+    send_count = 0;
+    expire_retransmission();
+    ASSERT_EQ(send_count, 1);
+    ASSERT_EQ(sent_tcp_seq(0), seq);
+    inject_ack_with_window(seq, 0);
+  }
+  ASSERT_EQ(conn.state, TCP_ESTABLISHED);
+  ASSERT_EQ(evt_error, 0);
+  inject_ack_with_window(seq + 100u, 8192);
+  ASSERT_TRUE(tcp_tx_idle(&conn));
+}
+
+/* A peer that stops answering is still given up */
+TEST(test_tcp_fin_into_zero_window_given_up_when_peer_silent) {
+  int i;
+  setup();
+  establish();
+  inject_ack_with_window(conn.snd_nxt, 0);
+  tcp_close(&net, &conn);
+  for (i = 0; i < 8; i++)
+    expire_retransmission();
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1);
+  expire_retransmission();
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  ASSERT_EQ(evt_error, 1);
+}
+
+/* §3.8.3: retransmissions are counted per segment — an ACK that moves
+ * SND.UNA gives the next one in line its own TCP_MAX_RETRANSMITS */
+TEST(test_tcp_retransmissions_counted_per_segment) {
+  uint32_t seq;
+  int i;
+  setup();
+  establish();
+  tcp_send(&net, &conn, (const uint8_t *)"last", 4);
+  seq = sent_tcp_seq(0);
+  tcp_close(&net, &conn); /* the FIN follows the data */
+  for (i = 0; i < 5; i++)
+    expire_retransmission();
+  inject_ack_with_window(seq + 4u, 8192); /* the data; the FIN still out */
+  for (i = 0; i < 8; i++)
+    expire_retransmission();
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1);
+  expire_retransmission();
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+}
+
 /* RFC 9293 §3.10.4: the FIN is queued behind data not yet sent */
 TEST(test_tcp_close_sends_unsent_data_first) {
   setup();
@@ -1636,6 +1721,10 @@ int main(void) {
   RUN_TEST(test_tcp_partial_ack_resends_rest_in_place);
   RUN_TEST(test_tcp_retransmission_ignores_shrunk_window);
   RUN_TEST(test_tcp_retransmission_after_fin_keeps_data);
+  RUN_TEST(test_tcp_fin_into_zero_window_waits_while_peer_answers);
+  RUN_TEST(test_tcp_data_into_shrunk_window_waits_while_peer_answers);
+  RUN_TEST(test_tcp_fin_into_zero_window_given_up_when_peer_silent);
+  RUN_TEST(test_tcp_retransmissions_counted_per_segment);
   RUN_TEST(test_tcp_close_sends_unsent_data_first);
   RUN_TEST(test_tcp_close_fin_waits_for_the_last_segment);
   RUN_TEST(test_tcp_unsent_frame_is_retransmitted);
