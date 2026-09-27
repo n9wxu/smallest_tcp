@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-27 (Tasks 1–13 complete: through Milestone 13, TLS 1.3, and the Linux raw-socket driver.  718 unit tests on macOS (729 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 7.1 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
+**Last updated:** 2026-09-27 (Tasks 1–13 complete: through Milestone 13, TLS 1.3, and the Linux raw-socket driver.  718 unit tests on macOS (729 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 7.1 KB of TLS protocol code for a server.  Open issues from the review: Task 15.  Next: Milestone 14, DTLS 1.3.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says
@@ -269,6 +269,77 @@ state at all: every byte of RAM is application-owned.
 
 ### Task 14: DTLS 1.3 — planned
 - Design: [docs/design/dtls.md](docs/design/dtls.md); tracked in the README roadmap
+
+### Task 15: Open issues found in the 2026-09-27 review — open
+Found while fixing the design review's bugs; none is fixed yet.  Each fix
+starts with a unit test that fails on the current code.
+
+**TCP** ([docs/design/tcp.md](docs/design/tcp.md) §8.3)
+- [ ] The FIN is sent whatever the peer's window and counts toward
+      `TCP_MAX_RETRANSMITS`: a peer holding its window at zero resets the
+      connection after about 4 minutes, where unsent data would be probed
+      indefinitely
+- [ ] A busy driver fails `tcp_connect()` / `tcp6_connect()` with
+      `NET_ERR_BUSY`, while every later segment treats it as a loss and
+      retransmits
+- [ ] A frame buffer too small for a TCP header (< 54 B IPv4, < 74 B IPv6)
+      gives an MSS of 0 rather than refusing TCP at `net_init()`, which
+      accepts buffers of 14 B
+
+**Core** ([docs/design/mac-hal.md](docs/design/mac-hal.md),
+[docs/design/configuration.md](docs/design/configuration.md))
+- [ ] `net_init()` does not check that `rx.buf` and `tx.buf` do not overlap
+      (replies are built in tx while rx is still read)
+- [ ] `NET_USE_IPV4=0` only gates the Ethernet dispatch and is untested
+
+**TLS 1.3** ([docs/design/tls.md](docs/design/tls.md))
+- [ ] No API wipes a connection's secrets: one abandoned without an error,
+      or closed cleanly with close_notify, keeps its keys and `kx_priv`
+      until the next `tls_init()`
+- [ ] The `shared` secret on the stack is not wiped when `kx_shared()` fails
+      (client `on_server_hello()`, server `on_client_hello()`), nor the
+      server's `priv` when `kx_keygen()` fails — matters if a backend writes
+      partial output on failure
+- [ ] A crossed KeyUpdate: if the peer's says update_not_requested while our
+      `tls_key_update(t, 1)` is pending, ours still asks — allowed by RFC 8446
+      §4.6.3, but costs the peer an extra KeyUpdate
+
+**DHCPv4** ([docs/design/dhcpv4.md](docs/design/dhcpv4.md) §7)
+- [ ] No random 1–10 s delay before the first DISCOVER (RFC 2131 §4.4.1 SHOULD)
+- [ ] T1 and T2 are not randomized ("fuzzed", RFC 2131 §4.4.5)
+- [ ] The lease is timed from the ACK, not from the REQUEST it answers
+      (§4.4.5), so it ends later by a round-trip time
+- [ ] Renewing REQUESTs carry the Server Identifier (RFC 2131 §4.3.2: MUST NOT)
+- [ ] Unicast renewals are sent to the broadcast MAC
+- [ ] Any NAK with our xid drops the lease; its source is not checked
+- [ ] No event when REQUESTING gives up and discovery restarts (§3.1 SHOULD
+      notify the user); adding one changes the API
+- [ ] An ACK without a lease time leaves the client bound for good, like an
+      infinite lease
+- [ ] Server: always sets the broadcast flag and leaves `giaddr` 0, where
+      RFC 2131 Table 3 copies the client's values
+- [ ] REQ-DHCPv4-050, 051 and 078 require the init functions to check for a
+      576-byte buffer and return an error; they return `void` and check
+      nothing — fix the code or the requirements
+- [ ] REQ-DHCPv4-048/049 (ARP for the gateway's MAC) are unverified
+
+**TFTP** ([docs/design/tftp.md](docs/design/tftp.md) §9)
+- [ ] `parse_decimal()` accepts trailing junk: "512abc" reads as 512
+- [ ] A truncated ERROR (2–3 bytes) still ends the transfer, with code 0;
+      the coding rules' "reject, don't repair" says drop it
+- [ ] Options in an OACK we never requested, other than blksize, are ignored
+      rather than refused (RFC 2347)
+- [ ] The retransmission timer restarts on any datagram from the server's
+      TID, including ones that are ignored
+- [ ] The server TID uses 0 for "unknown", so a server answering from port 0
+      is mishandled
+- [ ] The 119-character cap on ERROR text in `put_error()` never applies —
+      every text is a short constant — and can go
+
+**CI** (`.github/workflows/fuzz.yml`)
+- [ ] The hardware fuzz job needs a board port — start-up code, linker
+      script, MAC driver and a `tcp_echo_demo` firmware target;
+      `cmake/arm-none-eabi.cmake` builds the libraries for it
 
 ## Language & Build
 
