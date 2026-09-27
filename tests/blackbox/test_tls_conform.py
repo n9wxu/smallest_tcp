@@ -23,6 +23,7 @@ when there is no openssl CLI.
 """
 
 import os
+import re
 import select
 import shutil
 import signal
@@ -44,6 +45,20 @@ PSK_ID = "device-1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CA = os.path.join(HERE, "..", "tls", "ca.pem")
 OPENSSL = shutil.which("openssl")
+
+# s_client -brief says "Server Temp Key" (OpenSSL 3.0) or "Peer Temp Key" (3.5, 3.6)
+TEMP_KEY = re.compile(r"(?:Peer|Server) Temp Key: ([^\n]*)")
+
+
+def temp_key(out):
+    """The (EC)DHE key s_client reports, e.g. "X25519, 253 bits"."""
+    m = TEMP_KEY.search(out)
+    return m.group(1) if m else ""
+
+
+def after_summary(out):
+    """s_client output after its connection summary: the echoed data."""
+    return re.split(r"(?:Peer|Server) Temp Key", out)[-1]
 
 # ── SUT management ─────────────────────────────────────────────────────────────
 
@@ -228,7 +243,8 @@ def s_client(sut, *args, line=b"hello", timeout=10):
             elif p.poll() is not None:
                 break
             # the echo: our line again after the connection summary
-            if b"\n" + line + b"\n" in out.split(b"Peer Temp Key")[-1]:
+            summary = re.split(rb"(?:Peer|Server) Temp Key", out)[-1]
+            if b"\n" + line + b"\n" in summary:
                 break
     finally:
         rc = p.poll()
@@ -404,15 +420,17 @@ def test_tls_021_records_coalesced(sut):
 
 # ── openssl s_client interop ───────────────────────────────────────────────────
 
-@pytest.mark.parametrize("group,shown", [("X25519", "X25519"),
-                                         ("P-256", "prime256v1")])
+@pytest.mark.parametrize("group,shown", [
+    ("X25519", ["X25519"]),
+    ("P-256", ["ECDH, prime256v1", "ECDH, P-256"])])
 def test_tls_030_groups(sut, group, shown):
     """REQ-TLS-004/005: x25519 and secp256r1 key exchange."""
     rc, out = s_client(sut, "-groups", group, "-brief")
     assert rc is None, out  # still connected when the echo came back
     assert "Protocol version: TLSv1.3" in out
-    assert f"Peer Temp Key: {'ECDH, ' if group == 'P-256' else ''}{shown}" in out
-    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+    # "ECDH, prime256v1" or "ECDH, P-256", by OpenSSL version
+    assert any(temp_key(out).startswith(k) for k in shown), out
+    assert "\nhello\n" in after_summary(out), out
 
 
 def test_tls_031_default_client_hello(sut):
@@ -421,14 +439,14 @@ def test_tls_031_default_client_hello(sut):
     rc, out = s_client(sut, "-brief")
     assert rc is None, out
     assert "Ciphersuite: TLS_AES_128_GCM_SHA256" in out
-    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+    assert "\nhello\n" in after_summary(out), out
 
 
 def test_tls_032_no_middlebox_compat(sut):
     """No session id: no dummy change_cipher_spec either way."""
     rc, out = s_client(sut, "-no_middlebox", "-brief")
     assert rc is None, out
-    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+    assert "\nhello\n" in after_summary(out), out
 
 
 @pytest.mark.parametrize("args", [
@@ -452,8 +470,8 @@ def test_tls_035_hello_retry(sut):
     assert out.count(">>> TLS 1.3, Handshake") >= 2
     assert len([l for l in out.splitlines()
                 if l.startswith(">>>") and l.endswith("ClientHello")]) == 2, out
-    assert "Peer Temp Key: X25519" in out
-    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+    assert temp_key(out).startswith("X25519")
+    assert "\nhello\n" in after_summary(out), out
 
 
 def test_tls_036_max_fragment_length(sut):
@@ -462,7 +480,7 @@ def test_tls_036_max_fragment_length(sut):
     line = b"m" * 3000
     rc, out = s_client(sut, "-maxfraglen", "512", "-brief", line=line)
     assert rc is None, out[:2000]
-    assert "\n" + "m" * 3000 + "\n" in out.split("Peer Temp Key")[1]
+    assert "\n" + "m" * 3000 + "\n" in after_summary(out)
 
 
 def test_tls_034_key_update(sut):
@@ -522,8 +540,8 @@ def test_tls_050_psk_openssl(sut):
                        "-brief")
     assert rc is None, out
     assert "No peer certificate" in out
-    assert "Peer Temp Key: X25519" in out
-    assert "\nhello\n" in out.split("Peer Temp Key")[1], out
+    assert temp_key(out).startswith("X25519")
+    assert "\nhello\n" in after_summary(out), out
 
 
 def test_tls_051_psk_wrong_key(sut):
@@ -539,7 +557,7 @@ def test_tls_052_psk_unknown_identity(sut):
     rc, out = s_client(sut, "-psk", PSK.hex(), "-psk_identity", "device-2",
                        "-brief")
     assert rc is None, out
-    assert "Peer certificate: CN=pyro-dead01.local" in out
+    assert re.search(r"Peer certificate: CN ?= ?pyro-dead01\.local", out), out
 
 
 @pytest.mark.skipif(not hasattr(ssl.SSLContext, "set_psk_client_callback"),

@@ -362,4 +362,6 @@ def test_tls_c43_psk_wrong_key(client):
         p.kill()
         p.communicate()
     assert rc == 2, out
-    assert "TLS alert 51" in out  # decrypt_error, from s_server
+    # the binder fails: decrypt_error from OpenSSL 3.5 and 3.6,
+    # illegal_parameter from 3.0
+    assert "TLS alert 51" in out or "TLS alert 47" in out, out
