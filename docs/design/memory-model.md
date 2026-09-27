@@ -143,8 +143,9 @@ For whole-build flash and RAM figures, see
 | `http_conn_init()` | Buffers present; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |
 | `http_server_init()` | At least one slot, a port, routes if `n_routes` | Every slot LISTENing on the port |
 | `mdns_init()` | Record count 1..`MDNS_MAX_RECORDS`; each record's type and names | STOPPED |
-| `dhcpv4_client_init()`, `dhcpv6_client_init()`, `tftp_client_init()` | — | Zeroed state, callbacks, tables |
-| `dhcpv4_server_init()` | — | Configuration and callback |
+| `dhcpv4_client_init()` | Non-NULL state and `net`; TX ≥ 342 and RX ≥ 590 bytes (`NET_ERR_BUF_TOO_SMALL`) | Zeroed state, callbacks, tables |
+| `dhcpv6_client_init()`, `tftp_client_init()` | — | Zeroed state, callbacks, tables |
+| `dhcpv4_server_init()` | Non-NULL state, `net` and configuration; TX and RX ≥ 342 bytes (`NET_ERR_BUF_TOO_SMALL`) | Configuration and callback |
 
 Protocol layers that have no state of their own (Ethernet, ARP, IPv4, ICMP,
 UDP) have no init function; their state is in `net_t`.

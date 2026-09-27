@@ -174,8 +174,9 @@ The application owns the struct (static, or wherever it fits);
 ### 3.3 Client API
 
 ```c
-void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_client_event_fn_t on_event,
-                        void *evt_ctx, const dhcpv4_opt_table_t *opts); /* opts may be NULL */
+net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
+                             dhcpv4_client_event_fn_t on_event, void *evt_ctx,
+                             const dhcpv4_opt_table_t *opts); /* opts may be NULL */
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);   /* DISCOVER now */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms);
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
@@ -280,7 +281,7 @@ static const dhcpv4_opt_entry_t app_opts[] = {
 };
 static const dhcpv4_opt_table_t opt_table = { app_opts, 2 };
 
-dhcpv4_client_init(&dhcp, on_dhcp_event, NULL, &opt_table);
+dhcpv4_client_init(&dhcp, &net, on_dhcp_event, NULL, &opt_table);
 ```
 
 After `DHCPV4_EVT_BOUND`, `g_tftp_server` is non-zero only if the server
@@ -337,8 +338,9 @@ typedef struct {
   void *evt_ctx;
 } dhcpv4_server_t;
 
-void dhcpv4_server_init(dhcpv4_server_t *s, const dhcpv4_server_cfg_t *cfg,
-                        dhcpv4_server_event_fn_t on_event, void *evt_ctx);
+net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
+                             const dhcpv4_server_cfg_t *cfg,
+                             dhcpv4_server_event_fn_t on_event, void *evt_ctx);
 void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
                          const uint8_t *src_mac, const uint8_t *data,
                          uint16_t len);  /* from the port-67 handler */
@@ -391,15 +393,22 @@ lease only with an address).  A reply is sent from `server_ip` via
 ## 5. Buffer Requirements
 
 - **TX:** both roles build messages in place and need
-  `UDP_PAYLOAD_OFFSET` + 300 = **342 bytes**.  With less, `dhcp_begin()`
-  returns NULL and nothing is sent — there is no runtime error; `init`
-  does not check the buffers.
+  `UDP_PAYLOAD_OFFSET` + 300 = **342 bytes** (`DHCPV4_CLIENT_TX_MIN`,
+  `DHCPV4_SERVER_TX_MIN`).
 - **RX:** the whole incoming frame must fit in `net->rx.buf`;
   `net_poll()` truncates a longer frame and IPv4 then drops it.  DHCP
-  messages are at least 300 bytes (a 342-byte frame), and RFC 2131 lets
-  a server send up to a 576-byte IP datagram (a 590-byte frame) to a
-  client that did not announce a larger Maximum DHCP Message Size — which
-  this client never does.  590 bytes of RX is the safe minimum.
+  messages are at least 300 bytes (a 342-byte frame), and RFC 2131 §2
+  requires a client to be prepared for a 576-byte IP datagram (a 590-byte
+  frame) from a server — the most a server may send a client that did
+  not announce a larger Maximum DHCP Message Size, which this client never
+  does.  The client needs **590 bytes** (`DHCPV4_CLIENT_RX_MIN`); the
+  server **342** (`DHCPV4_SERVER_RX_MIN`), and drops a longer request.
+
+`dhcpv4_client_init()` and `dhcpv4_server_init()` take the `net_t` and
+return `NET_ERR_BUF_TOO_SMALL` for smaller buffers (REQ-DHCPv4-050, 051,
+078).  They used to return nothing and check nothing: a TX buffer too
+small left every message unsent, silently, and an RX buffer under 590
+bytes dropped the longer replies a server may send.
 
 ---
 

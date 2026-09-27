@@ -47,7 +47,8 @@ Offset  Size  Field
 240    var    options (TLV format)
 ```
 
-Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
+Messages are at least 300 bytes; a client must be prepared to receive one
+of up to 576 bytes of IP datagram (RFC 2131 §2).
 
 ## Requirements
 
@@ -154,8 +155,8 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-050 | MUST | Minimum buffer size for DHCP: 576 bytes (RFC 2131 §2 minimum message size) | RFC 2131 §2 | TEST-DHCPv4-050 |
-| REQ-DHCPv4-051 | MUST | Verify buffer is large enough at DHCP init; return error if too small | Architecture | TEST-DHCPv4-051 |
+| REQ-DHCPv4-050 | MUST | Client frame buffers: TX ≥ 342 bytes (a 300-byte message after the Ethernet, IPv4 and UDP headers), RX ≥ 590 bytes (the 576-byte IP datagram a client must be prepared to receive) | RFC 2131 §2 | TEST-DHCPv4-050 |
+| REQ-DHCPv4-051 | MUST | `dhcpv4_client_init()` checks the frame buffers of the `net_t` it is given and returns `NET_ERR_BUF_TOO_SMALL` if either is too small | Architecture | TEST-DHCPv4-051 |
 
 ### Option Handler Callback API (dhcpv4_client.c)
 
@@ -209,7 +210,7 @@ Minimum message: 300 bytes (576 bytes recommended minimum per RFC 2131 §2).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-078 | MUST | Verify tx buffer ≥ 576 bytes at `dhcpv4_server_init()`; return error if too small | RFC 2131 §2, Architecture | TEST-DHCPv4-078 |
+| REQ-DHCPv4-078 | MUST | `dhcpv4_server_init()` checks that the TX and RX frame buffers hold a 300-byte message (342 bytes) and returns `NET_ERR_BUF_TOO_SMALL` otherwise | RFC 2131 §2, Architecture | TEST-DHCPv4-078 |
 
 ## Notes
 

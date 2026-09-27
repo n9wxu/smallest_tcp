@@ -323,9 +323,11 @@ starts with a unit test that fails on the current code.
       infinite lease
 - [ ] Server: always sets the broadcast flag and leaves `giaddr` 0, where
       RFC 2131 Table 3 copies the client's values
-- [ ] REQ-DHCPv4-050, 051 and 078 require the init functions to check for a
+- [x] REQ-DHCPv4-050, 051 and 078 require the init functions to check for a
       576-byte buffer and return an error; they return `void` and check
-      nothing — fix the code or the requirements
+      nothing — fix the code or the requirements — both: the init functions
+      take the `net_t` and check TX 342 / RX 590 (client) or 342 (server);
+      the requirements name those sizes
 - [ ] REQ-DHCPv4-048/049 (ARP for the gateway's MAC) are unverified
 
 **TFTP** ([docs/design/tftp.md](docs/design/tftp.md) §9)

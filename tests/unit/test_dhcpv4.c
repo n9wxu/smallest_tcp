@@ -224,16 +224,38 @@ static void setup(void) {
 /* REQ-DHCPv4-001: init zeros struct */
 TEST(test_dhcp_client_init_zeros_state) {
   setup();
-  dhcpv4_client_init(&cli, on_event, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
   ASSERT_EQ(cli.state, DHCPV4_CLI_INIT);
   ASSERT_EQ(cli.xid, 0u);
   ASSERT_EQ(cli.on_event, on_event);
 }
 
+/* REQ-DHCPv4-050, 051: the frame buffers must take a DHCP message — TX a
+   300-byte one, RX the 576-byte datagram a server may send (RFC 2131 §2) */
+TEST(test_dhcp_client_init_checks_buffers) {
+  setup();
+  ASSERT_EQ(DHCPV4_CLIENT_TX_MIN, 342);
+  ASSERT_EQ(DHCPV4_CLIENT_RX_MIN, 590);
+  ASSERT_EQ(dhcpv4_client_init(&cli, &net, NULL, NULL, NULL), NET_OK);
+  net.tx.capacity = DHCPV4_CLIENT_TX_MIN - 1;
+  ASSERT_EQ(dhcpv4_client_init(&cli, &net, NULL, NULL, NULL),
+            NET_ERR_BUF_TOO_SMALL);
+  net.tx.capacity = DHCPV4_CLIENT_TX_MIN;
+  net.rx.capacity = DHCPV4_CLIENT_RX_MIN - 1;
+  ASSERT_EQ(dhcpv4_client_init(&cli, &net, NULL, NULL, NULL),
+            NET_ERR_BUF_TOO_SMALL);
+  net.rx.capacity = DHCPV4_CLIENT_RX_MIN;
+  ASSERT_EQ(dhcpv4_client_init(&cli, &net, NULL, NULL, NULL), NET_OK);
+  ASSERT_EQ(dhcpv4_client_init(NULL, &net, NULL, NULL, NULL),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(dhcpv4_client_init(&cli, NULL, NULL, NULL, NULL),
+            NET_ERR_INVALID_PARAM);
+}
+
 /* REQ-DHCPv4-002, 008..017: DHCPDISCOVER sent on start */
 TEST(test_dhcp_client_start_sends_discover) {
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
 
   ASSERT_TRUE(send_count >= 1);
@@ -257,7 +279,7 @@ TEST(test_dhcp_client_start_sends_discover) {
 /* REQ-DHCPv4-016,017: DISCOVER goes to broadcast IP */
 TEST(test_dhcp_client_discover_to_broadcast) {
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
 
   ASSERT_TRUE(send_count >= 1);
@@ -275,7 +297,7 @@ TEST(test_dhcp_client_discover_to_broadcast) {
 /* REQ-DHCPv4-018..021: OFFER → sends REQUEST */
 TEST(test_dhcp_client_offer_triggers_request) {
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
 
   int discovers = send_count;
@@ -305,7 +327,7 @@ TEST(test_dhcp_client_offer_triggers_request) {
 /* REQ-DHCPv4-028..036: ACK → BOUND, IP configured, timers set */
 TEST(test_dhcp_client_ack_enters_bound) {
   setup();
-  dhcpv4_client_init(&cli, on_event, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
 
   uint32_t xid = cli.xid;
@@ -336,7 +358,7 @@ TEST(test_dhcp_client_ack_enters_bound) {
 /* REQ-DHCPv4-035,036: default T1/T2 when not present in ACK */
 TEST(test_dhcp_client_default_t1_t2) {
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
 
   uint32_t xid = cli.xid;
@@ -360,7 +382,7 @@ TEST(test_dhcp_client_default_t1_t2) {
 /* REQ-DHCPv4-037..038: NAK → restart INIT, IP cleared */
 TEST(test_dhcp_client_nak_restarts_init) {
   setup();
-  dhcpv4_client_init(&cli, on_event, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
 
   uint32_t xid = cli.xid;
@@ -405,7 +427,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
   static const dhcpv4_opt_entry_t entries[] = {{6, dns_handler_fn, NULL}};
   static const dhcpv4_opt_table_t tbl = {entries, 1};
 
-  dhcpv4_client_init(&cli, NULL, NULL, &tbl);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, &tbl);
   dhcpv4_client_start(&net, &cli);
   uint32_t xid = cli.xid;
 
@@ -454,7 +476,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
 /* REQ-DHCPv4-058: NULL opt_table — no handlers, still applies mandatory opts */
 TEST(test_dhcp_client_null_opt_table) {
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL); /* NULL opt_table */
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL); /* NULL opt_table */
   dhcpv4_client_start(&net, &cli);
   uint32_t xid = cli.xid;
 
@@ -477,7 +499,7 @@ TEST(test_dhcp_client_null_opt_table) {
 /* REQ-DHCPv4-045: retransmit DISCOVER after timer expiry */
 TEST(test_dhcp_client_retransmit_discover) {
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
   int first = send_count;
 
@@ -516,7 +538,7 @@ TEST(test_dhcp_client_discover_backoff) {
   static const uint32_t base_ms[] = {4000, 8000, 16000, 32000, 64000, 64000};
   uint8_t i;
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
   for (i = 0; i < 6; i++)
     ASSERT_TRUE(within_a_second(ms_until_sent(70000u), base_ms[i]));
@@ -530,7 +552,7 @@ TEST(test_dhcp_client_backoff_randomised) {
   for (seed = 1; seed <= 8; seed++) {
     setup();
     net_random_seed(&net, seed * 0x9E3779B9u);
-    dhcpv4_client_init(&cli, NULL, NULL, NULL);
+    dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
     dhcpv4_client_start(&net, &cli);
     waited = ms_until_sent(10000u);
     ASSERT_TRUE(within_a_second(waited, 4000u));
@@ -556,7 +578,7 @@ TEST(test_dhcp_client_requesting_gives_up) {
   uint32_t xid;
   uint8_t i;
   setup();
-  dhcpv4_client_init(&cli, NULL, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
   xid = cli.xid;
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, xid, NET_IPV4(10, 0, 0, 50),
@@ -585,7 +607,7 @@ static uint32_t clock_s; /* seconds since bind_lease() */
 static void bind_lease(uint32_t lease, uint32_t t1, uint32_t t2) {
   uint8_t msg[DHCP_MIN_LEN + 64];
   uint16_t mlen;
-  dhcpv4_client_init(&cli, on_event, NULL, NULL);
+  dhcpv4_client_init(&cli, &net, on_event, NULL, NULL);
   dhcpv4_client_start(&net, &cli);
   mlen = make_server_msg(msg, DHCP_MSG_OFFER, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, lease, 0, 0, 0, 0);
@@ -765,10 +787,33 @@ static uint16_t make_client_msg(uint8_t *buf, uint8_t msg_type, uint32_t xid,
   return (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
 }
 
+/* REQ-DHCPv4-078: the frame buffers must take a DHCP message both ways */
+TEST(test_dhcp_server_init_checks_buffers) {
+  setup();
+  ASSERT_EQ(DHCPV4_SERVER_TX_MIN, 342);
+  ASSERT_EQ(DHCPV4_SERVER_RX_MIN, 342);
+  ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL), NET_OK);
+  net.tx.capacity = DHCPV4_SERVER_TX_MIN - 1;
+  ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL),
+            NET_ERR_BUF_TOO_SMALL);
+  net.tx.capacity = DHCPV4_SERVER_TX_MIN;
+  net.rx.capacity = DHCPV4_SERVER_RX_MIN - 1;
+  ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL),
+            NET_ERR_BUF_TOO_SMALL);
+  net.rx.capacity = DHCPV4_SERVER_RX_MIN;
+  ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL), NET_OK);
+  ASSERT_EQ(dhcpv4_server_init(&srv, &net, NULL, NULL, NULL),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(dhcpv4_server_init(NULL, &net, &server_cfg, NULL, NULL),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(dhcpv4_server_init(&srv, NULL, &server_cfg, NULL, NULL),
+            NET_ERR_INVALID_PARAM);
+}
+
 /* REQ-DHCPv4-064,065: DISCOVER → OFFER */
 TEST(test_dhcp_server_offer_on_discover) {
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01};
   uint8_t msg[DHCP_MIN_LEN + 32];
@@ -801,7 +846,7 @@ TEST(test_dhcp_server_offer_on_discover) {
 /* REQ-DHCPv4-068: REQUEST with correct IP → ACK */
 TEST(test_dhcp_server_ack_on_correct_request) {
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02};
   uint8_t msg[DHCP_MIN_LEN + 32];
@@ -822,7 +867,7 @@ TEST(test_dhcp_server_ack_on_correct_request) {
 /* REQ-DHCPv4-069: REQUEST with wrong IP → NAK */
 TEST(test_dhcp_server_nak_on_wrong_request) {
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x03};
   uint8_t msg[DHCP_MIN_LEN + 32];
@@ -843,7 +888,7 @@ TEST(test_dhcp_server_nak_on_wrong_request) {
 /* REQ-DHCPv4-070: RELEASE → silently ignored */
 TEST(test_dhcp_server_release_ignored) {
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, NULL, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x04};
   uint8_t msg[DHCP_MIN_LEN + 32];
@@ -858,7 +903,7 @@ TEST(test_dhcp_server_release_ignored) {
 /* REQ-DHCPv4-073: invalid op → ignored */
 TEST(test_dhcp_server_invalid_op_ignored) {
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, NULL, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x05};
   uint8_t msg[DHCP_MIN_LEN + 32];
@@ -873,7 +918,7 @@ TEST(test_dhcp_server_invalid_op_ignored) {
 /* REQ-DHCPv4-073: wrong magic cookie → ignored */
 TEST(test_dhcp_server_bad_magic_ignored) {
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, NULL, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x06};
   uint8_t msg[DHCP_MIN_LEN + 32];
@@ -909,7 +954,7 @@ TEST(test_dhcp_server_nak_is_bare) {
   uint16_t mlen;
   const uint8_t *d;
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
   mlen = make_client_msg(msg, DHCP_MSG_REQUEST, 0x5EED0001u, chaddr, 0,
                          server_cfg.server_ip);
   net_write32be(msg + DHCP_OFF_CIADDR, NET_IPV4(192, 168, 1, 100));
@@ -937,7 +982,7 @@ TEST(test_dhcp_server_inform_ack_has_no_lease) {
   uint16_t mlen, opt_len;
   const uint8_t *d;
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
   mlen = make_client_msg(msg, DHCP_MSG_INFORM, 0x5EED0002u, chaddr, 0, 0);
   net_write16be(msg + DHCP_OFF_FLAGS, 0);
   net_write32be(msg + DHCP_OFF_CIADDR, NET_IPV4(10, 0, 0, 77));
@@ -966,7 +1011,7 @@ TEST(test_dhcp_server_renewal_ack_echoes_ciaddr) {
   uint16_t mlen, opt_len;
   const uint8_t *d;
   setup();
-  dhcpv4_server_init(&srv, &server_cfg, on_event, NULL);
+  dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
   mlen = make_client_msg(msg, DHCP_MSG_REQUEST, 0x5EED0003u, chaddr, 0, 0);
   net_write32be(msg + DHCP_OFF_CIADDR, server_cfg.offered_ip);
 
@@ -986,6 +1031,7 @@ TEST(test_dhcp_server_renewal_ack_echoes_ciaddr) {
 int main(void) {
   fprintf(stderr, "=== test_dhcpv4 ===\n");
   RUN_TEST(test_dhcp_client_init_zeros_state);
+  RUN_TEST(test_dhcp_client_init_checks_buffers);
   RUN_TEST(test_dhcp_client_start_sends_discover);
   RUN_TEST(test_dhcp_client_discover_to_broadcast);
   RUN_TEST(test_dhcp_client_offer_triggers_request);
@@ -1002,6 +1048,7 @@ int main(void) {
   RUN_TEST(test_dhcp_client_renewal_restarts_lease);
   RUN_TEST(test_dhcp_client_infinite_lease);
   RUN_TEST(test_dhcp_client_long_lease);
+  RUN_TEST(test_dhcp_server_init_checks_buffers);
   RUN_TEST(test_dhcp_server_offer_on_discover);
   RUN_TEST(test_dhcp_server_ack_on_correct_request);
   RUN_TEST(test_dhcp_server_nak_on_wrong_request);

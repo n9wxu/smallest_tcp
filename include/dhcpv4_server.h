@@ -22,6 +22,12 @@
 extern "C" {
 #endif
 
+/** The smallest frame buffers the server works with: a 300-byte message
+ *  (RFC 2131 §2) after the Ethernet, IPv4 and UDP headers, both ways.  A
+ *  request larger than the RX buffer is truncated and dropped. */
+#define DHCPV4_SERVER_TX_MIN 342
+#define DHCPV4_SERVER_RX_MIN 342
+
 /* Server event codes */
 #define DHCPV4_SRV_EVT_OFFER 1 /**< DHCPOFFER sent */
 #define DHCPV4_SRV_EVT_ACK 2   /**< DHCPACK sent */
@@ -60,12 +66,16 @@ typedef struct {
  * Initialise the server.  cfg must remain valid for the server's lifetime.
  *
  * @param s         Application-owned server state.
+ * @param net       The interface, whose frame buffers must hold
+ *                  DHCPV4_SERVER_TX_MIN and DHCPV4_SERVER_RX_MIN bytes.
  * @param cfg       Server configuration (const in flash, owned by caller).
  * @param on_event  Called on OFFER/ACK/NAK (may be NULL).
  * @param evt_ctx   Passed to on_event.
+ * @return NET_OK, NET_ERR_INVALID_PARAM, or NET_ERR_BUF_TOO_SMALL.
  */
-void dhcpv4_server_init(dhcpv4_server_t *s, const dhcpv4_server_cfg_t *cfg,
-                        dhcpv4_server_event_fn_t on_event, void *evt_ctx);
+net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
+                             const dhcpv4_server_cfg_t *cfg,
+                             dhcpv4_server_event_fn_t on_event, void *evt_ctx);
 
 /**
  * Feed an incoming UDP payload (port 67) to the server.

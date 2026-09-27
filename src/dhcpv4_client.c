@@ -232,12 +232,20 @@ static void lease_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
   }
 }
 
-void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_client_event_fn_t on_event,
-                        void *evt_ctx, const dhcpv4_opt_table_t *opts) {
+/* REQ-DHCPv4-050, 051 */
+net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
+                             dhcpv4_client_event_fn_t on_event, void *evt_ctx,
+                             const dhcpv4_opt_table_t *opts) {
+  if (!c || !net)
+    return NET_ERR_INVALID_PARAM;
+  if (net->tx.capacity < DHCPV4_CLIENT_TX_MIN ||
+      net->rx.capacity < DHCPV4_CLIENT_RX_MIN)
+    return NET_ERR_BUF_TOO_SMALL;
   memset(c, 0, sizeof(*c));
   c->on_event = on_event;
   c->evt_ctx = evt_ctx;
   c->opt_table = opts;
+  return NET_OK;
 }
 
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {

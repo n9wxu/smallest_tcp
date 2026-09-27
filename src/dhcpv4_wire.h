@@ -27,7 +27,8 @@
 #define DHCP_OFF_MAGIC 236
 #define DHCP_OFF_OPTIONS 240
 /** Messages are padded to this length (RFC 2131 §2); every message this
- *  library builds fits in it. */
+ *  library builds fits in it — a frame of DHCPV4_CLIENT_TX_MIN or
+ *  DHCPV4_SERVER_TX_MIN bytes. */
 #define DHCP_MIN_LEN 300
 
 #define DHCP_MAGIC 0x63825363u

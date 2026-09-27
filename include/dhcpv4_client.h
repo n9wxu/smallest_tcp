@@ -5,8 +5,8 @@
  * Integrated like every protocol module (docs/integrating-modules.md):
  * dhcpv4_client_init(), a UDP port-68 handler calling
  * dhcpv4_client_input(), dhcpv4_client_start(), dhcpv4_client_tick().
- * Messages are built in net->tx.buf; they need a TX buffer of at least
- * 342 bytes.
+ * Messages are built in net->tx.buf; dhcpv4_client_init() checks that the
+ * frame buffers are large enough.
  */
 
 #ifndef DHCPV4_CLIENT_H
@@ -19,6 +19,13 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** The smallest frame buffers the client works with: TX a 300-byte
+ *  message (RFC 2131 §2) after the Ethernet, IPv4 and UDP headers; RX the
+ *  576-byte datagram a server may send a client that did not announce a
+ *  larger Maximum DHCP Message Size (this one never does). */
+#define DHCPV4_CLIENT_TX_MIN 342
+#define DHCPV4_CLIENT_RX_MIN 590
 
 /* DHCP client states */
 #define DHCPV4_CLI_INIT 0       /**< No address; will send DISCOVER */
@@ -99,12 +106,16 @@ typedef struct {
  * Initialise client state.  Call before dhcpv4_client_start().
  *
  * @param c         Application-owned client state.
+ * @param net       The interface, whose frame buffers must hold
+ *                  DHCPV4_CLIENT_TX_MIN and DHCPV4_CLIENT_RX_MIN bytes.
  * @param on_event  Called on BOUND/RENEWED/EXPIRED/NAK (may be NULL).
  * @param evt_ctx   Opaque pointer passed to on_event.
  * @param opts      Option handler table (may be NULL).
+ * @return NET_OK, NET_ERR_INVALID_PARAM, or NET_ERR_BUF_TOO_SMALL.
  */
-void dhcpv4_client_init(dhcpv4_client_t *c, dhcpv4_client_event_fn_t on_event,
-                        void *evt_ctx, const dhcpv4_opt_table_t *opts);
+net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
+                             dhcpv4_client_event_fn_t on_event, void *evt_ctx,
+                             const dhcpv4_opt_table_t *opts);
 
 /**
  * Begin DHCP discovery.  Sends DHCPDISCOVER and starts the retransmit timer.

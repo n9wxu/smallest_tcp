@@ -80,7 +80,8 @@ int main(int argc, char *argv[]) {
   if (demo_net_open(&net, &nic, argc > 1 ? argv[1] : NULL, "dhcp_echo") != 0)
     return 1;
   udp_set_ports(&net, udp_ports, 2);
-  dhcpv4_client_init(&dhcp, on_dhcp_event, NULL, NULL);
+  if (dhcpv4_client_init(&dhcp, &net, on_dhcp_event, NULL, NULL) != NET_OK)
+    return 1;
   dhcpv4_client_start(&net, &dhcp);
   printf("[DHCP] Discovery started\n");
   fflush(stdout);

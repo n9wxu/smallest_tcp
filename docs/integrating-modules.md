@@ -49,8 +49,8 @@ replies are built in `net->tx.buf`, a separate buffer.
 
 | Module | Header, CMake target | State | Init | Traffic → input | Start | Tick |
 |---|---|---|---|---|---|---|
-| DHCPv4 client | `dhcpv4_client.h`, `smallest_tcp::dhcpv4_client` | `dhcpv4_client_t` | `dhcpv4_client_init(c, on_event, ctx, opts)` | UDP **68** → `dhcpv4_client_input(net, c, src_ip, payload, len)` | `dhcpv4_client_start(net, c)` | `dhcpv4_client_tick(net, c, ms)` |
-| DHCPv4 server | `dhcpv4_server.h`, `smallest_tcp::dhcpv4_server` | `dhcpv4_server_t`, `const dhcpv4_server_cfg_t` | `dhcpv4_server_init(s, cfg, on_event, ctx)` | UDP **67** → `dhcpv4_server_input(net, s, src_ip, src_mac, payload, len)` | — (answers requests) | — |
+| DHCPv4 client | `dhcpv4_client.h`, `smallest_tcp::dhcpv4_client` | `dhcpv4_client_t` | `dhcpv4_client_init(c, net, on_event, ctx, opts)` | UDP **68** → `dhcpv4_client_input(net, c, src_ip, payload, len)` | `dhcpv4_client_start(net, c)` | `dhcpv4_client_tick(net, c, ms)` |
+| DHCPv4 server | `dhcpv4_server.h`, `smallest_tcp::dhcpv4_server` | `dhcpv4_server_t`, `const dhcpv4_server_cfg_t` | `dhcpv4_server_init(s, net, cfg, on_event, ctx)` | UDP **67** → `dhcpv4_server_input(net, s, src_ip, src_mac, payload, len)` | — (answers requests) | — |
 | DHCPv6 client | `dhcpv6_client.h`, `smallest_tcp::dhcpv6_client` | `dhcpv6_client_t` | `dhcpv6_client_init(c, on_event, ctx, opts)` | UDP over IPv6 **546** (udp6 table) → `dhcpv6_client_input(net, c, src_ip, payload, len)` | `dhcpv6_client_start(net, c, mode)` | `dhcpv6_client_tick(net, c, ms)` |
 | TFTP client | `tftp.h`, `smallest_tcp::tftp` | `tftp_client_t` | `tftp_client_init(c, local_port, on_data, on_done, ctx)` | UDP **`local_port`** (your choice) → `tftp_client_input(net, c, src_ip, src_mac, src_port, payload, len)` | `tftp_client_get(net, c, server_ip, server_mac, filename, blksize_opt)` | `tftp_client_tick(net, c, ms)` |
 | mDNS / DNS-SD responder | `mdns.h`, `smallest_tcp::mdns` | `mdns_t`, `const mdns_record_t[]` | `mdns_init(m, net, records, count, on_conflict, ctx)` | UDP **5353** → `mdns_input(m, src_ip, src_mac, src_port, payload, len)`; over IPv6 also udp6 **5353** → `mdns_input6(...)` | `mdns_start(m)` | `mdns_tick(m, ms)` |
@@ -182,8 +182,9 @@ int main(void) {
   udp_set_ports(&net, udp_ports, sizeof udp_ports / sizeof udp_ports[0]);
 
   /* 2. The modules: init, then start */
-  dhcpv4_client_init(&dhcp, on_dhcp, NULL, NULL);
-  mdns_init(&mdns, &net, records, 1, NULL, NULL);
+  if (dhcpv4_client_init(&dhcp, &net, on_dhcp, NULL, NULL) != NET_OK ||
+      mdns_init(&mdns, &net, records, 1, NULL, NULL) != NET_OK)
+    return 1;
   dhcpv4_client_start(&net, &dhcp);
 
   /* 3. The main loop */
