@@ -33,6 +33,9 @@ const uint8_t mdns_group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
 #if NET_MAX_MCAST_GROUPS < 1
 #error "mDNS needs NET_MAX_MCAST_GROUPS >= 1 to receive 224.0.0.251"
 #endif
+#if NET_USE_IPV6 && NET_MAX_MCAST6_GROUPS < 1
+#error "mDNS needs NET_MAX_MCAST6_GROUPS >= 1 to receive ff02::fb"
+#endif
 
 #define BIT(i) ((uint32_t)1u << (i))
 

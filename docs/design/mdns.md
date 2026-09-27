@@ -55,7 +55,7 @@ mdns.h / mdns.c           — responder state machine, answering, DNS-SD composi
 
 All three build into the optional `smallest_tcp_mdns` library (`smallest_tcp::mdns`).  They rely on core-stack features:
 
-- **Multicast receive:** `net_t` holds a fixed table of joined IPv4 groups (`NET_MAX_MCAST_GROUPS`, default 1; `mdns.c` refuses to compile with 0).  `eth_input()` accepts the 01:00:5E MAC of a joined group and `ipv4_input()` the group address; unjoined groups and aliased MACs are dropped.  No ICMP errors or echo replies are ever sent for multicast destinations (RFC 1122 §3.2.2).  IPv6 groups are joined with `ipv6_mcast_join()` ([ipv6.md](ipv6.md#9-mld-and-multicast-groups-stage-6a)).
+- **Multicast receive:** `net_t` holds a fixed table of joined IPv4 groups (`NET_MAX_MCAST_GROUPS`, default 1; `mdns.c` refuses to compile with 0).  `eth_input()` accepts the 01:00:5E MAC of a joined group and `ipv4_input()` the group address; unjoined groups and aliased MACs are dropped.  No ICMP errors or echo replies are ever sent for multicast destinations (RFC 1122 §3.2.2).  IPv6 groups are joined with `ipv6_mcast_join()` ([ipv6.md](ipv6.md#9-mld-and-multicast-groups-stage-6a)); a dual-stack `mdns.c` likewise refuses to compile with `NET_MAX_MCAST6_GROUPS` 0.
 - **Per-packet TTL + in-place send:** `udp_send_inplace()` / `udp6_send_inplace()` send a payload the caller already wrote at `UDP_PAYLOAD_OFFSET` / `UDP6_PAYLOAD_OFFSET` in `net->tx.buf`, with an explicit TTL or Hop Limit (255 for mDNS, RFC 6762 §11).
 - **Randomness:** the probe and response delays come from `net_random_below()`, the stack's one generator (§12).
 
@@ -243,7 +243,7 @@ A PTR query returns the PTR in Answer and SRV + TXT + A (and AAAA) in Additional
 5. **Hardware MACs:** TAP and BPF deliver every frame.  A MAC with a multicast hash filter (e.g. ENC28J60) must be configured to pass 01:00:5E:00:00:FB, and 33:33:00:00:00:FB for IPv6.
 6. **TTL / Hop Limit 255** on every mDNS packet, including unicast responses (RFC 6762 §11).
 7. **Source address:** `net->ipv4_addr` over IPv4; over IPv6, `ipv6_src_for()` — the link-local address, the group being link-scope.  Start the responder once the IPv4 address is known (static, or on the DHCP BOUND event).
-8. **Configuration:** dual-stack mDNS needs `NET_MAX_MCAST6_GROUPS` ≥ 1 (the default).  Unlike the IPv4 table this is not checked at compile time: with 0, `ipv6_mcast_join()` fails and nothing arrives on ff02::fb.
+8. **Configuration:** dual-stack mDNS needs `NET_MAX_MCAST6_GROUPS` ≥ 1 (the default), as it needs `NET_MAX_MCAST_GROUPS` ≥ 1 for IPv4.  Both are checked at compile time: without a slot `ipv6_mcast_join()` would fail and nothing would arrive on ff02::fb, so `mdns.c` stops the build with `#error` rather than produce a responder that hears nothing.  Two CTest cases (`mdns_needs_ipv4_group_slot`, `mdns_needs_ipv6_group_slot` in `tests/CMakeLists.txt`) compile `mdns.c` with each count at 0 and pass when the compiler reports the error.
 
 ---
 
@@ -287,7 +287,7 @@ mdns_stop(&mdns);               /* goodbye + IGMP/MLD leave */
 
 `mdns_tick()` takes elapsed milliseconds, like `net_tick()` and `dhcpv4_client_tick()`.  The conflict callback may rename (change the strings the record table points at) and call `mdns_start()` directly: the responder enters CONFLICT before calling back and does nothing more with the message afterwards.  `demo/mdns_demo/main.c` is a complete, dual-stack example.
 
-Random delays — the 0–250 ms probe start and the 20–120 ms response delay — come from `net_random_below()`, which scales rather than reduces with `%` so Cortex-M0 builds do not link a software divide.  The generator is the stack's one xorshift32 (`net_random()`), seeded from the MAC by `net_init()`; an application with a real entropy source adds it with `net_random_seed()`.  mDNS used to keep its own generator, seeded from the MAC and the IPv4 address.
+Random delays — the 0–250 ms probe start and the 20–120 ms response delay — come from `net_random_below()`, which scales rather than reduces with `%` so Cortex-M0 builds do not link a software divide.  The generator is the stack's one keyed hash (`net_random()`: HalfSipHash-2-4 of an output count, [architecture.md §9](../architecture.md#9-randomness)), keyed from the MAC by `net_init()`; an application with a real entropy source adds it with `net_random_seed()`.  mDNS used to keep its own generator, seeded from the MAC and the IPv4 address.
 
 ---
 

@@ -125,3 +125,21 @@ if(SMALLEST_TCP_TLS)
     target_link_libraries(test_tls_client PRIVATE
         smallest_tcp_tls smallest_tcp_tls_mbedtls)
 endif()
+
+# ── Configurations mdns.c must refuse ─────────────────────────────────
+#
+# Without a group slot mDNS cannot receive its queries: a build error,
+# not a responder that silently hears nothing.  Each test passes when the
+# compiler reports the configuration error.
+
+function(add_config_rejected_test name source message)
+    add_test(NAME ${name} COMMAND ${CMAKE_C_COMPILER} -std=c99 -fsyntax-only
+        -I${PROJECT_SOURCE_DIR}/include ${ARGN} ${PROJECT_SOURCE_DIR}/${source})
+    set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${message}")
+endfunction()
+
+add_config_rejected_test(mdns_needs_ipv4_group_slot src/mdns.c
+    "needs NET_MAX_MCAST_GROUPS >= 1" -DNET_MAX_MCAST_GROUPS=0)
+add_config_rejected_test(mdns_needs_ipv6_group_slot src/mdns.c
+    "needs NET_MAX_MCAST6_GROUPS >= 1"
+    -DNET_USE_IPV6=1 -DNET_MAX_MCAST6_GROUPS=0)
