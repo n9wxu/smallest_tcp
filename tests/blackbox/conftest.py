@@ -103,6 +103,21 @@ def pytest_addoption(parser):
                      help="Path to tls_client_demo; the TLS client tests run it "
                           "against servers on --our-ip (skipped when not given)")
 
+    # DTLS 1.3 blackbox options: the peer is wolfSSL (OpenSSL and Mbed TLS
+    # have no DTLS 1.3), its example client and server
+    parser.addoption("--dtls-sut-bin", default=None,
+                     help="Path to dtls_echo_demo; the DTLS server tests "
+                          "launch it (skipped when not given)")
+    parser.addoption("--dtls-client-bin", default=None,
+                     help="Path to dtls_client_demo; the DTLS client tests "
+                          "run it against wolfSSL's server on --our-ip")
+    parser.addoption("--wolfssl-client", default=None,
+                     help="wolfSSL's examples/client/client, built with "
+                          "DTLS 1.3 (interop tests skipped when not given)")
+    parser.addoption("--wolfssl-server", default=None,
+                     help="wolfSSL's examples/server/server, built with "
+                          "DTLS 1.3 (client tests skipped when not given)")
+
 
 # ── Context object ─────────────────────────────────────────────────────────────
 

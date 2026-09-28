@@ -104,3 +104,23 @@ if(SMALLEST_TCP_TLS)
             TLS_CLIENT_DEFAULT_CA="${PROJECT_SOURCE_DIR}/tests/tls/ca.pem")
     endif()
 endif()
+
+# ── dtls_echo, dtls_client (DTLS 1.3 over UDP — blackbox SUTs) ────────
+
+if(SMALLEST_TCP_TLS AND SMALLEST_TCP_DTLS AND SMALLEST_TCP_IPV4 AND
+   SMALLEST_TCP_UDP)
+    add_executable(dtls_echo_demo dtls_echo/main.c)
+    add_demo_with_driver(dtls_echo_demo)
+    target_link_libraries(dtls_echo_demo PRIVATE
+        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+    target_compile_definitions(dtls_echo_demo PRIVATE
+        DTLS_ECHO_DEFAULT_CERT="${PROJECT_SOURCE_DIR}/tests/tls/server.pem"
+        DTLS_ECHO_DEFAULT_KEY="${PROJECT_SOURCE_DIR}/tests/tls/server.key")
+
+    add_executable(dtls_client_demo dtls_client/main.c)
+    add_demo_with_driver(dtls_client_demo)
+    target_link_libraries(dtls_client_demo PRIVATE
+        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+    target_compile_definitions(dtls_client_demo PRIVATE
+        DTLS_CLIENT_DEFAULT_CA="${PROJECT_SOURCE_DIR}/tests/tls/ca.pem")
+endif()

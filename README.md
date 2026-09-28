@@ -311,6 +311,29 @@ curl --cacert tests/tls/ca.pem https://10.0.0.2/
 
 The certificates and keys in `tests/tls` are for testing only.
 
+#### Option D3 — DTLS 1.3 suites
+
+The peer is wolfSSL — OpenSSL and Mbed TLS have no DTLS 1.3 —
+built from its pinned release by `tests/blackbox/build_wolfssl.sh`, which
+prints the paths of its example client and server.  The server suite starts
+`dtls_echo_demo` (UDP port 4433) itself; the client suite runs
+`dtls_client_demo` per test against wolfSSL's server on `--our-ip`:
+
+```bash
+eval "$(tests/blackbox/build_wolfssl.sh build/wolfssl)"  # WOLFSSL_CLIENT, WOLFSSL_SERVER
+cmake --build build --target dtls_echo_demo dtls_client_demo
+sudo python3 -m pytest tests/blackbox/test_dtls_conform.py \
+    tests/blackbox/test_dtls_client_conform.py \
+    --iface tap0 --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \
+    --dtls-sut-bin ./build/demo/dtls_echo_demo \
+    --dtls-client-bin ./build/demo/dtls_client_demo \
+    --wolfssl-client "$WOLFSSL_CLIENT" --wolfssl-server "$WOLFSSL_SERVER" -v
+
+# By hand (in wolfSSL's source tree, which its examples insist on):
+sudo ./build/demo/dtls_echo_demo &
+./examples/client/client -u -v 4 -h 10.0.0.2 -p 4433 -A <repo>/tests/tls/ca.pem -x
+```
+
 #### Option E — any suite over the raw-socket driver (no TUN)
 
 Every demo takes its interface as the first argument: `tap0` (the default) or
@@ -326,7 +349,7 @@ sudo tests/blackbox/run_blackbox.sh --sut-bin ./build/demo/tcp_echo_demo \
 sudo tests/blackbox/sut_net.sh down raw
 ```
 
-The suites that launch their own SUT (DHCPv4, mDNS, HTTP, TLS) take
+The suites that launch their own SUT (DHCPv4, mDNS, HTTP, TLS, DTLS) take
 `--sut-iface "$SUT_IF"`; the interop scripts take it as a second argument.  Leave
 out `--rst-drop` for the HTTP suite, as in Option D.  On a real network:
 `sudo ./build/demo/http_demo raw:eth0` — the driver keeps the interface in

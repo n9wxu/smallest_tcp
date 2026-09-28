@@ -139,6 +139,25 @@ else
   echo "── TLS suites skipped: no $BUILD/demo/tls_echo_demo"
 fi
 
+# ── DTLS 1.3 server and client, against wolfSSL ──────────────────────────────
+# The peer is built by tests/blackbox/build_wolfssl.sh (WOLFSSL_DIR, default
+# build/wolfssl).  The host side of these suites is the Mac's own 10.0.0.1.
+WOLF=$(ls -d "${WOLFSSL_DIR:-build/wolfssl}"/wolfssl-*-stable/build/examples \
+  2>/dev/null | tail -1)
+if [[ -x "$BUILD/demo/dtls_echo_demo" && -n "$WOLF" ]]; then
+  run_suite "test_dtls_conform.py" "$HERE/test_dtls_conform.py" \
+    --iface "$IFACE" --sut-ip "$SUT_IP" --our-ip 10.0.0.1 \
+    --dtls-sut-bin "$BUILD/demo/dtls_echo_demo" \
+    --wolfssl-client "$WOLF/client/client"
+  run_suite "test_dtls_client_conform.py" "$HERE/test_dtls_client_conform.py" \
+    --iface "$IFACE" --our-ip 10.0.0.1 \
+    --dtls-client-bin "$BUILD/demo/dtls_client_demo" \
+    --wolfssl-server "$WOLF/server/server"
+else
+  echo "── DTLS suites skipped: no $BUILD/demo/dtls_echo_demo, or no wolfSSL" \
+    "(tests/blackbox/build_wolfssl.sh)"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════════════════════════"

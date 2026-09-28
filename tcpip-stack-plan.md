@@ -281,7 +281,7 @@ the TLS stream one.
       flights, fragmentation and reassembly, the timer, ACKs, the cookie
 - [x] Stage 5: after the handshake — application data, KeyUpdate with
       ACKs, close_notify, `dtls_release()`
-- [ ] Stage 6: demos, blackbox and interop with wolfSSL (OpenSSL and Mbed
+- [x] Stage 6: demos, blackbox and interop with wolfSSL (OpenSSL and Mbed
       TLS have no DTLS 1.3), CI
 - [ ] Stage 7: sizes (`make arm-size-dtls`), documentation
 - Design: [docs/design/dtls.md](docs/design/dtls.md); requirements:

@@ -6,6 +6,7 @@ They build raw Ethernet+IP+TCP frames using the phantom source IP so the
 local kernel's TCP stack never sees the replies.
 """
 
+import os
 import threading
 import time
 from scapy.all import (
@@ -573,3 +574,16 @@ def sut_argv(binary, sut_iface=None):
     """Command line for a demo SUT: argv[1] names its interface and driver
     (tap0, raw:veth-sut, feth1 ...); None keeps the demo's default."""
     return [binary] + ([sut_iface] if sut_iface else [])
+
+
+def wolfssl_root(binary):
+    """The source tree a wolfSSL example was built in: its programs must run
+    there (they look for ./certs, and refuse to start elsewhere)."""
+    d = os.path.dirname(os.path.abspath(binary))
+    while d != os.path.dirname(d):
+        if os.path.isdir(os.path.join(d, "certs")) and \
+                os.path.isdir(os.path.join(d, "wolfssl")):
+            return d
+        d = os.path.dirname(d)
+    raise RuntimeError(f"no wolfSSL source tree above {binary}")
+

@@ -700,6 +700,84 @@ jobs:
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+  # ── DTLS 1.3 blackbox tests (Linux, once per MAC driver) ─────────────
+  # The peer is wolfSSL (OpenSSL and Mbed TLS have no DTLS 1.3), built from
+  # its pinned release by tests/blackbox/build_wolfssl.sh and cached.
+  blackbox-dtls:
+    name: Blackbox — DTLS 1.3 server + client vs wolfSSL (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    needs: cmake-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { driver: tap, label: TAP }
+          - { driver: raw, label: raw socket }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-pip iproute2
+
+      - name: Install Python deps
+        run: |
+          sudo pip3 install --break-system-packages \
+            -r tests/blackbox/requirements.txt \
+            pytest-github-actions-annotate-failures
+
+      - name: Cache wolfSSL
+        uses: actions/cache@v4
+        with:
+          path: build/wolfssl
+          key: wolfssl-${{ runner.os }}-${{ hashFiles('tests/blackbox/build_wolfssl.sh') }}
+
+      - name: Build wolfSSL (the DTLS 1.3 peer)
+        run: tests/blackbox/build_wolfssl.sh build/wolfssl | tee -a "$GITHUB_ENV"
+
+      - name: Build the DTLS demos
+        run: |
+          cmake -S . -B build
+          cmake --build build --target dtls_echo_demo dtls_client_demo
+
+      - name: Set up the SUT link (${{ matrix.label }})
+        run: |
+          set -o pipefail
+          sudo tests/blackbox/sut_net.sh up ${{ matrix.driver }} | tee -a "$GITHUB_ENV"
+
+      - name: Run DTLS conformance suite
+        run: |
+          set -o pipefail
+          sudo python3 -m pytest tests/blackbox/test_dtls_conform.py \
+            tests/blackbox/test_dtls_client_conform.py       \
+            --iface           "$TEST_IF"                    \
+            --sut-iface       "$SUT_IF"                     \
+            --sut-ip          10.0.0.2                      \
+            --our-ip          10.0.0.100                    \
+            --dtls-sut-bin    ./build/demo/dtls_echo_demo   \
+            --dtls-client-bin ./build/demo/dtls_client_demo \
+            --wolfssl-client  "$WOLFSSL_CLIENT"             \
+            --wolfssl-server  "$WOLFSSL_SERVER"             \
+            -p no:cacheprovider --tb=short -v               \
+            2>&1 | tee /tmp/dtls_blackbox.out
+
+      - name: Tear down the link
+        if: always()
+        run: |
+          sudo pkill -f build/demo/dtls_echo_demo 2>/dev/null || true
+          sudo pkill -f build/demo/dtls_client_demo 2>/dev/null || true
+          sudo tests/blackbox/sut_net.sh down ${{ matrix.driver }}
+
+      - name: DTLS results summary
+        if: always()
+        run: |
+          echo "## DTLS Blackbox Output (${{ matrix.label }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 12000 /tmp/dtls_blackbox.out >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   # ── FetchContent integration test ───────────────────────────────────
   fetchcontent:
     name: FetchContent — Integration

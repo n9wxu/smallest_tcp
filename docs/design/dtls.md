@@ -553,23 +553,37 @@ record-layer interface: 7,460 bytes for a server, 10,950 for both roles.
 
 ## 13. Testing
 
-**Unit** (CMake with `SMALLEST_TCP_TLS`):
+**Unit** (`test_dtls`, 57 tests, CMake with `SMALLEST_TCP_TLS` and
+`SMALLEST_TCP_DTLS`; plus `test_tls_crypto`'s AES block against FIPS-197
+and `test_tls_keys`'s `"dtls13"` labels against `tests/tls/gen_dtls13.py`):
 
-- `test_tls_crypto`: `aes_block` against FIPS-197 C.1.
-- `test_tls_keys`: the `"dtls13"` label prefix against an independent
-  HKDF (`tests/tls/gen_dtls13.py`), and the `"sn"` key.
-- `test_dtls`: record formats (both sequence lengths, with and without
-  length, several records per datagram), record number encryption,
-  sequence reconstruction, the replay window, silently dropped records;
-  our client against our server over a memory "network" that loses,
-  duplicates and reorders datagrams — every flight lost once, fragments
-  out of order and overlapping, a lost last flight and its ACK, a lost
-  KeyUpdate ACK, timeouts; the cookie; HelloRetryRequest for a group;
-  PSK; max_fragment_length; small MTUs; a scripted peer for refusals.
+- Records: our records rebuilt from the backend's primitives as RFC 9147
+  describes them; both sequence-number lengths, with and without a length;
+  CIDs and other versions refused; short ciphertext, tampering, padding;
+  sequence reconstruction (with its tie); the replay window.
+- Our client and our server over a memory network that can lose, repeat
+  and reorder datagrams: the formats on the wire; each datagram of the
+  handshake lost in turn; everything twice; everything reversed; small
+  MTUs; a retransmission cut differently from the first transmission;
+  fragments in any order, overlapping, and changed bytes refused; the timer
+  and its give-up; the ACK of the last flight, lost and resent; the Finished
+  lost; an ACK when a later fragment comes first; the cookie refused,
+  missing and switched off; a HelloRetryRequest for a group; PSK;
+  max_fragment_length; bad records and forged plaintext ignored; buffers
+  too small.
+- After the handshake: data both ways a datagram per record; data before
+  the Finished not taken; KeyUpdate — acknowledged before use, its ACK
+  lost, requested both ways, at the record limit, behind unread data,
+  waiting for an unanswered flight — and a late record of the old epoch;
+  close_notify; `dtls_release()`; a NewSessionTicket acknowledged.
 
-**Blackbox and interop** (Linux, TAP and raw socket): a `dtls_echo_demo`
-on UDP port 4433 against wolfSSL's example client (`-u -v 4`) and our
-`dtls_client_demo` against wolfSSL's example server — OpenSSL and Mbed TLS
-have no DTLS 1.3.  Scapy checks what needs no peer: the cookie
-HelloRetryRequest to a hand-built ClientHello, silence towards garbage,
-and no answer to a forged record.
+Every mechanism was checked by mutation: disabling it fails a test.
+
+**Blackbox and interop** (27 tests; Linux TAP and raw socket, macOS feth;
+CI job `blackbox-dtls`).  The peer is wolfSSL 5.9.4, built by
+`tests/blackbox/build_wolfssl.sh` from its pinned release:
+
+| Suite | Tests | |
+|---|---:|---|
+| `test_dtls_conform.py` | 19 | wolfSSL's client against `dtls_echo_demo`: P-256, x25519, a HelloRetryRequest for the group, KeyUpdate from the client, PSK (psk_dhe_ke, psk_ke), three clients at once, the server's flight in 300-byte fragments, no cookie; hand-built datagrams: the cookie HelloRetryRequest, the same answer to a repeated ClientHello, a wrong cookie, a legacy_cookie and DTLS 1.2 refused with their alerts, silence towards four kinds of garbage |
+| `test_dtls_client_conform.py` | 8 | `dtls_client_demo` against wolfSSL's server: 3000 bytes echoed, the server's cookie, KeyUpdate from either side, 300-byte datagrams, PSK, a wrong name and an untrusted chain refused |
