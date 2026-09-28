@@ -11,9 +11,9 @@
 | `src/tls_server.c`, `src/tls_client.c` | The handshake of each role, for both protocols |
 | `include/tls_crypto.h` | The crypto backend, with one addition for DTLS: `aes_block` |
 
-**Requirements:** [docs/requirements/dtls.md](../requirements/dtls.md) (REQ-DTLS-001..082)  
+**Requirements:** [docs/requirements/dtls.md](../requirements/dtls.md) (REQ-DTLS-001..073)  
 **Milestone:** 14  
-**Status:** implemented — records, the handshake over datagrams, KeyUpdate, close; demos and interop in progress  
+**Status:** implemented (Milestone 14) — interoperates with wolfSSL 5.9.4 in both roles  
 **Last updated:** 2026-09-27
 
 ---
@@ -140,7 +140,8 @@ keys at once; DTLS changes keys only when it is acknowledged (section 9).
 `TLS_USE_DTLS` (`tls.h`; CMake `SMALLEST_TCP_DTLS`, on by default) set to 0
 makes `tls_is_dtls()` a constant 0: the roles lose their DTLS branches
 (the hello formats, the cookie) and `dtls.c` refuses to build.  A TLS-only
-device pays nothing for DTLS but the record-layer interface (section 12).
+device pays nothing for DTLS but the record-layer interface: 24 bytes more
+for a TLS server than before DTLS (section 12).
 
 ### 3.3 The label prefix
 
@@ -543,13 +544,35 @@ resolves the server's MAC first, as `tls_client_demo` does for TCP
 
 ## 12. Size and memory
 
-Cortex-M0 `.text`, `-Os -mthumb`: `dtls.c` is 5,821 bytes; with DTLS
-built in, the roles grow by the DTLS branches (the server by 404 bytes, the
-client by 96).  A TLS-only build (`TLS_USE_DTLS` 0) carries only the
-record-layer interface: 7,460 bytes for a server, 10,950 for both roles.
-`make arm-size-dtls` and `sizeof(dtls_conn_t)` are measured in Stage 7.
+Cortex-M0 `.text` (`make arm-size-tls`, `make arm-size-dtls`; `-Os -mthumb`,
+`NET_DEBUG=0`):
 
----
+| Object | TLS only (`TLS_USE_DTLS` 0) | With DTLS |
+|---|---:|---:|
+| `tls_common.c` | 766 | 770 |
+| `tls_keys.c` | 1,086 | 1,086 |
+| `tls_server.c` | 3,118 | 3,546 |
+| `tls_client.c` | 3,490 | 3,658 |
+| `tls.c` (stream records) | 2,490 | 2,490 |
+| `dtls.c` (datagram records) | — | 5,861 |
+| **Server only** | **7,460** (TLS) | **11,263** (DTLS) |
+| **Client and server** | **10,950** (TLS) | **14,921** (DTLS) |
+
+A device with both protocols and both roles carries all six objects: 17,411
+bytes.  The DTLS branches cost the roles 428 bytes (server: the cookie, the
+hello formats) and 168 (client).  The crypto backend is extra, as for TLS,
+and adds only `aes_block`.  `make arm-check-links` checks that the DTLS
+objects reference nothing only `tls.c` defines, and the TLS-only objects
+nothing only `dtls.c` defines (REQ-DTLS-072).
+
+| | Cortex-M0 | Notes |
+|---|---:|---|
+| `dtls_conn_t` | 904 B | Its `tls_conn_t` (448 B), four epochs' keys with their record-number keys and windows (256 B), the records of the flight (80 B) and of the peer's to acknowledge (64 B), the flight's cursor and the timer |
+| `tls_config_t` | 44 B | Shared with TLS |
+| rx, tx | section 11 | Application owned |
+| Stack | 104 B deepest frame in `dtls.c` | `dtls_record_open()`.  The longest chain — input, fragments, the handshake, the key schedule — is about 740 bytes, plus the backend's |
+
+`dtls.c` has no `.data` or `.bss`, and no divide routine is linked.
 
 ## 13. Testing
 

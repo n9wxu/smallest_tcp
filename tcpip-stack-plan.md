@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-27 (Tasks 1–13 and 15 complete: through Milestone 13, TLS 1.3, the Linux raw-socket driver, and the issues found in the review.  749 unit tests on macOS (760 on Linux as root) + 182 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.4 KB of TLS protocol code for a server.  Next: Milestone 14, DTLS 1.3.)
+**Last updated:** 2026-09-27 (Tasks 1–15 complete: through Milestone 14, DTLS 1.3, with the Linux raw-socket driver and the issues found in the review.  809 unit tests on macOS (820 on Linux as root) + 209 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too; DTLS interoperates with wolfSSL.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.5 KB of TLS protocol code for a server, 11.3 KB of DTLS.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says
@@ -267,7 +267,7 @@ state at all: every byte of RAM is application-owned.
 - `tls_tcp_carry()` moves records between a TLS and a TCP connection; HTTPS is the HTTP server with `http_conn_use_tls()`
 - Design: [docs/design/tls.md](docs/design/tls.md)
 
-### Task 14: DTLS 1.3 — in progress
+### ✅ Task 14: DTLS 1.3 (dtls.c, tls_common.c) *(DONE)*
 DTLS 1.3 (RFC 9147) on the TLS 1.3 handshake: the roles, key schedule and
 crypto backend are shared; a datagram record layer (`dtls.c`) sits beside
 the TLS stream one.
@@ -283,7 +283,7 @@ the TLS stream one.
       ACKs, close_notify, `dtls_release()`
 - [x] Stage 6: demos, blackbox and interop with wolfSSL (OpenSSL and Mbed
       TLS have no DTLS 1.3), CI
-- [ ] Stage 7: sizes (`make arm-size-dtls`), documentation
+- [x] Stage 7: sizes (`make arm-size-dtls`, `make arm-check-links`), documentation
 - Design: [docs/design/dtls.md](docs/design/dtls.md); requirements:
   [docs/requirements/dtls.md](docs/requirements/dtls.md)
 
@@ -409,7 +409,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/http.md](docs/design/http.md)** — HTTP/1.0 server, also over TLS (Task 11, implemented)
 - **[docs/design/ipv6.md](docs/design/ipv6.md)** — IPv6, ICMPv6, NDP, SLAAC, DHCPv6, MLD, mDNS/HTTP over IPv6 (Task 12, implemented)
 - **[docs/design/tls.md](docs/design/tls.md)** — TLS 1.3 (Task 13, implemented)
-- **[docs/design/dtls.md](docs/design/dtls.md)** — DTLS 1.3 (Task 14, planned)
+- **[docs/design/dtls.md](docs/design/dtls.md)** — DTLS 1.3 (Task 14): the datagram record layer on the TLS handshake
 
 ### RFC Requirements (~950 total, traced to RFC sections)
 
@@ -432,7 +432,7 @@ Detailed documentation is maintained in `docs/`:
 
 **Security (88 requirements):**
 - **[docs/requirements/tls.md](docs/requirements/tls.md)** — TLS 1.3 (43 reqs, RFC 8446)
-- **[docs/requirements/dtls.md](docs/requirements/dtls.md)** — DTLS 1.3 (45 reqs, RFC 9147)
+- **[docs/requirements/dtls.md](docs/requirements/dtls.md)** — DTLS 1.3 (56 reqs, RFC 9147)
 
 **V2 — IPv6 Fast-Follow (~239 requirements):**
 - **[docs/requirements/ipv6.md](docs/requirements/ipv6.md)** — IPv6 host behavior (47 reqs, RFC 8200)

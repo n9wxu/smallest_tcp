@@ -96,6 +96,15 @@ slot.  TLS has no timers.  CMake targets: `smallest_tcp::tls`, `::tls_tcp`,
 `::https`, and a crypto backend such as `::tls_mbedtls`.  See
 [tls.md](design/tls.md).
 
+**DTLS is.**  The application's UDP handler looks up the peer's
+`dtls_conn_t` by address and port (a server takes a new one for a
+ClientHello), calls `dtls_input()`, then sends every datagram
+`dtls_pending()` returns with `udp_send()` and `dtls_sent()`.  The main
+loop calls `dtls_tick()`, whose retransmissions are sent the same way.  The
+connection keeps no address: where its datagrams go is the application's.
+CMake target: `smallest_tcp::tls` built with `SMALLEST_TCP_DTLS`, and a
+crypto backend.  See [dtls.md](design/dtls.md) and `demo/dtls_echo`.
+
 ## 3. Rules for handlers and callbacks
 
 Handlers and module callbacks (`on_event`, `on_data`, `on_conflict`, option

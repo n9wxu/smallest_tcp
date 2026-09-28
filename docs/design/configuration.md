@@ -126,9 +126,13 @@ announce timings and `MDNS_MAX_RECORDS` (the width of its record bitmasks,
 `mdns.h`), the DHCPv4 retransmission back-off (`dhcpv4_client.c`), and
 `TCP_MAX_RETRANSMITS` (`tcp.c`).
 
-TLS has no settings here.  The Mbed TLS backend is configured by
-`tls_mbedtls_user_config.h`, which CMake passes to Mbed TLS as
-`MBEDTLS_USER_CONFIG_FILE`.
+`TLS_USE_DTLS` (`tls.h`, default 1; CMake `SMALLEST_TCP_DTLS`) builds the
+shared TLS handshake for DTLS 1.3 too; 0 leaves DTLS's formats and cookie
+out of it, and `dtls.c` refuses to build.  DTLS's retransmission timer is
+tunable in `dtls.h`: `DTLS_RTO_INITIAL_MS` (1000), `DTLS_RTO_MAX_MS`
+(60000) and `DTLS_MAX_RETRANSMITS` (6).  TLS has no other settings here;
+the Mbed TLS backend is configured by `tls_mbedtls_user_config.h`, which
+CMake passes to Mbed TLS as `MBEDTLS_USER_CONFIG_FILE`.
 
 ### Removed
 
@@ -189,7 +193,7 @@ unused module is simply not linked.  In CMake each is its own library:
 | `smallest_tcp::tftp` | `tftp.c` (IPv4 builds) |
 | `smallest_tcp::mdns` | `mdns.c`, `dns_wire.c`; `igmp.c` in IPv4 builds |
 | `smallest_tcp::http` | `http.c` |
-| `smallest_tcp::tls`, `::tls_tcp`, `::https`, `::tls_mbedtls` | TLS 1.3, its glue to a TCP connection, HTTPS (`http_tls.c`), and the Mbed TLS crypto backend ([tls.md](tls.md)) |
+| `smallest_tcp::tls`, `::tls_tcp`, `::https`, `::tls_mbedtls` | TLS 1.3 (and DTLS 1.3 with `SMALLEST_TCP_DTLS`), its glue to a TCP connection, HTTPS (`http_tls.c`), and the Mbed TLS crypto backend ([tls.md](tls.md), [dtls.md](dtls.md)) |
 | `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf`, `::driver_stm32f4_eth` | Platform MAC drivers (the last when cross-compiling for ARM) |
 
 ## 6. Run-time values

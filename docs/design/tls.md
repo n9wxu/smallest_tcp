@@ -103,19 +103,20 @@ out — a server-only device does not carry the client (and vice versa).  A
 `switch` on the role inside `tls.c` would have referenced both handshakes
 from every build.
 
-Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`):
+Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`,
+`TLS_USE_DTLS` 0 — with DTLS built in the roles are larger, [dtls.md §12](dtls.md#12-size-and-memory)):
 
 | Object | Bytes |
 |---|---:|
 | `tls_common.c` | 766 |
 | `tls.c` | 2,490 |
 | `tls_keys.c` | 1,086 |
-| `tls_server.c` | 3,094 |
-| `tls_client.c` | 3,522 |
-| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,436** |
-| **Client and server** | **10,958** |
+| `tls_server.c` | 3,118 |
+| `tls_client.c` | 3,490 |
+| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,460** |
+| **Client and server** | **10,950** |
 
-A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,864 bytes
+A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,832 bytes
 by the same objects.  These are object sizes; the crypto backend is extra
 (section 3).  No object calls a library divide (`make arm-check-division`).
 
@@ -137,8 +138,9 @@ handshake message, letting written messages go, the dummy
 change_cipher_spec, queueing an alert, installing traffic keys — so a
 TLS-only build does not link DTLS's record layer, nor a DTLS-only build
 this one ([dtls.md §3.1](dtls.md#31-the-record-layer-interface)).  The
-indirection and the key schedule's label-prefix parameter (section 11) cost
-the TLS server 219 bytes of Cortex-M0 code.
+indirection, the key schedule's label-prefix parameter (section 11) and a
+HelloRetryRequest that may carry no group cost the TLS server 243 bytes of
+Cortex-M0 code.
 
 ### 2.3 CMake targets
 
@@ -239,7 +241,7 @@ if (tls_state(&tls) == TLS_STATE_CONNECTED) {
 
 | Call | |
 |---|---|
-| `tls_init(tls, cfg, rx, rx_cap, tx, tx_cap)` | Zero the connection and attach the configuration and buffers (each at least 256 bytes; above 65,534 the rest is unused).  Call it again to reuse the connection |
+| `tls_init(tls, cfg, rx, rx_cap, tx, tx_cap)` | Zero the connection and attach the stream record layer, the configuration and buffers (each at least 256 bytes; above 65,534 the rest is unused).  Call it again to reuse the connection |
 | `tls_accept(tls)` | Server: wait for a ClientHello.  −1 unless the connection is `IDLE` and the configuration has a certificate chain with its key and scheme, a complete PSK, or both |
 | `tls_connect(tls, host)` | Client: queue the ClientHello.  `host` is checked against the certificate and sent as server_name (not for an address literal); NULL skips the name check; it must stay valid for the handshake.  −1 for a connection that is not `IDLE`, an incomplete PSK, a host name over 255 characters, or a ClientHello that does not fit in tx |
 | `tls_rx_space()` + `tls_rx_commit()` | Ciphertext in, written straight into rx (`tls_tcp_carry()` passes the space to `tcp_recv()`).  Returns 0 or the negated alert that ended the connection |
@@ -313,10 +315,10 @@ even when empty fails with `internal_error` rather than waiting forever.
 
 | | Cortex-M0 | Notes |
 |---|---:|---|
-| `tls_conn_t` | 440 B | 128 of them the backend's SHA-256 state; three 32-byte secrets; two `tls_keys_t` (key, IV, sequence number) |
-| `tls_config_t` | 40 B | Shared by any number of connections; it and everything it points to must outlive them |
+| `tls_conn_t` | 448 B | 128 of them the backend's SHA-256 state; three 32-byte secrets; two `tls_keys_t` (key, IV, sequence number) |
+| `tls_config_t` | 44 B | Shared by any number of connections; it and everything it points to must outlive them |
 | rx, tx | section 5.2 | Application owned |
-| Stack | 360 B deepest frame | The client's message handler, with the handlers inlined into it; the server's is 336 B (the ephemeral key pair and shared secret live in the connection, not here).  The longest chain through the TLS code — commit, process, handler, key schedule — is about 630 bytes, plus whatever the backend uses below it (Mbed TLS's ECDH and signatures are the heaviest).  Measured with `-fstack-usage` for Cortex-M0 |
+| Stack | 360 B deepest frame | The client's message handler, with the handlers inlined into it; the server's is 352 B (the ephemeral key pair and shared secret live in the connection, not here).  The longest chain through the TLS code — commit, process, handler, key schedule — is about 640 bytes, plus whatever the backend uses below it (Mbed TLS's ECDH and signatures are the heaviest).  Measured with `-fstack-usage` for Cortex-M0 |
 
 The TLS objects have no `.data` or `.bss`.
 

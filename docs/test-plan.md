@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**28 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **749 tests on macOS; on Linux 752, or 760 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites need `SMALLEST_TCP_TLS` (Mbed TLS) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 18 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
+**29 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **809 tests on macOS; on Linux 812, or 820 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites and `test_dtls` need `SMALLEST_TCP_TLS` (Mbed TLS; `test_dtls` also `SMALLEST_TCP_DTLS`) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 19 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -49,10 +49,11 @@ verified at both the unit and integration levels:
 | `test_mdns6` | tests/unit/test_mdns6.c | 19 | mDNS over IPv6: ff02::fb joined, probes / announcements / goodbyes on both families, AAAA per usable address (not tentative), answers on the query's family, A ↔ AAAA and SRV → AAAA additionals, QU and legacy unicast over IPv6, known-answer suppression, NSEC with AAAA, delayed shared answers, explicit AAAA, conflicts, re-announcing (RFC 6762 §6.2, §8.4, §20) |
 | `test_dhcpv6` | tests/unit/test_dhcpv6.c | 20 | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-*) |
 | `test_rawsock` | tests/unit/test_rawsock.c | 15 on Linux (4 elsewhere) | Raw-socket driver: offloaded-checksum completion (portable); context and no-frame checks (Linux); live on a veth pair (Linux, root, 8): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
-| `test_tls_crypto` | tests/unit/test_tls_crypto.c | 22 | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
-| `test_tls_keys` | tests/unit/test_tls_keys.c | 34 | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034) |
+| `test_tls_crypto` | tests/unit/test_tls_crypto.c | 23 | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, the AES block (FIPS-197, for DTLS), X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
+| `test_tls_keys` | tests/unit/test_tls_keys.c | 36 | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034); DTLS 1.3's `"dtls13"` labels and `"sn"` key (REQ-DTLS-006) |
 | `test_tls_server` | tests/unit/test_tls_server.c | 107 | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate (a request met by the peer's own), alerts, a failed key exchange leaving no secret (REQ-TLS-001, 018..025, 030, 031, 035..043) |
 | `test_tls_client` | tests/unit/test_tls_client.c | 53 | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()` (REQ-TLS-010..017, 023, 031) |
+| `test_dtls` | tests/unit/test_dtls.c | 57 | DTLS 1.3 (RFC 9147): records rebuilt from the backend's primitives, the unified header, record number encryption, sequence reconstruction, the replay window; our client and server over a network that loses, repeats and reorders datagrams — every datagram of the handshake lost in turn, fragments in any order and overlapping, small MTUs, the timer and its give-up, ACKs, the cookie, HRR, PSK; KeyUpdate acknowledged before use, close_notify, release (REQ-DTLS-*) |
 
 ### Running Unit Tests
 
@@ -165,6 +166,9 @@ Test harness (Scapy, our_ip=10.0.0.100)
 | `tests/blackbox/test_tls_conform.py` | 29 TLS 1.3 server tests (25 functions, two parametrized) against `tls_echo_demo` |
 | `tests/blackbox/test_tls_client_conform.py` | 17 TLS 1.3 client tests: `tls_client_demo` against Python ssl and openssl s_server |
 | `tests/blackbox/test_https_conform.py` | 9 HTTPS tests against `https_demo` |
+| `tests/blackbox/test_dtls_conform.py` | 19 DTLS 1.3 server tests against `dtls_echo_demo`: wolfSSL's client, and hand-built datagrams |
+| `tests/blackbox/test_dtls_client_conform.py` | 8 DTLS 1.3 client tests: `dtls_client_demo` against wolfSSL's server |
+| `tests/blackbox/build_wolfssl.sh` | Builds the DTLS peer, wolfSSL, from its pinned release (SHA-256 checked); prints `WOLFSSL_CLIENT` / `WOLFSSL_SERVER` |
 | `tests/blackbox/dhcpv6_interop.sh` | dnsmasq as router + DHCPv6 server: RA with M → lease, DNS option, host ping + TCP echo at the leased address |
 | `tests/blackbox/http_interop.sh` | Browse by name on Linux: Avahi finds `_http._tcp`, nss-mdns + curl fetch `http://pyro-dead01.local/`; `curl -6` over the link-local address |
 | `tests/blackbox/http_interop_macos.sh` | Browse by name on macOS: `dns-sd` + curl, lookup time bounded |
@@ -407,6 +411,19 @@ s_client/s_server, curl — through the host's TCP to ours.
 | test_tls_client_conform.py (client) | 17 | SNI; 30 kB echo; RSA-PSS; no name check; max_fragment_length; KeyUpdate; wrong name (bad_certificate), untrusted chain (unknown_ca), TLS 1.2 server; optional and required client certificates; openssl s_server -rev; HRR from a P-256-only server; PSK against Python and certificate-less s_server (psk_dhe_ke, psk_ke), wrong PSK |
 | test_https_conform.py | 9 | GET / JSON / 20000-byte body / HEAD / 404 / 405 + Allow over TLS 1.3; by address; curl by name; five in a row |
 
+### Blackbox DTLS 1.3 Coverage
+
+Run with `--dtls-sut-bin ./build/demo/dtls_echo_demo`, `--dtls-client-bin
+./build/demo/dtls_client_demo`, and the wolfSSL example programs that
+`tests/blackbox/build_wolfssl.sh` builds (`--wolfssl-client`,
+`--wolfssl-server`) — OpenSSL and Mbed TLS have no DTLS 1.3.  The wolfSSL
+programs run in their own source tree, which they insist on.
+
+| Suite | Tests | Checks |
+|---|---|---|
+| test_dtls_conform.py (server) | 19 | wolfSSL's client: P-256 (with the cookie exchange), x25519, a HelloRetryRequest for the group, a KeyUpdate before its data, PSK psk_dhe_ke and psk_ke, three clients at once, the server's flight in 300-byte fragments, no cookie; hand-built datagrams over a UDP socket: the cookie HelloRetryRequest (versions, no session id), the same HelloRetryRequest to a repeated ClientHello, a wrong cookie, a legacy_cookie and DTLS 1.2 refused with illegal_parameter and protocol_version, no answer to four kinds of garbage |
+| test_dtls_client_conform.py (client) | 8 | wolfSSL's echo server: 3000 bytes in datagrams, its cookie, a KeyUpdate from either side, 300-byte datagrams, PSK, a wrong name (bad_certificate) and an untrusted chain (unknown_ca) refused |
+
 ### Fuzz Test Coverage
 
 | Test | REQ(s) | Description |
@@ -435,7 +452,8 @@ s_client/s_server, curl — through the host's TCP to ours.
 | `blackbox-mdns` | ci.yml | ubuntu-latest | mDNS/DNS-SD suite against `mdns_demo` (TAP, raw socket), then Avahi interop | push/PR |
 | `blackbox-http` | ci.yml | ubuntu-latest | HTTP suite against `http_demo` (TAP, raw socket), then browse-by-name (Avahi + nss-mdns + curl) | push/PR |
 | `blackbox-tls` | ci.yml | ubuntu-latest | TLS 1.3 server, client and HTTPS suites against `tls_echo_demo`, `tls_client_demo`, `https_demo` with Python ssl, OpenSSL 3 and curl (TAP, raw socket) | push/PR |
-| `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide | push/PR |
+| `blackbox-dtls` | ci.yml | ubuntu-latest | DTLS 1.3 server and client suites against `dtls_echo_demo`, `dtls_client_demo` with wolfSSL 5.9.4, built by `build_wolfssl.sh` and cached (TAP, raw socket) | push/PR |
+| `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS and DTLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide — and `arm-check-links` — fails if TLS's objects need DTLS's record layer or DTLS's TLS's | push/PR |
 | `board-nucleo-f429zi` | ci.yml | ubuntu-latest | Builds the NUCLEO-F429ZI `tcp_echo_demo.elf` of the hardware fuzz job (§4) — build only | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Builds and runs `examples/fetchcontent` against the checkout | push/PR |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
@@ -548,6 +566,8 @@ The `fuzz.yml` workflow's `fuzz-tcp-hw` job then:
 | 6 | Hardware fixture | Procure BOM, set up self-hosted runner | Medium |
 | 7 | REQ-TLS-003 | TLS_CHACHA20_POLY1305_SHA256 (SHOULD) | Low |
 | 8 | TLS | Client certificates, session tickets / 0-RTT, record_size_limit (RFC 8449) | Low |
+| 9 | REQ-DTLS-058 | DTLS: after a partial ACK, resend only what it leaves out (SHOULD); the timer resends the whole flight | Low |
+| 10 | DTLS | Connection IDs (RFC 9146), backing off to smaller records when the PMTU is unknown, buffering out-of-order handshake messages (all optional); no fuzz suite for DTLS yet | Low |
 
 ---
 

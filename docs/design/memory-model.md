@@ -120,6 +120,8 @@ in parentheses where it differs):
 | `dhcpv4_server_t` | 12 B | A `const dhcpv4_server_cfg_t` |
 | `dhcpv6_client_t` | 100 B | An optional option-handler table |
 | `tftp_client_t` | 172 B | — (128 B of it is the filename) |
+| `tls_conn_t` | 448 B | A receive and a transmit buffer ([tls.md §5](tls.md#5-buffers)); a shared `tls_config_t` (44 B) |
+| `dtls_conn_t` | 904 B | Its `tls_conn_t` included; a receive and a transmit buffer ([dtls.md §11](dtls.md#11-sizing)) |
 
 The TCP receive window is the free space in the connection's own RX buffer,
 not in `net->rx.buf`: TCP copies arriving data out of the frame during

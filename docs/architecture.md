@@ -42,7 +42,7 @@ switches change `net_t`, so the library and the application must be built
 with the same settings ([configuration.md](design/configuration.md)).
 
 The application protocols — DHCPv4 client and server, DHCPv6 client, TFTP
-client, mDNS/DNS-SD, HTTP, TLS — are composed **at link time**.  The core
+client, mDNS/DNS-SD, HTTP, TLS, DTLS — are composed **at link time**.  The core
 never refers to them; the application calls them and routes their traffic to
 them, and an unused one is simply not linked.  Each is its own CMake library
 (`smallest_tcp::dhcpv4_client`, `::mdns`, `::http`, `::tls`, …).
@@ -57,7 +57,8 @@ them, and an unused one is simply not linked.  Each is its own CMake library
 │   dhcpv4_client  dhcpv4_server  dhcpv6_client  tftp                  │
 │   mdns (+ dns_wire, igmp)  http (+ http_tls)                         │
 ├──────────────────────────────────────────────────────────────────────┤
-│ TLS 1.3 (link-time): over a tcp_conn_t; crypto via tls_crypto_t      │
+│ TLS 1.3 over a tcp_conn_t, DTLS 1.3 over datagrams (link-time):      │
+│   one handshake, two record layers; crypto via tls_crypto_t          │
 ├────────────────────────────────┬─────────────────────────────────────┤
 │ udp.c          [NET_USE_UDP]   │ tcp.c, tcp_buf_saw.c  [NET_USE_TCP] │
 ├────────────────────────────────┼─────────────────────────────────────┤
@@ -313,13 +314,15 @@ held in host order for IPv4 and as 16-byte network-order arrays for IPv6
 | mDNS responder with DNS-SD | `mdns.c`, `dns_wire.c`, `igmp.c` | [mdns.md](design/mdns.md) |
 | HTTP/1.0 server, also over TLS | `http.c`, `http_tls.c` | [http.md](design/http.md) |
 | TLS 1.3 client and server | `tls*.c`, crypto through `tls_crypto_t` (Mbed TLS backend bundled) | [tls.md](design/tls.md) |
+| DTLS 1.3 client and server | `dtls.c` on TLS's handshake and backend | [dtls.md](design/dtls.md) |
 
 All of them follow one integration recipe — init, route traffic to the
 module's input function, start, tick — described with a working example in
 [integrating-modules.md](integrating-modules.md).  TLS is the exception to
 the UDP pattern: a TLS connection rides on a TCP connection, and the
-application moves ciphertext between the two.  DTLS 1.3 has a design
-([dtls.md](design/dtls.md)) but no implementation.
+application moves ciphertext between the two.  DTLS follows it: the UDP
+handler feeds a peer's datagrams to its connection and sends what the
+connection has pending.
 
 ## 15. Project structure
 
@@ -339,7 +342,7 @@ smallest_tcp/
 │   ├── ipv6.h  icmpv6.h  ndp.h  mld.h
 │   ├── dhcpv4_client.h  dhcpv4_server.h  dhcpv6_client.h  tftp.h
 │   ├── dns_wire.h  mdns.h  http.h  http_tls.h
-│   ├── tls*.h              TLS 1.3, its crypto interface and Mbed TLS backend
+│   ├── tls*.h  dtls.h      TLS 1.3 and DTLS 1.3, the crypto interface and Mbed TLS backend
 │   └── driver/             tap.h  rawsock.h  bpf.h  stub.h
 ├── src/
 │   ├── net.c  net_cksum.c  net_text.c
@@ -347,16 +350,17 @@ smallest_tcp/
 │   ├── ipv6.c  icmpv6.c  ndp.c  mld.c
 │   ├── dhcpv4_client.c  dhcpv4_server.c  dhcpv4_wire.h (private)  dhcpv6_client.c
 │   ├── tftp.c  dns_wire.c  mdns.c  http.c  http_tls.c
-│   ├── tls*.c              TLS 1.3 (see design/tls.md for the file split)
+│   ├── tls*.c  dtls.c      TLS 1.3 and DTLS 1.3 (see design/tls.md, dtls.md)
 │   └── driver/             tap.c  rawsock.c  bpf.c  stub.c
 ├── demo/                   hosted demos; common/ has the shared main loop
 │   ├── common/             demo_loop.h  demo_mac.h  demo_echo.h  demo_ipv6.h  demo_tls.h
-│   └── dhcp_echo/  echo_server/  frame_dump/  http_demo/  https_demo/
-│       mdns_demo/  tcp_echo/  tftp_client/  tls_client/  tls_echo/
+│   └── dhcp_echo/  dtls_client/  dtls_echo/  echo_server/  frame_dump/
+│       http_demo/  https_demo/  mdns_demo/  tcp_echo/  tftp_client/
+│       tls_client/  tls_echo/
 ├── tests/
 │   ├── unit/               C unit tests (test_main.h framework), per module or feature
 │   ├── blackbox/           pytest + Scapy conformance suites and interop scripts
-│   └── tls/                test certificates and RFC 8448 vector generators
+│   └── tls/                test certificates; RFC 8448 and DTLS label vector generators
 ├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
 ├── examples/fetchcontent/  consuming the library with CMake FetchContent
 └── docs/
@@ -381,7 +385,7 @@ smallest_tcp/
 | UDP | [udp.md](design/udp.md) |
 | TCP; its buffers | [tcp.md](design/tcp.md); [tcp-buffer.md](design/tcp-buffer.md) |
 | IPv6, NDP, SLAAC, MLD, DHCPv6 | [ipv6.md](design/ipv6.md) |
-| Application protocols | [dhcpv4.md](design/dhcpv4.md), [tftp.md](design/tftp.md), [mdns.md](design/mdns.md), [http.md](design/http.md), [tls.md](design/tls.md) |
+| Application protocols | [dhcpv4.md](design/dhcpv4.md), [tftp.md](design/tftp.md), [mdns.md](design/mdns.md), [http.md](design/http.md), [tls.md](design/tls.md), [dtls.md](design/dtls.md) |
 | Coding rules | [coding-rules.md](design/coding-rules.md) |
 | Code size against lwIP | [size-comparison.md](design/size-comparison.md) |
 
@@ -417,6 +421,7 @@ smallest_tcp/
 | RFC 8415 | DHCPv6 | `dhcpv6_client.c` |
 | RFC 8446 | TLS 1.3 | `tls*.c` |
 | RFC 9110, RFC 9112 | HTTP semantics, HTTP/1.1 syntax | `http.c` |
+| RFC 9147 | DTLS 1.3 | `dtls.c`, the roles in `tls_server.c`, `tls_client.c` |
 | RFC 9293 | TCP | `tcp.c` |
 
 Partly implemented: RFC 6298 (initial RTO and back-off, no RTT

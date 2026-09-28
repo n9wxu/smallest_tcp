@@ -251,8 +251,9 @@ and the IPv4 branches of `eth.c` and `net.c` (64 B).
 
 `make arm-size-tls` compiles the TLS 1.3 protocol — records, key schedule,
 handshake with certificates and pre-shared keys, HelloRetryRequest,
-max_fragment_length, KeyUpdate — with the benchmark flags and reports it per
-object and for the two ways a device links it.  It is not linked into a
+max_fragment_length, KeyUpdate — with the benchmark flags, DTLS left out of
+the handshake (`TLS_USE_DTLS` 0), and reports it per object and for the two
+ways a device links it.  It is not linked into a
 benchmark: every cryptographic primitive comes from a `tls_crypto_t` backend
 (Mbed TLS in this project), whose size depends entirely on its configuration
 and is not measured here.
@@ -262,19 +263,43 @@ and is not measured here.
 | `tls_common.c` (handshake framing, keys, alerts; shared with DTLS) | 766 B | — |
 | `tls.c` (stream records, KeyUpdate, API) | 2,490 B | — |
 | `tls_keys.c` (key schedule, record protection) | 1,086 B | — |
-| `tls_server.c` (`tls_accept()`, server handshake) | 3,094 B | — |
-| `tls_client.c` (`tls_connect()`, client handshake) | 3,522 B | — |
-| **Server only** | **7,436 B** | — |
-| **Client and server** | **10,958 B** | — |
-| `tls_conn_t` (per connection) | — | 440 B (128 of them the backend's SHA-256 state) |
-| `tls_config_t` (shared) | — | 40 B |
+| `tls_server.c` (`tls_accept()`, server handshake) | 3,118 B | — |
+| `tls_client.c` (`tls_connect()`, client handshake) | 3,490 B | — |
+| **Server only** | **7,460 B** | — |
+| **Client and server** | **10,950 B** | — |
+| `tls_conn_t` (per connection) | — | 448 B (128 of them the backend's SHA-256 state) |
+| `tls_config_t` (shared) | — | 44 B |
 
-A server-only device links 7.4 KB: `tls.c` reaches the handshake only through
+A server-only device links 7.5 KB: `tls.c` reaches the handshake only through
 the role pointer that `tls_accept()` or `tls_connect()` sets, so the role an
 application never starts is never referenced and never linked
 ([tls.md §2.1](tls.md#21-the-role-interface)).  Plus the application's record
 buffers ([tls.md §5](tls.md#5-buffers)).  The TLS objects have no `.data` or
 `.bss`, and no divide routine is linked.
+
+## Adding DTLS 1.3
+
+`make arm-size-dtls` compiles DTLS 1.3 the same way: the shared handshake
+built with DTLS (`TLS_USE_DTLS` 1) and the datagram record layer, `dtls.c`,
+in place of TLS's `tls.c`.
+
+| | .text | RAM |
+|---|---:|---:|
+| `tls_common.c` | 770 B | — |
+| `dtls.c` (records, epochs, flights, timer, ACKs, API) | 5,861 B | — |
+| `tls_keys.c` | 1,086 B | — |
+| `tls_server.c`, with DTLS's hello formats and cookie | 3,546 B | — |
+| `tls_client.c`, with DTLS's hello formats | 3,658 B | — |
+| **Server only** | **11,263 B** | — |
+| **Client and server** | **14,921 B** | — |
+| `dtls_conn_t` (per connection) | — | 904 B (its `tls_conn_t` is 448 B) |
+
+The datagram record layer costs more than the stream one — reliability,
+fragmentation and reassembly, epochs and ACKs are DTLS's to do, where TCP
+does them for TLS — but the handshake is shared: a device with both
+protocols links 17.4 KB, not two handshakes.  `make arm-check-links` checks
+that neither protocol's build references the other's record layer
+([dtls.md §12](dtls.md#12-size-and-memory)).
 
 ## Target Fit Analysis
 
@@ -296,8 +321,11 @@ make arm-size-http   # UDP + HTTP server (with TCP)
 make arm-size-ipv6   # UDP, dual stack IPv4 + IPv6 (ICMPv6, ND, SLAAC, MLD)
 make arm-size-ipv6-only  # UDP over IPv6 alone (no ARP, IPv4, ICMPv4)
 make arm-size-tls    # TLS 1.3 protocol: server only, client and server
-make arm-size-all    # all of the above, then arm-check-division
+make arm-size-dtls   # DTLS 1.3 protocol: the same
+make arm-size-all    # all of the above, then arm-check-division and
+                     # arm-check-links
 make arm-check-division  # fail if any ARM object calls a library divide
+make arm-check-links     # fail if TLS needs dtls.c, or DTLS tls.c
 
 # Build lwIP for comparison (clones lwIP 2.2.1 into build/lwip if missing)
 bash bench/build_lwip.sh
@@ -361,6 +389,8 @@ Cortex-M0 has no divide instruction ([coding-rules.md](coding-rules.md)).
 | 2026-09-27 | ETH+ARP+IPv4+ICMP+UDP, dual stack | 7,805 B (7,691 stack) | — | — |
 | 2026-09-27 | TLS 1.3 (keys wiped after close_notify, `tls_release()`) | 7,217 B / 10,701 B | — | — |
 | 2026-09-27 | TLS 1.3 (record-layer interface shared with DTLS) | 7,436 B / 10,958 B | — | — |
+| 2026-09-27 | TLS 1.3, DTLS compiled out (`TLS_USE_DTLS` 0) | 7,460 B / 10,950 B | — | — |
+| 2026-09-27 | DTLS 1.3 protocol: server only / client and server | 11,263 B / 14,921 B | — | — |
 
 > The UDP-only growth from 2026-03-19 to 2026-09-26 came from `net_poll()`
 > (Milestone 7), the peek-based UDP dispatch, IPv4 Protocol Unreachable, and

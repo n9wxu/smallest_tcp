@@ -249,7 +249,7 @@ The TLS handshake happens while the slot is in `S_RECV` (section 8), so it
 counts against the request timeout.  A failed handshake makes `client_done`
 true, and the slot ends the stream — the alert goes out — and closes.
 
-An HTTPS slot needs a `tls_conn_t` (440 B on Cortex-M0) and TLS receive and
+An HTTPS slot needs a `tls_conn_t` (448 B on Cortex-M0) and TLS receive and
 transmit buffers sized as in [tls.md §5.2](tls.md#52-sizing), besides its
 TCP buffers.  The HTTPS demo (`demo/https_demo/main.c`) serves one slot on
 port 443 with a 1,460-byte TCP TX buffer, a 4,096-byte TCP RX buffer, a

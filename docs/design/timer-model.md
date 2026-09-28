@@ -49,6 +49,7 @@ has.
 | `tftp_client_tick(net, c, ms)` | the application |
 | `mdns_tick(m, ms)` | the application |
 | `http_server_tick(s, ms)` | the application (and `http_server_poll(s)` every loop, which is not a timer) |
+| `dtls_tick(d, ms)` | the application, for each DTLS connection (it retransmits flights: send what `dtls_pending()` then returns) |
 
 The DHCPv4 server and TLS have no timers.
 
