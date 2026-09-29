@@ -1,6 +1,6 @@
 # Architecture — smallest_tcp
 
-**Last updated:** 2026-09-27
+**Last updated:** 2026-09-28
 
 smallest_tcp is a TCP/IP stack in portable C99 for devices from small
 microcontrollers up to Linux and macOS hosts.  This document describes how
@@ -71,15 +71,17 @@ them, and an unused one is simply not linked.  Each is its own CMake library
 │ support: net_cksum.c  net_text.c  net_endian.h                       │
 ├──────────────────────────────────────────────────────────────────────┤
 │ MAC driver interface — net_mac_t (net_mac.h)                         │
-├─────────────┬─────────────────┬─────────────┬─────────────┬──────────┤
-│ tap.c       │ rawsock.c       │ bpf.c       │ stub.c      │ your     │
-│ Linux TAP   │ Linux AF_PACKET │ macOS BPF   │ size builds │ driver   │
-└─────────────┴─────────────────┴─────────────┴─────────────┴──────────┘
+├────────────┬──────────────┬────────────┬───────────────┬─────────────┤
+│ tap.c      │ rawsock.c    │ bpf.c      │ stm32f4_eth.c │ stub.c      │
+│ Linux TAP  │ Linux raw    │ macOS BPF  │ STM32F4 MAC   │ size builds │
+└────────────┴──────────────┴────────────┴───────────────┴─────────────┘
 ```
 
 `igmp.c` sends IGMP joins and leaves for IPv4 multicast; it is only needed by
-mDNS and ships in the `mdns` library.  An ENC28J60 (SPI) or USB CDC-ECM
-driver would sit beside the bundled ones; none is in the tree.
+mDNS and ships in the `mdns` library.  `stm32f4_eth.c` drives the STM32F4's
+Ethernet MAC for the NUCLEO-F429ZI board port (`boards/`; built in CI, not
+yet run on hardware).  An ENC28J60 (SPI) or USB CDC-ECM driver would sit
+beside the bundled ones; none is in the tree yet.
 
 ## 4. The network context: `net_t`
 
@@ -343,7 +345,7 @@ smallest_tcp/
 │   ├── dhcpv4_client.h  dhcpv4_server.h  dhcpv6_client.h  tftp.h
 │   ├── dns_wire.h  mdns.h  http.h  http_tls.h
 │   ├── tls*.h  dtls.h      TLS 1.3 and DTLS 1.3, the crypto interface and Mbed TLS backend
-│   └── driver/             tap.h  rawsock.h  bpf.h  stub.h
+│   └── driver/             tap.h  rawsock.h  bpf.h  stm32f4_eth.h  stub.h
 ├── src/
 │   ├── net.c  net_cksum.c  net_text.c
 │   ├── eth.c  arp.c  ipv4.c  icmp.c  igmp.c  udp.c  tcp.c  tcp_buf_saw.c
@@ -351,7 +353,7 @@ smallest_tcp/
 │   ├── dhcpv4_client.c  dhcpv4_server.c  dhcpv4_wire.h (private)  dhcpv6_client.c
 │   ├── tftp.c  dns_wire.c  mdns.c  http.c  http_tls.c
 │   ├── tls*.c  dtls.c      TLS 1.3 and DTLS 1.3 (see design/tls.md, dtls.md)
-│   └── driver/             tap.c  rawsock.c  bpf.c  stub.c
+│   └── driver/             tap.c  rawsock.c  bpf.c  stm32f4_eth.c  stub.c
 ├── demo/                   hosted demos; common/ has the shared main loop
 │   ├── common/             demo_loop.h  demo_mac.h  demo_echo.h  demo_ipv6.h  demo_tls.h
 │   └── dhcp_echo/  dtls_client/  dtls_echo/  echo_server/  frame_dump/
@@ -361,6 +363,9 @@ smallest_tcp/
 │   ├── unit/               C unit tests (test_main.h framework), per module or feature
 │   ├── blackbox/           pytest + Scapy conformance suites and interop scripts
 │   └── tls/                test certificates; RFC 8448 and DTLS label vector generators
+├── boards/nucleo-f429zi/   bare-metal port: start-up, clocks, linker script, the
+│                           tcp_echo_demo firmware of the hardware fuzz job
+├── cmake/                  arm-none-eabi.cmake: cross-compiling the libraries
 ├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
 ├── examples/fetchcontent/  consuming the library with CMake FetchContent
 └── docs/

@@ -1,6 +1,6 @@
 # CI/CD Debugging Guide — smallest_tcp
 
-**Last updated:** 2026-09-27
+**Last updated:** 2026-09-28
 
 This document captures every significant CI/CD failure encountered during
 development, along with the diagnostic workflow that resolved each one.  Consult
@@ -17,11 +17,13 @@ CMake is the only host build; the `Makefile` is used only by `arm-size`.
 | Job | What it does |
 |---|---|
 | `cmake-ipv4-only` | IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`) and its unit tests; then library-only builds with `-DSMALLEST_TCP_TCP=OFF` and with `-DSMALLEST_TCP_UDP=OFF` |
-| `arm-size` | `make arm-size-all`: the Cortex-M0 size benchmarks and `arm-check-division` (§3.12) |
+| `cmake-ipv6-only` | IPv6-only build (`-DSMALLEST_TCP_IPV4=OFF`) and its unit tests, including the checks that the IPv4-only protocols refuse to compile; then library-only builds without TCP and without UDP |
+| `arm-size` | `make arm-size-all`: the Cortex-M0 size benchmarks, `arm-check-division` (§3.12) and `arm-check-links` (TLS's objects must not need DTLS's record layer, nor DTLS's TLS's) |
+| `board-nucleo-f429zi` | Cross-builds the NUCLEO-F429ZI firmware of the hardware fuzz job — build only |
 | `cmake-linux`, `cmake-macos` | The default build (dual stack, TLS with Mbed TLS) and `ctest`; on Linux also `sudo ./build/tests/test_rawsock` for the raw-socket driver's live tests |
 | `blackbox-linux` | ARP, IPv4, ICMP, UDP, TCP suites against `tcp_echo_demo` via `run_blackbox.sh`, once over TAP and once over the raw socket |
 | `blackbox-validate` | The same suites against the Linux kernel as reference SUT (§1) |
-| `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks |
+| `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls`, `blackbox-dtls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks (DTLS against wolfSSL, built by `tests/blackbox/build_wolfssl.sh` and cached) |
 | `fetchcontent` | Builds and runs `examples/fetchcontent` against the checkout |
 
 `fuzz.yml` runs the TCP fuzz suite nightly.  The full matrix is in
@@ -37,8 +39,8 @@ The core protocol suites (ARP, IPv4, ICMP, UDP, TCP) run in two CI jobs:
 | `blackbox-validate` | Linux kernel + `socat` (reference implementation) | **Test bug** — the test assertion is wrong |
 
 The DHCPv4, mDNS, HTTP and IPv6 suites are excluded from
-`blackbox-validate` (they drive our demos, not the kernel), and the TLS and
-HTTPS suites skip themselves there because no SUT binary is given.
+`blackbox-validate` (they drive our demos, not the kernel), and the TLS,
+HTTPS and DTLS suites skip themselves there because no SUT binary is given.
 
 **Always check `blackbox-validate` first.**  If the same test also fails
 against the Linux kernel, fix the test — do not touch SUT code.  Only once

@@ -591,7 +591,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [mDNS + DNS-SD](docs/design/mdns.md) — Zero-config hostname + service discovery, probing/announcing state machine, DNS-SD PTR/SRV/TXT composition
   - [HTTP](docs/design/http.md) — HTTP/1.0 server: connection slots, transports (TCP, TLS), streaming, TIME-WAIT recycling, lingering close
   - [TLS 1.3](docs/design/tls.md) — Client and server over the stack's TCP, role files linked separately, pluggable crypto backend (Mbed TLS bundled), certificates + PSK, HelloRetryRequest, max_fragment_length, RFC 8448-verified key schedule
-  - [DTLS 1.3](docs/design/dtls.md) — Anti-replay window, flight retransmit, handshake fragmentation *(Milestone 14, planned)*
+  - [DTLS 1.3](docs/design/dtls.md) — TLS 1.3's handshake over datagrams: the record layer shared through an interface, epochs and record number encryption, replay window, flights with fragmentation and a retransmission timer, ACKs, the cookie; interoperates with wolfSSL
 - **[RFC Requirements](docs/requirements/)** — RFC-traced requirements across 20 protocol specifications:
   - [mDNS](docs/requirements/mdns.md) — RFC 6762: probing, announcing, responding, goodbye, known-answer suppression
   - [DNS-SD](docs/requirements/dns-sd.md) — RFC 6763: PTR/SRV/TXT advertisement, service-type enumeration, conflict detection

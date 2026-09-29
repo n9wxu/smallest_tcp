@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-27 (Tasks 1–15 complete: through Milestone 14, DTLS 1.3, with the Linux raw-socket driver and the issues found in the review.  809 unit tests on macOS (820 on Linux as root) + 209 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too; DTLS interoperates with wolfSSL.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.5 KB of TLS protocol code for a server, 11.3 KB of DTLS.)
+**Last updated:** 2026-09-28 (Tasks 1–15 complete: through Milestone 14, DTLS 1.3, with the Linux raw-socket driver and the issues found in the review.  809 unit tests on macOS (820 on Linux as root) + 209 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too; DTLS interoperates with wolfSSL.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.5 KB of TLS protocol code for a server, 11.3 KB of DTLS.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says
@@ -33,8 +33,8 @@ The stack must scale from tiny MCUs to hosted environments:
 ## Architecture
 
 As built (the original sketch had only IPv4 and planned `feth.c` and
-`enc28j60.c` drivers; macOS uses `bpf.c` on an feth pair, and no ENC28J60
-driver exists yet):
+`enc28j60.c` drivers; macOS uses `bpf.c` on an feth pair, `stm32f4_eth.c`
+drives the STM32F4's Ethernet MAC, and no ENC28J60 driver exists yet):
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -45,7 +45,8 @@ driver exists yet):
 │  L7: dhcpv4_client/server  dhcpv6_client     │  ← optional, link what you need
 │      tftp  mdns  http (+ http_tls)           │
 ├──────────────────────────────────────────────┤
-│  TLS 1.3: tls*.c over a tcp_conn_t           │  ← optional, link time
+│  TLS 1.3 over a tcp_conn_t, DTLS 1.3 over    │  ← optional, link time
+│  datagrams: one handshake, two record layers │
 ├──────────────────────────────────────────────┤
 │  L4: udp.c          tcp.c                    │  ← optional, compile time
 ├──────────────────────────────────────────────┤
@@ -56,9 +57,9 @@ driver exists yet):
 ├──────────────────────────────────────────────┤
 │  MAC driver interface (net_mac.h)            │  ← abstract: function pointers
 ├──────────────┬─────────────┬─────────────────┤
-│ tap.c        │ bpf.c       │ your driver     │  ← one per platform
-│ rawsock.c    │ (macOS,     │ (e.g. ENC28J60  │
-│ (Linux)      │  feth pair) │  over SPI)      │
+│ tap.c        │ bpf.c       │ stm32f4_eth.c,  │  ← one per platform
+│ rawsock.c    │ (macOS,     │ or yours (e.g.  │
+│ (Linux)      │  feth pair) │ ENC28J60, SPI)  │
 └──────────────┴─────────────┴─────────────────┘
 ```
 
@@ -146,9 +147,10 @@ typedef struct {
 | Full (UDP+TCP+DHCP+HTTP) | everything | ~10-14 KB | ~50 bytes state |
 
 Measured on Cortex-M0 (2026-09-27, [size-comparison.md](docs/design/size-comparison.md)):
-UDP echo 2,574 B, UDP + TCP 6,130 B, UDP + HTTP (with TCP) 10,510 B, UDP +
-mDNS 8,956 B, dual-stack UDP 7,549 B — with **no** stack-internal static
-state at all: every byte of RAM is application-owned.
+UDP echo 2,802 B, UDP + TCP 6,626 B, UDP + HTTP (with TCP) 10,990 B, UDP +
+mDNS 9,244 B, dual-stack UDP 7,805 B, IPv6-only UDP 5,977 B; the TLS 1.3
+protocol 7,460 B for a server, DTLS 1.3 11,263 B — with **no** stack-internal
+static state at all: every byte of RAM is application-owned.
 
 ## First Demo Platform
 
@@ -411,7 +413,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/tls.md](docs/design/tls.md)** — TLS 1.3 (Task 13, implemented)
 - **[docs/design/dtls.md](docs/design/dtls.md)** — DTLS 1.3 (Task 14): the datagram record layer on the TLS handshake
 
-### RFC Requirements (~950 total, traced to RFC sections)
+### RFC Requirements (~960 total, traced to RFC sections)
 
 **V1 — IPv4 Core (~546 requirements):**
 - **[docs/requirements/ethernet.md](docs/requirements/ethernet.md)** — Ethernet II framing (20 reqs, RFC 894)
@@ -430,7 +432,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/requirements/mdns.md](docs/requirements/mdns.md)** — Multicast DNS (43 reqs, RFC 6762)
 - **[docs/requirements/dns-sd.md](docs/requirements/dns-sd.md)** — DNS-Based Service Discovery (32 reqs, RFC 6763)
 
-**Security (88 requirements):**
+**Security (99 requirements):**
 - **[docs/requirements/tls.md](docs/requirements/tls.md)** — TLS 1.3 (43 reqs, RFC 8446)
 - **[docs/requirements/dtls.md](docs/requirements/dtls.md)** — DTLS 1.3 (56 reqs, RFC 9147)
 
@@ -442,7 +444,7 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/requirements/dhcpv6.md](docs/requirements/dhcpv6.md)** — DHCPv6 client (44 reqs, RFC 8415)
 
 ### Size Benchmarks
-- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (4.1× smaller stack code; UDP + TCP = 6.1 KB)
+- **[docs/design/size-comparison.md](docs/design/size-comparison.md)** — ARM Cortex-M0 code size comparison vs lwIP (3.7× smaller stack code; UDP + TCP = 6.6 KB; TLS and DTLS protocol code)
 
 ### Test Plan
 - **[docs/test-plan.md](docs/test-plan.md)** — Unit and black-box conformance testing with Python/Scapy/pytest, CI strategy, traceability matrix
