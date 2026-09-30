@@ -238,7 +238,7 @@ A PTR query returns the PTR in Answer and SRV + TXT + A (and AAAA) in Additional
 
 1. **Join:** `mdns_start()` calls `igmp_join(net, 224.0.0.251)` — adds the group to `net_t`'s table and sends an IGMPv2 Membership Report (IP TTL 1, Router Alert option, RFC 2236 §2) every time it runs.  In IPv6 builds it also calls `ipv6_mcast_join(net, ff02::fb)`; MLD reports a new membership and repeats it once after 1 s.  A join before `ipv6_start()` is kept and reported with the first MLD report.
 2. **Repeat:** the IGMP report is repeated once when announcing starts (~0.75 s after the join).
-3. **Leave:** `mdns_stop()` sends the goodbye first, then an IGMPv2 Leave Group to 224.0.0.2 and the MLD leave for ff02::fb.
+3. **Leave:** `mdns_stop()` sends the goodbye first — every record with TTL 0, and each service type's PTR under `_services._dns-sd._udp.local.`, which a querier may have cached from a meta-query answer — then an IGMPv2 Leave Group to 224.0.0.2 and the MLD leave for ff02::fb.
 4. **IGMP queries are not answered.**  224.0.0.251 is in the link-local control block (224.0.0.0/24), which IGMP-snooping switches must flood regardless of membership (RFC 4541 §2.1.2), so the responder only signals joins and leaves.  MLD queries are answered by `mld.c` for every joined group, ff02::fb included.
 5. **Hardware MACs:** TAP and BPF deliver every frame.  A MAC with a multicast hash filter (e.g. ENC28J60) must be configured to pass 01:00:5E:00:00:FB, and 33:33:00:00:00:FB for IPv6.
 6. **TTL / Hop Limit 255** on every mDNS packet, including unicast responses (RFC 6762 §11).
@@ -315,7 +315,7 @@ Each test launches a fresh `mdns_demo` on tap0 so start-up and shutdown are obse
 | 005 ID zero | Multicast responses have ID 0 whatever the query ID |
 | 006 IP TTL 255 | Responses sent with TTL 255 from port 5353 |
 | 007 known-answer suppression | Fresh known answer suppresses, stale one does not |
-| 008 goodbye | SIGTERM → every record with TTL 0 |
+| 008 goodbye | SIGTERM → every record with TTL 0, the meta-query's PTR too |
 | 009 meta-query | `_services._dns-sd._udp.local` → `_pyro._tcp.local` |
 | 010 probes | Three probes 150–450 ms apart, ANY/QU, records in Authority |
 | 011 announcements | Two announcements 0.8–1.5 s apart after probing |

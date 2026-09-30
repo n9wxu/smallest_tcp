@@ -285,6 +285,7 @@ def test_mdns_008_goodbye_on_shutdown(sut):
     assert rrs and all(rr.ttl == 0 for rr in rrs)
     assert find(sniffer.results[0][DNS].an, HOST, T_A)
     assert find(sniffer.results[0][DNS].an, SVC, T_PTR)
+    assert find(sniffer.results[0][DNS].an, META, T_PTR)
 
 
 def test_mdns_009_meta_query(sut):

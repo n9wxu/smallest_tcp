@@ -1068,9 +1068,13 @@ TEST(test_stop_sends_goodbye_and_leaves) {
   ASSERT_TRUE(multicast_envelope_ok(i));
   const uint8_t *msg = dns_msg(i, &len);
   ASSERT_EQ(hdr16(msg, DNS_OFF_FLAGS), DNS_FLAG_QR | DNS_FLAG_AA);
-  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), N_RECS);
+  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), N_RECS + 1);
   ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_A, &rr));
   ASSERT_EQ(rr.ttl, 0u);
+  /* REQ-DNSSD-018: the service type's listing under the meta-query too */
+  ASSERT_TRUE(find_rr(msg, len, 0, MDNS_META_QUERY, DNS_TYPE_PTR, &rr));
+  ASSERT_EQ(rr.ttl, 0u);
+  ASSERT_TRUE(dns_name_equals(msg, len, rr.rdata_off, SVC));
   ASSERT_TRUE(find_rr(msg, len, 0, SVC, DNS_TYPE_PTR, &rr));
   ASSERT_EQ(rr.ttl, 0u);
   ASSERT_TRUE(find_rr(msg, len, 0, INST, DNS_TYPE_SRV, &rr));

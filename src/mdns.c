@@ -99,6 +99,17 @@ static uint32_t shared_mask(const mdns_t *m) {
   return mask;
 }
 
+/* The PTR records of service types: what the DNS-SD meta-query lists */
+static uint32_t service_type_mask(const mdns_t *m) {
+  uint32_t mask = 0;
+  uint8_t i;
+  for (i = 0; i < m->count; i++) {
+    if (is_service_type(&m->records[i]))
+      mask |= BIT(i);
+  }
+  return mask;
+}
+
 /* Index of the first unique record carrying the same name as record i */
 static uint8_t name_rep(const mdns_t *m, uint8_t i) {
   uint8_t j;
@@ -533,8 +544,11 @@ static void send_to_groups(mdns_t *m, uint8_t families, uint32_t answers,
   }
 }
 
+/* Every record; a goodbye withdraws the service types' listing under the
+ * meta-query too, which queriers may have cached (REQ-DNSSD-018) */
 static void announce(mdns_t *m, int goodbye) {
-  send_to_groups(m, m->announce_families, all_mask(m), 0, 0, (uint8_t)goodbye);
+  send_to_groups(m, m->announce_families, all_mask(m),
+                 goodbye ? service_type_mask(m) : 0, 0, (uint8_t)goodbye);
 }
 
 /* ── Probing (RFC 6762 §8.1) ── */
@@ -821,10 +835,7 @@ static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
   }
   if ((q->type == DNS_TYPE_PTR || q->type == DNS_TYPE_ANY) &&
       dns_name_equals(msg, len, q->name_off, MDNS_META_QUERY)) {
-    for (i = 0; i < m->count; i++) {
-      if (is_service_type(&m->records[i]))
-        types |= BIT(i);
-    }
+    types = service_type_mask(m);
   }
   if (!(hit | types) && q->type != DNS_TYPE_ANY) {
     /* One of our unique names, a type it doesn't have (RFC 6762 §6.1) */
