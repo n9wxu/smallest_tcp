@@ -726,6 +726,73 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
   }
 }
 
+/* Record @p r's RRs, names uncompressed: at most what they take in any
+ * message — for an AAAA record standing for the interface's addresses,
+ * all NET_IPV6_ADDRS of them */
+static uint32_t rr_wire_max(const mdns_record_t *r) {
+  uint32_t head = (uint32_t)dns_name_wire_len(r->name) + 10u, rdata = 0;
+  const char *const *t;
+  switch (r->type) {
+#if NET_USE_IPV6
+  case DNS_TYPE_AAAA:
+    return (head + 16u) * (r->rdata.aaaa ? 1u : NET_IPV6_ADDRS);
+#endif
+  case DNS_TYPE_PTR:
+    rdata = (uint32_t)dns_name_wire_len(r->rdata.ptr);
+    break;
+  case DNS_TYPE_SRV:
+    rdata = 6u + (uint32_t)dns_name_wire_len(r->rdata.srv.target);
+    break;
+  case DNS_TYPE_TXT:
+    for (t = r->rdata.txt; t && *t; t++)
+      rdata += 1u + (uint32_t)strlen(*t);
+    if (rdata == 0)
+      rdata = 1; /* the single zero byte */
+    break;
+  default: /* A */
+    rdata = 4;
+    break;
+  }
+  return head + rdata;
+}
+
+/*
+ * REQ-DNSSD-029, REQ-MDNS-042: every message record @p i must travel in
+ * alone fits the TX frame buffer — a response repeating the question (as
+ * legacy replies do), for a unique name its probe and its NSEC, for a
+ * service type its meta-query listing.  One that does not could never be
+ * sent.
+ */
+static int fits_alone(const net_t *net, const mdns_record_t *records,
+                      uint8_t count, uint8_t i) {
+  const mdns_record_t *r = &records[i];
+  uint32_t name = (uint32_t)dns_name_wire_len(r->name);
+  uint32_t q = DNS_HDR_SIZE + name + 4u, need = q + rr_wire_max(r);
+#if NET_USE_IPV6
+  uint16_t off = UDP6_PAYLOAD_OFFSET; /* the larger */
+#else
+  uint16_t off = UDP_PAYLOAD_OFFSET;
+#endif
+  uint8_t j;
+  if (!is_shared(r)) {
+    uint32_t probe = q;
+    for (j = 0; j < count; j++) {
+      if (!is_shared(&records[j]) && dns_dotted_equal(records[j].name, r->name))
+        probe += rr_wire_max(&records[j]);
+    }
+    if (probe > need)
+      need = probe;
+    if (q + 2u * name + 20u > need) /* NSEC */
+      need = q + 2u * name + 20u;
+  }
+  if (is_service_type(r)) {
+    uint32_t meta = (uint32_t)dns_name_wire_len(MDNS_META_QUERY);
+    if (DNS_HDR_SIZE + 2u * meta + 14u + name > need)
+      need = DNS_HDR_SIZE + 2u * meta + 14u + name;
+  }
+  return net->tx.capacity >= off && need <= (uint32_t)(net->tx.capacity - off);
+}
+
 net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx) {
   uint8_t i;
@@ -763,6 +830,10 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
     default:
       return NET_ERR_INVALID_PARAM;
     }
+  }
+  for (i = 0; i < count; i++) {
+    if (!fits_alone(net, records, count, i))
+      return NET_ERR_BUF_TOO_SMALL;
   }
 
   memset(m, 0, sizeof(*m));

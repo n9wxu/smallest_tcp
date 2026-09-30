@@ -122,7 +122,9 @@ struct mdns_s {
 
 /**
  * Initialise a responder (state STOPPED).  Sends nothing.
- * @return NET_ERR_INVALID_PARAM if @p count is 0 or > MDNS_MAX_RECORDS.
+ * @return NET_ERR_INVALID_PARAM if @p count is 0 or > MDNS_MAX_RECORDS, or
+ *         a record is malformed; NET_ERR_BUF_TOO_SMALL if a record would
+ *         not fit one message in net's TX frame buffer (REQ-DNSSD-029).
  */
 net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx);

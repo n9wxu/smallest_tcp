@@ -87,7 +87,8 @@ mdns_start(&mdns);                                       /* once the IPv4 addres
 
 - PTR records are **shared** (many hosts advertise the same service type); A, AAAA, SRV and TXT records are **unique** and are probed for (`is_shared()`).
 - An A record with `.rdata.a = 0` always answers with the current `net->ipv4_addr`, so a DHCP-assigned address needs no table update.  In IPv6 builds, `{.type = DNS_TYPE_AAAA, .ttl = MDNS_TTL_HOST, .name = "pyro-dead01.local", .rdata.aaaa = NULL}` does the same for every usable IPv6 address (§11); an IPv4-only build rejects AAAA records, and an IPv6-only build A records.
-- `mdns_init()` rejects invalid names (empty label, label > 63 bytes, name > 255 bytes), TXT strings > 255 bytes, types other than A, PTR, SRV, TXT (and AAAA in IPv6 builds), and more than `MDNS_MAX_RECORDS` (32) records.
+- `mdns_init()` rejects invalid names (empty label, label > 63 bytes, name > 255 bytes), TXT strings > 255 bytes, types other than A, PTR, SRV, TXT (and AAAA in IPv6 builds), and more than `MDNS_MAX_RECORDS` (32) records (`NET_ERR_INVALID_PARAM`).
+- It also rejects, with `NET_ERR_BUF_TOO_SMALL`, a record that no message could carry in the TX frame buffer after the largest family's headers (REQ-DNSSD-029, `fits_alone()`): a response with the record alone and the question repeated, as legacy replies have it; for a unique name its probe (every record of the name) and its NSEC; for a service type its meta-query PTR.  Names are counted uncompressed, and an AAAA record standing for the interface's addresses as `NET_IPV6_ADDRS` of them, so the bound holds whatever the packet.  Such a record used to be dropped silently from every announcement.
 - Names are dotted strings; labels may contain spaces (`Pyro Unit 1`) but not dots.
 - **Record sets are 32-bit masks**, bit *i* = `records[i]`: what a query wants, what a delayed response owes, which names get NSEC.  A unique *name* is represented by its first unique record (`name_rep()`); probes ask one question per representative, and NSEC answers are keyed by it.
 
@@ -180,7 +181,7 @@ typedef struct {
 
 **`send_response()`** writes, in order: the answers (table order), the NSEC records, one PTR per distinct service type (`_services._dns-sd._udp.local.` → the type, TTL 4500), and last the additionals.  The header has QR and AA set and ID 0, except in legacy replies, which echo the ID and carry the question.  `rr_ttl()` makes goodbye TTLs 0 and caps legacy TTLs; `rr_class()` sets the cache-flush bit on unique records except in legacy replies.  A packet with no answer is not sent.
 
-**Size** (REQ-MDNS-042).  `add_answer()` writes an answer; when it does not fit, the packet so far is sent and a new one begun with the same header (and, for legacy, the same question).  A single record too large for an empty packet is dropped.  Every record is written with a writer mark and rolled back on overflow (`write_one()`, `write_rr()`, `write_nsec()`), so a record never goes out half-written.  Additionals go in the last packet only, and only those that fit.
+**Size** (REQ-MDNS-042).  `add_answer()` writes an answer; when it does not fit, the packet so far is sent and a new one begun with the same header (and, for legacy, the same question).  A single record too large for an empty packet cannot occur: `mdns_init()` refused it.  Every record is written with a writer mark and rolled back on overflow (`write_one()`, `write_rr()`, `write_nsec()`), so a record never goes out half-written.  Additionals go in the last packet only, and only those that fit.
 
 **Additional records** (`additionals_for()`, RFC 6763 §12): a PTR answer adds the instance's SRV and TXT; an SRV (answered or added) adds the A and AAAA records of its target; in IPv6 builds an A answer adds the name's AAAA records and vice versa (RFC 6762 §6.2).  Records already in the answers are not repeated.
 
@@ -299,7 +300,7 @@ Random delays — the 0–250 ms probe start and the 20–120 ms response delay 
 |---|---|---|
 | `tests/unit/test_dns_wire.c` | 23 | Encoding, compression (suffix, whole name, prefix), limits, rollback, decode, pointer loops, truncation, question/RR parsing |
 | `tests/unit/test_mcast.c` | 19 | Group table, multicast accept/drop (incl. aliased MACs), no ICMP errors / echo for multicast, `udp_send_inplace()` TTL, IGMP report/leave format |
-| `tests/unit/test_mdns.c` | 49 | Table validation, probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression, QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
+| `tests/unit/test_mdns.c` | 50 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression, QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
 | `tests/unit/test_mdns6.c` | 19 | ff02::fb join, probes and goodbyes on both families, one AAAA per usable address (none for tentative ones), AAAA over either family, AAAA added to an A answer, SRV additionals, QU and legacy over IPv6, known answers, NSEC listing AAAA, delayed response on IPv6 only, explicit AAAA address, AAAA conflicts, `mdns_readdress6()` while running and while announcing |
 
 ### Blackbox (`tests/blackbox/test_mdns_conform.py`, 21 tests)

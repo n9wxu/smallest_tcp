@@ -349,6 +349,28 @@ TEST(test_init_validates_table) {
   ASSERT_EQ(n_frames, 0);
 }
 
+/* REQ-DNSSD-029, REQ-MDNS-042: a record no message could carry — here a
+ * TXT record of 3 x 200 bytes with a 300-byte TX buffer — is refused, not
+ * left unannounced */
+TEST(test_init_refuses_a_record_too_big_for_any_packet) {
+  static char e1[201], e2[201], e3[201];
+  static const char *const big_txt[] = {e1, e2, e3, NULL};
+  static const mdns_record_t recs[] = {
+      {.type = DNS_TYPE_A, .ttl = 120, .name = HOST, .rdata.a = 0},
+      {.type = DNS_TYPE_TXT, .ttl = 120, .name = INST, .rdata.txt = big_txt},
+  };
+  static int ctx;
+  memset(e1, 'a', 200);
+  memset(e2, 'b', 200);
+  memset(e3, 'c', 200);
+  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, 300, NULL, &stub_mac, &ctx);
+  ASSERT_EQ(mdns_init(&m, &net, recs, 2, NULL, NULL), NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(mdns_init(&m, &net, recs, 1, NULL, NULL), NET_OK);
+  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
+           &stub_mac, &ctx);
+  ASSERT_EQ(mdns_init(&m, &net, recs, 2, NULL, NULL), NET_OK);
+}
+
 TEST(test_stopped_is_silent) {
   setup();
   mdns_tick(&m, 5000);
@@ -1128,6 +1150,8 @@ static const mdns_record_t many[] = {
 TEST(test_announcement_split_across_packets) {
   int k, total_an = 0, frames_seen = 0;
   setup_with(many, 4, SMALL_TX);
+  /* each record fits a packet alone */
+  ASSERT_EQ(mdns_init(&m, &net, many, 4, on_conflict, NULL), NET_OK);
   mdns_start(&m);
   mdns_tick(&m, MDNS_PROBE_WAIT_MS);
   mdns_tick(&m, MDNS_PROBE_WAIT_MS);
@@ -1169,6 +1193,7 @@ TEST(test_probe_split_across_packets) {
 
 int main(void) {
   RUN_TEST(test_init_validates_table);
+  RUN_TEST(test_init_refuses_a_record_too_big_for_any_packet);
   RUN_TEST(test_stopped_is_silent);
   RUN_TEST(test_start_joins_group);
   RUN_TEST(test_first_probe_within_250ms);
