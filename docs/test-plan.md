@@ -40,7 +40,7 @@ verified at both the unit and integration levels:
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC |
-| `test_http` | tests/unit/test_http.c | 46 | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot (REQ-HTTP-*) |
+| `test_http` | tests/unit/test_http.c | 51 | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot, no body for HEAD (errors too) or 204, `Allow` on every 405, one Host line (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
 | `test_udp6` | tests/unit/test_udp6.c | 14 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` (REQ-IPv6-044,045, REQ-ICMPv6-016) |
 | `test_tcp6` | tests/unit/test_tcp6.c | 19 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, advertised MSS from the RX frame buffer and within the Ethernet MTU (1440), send MSS clamped to the TX frame buffer (IPv4 and IPv6) |

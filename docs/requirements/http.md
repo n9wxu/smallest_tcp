@@ -26,7 +26,7 @@ This stack implements a minimal HTTP/1.0 server (with optional HTTP/1.1 support)
 | REQ-HTTP-007 | MUST | Parse headers as field-name ":" field-value CRLF | RFC 9110 §5.1, RFC 9112 §5 | TEST-HTTP-007 |
 | REQ-HTTP-008 | MUST | Detect end of headers: empty line (CRLF CRLF) | RFC 9112 §5 | TEST-HTTP-008 |
 | REQ-HTTP-009 | SHOULD | Extract Content-Length header (for POST body) | RFC 9110 §8.6 | TEST-HTTP-009 |
-| REQ-HTTP-010 | MUST | Respond 400 (Bad Request) to an HTTP/1.1 request without a Host header | RFC 9112 §3.2 | TEST-HTTP-010 |
+| REQ-HTTP-010 | MUST | Respond 400 (Bad Request) to an HTTP/1.1 request without a Host header, and to any request with more than one Host header line | RFC 9112 §3.2 | TEST-HTTP-010 |
 | REQ-HTTP-011 | MUST | Tolerate missing Host header for HTTP/1.0 requests | RFC 9112 §3.3 | TEST-HTTP-011 |
 | REQ-HTTP-012 | SHOULD | Handle requests with unknown/unsupported headers by ignoring them | RFC 9110 §5.1 | TEST-HTTP-012 |
 
@@ -49,7 +49,7 @@ This stack implements a minimal HTTP/1.0 server (with optional HTTP/1.1 support)
 | REQ-HTTP-020 | MUST | Include Content-Length header in response | RFC 9110 §8.6 | TEST-HTTP-020 |
 | REQ-HTTP-021 | MUST | Include Connection: close header for HTTP/1.0 semantics | RFC 9112 §9.6 | TEST-HTTP-021 |
 | REQ-HTTP-022 | MUST | Send response headers followed by CRLF CRLF followed by body | RFC 9112 §6 | TEST-HTTP-022 |
-| REQ-HTTP-023 | MUST | For HEAD requests, send response headers but no body | RFC 9110 §9.3.2 | TEST-HTTP-023 |
+| REQ-HTTP-023 | MUST | For HEAD requests, send response headers but no body — error responses included | RFC 9110 §9.3.2 | TEST-HTTP-023 |
 
 ### Method Handling
 

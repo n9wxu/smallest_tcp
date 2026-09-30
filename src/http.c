@@ -192,6 +192,8 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
     } else if (eq_ci(line, name_len, "transfer-encoding")) {
       return 501; /* no chunked request bodies in V1 */
     } else if (eq_ci(line, name_len, "host")) {
+      if (host_seen)
+        return 400; /* RFC 9112 §3.2: one Host line at most */
       host_seen = 1;
     }
   }
@@ -307,7 +309,7 @@ uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
     put_u32(&b, content_length);
     put(&b, "\r\n");
   }
-  if (allow) {
+  if (allow || status == 405) { /* RFC 9110 §15.5.6: 405 always has it */
     const char *sep = "";
     put(&b, "Allow: ");
     if (allow & HTTP_GET) {
@@ -444,6 +446,8 @@ net_err_t http_server_init(http_server_t *s, net_t *net, uint16_t port,
 static void respond(http_conn_t *c, uint16_t status, const char *content_type,
                     const uint8_t *body, uint32_t body_len, uint8_t allow) {
   char hdr[HTTP_HDR_MAX];
+  if (status == 204 || status == 304) /* RFC 9110 §15.3.5, §15.4.5 */
+    body_len = 0;
   c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status, content_type,
                                        body_len, allow);
   if (c->resp_hdr_len == 0) { /* e.g. a very long content type */
@@ -463,6 +467,17 @@ static void respond(http_conn_t *c, uint16_t status, const char *content_type,
   c->sent = 0;
   c->state = S_SEND;
   c->timer_ms = HTTP_RESPONSE_TIMEOUT_MS;
+}
+
+/* RFC 9110 §9.3.2: no content in a response to HEAD, an error included —
+ * so this looks at the request line itself, parsed or not (the parser
+ * skips empty lines before it too) */
+static int is_head(const char *req, uint16_t len) {
+  while (len > 0 && (*req == '\r' || *req == '\n')) {
+    req++;
+    len--;
+  }
+  return len >= 5 && memcmp(req, "HEAD ", 5) == 0;
 }
 
 /* Error responses carry the reason phrase as a text/plain body */
@@ -552,6 +567,7 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
 
   if (c->hdr_len == 0) {
     uint16_t end = http_header_end(c->req, c->req_len);
+    c->head_only = (uint8_t)is_head(c->req, c->req_len);
     if (end == 0) {
       if (c->req_len >= c->req_size) /* REQ-HTTP-039..041 */
         respond_error(c, memchr(c->req, '\n', c->req_len) ? 431 : 414, 0);
@@ -566,7 +582,6 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
       respond_error(c, status, 0);
       return;
     }
-    c->head_only = (uint8_t)(c->request.method == HTTP_HEAD);
     if ((uint32_t)end + c->content_length > c->req_size) {
       respond_error(c, 413, 0); /* REQ-HTTP-033, 034 */
       return;

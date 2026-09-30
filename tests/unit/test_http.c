@@ -77,6 +77,12 @@ TEST(test_parse_http11_needs_host) {
   ASSERT_EQ(parse("GET / HTTP/1.0\r\n\r\n"), HTTP_PARSE_OK); /* REQ-HTTP-011 */
 }
 
+/* RFC 9112 §3.2: more than one Host line is a 400 */
+TEST(test_parse_duplicate_host_rejected) {
+  ASSERT_EQ(parse("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"), 400);
+  ASSERT_EQ(parse("GET / HTTP/1.0\r\nHost: a\r\nhost: a\r\n\r\n"), 400);
+}
+
 TEST(test_parse_query_split) {
   ASSERT_EQ(parse("GET /api/status?x=1&y=2 HTTP/1.0\r\n\r\n"), HTTP_PARSE_OK);
   ASSERT_TRUE(strcmp(preq.path, "/api/status") == 0);
@@ -215,6 +221,15 @@ TEST(test_format_header_405_allow) {
   (void)n;
 }
 
+/* RFC 9110 §10.2.1: a 405 always has Allow, empty when nothing is */
+TEST(test_format_header_405_allows_nothing) {
+  char out[HTTP_HDR_MAX];
+  http_format_header(out, sizeof(out), 405, "text/plain", 0, 0);
+  ASSERT_TRUE(strstr(out, "\r\nAllow: \r\n") != NULL);
+  http_format_header(out, sizeof(out), 404, "text/plain", 0, 0);
+  ASSERT_TRUE(strstr(out, "Allow") == NULL);
+}
+
 TEST(test_format_header_204_has_no_body_fields) {
   char out[HTTP_HDR_MAX];
   const char *expect = "HTTP/1.0 204 No Content\r\n"
@@ -336,6 +351,14 @@ static int page_gen(const http_request_t *rq, http_response_t *rs, void *c) {
   rs->body_len = (uint32_t)strlen((char *)rs->scratch);
   return 0;
 }
+static int page_none(const http_request_t *rq, http_response_t *rs, void *c) {
+  (void)rq;
+  (void)c;
+  rs->status = 204;
+  rs->body = (const uint8_t *)"not sent";
+  rs->body_len = 8;
+  return 0;
+}
 static int page_fail(const http_request_t *rq, http_response_t *rs, void *c) {
   (void)rq;
   (void)rs;
@@ -346,7 +369,8 @@ static int page_fail(const http_request_t *rq, http_response_t *rs, void *c) {
 static const http_route_t routes[] = {
     {"/", HTTP_GET, page_root, NULL},      {"/big", HTTP_GET, page_big, NULL},
     {"/echo", HTTP_POST, page_echo, NULL}, {"/gen", HTTP_GET, page_gen, NULL},
-    {"/fail", HTTP_GET, page_fail, NULL},
+    {"/fail", HTTP_GET, page_fail, NULL},  {"/none", HTTP_GET, page_none, NULL},
+    {"/off", 0, page_root, NULL},
 };
 
 static void server_setup(void) {
@@ -658,6 +682,50 @@ TEST(test_server_431_headers_too_large) {
   ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 431 ", 13) == 0);
 }
 
+/* RFC 9110 §9.3.2: no content in a response to HEAD — an error too, even
+ * one about a request that could not be parsed */
+TEST(test_server_head_error_has_no_body) {
+  static const char *const requests[] = {
+      "HEAD / HTTP/2.0\r\n\r\n",         /* 505 */
+      "HEAD / HTTP/1.1\r\n\r\n",         /* 400: no Host */
+      "HEAD /x y HTTP/1.0\r\n\r\n",      /* 400 */
+      "\r\nHEAD /nope HTTP/1.0\r\n\r\n", /* 404 */
+  };
+  char line[REQ_SIZE + 32];
+  unsigned i;
+  for (i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+    server_setup();
+    exchange(&cl, (uint16_t)(40030 + i), requests[i]);
+    ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 ", 9) == 0);
+    ASSERT_TRUE(strstr((char *)cl.resp, "Content-Length: ") != NULL);
+    ASSERT_EQ(strlen(resp_body(&cl)), 0u);
+  }
+  server_setup(); /* 414: the request line never ends */
+  memset(line, 'a', sizeof(line));
+  memcpy(line, "HEAD /", 6);
+  line[sizeof(line) - 1] = '\0';
+  exchange(&cl, 40039, line);
+  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 414 ", 13) == 0);
+  ASSERT_EQ(strlen(resp_body(&cl)), 0u);
+}
+
+/* RFC 9110 §15.3.5: a 204 has no content, whatever the handler gave */
+TEST(test_server_204_sends_no_body) {
+  server_setup();
+  exchange(&cl, 40040, "GET /none HTTP/1.0\r\n\r\n");
+  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 204 ", 13) == 0);
+  ASSERT_EQ(strlen(resp_body(&cl)), 0u);
+  ASSERT_EQ(cl.fin, 1);
+}
+
+/* RFC 9110 §15.5.6: a 405 names what is allowed, even nothing */
+TEST(test_server_405_for_a_route_allowing_nothing) {
+  server_setup();
+  exchange(&cl, 40041, "GET /off HTTP/1.0\r\n\r\n");
+  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 405 ", 13) == 0);
+  ASSERT_TRUE(strstr((char *)cl.resp, "\r\nAllow: \r\n") != NULL);
+}
+
 /* ── Connection lifecycle (REQ-HTTP-028, 029) ── */
 
 /* Recycled straight to LISTEN — no 240 s TIME_WAIT lock-out */
@@ -821,6 +889,7 @@ int main(void) {
   RUN_TEST(test_parse_simple_get);
   RUN_TEST(test_parse_head_and_post);
   RUN_TEST(test_parse_http11_needs_host);
+  RUN_TEST(test_parse_duplicate_host_rejected);
   RUN_TEST(test_parse_query_split);
   RUN_TEST(test_parse_absolute_form);
   RUN_TEST(test_parse_bare_lf_lines);
@@ -836,6 +905,7 @@ int main(void) {
   RUN_TEST(test_format_header_200);
   RUN_TEST(test_format_header_405_allow);
   RUN_TEST(test_format_header_204_has_no_body_fields);
+  RUN_TEST(test_format_header_405_allows_nothing);
   RUN_TEST(test_format_header_large_length_and_no_fit);
   RUN_TEST(test_server_get_root);
   RUN_TEST(test_server_small_response_is_one_segment);
@@ -852,6 +922,9 @@ int main(void) {
   RUN_TEST(test_server_413_body_too_large);
   RUN_TEST(test_server_414_uri_too_long);
   RUN_TEST(test_server_431_headers_too_large);
+  RUN_TEST(test_server_head_error_has_no_body);
+  RUN_TEST(test_server_204_sends_no_body);
+  RUN_TEST(test_server_405_for_a_route_allowing_nothing);
   RUN_TEST(test_server_slot_recycled_after_close);
   RUN_TEST(test_server_two_concurrent_connections);
   RUN_TEST(test_server_request_with_half_close);

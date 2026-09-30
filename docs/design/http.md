@@ -122,7 +122,12 @@ typedef int (*http_handler_t)(const http_request_t *req,
   else touches it until the response is done.
 - A handler returning < 0 produces **500**.
 - A HEAD request calls the GET handler and sends only the headers, with the
-  same Content-Length (RFC 9110 §9.3.2).
+  same Content-Length (RFC 9110 §9.3.2).  Every response to HEAD is headers
+  only, an error too: whether the request is HEAD is read from the request
+  line itself, so a 400, 414, 431 or 505 about a request that could not be
+  parsed has no body either.
+- A 204 or 304 is sent without the body the handler gave (RFC 9110 §15.3.5,
+  §15.4.5).
 
 ---
 
@@ -143,12 +148,12 @@ bytes arrive (transport read → request buffer)
 | Condition | Status |
 |---|---|
 | Request line not `METHOD SP target SP HTTP/x.y`, header line without `:`, obsolete line folding, bad or conflicting Content-Length | 400 |
-| HTTP/1.1 request without `Host` (RFC 9112 §3.2) | 400 |
+| HTTP/1.1 request without `Host`, or any request with more than one `Host` line (RFC 9112 §3.2) | 400 |
 | Method other than GET, HEAD, POST (RFC 9110 §15.6.2) | 501 |
 | `Transfer-Encoding` in the request (chunked not supported) | 501 |
 | Version other than HTTP/1.0 or HTTP/1.1 | 505 |
 | Path not in the route table | 404 |
-| Path known, method not allowed for it (with `Allow:`) | 405 |
+| Path known, method not allowed for it (with `Allow:`, empty for a route that allows nothing — RFC 9110 §15.5.6) | 405 |
 | Body larger than the request buffer | 413 |
 | Request line longer than the request buffer | 414 |
 | Headers larger than the request buffer (RFC 6585) | 431 |
@@ -160,7 +165,8 @@ large.
 
 Absolute-form targets (`GET http://host/path`) are reduced to their path.
 Paths are compared exactly (no percent-decoding).  Headers other than
-Content-Length, Transfer-Encoding and Host are ignored.
+Content-Length, Transfer-Encoding and Host are ignored, and Host's value is
+not checked.
 
 ---
 
