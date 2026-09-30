@@ -251,6 +251,54 @@ TEST(test_net_random_output_does_not_predict_the_next) {
   ASSERT_TRUE(b != xorshift32(a));
 }
 
+/* The first output after net_init() with @p mac, seeded with @p entropy */
+static uint32_t first_output(const uint8_t *mac, const uint8_t *entropy,
+                             uint16_t len) {
+  static uint8_t rx[200], tx[200];
+  static net_t net;
+  int ctx = 0;
+  net_init(&net, rx, sizeof(rx), tx, sizeof(tx), mac, &stub_mac, &ctx);
+  if (entropy)
+    net_random_seed(&net, entropy, len);
+  return net_random(&net);
+}
+
+/* Every byte of the entropy counts, however long: a 64-bit key needs more
+ * than 32 bits to be beyond guessing (RFC 6528 §3) */
+TEST(test_net_random_seed_uses_every_byte) {
+  uint8_t e[40];
+  uint32_t base;
+  uint16_t i;
+  memset(e, 0x5A, sizeof(e));
+  base = first_output(NULL, e, sizeof(e));
+  for (i = 0; i < sizeof(e); i++) {
+    e[i] ^= 1u;
+    ASSERT_TRUE(first_output(NULL, e, sizeof(e)) != base);
+    e[i] ^= 1u;
+  }
+  ASSERT_TRUE(first_output(NULL, e, 39) != base); /* the length too */
+}
+
+/* A seed adds to the key: two seeds are not the second alone */
+TEST(test_net_random_seeds_accumulate) {
+  static uint8_t rx[200], tx[200];
+  static const uint8_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  static const uint8_t b[8] = {8, 7, 6, 5, 4, 3, 2, 1};
+  net_t net;
+  int ctx = 0;
+  net_init(&net, rx, sizeof(rx), tx, sizeof(tx), NULL, &stub_mac, &ctx);
+  net_random_seed(&net, a, sizeof(a));
+  net_random_seed(&net, b, sizeof(b));
+  ASSERT_TRUE(net_random(&net) != first_output(NULL, b, sizeof(b)));
+}
+
+/* net_init() keys from the whole MAC, its first bytes too */
+TEST(test_net_init_keys_from_the_whole_mac) {
+  static const uint8_t m1[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+  static const uint8_t m2[6] = {0x06, 0x00, 0x00, 0x00, 0x00, 0x01};
+  ASSERT_TRUE(first_output(m1, NULL, 0) != first_output(m2, NULL, 0));
+}
+
 int main(void) {
   fprintf(stderr, "=== test_net ===\n");
 
@@ -269,6 +317,9 @@ int main(void) {
   RUN_TEST(test_net_transmit_reports_busy_driver);
   RUN_TEST(test_net_hash_matches_reference_vectors);
   RUN_TEST(test_net_random_output_does_not_predict_the_next);
+  RUN_TEST(test_net_random_seed_uses_every_byte);
+  RUN_TEST(test_net_random_seeds_accumulate);
+  RUN_TEST(test_net_init_keys_from_the_whole_mac);
 
   TEST_REPORT();
   return test_failures;

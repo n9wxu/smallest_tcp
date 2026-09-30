@@ -139,7 +139,7 @@ For whole-build flash and RAM figures, see
 
 | Function | Validates | Sets |
 |---|---|---|
-| `net_init()` | Non-NULL `net`, buffers and driver; buffers that do not overlap; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with MAC bytes 2..5 (`net_random_seed()`).  Does **not** call `driver->init()`. |
+| `net_init()` | Non-NULL `net`, buffers and driver; buffers that do not overlap; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver; `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY`; seeds the zeroed `secret` with the MAC address (`net_random_seed()`).  Does **not** call `driver->init()`. |
 | `tcp_conn_init()` | Non-NULL connection and buffer tables/contexts | CLOSED, initial RTO, default MSS |
 | `tcp_saw_tx_init()`, `tcp_saw_rx_init()` | — | Buffer and capacity |
 | `http_conn_init()` | Buffers present; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |

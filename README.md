@@ -423,7 +423,7 @@ A UDP echo server and one TCP connection on a bare-metal board.  The `board_*` s
 extern const net_mac_t board_mac_ops; /* your MAC driver (net_mac.h) */
 extern void *board_mac_ctx;
 extern uint32_t board_millis(void);
-extern uint32_t board_entropy(void);
+extern void board_entropy(uint8_t *buf, uint16_t len); /* a hardware RNG */
 
 static uint8_t rx_buf[1514], tx_buf[1514]; /* one frame each way */
 static net_t net;
@@ -444,13 +444,15 @@ static tcp_conn_t conn;
 static tcp_conn_t *const tcp_table[] = {&conn};
 
 int main(void) {
+  uint8_t entropy[16];
   uint32_t last;
 
   if (net_init(&net, rx_buf, sizeof rx_buf, tx_buf, sizeof tx_buf, NULL,
                &board_mac_ops, board_mac_ctx) != NET_OK ||
       board_mac_ops.init(board_mac_ctx) != 0)
     return 1;
-  net_random_seed(&net, board_entropy()); /* TCP ISNs, DHCP xids, ... */
+  board_entropy(entropy, sizeof entropy);
+  net_random_seed(&net, entropy, sizeof entropy); /* TCP ISNs, DHCP xids */
   udp_set_ports(&net, udp_ports, 1);
 
   tcp_saw_tx_init(&tx_ctx, tcp_tx, sizeof tcp_tx);

@@ -227,6 +227,12 @@ static void setup(void) {
   udp_set_ports(&net, NULL, 0);
 }
 
+static void seed_with(uint32_t entropy) {
+  uint8_t e[4];
+  net_write32be(e, entropy);
+  net_random_seed(&net, e, sizeof(e));
+}
+
 /* Start the client and wait out the start-up delay: the first DISCOVER has
    just gone */
 static void start_discovery(void) {
@@ -571,7 +577,7 @@ TEST(test_dhcp_client_backoff_randomised) {
   int differs = 0;
   for (seed = 1; seed <= 8; seed++) {
     setup();
-    net_random_seed(&net, seed * 0x9E3779B9u);
+    seed_with(seed * 0x9E3779B9u);
     dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
     start_discovery();
     waited = ms_until_sent(10000u);
@@ -598,7 +604,7 @@ TEST(test_dhcp_client_start_waits_one_to_ten_seconds) {
   ASSERT_EQ(DHCPV4_START_DELAY_MAX_MS, 10000);
   for (seed = 1; seed <= 8; seed++) {
     setup();
-    net_random_seed(&net, seed * 0x9E3779B9u);
+    seed_with(seed * 0x9E3779B9u);
     dhcpv4_client_init(&cli, &net, NULL, NULL, NULL);
     dhcpv4_client_start(&net, &cli);
     ASSERT_EQ(send_count, 0);
@@ -947,7 +953,7 @@ TEST(test_dhcp_client_t1_t2_fuzzed) {
   int differs = 0;
   for (seed = 1; seed <= 8; seed++) {
     setup();
-    net_random_seed(&net, seed * 0x9E3779B9u);
+    seed_with(seed * 0x9E3779B9u);
     bind_lease_fuzzed(3600, 0, 0);
     ASSERT_TRUE(fuzzed(cli.t1, 1800u));
     ASSERT_TRUE(fuzzed(cli.t2, 3150u));

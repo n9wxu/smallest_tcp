@@ -200,7 +200,7 @@ HalfSipHash-2-4 with a 32-bit output (the 32-bit-word variant of Aumasson and
 Bernstein's SipHash), under a 64-bit secret key in `net->secret`.
 
 ```c
-void     net_random_seed(net_t *net, uint32_t entropy); /* mix entropy into the key */
+void     net_random_seed(net_t *net, const uint8_t *entropy, uint16_t len); /* into the key */
 uint32_t net_hash(const net_t *net, const uint8_t *data, uint16_t len);
 uint32_t net_random(net_t *net);
 uint32_t net_random_below(net_t *net, uint32_t n);     /* [0, n), n ≤ 65536 */
@@ -211,15 +211,15 @@ uint32_t net_random_below(net_t *net, uint32_t n);     /* [0, n), n ≤ 65536 */
 - `net_random()` is `net_hash()` of how many outputs came before it
   (`net->random_count`, big-endian), so no two calls hash the same input
   until the 32-bit count wraps.
-- `net_random_seed()` replaces the key with two hashes of the entropy under
-  the old key — the entropy followed by a byte 0 for the first word, 1 for
-  the second.  Each seed therefore adds to what the key already holds.
-- `net_init()` zeroes the key and seeds it with bytes 2..5 of the MAC
-  address.
+- `net_random_seed()` replaces the key with two hashes under the old key of
+  16 bytes of the entropy, zero-padded, followed by a byte of how many were
+  entropy and which word; longer entropy goes in 16 bytes at a time.  Every
+  byte counts, and each seed adds to what the key already holds.
+- `net_init()` zeroes the key and seeds it with the MAC address.
 - `net_random_below()` scales rather than takes a remainder (no division on
   Cortex-M0).
 
-The three kinds of input have different lengths — a 4-byte count, a 5-byte
+The three kinds of input have different lengths — a 4-byte count, a 17-byte
 seed, a 12- or 36-byte TCP connection id — and HalfSipHash puts the length
 into its last block, so zero padding cannot make one kind of input the same
 message as another.
@@ -248,10 +248,10 @@ after `net_init()` with real entropy — a hardware RNG, ADC noise, timing
 jitter — and again whenever more is available, preferably before TCP
 connections are opened (a new key moves every initial sequence number).
 
-**Know its limits.**  The key is 64 bits and each seed adds at most 32 bits
-of entropy; the outputs are 32 bits.  That suits sequence numbers,
-transaction IDs and delays; it is not a source for cryptographic keys or
-nonces.
+**Know its limits.**  The key is 64 bits, which 8 random bytes of seed fill
+(RFC 6528 recommends 128, more than HalfSipHash's key holds); the outputs
+are 32 bits.  That suits sequence numbers, transaction IDs and delays; it is
+not a source for cryptographic keys or nonces.
 
 ## 10. Timers
 

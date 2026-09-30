@@ -13,7 +13,7 @@ recipe.
 1. **Initialise the stack.**  `net_init()` with two frame buffers and a MAC
    driver, then open the driver (`driver->init(ctx)` — `net_init()` does not),
    then seed the random generator with real entropy:
-   `net_random_seed(&net, entropy)`.  For IPv6, `ipv6_start(&net)`.
+   `net_random_seed(&net, entropy, len)`.  For IPv6, `ipv6_start(&net)`.
 2. **Initialise the module** with its `*_init()` function: its state
    structure, callbacks, tables.  Nothing is sent yet.
 3. **Route its traffic to it.**  A UDP module gets an entry in the
@@ -135,7 +135,7 @@ entropy source.
 extern const net_mac_t board_mac_ops;
 extern void *board_mac_ctx;
 extern uint32_t board_millis(void);
-extern uint32_t board_entropy(void); /* hardware RNG, ADC noise, ... */
+extern void board_entropy(uint8_t *buf, uint16_t len); /* a hardware RNG */
 
 static uint8_t rx_buf[1514];
 static uint8_t tx_buf[1514];
@@ -177,6 +177,7 @@ static const udp_port_entry_t udp_ports[] = {
 };
 
 int main(void) {
+  uint8_t entropy[16];
   uint32_t last;
 
   /* 1. The stack */
@@ -184,7 +185,8 @@ int main(void) {
                &board_mac_ops, board_mac_ctx) != NET_OK ||
       board_mac_ops.init(board_mac_ctx) != 0)
     return 1;
-  net_random_seed(&net, board_entropy());
+  board_entropy(entropy, sizeof entropy);
+  net_random_seed(&net, entropy, sizeof entropy);
   net.ipv4_addr = 0; /* no address until DHCP binds */
   udp_set_ports(&net, udp_ports, sizeof udp_ports / sizeof udp_ports[0]);
 
@@ -269,9 +271,10 @@ demo's `main.c` is a working example of one or more modules.
 `net_init()` seeds the stack's one generator from the MAC address, which is
 unique per device but public.  TCP initial sequence numbers, DHCPv4 and
 DHCPv6 transaction IDs, and the random delays of mDNS, NDP, MLD and DHCPv6
-all come from it, so call `net_random_seed(&net, value)` after `net_init()`
-with whatever entropy the platform has — a hardware RNG, ADC noise, the
-microseconds until the first frame, a value kept in flash across boots.  It
-may be called again at any time to mix in more.  See
+all come from it, so call `net_random_seed(&net, bytes, len)` after
+`net_init()` with whatever entropy the platform has — a hardware RNG, ADC
+noise, the microseconds until the first frame, a value kept in flash across
+boots.  Every byte counts; 8 random bytes fill the 64-bit key.  It may be
+called again at any time to mix in more.  See
 [architecture.md §9](architecture.md#9-randomness) for what the generator is
 and is not.

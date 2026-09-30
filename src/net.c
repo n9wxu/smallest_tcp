@@ -56,9 +56,7 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
   net->subnet_mask = NET_DEFAULT_SUBNET_MASK;
   net->gateway_ipv4 = NET_DEFAULT_GATEWAY;
 #endif
-  net_random_seed(net, (uint32_t)net->mac[2] << 24 |
-                           (uint32_t)net->mac[3] << 16 |
-                           (uint32_t)net->mac[4] << 8 | net->mac[5]);
+  net_random_seed(net, net->mac, 6);
 
   NET_LOG("net_init: rx=%u tx=%u mac=%02x:%02x:%02x:%02x:%02x:%02x", rx_size,
           tx_size, net->mac[0], net->mac[1], net->mac[2], net->mac[3],
@@ -145,17 +143,29 @@ uint32_t net_hash(const net_t *net, const uint8_t *data, uint16_t len) {
   return v[1] ^ v[3];
 }
 
-/* The new secret is the entropy hashed under the old one, so each seed
- * adds to what the key already holds */
-void net_random_seed(net_t *net, uint32_t entropy) {
-  uint8_t in[5];
+#define SEED_CHUNK 16u
+
+/* The new secret is two hashes under the old one of 16 bytes of entropy,
+ * zero-padded, and a byte of how many were entropy and which word — so each
+ * seed adds to what the key already holds, 16 bytes at a time.  17 bytes is
+ * no length net_random() or TCP hashes. */
+void net_random_seed(net_t *net, const uint8_t *entropy, uint16_t len) {
+  uint8_t in[SEED_CHUNK + 1];
+  uint16_t n;
   uint32_t first;
-  net_write32be(in, entropy);
-  in[4] = 0;
-  first = net_hash(net, in, sizeof(in));
-  in[4] = 1;
-  net->secret[1] = net_hash(net, in, sizeof(in));
-  net->secret[0] = first;
+  do {
+    n = len < SEED_CHUNK ? len : (uint16_t)SEED_CHUNK;
+    memset(in, 0, sizeof(in));
+    if (n)
+      memcpy(in, entropy, n);
+    in[SEED_CHUNK] = (uint8_t)(n << 1);
+    first = net_hash(net, in, sizeof(in));
+    in[SEED_CHUNK] |= 1u;
+    net->secret[1] = net_hash(net, in, sizeof(in));
+    net->secret[0] = first;
+    entropy += n;
+    len = (uint16_t)(len - n);
+  } while (len > 0);
 }
 
 uint32_t net_random(net_t *net) {

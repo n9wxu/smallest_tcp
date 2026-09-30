@@ -2,7 +2,8 @@
  * @file boards/nucleo-f429zi/board.c
  * @brief NUCLEO-F429ZI bring-up (RM0090, UM1974): the PLL from the 16 MHz
  *        HSI to 168 MHz, SysTick at 1 kHz, USART3 (PD8/PD9, the ST-LINK
- *        virtual COM port), the RMII pins, LD1 (PB0).
+ *        virtual COM port), the RMII pins, LD1 (PB0), the random number
+ *        generator.
  */
 
 #include "board.h"
@@ -14,6 +15,7 @@
 #define RCC_PLLCFGR REG(0x40023804u)
 #define RCC_CFGR REG(0x40023808u)
 #define RCC_AHB1ENR REG(0x40023830u)
+#define RCC_AHB2ENR REG(0x40023834u)
 #define RCC_APB1ENR REG(0x40023840u)
 #define FLASH_ACR REG(0x40023C00u)
 #define PWR_CR REG(0x40007000u)
@@ -25,6 +27,9 @@
 #define USART3_BRR REG(0x40004808u)
 #define USART3_CR1 REG(0x4000480Cu)
 #define UID(i) REG(0x1FFF7A10u + 4u * (i))
+#define RNG_CR REG(0x50060800u)
+#define RNG_SR REG(0x50060804u)
+#define RNG_DR REG(0x50060808u)
 
 #define GPIOA 0x40020000u
 #define GPIOB 0x40020400u
@@ -51,11 +56,16 @@
 #define RCC_AHB1_GPIOC (1u << 2)
 #define RCC_AHB1_GPIOD (1u << 3)
 #define RCC_AHB1_GPIOG (1u << 6)
+#define RCC_AHB2_RNG (1u << 6)
 #define RCC_APB1_USART3 (1u << 18)
 #define RCC_APB1_PWR (1u << 28)
 #define FLASH_ACR_5WS 5u           /* 150 to 168 MHz at 2.7 to 3.6 V */
 #define FLASH_ACR_CACHES (7u << 8) /* prefetch, instruction, data */
 #define PWR_CR_VOS_SCALE1 (3u << 14)
+#define RNG_CR_RNGEN (1u << 2)
+#define RNG_SR_DRDY (1u << 0)
+#define RNG_SR_ERRORS (3u << 1) /* CECS, SECS */
+#define RNG_TRIES 100000u       /* a word takes 40 of its 48 MHz clocks */
 #define USART_SR_TXE (1u << 7)
 #define USART_CR1_UE (1u << 13)
 #define USART_CR1_TE (1u << 3)
@@ -162,6 +172,41 @@ void board_puts(const char *s) {
 
 void board_led(int on) { REG(GPIOB + GPIO_BSRR) = on ? 1u : 1u << 16; }
 
-uint32_t board_entropy(void) {
-  return UID(0) ^ UID(1) * 0x9E3779B9u ^ UID(2) ^ SYST_CVR ^ millis << 16;
+/* A word from the RNG; *ok cleared if it reports an error or none comes */
+static uint32_t rng_word(int *ok) {
+  uint32_t tries;
+  for (tries = 0; tries < RNG_TRIES && !(RNG_SR & RNG_SR_ERRORS); tries++) {
+    if (RNG_SR & RNG_SR_DRDY)
+      return RNG_DR;
+  }
+  *ok = 0;
+  return 0;
+}
+
+/* RM0090 §24: the true random number generator, clocked at 48 MHz from
+ * PLLQ.  Its first word is kept only to compare with the next, and each
+ * with the one before (FIPS 140-2's continuous test).  Should it fail, the
+ * unique ID and the SysTick count stand in, poor as they are. */
+int board_entropy(uint8_t *buf, uint16_t len) {
+  uint32_t word = 0, prev;
+  uint16_t i;
+  int ok = 1;
+  RCC_AHB2ENR |= RCC_AHB2_RNG;
+  (void)RCC_AHB2ENR;
+  RNG_CR |= RNG_CR_RNGEN;
+  prev = rng_word(&ok);
+  for (i = 0; i < len && ok; i++) {
+    if ((i & 3u) == 0) {
+      word = rng_word(&ok);
+      ok = ok && word != prev;
+      prev = word;
+    }
+    buf[i] = (uint8_t)(word >> 8u * (i & 3u));
+  }
+  RNG_CR &= ~RNG_CR_RNGEN;
+  for (i = 0; i < len && !ok; i++) {
+    word = i < 12u ? UID(i >> 2) : SYST_CVR ^ millis << 16;
+    buf[i] = (uint8_t)(word >> 8u * (i & 3u));
+  }
+  return ok;
 }

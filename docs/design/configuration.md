@@ -207,7 +207,7 @@ values are ordinary fields the application or a protocol changes:
 | `net->mac` | `mac` argument, else `NET_DEFAULT_MAC` | Set once at init |
 | `net->gateway_mac`, `gateway_mac_valid` | unset | ARP replies from the gateway |
 | `net->ip6` | zero | `ipv6_start()`, NDP, SLAAC, DHCPv6, `ipv6_addr_add()` |
-| `net->secret` | derived from MAC bytes 2..5 | `net_random_seed()` ([architecture.md §9](../architecture.md#9-randomness)) |
+| `net->secret` | derived from the MAC address | `net_random_seed()` ([architecture.md §9](../architecture.md#9-randomness)) |
 | `net->random_count` | 0 | `net_random()`, once per output |
 | `net->tcp_clock` | 0 | `tcp_tick()`, 250 per elapsed millisecond ([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)) |
 

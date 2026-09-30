@@ -1220,7 +1220,7 @@ TEST(test_tcp_isn_depends_on_secret) {
   tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
   unseeded = conn.iss;
   setup();
-  net_random_seed(&net, 0x5eed1234u);
+  net_random_seed(&net, (const uint8_t *)"entropy!", 8);
   tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
   ASSERT_TRUE(conn.iss != unseeded);
 }

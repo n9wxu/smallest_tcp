@@ -9,6 +9,7 @@
 #define DEMO_LOOP_H
 
 #include "net.h"
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <time.h>
@@ -49,6 +50,21 @@ static inline void demo_print_ip(const net_t *net) {
 #endif
 }
 
+/** Seed the stack's key from the host's random source, else (no
+ *  /dev/urandom) from the time and the process ID. */
+static inline void demo_seed(net_t *net) {
+  uint8_t e[16];
+  int fd = open("/dev/urandom", O_RDONLY);
+  if (fd >= 0 && read(fd, e, sizeof(e)) == (ssize_t)sizeof(e)) {
+    net_random_seed(net, e, sizeof(e));
+  } else {
+    uint32_t weak = (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16);
+    net_random_seed(net, (const uint8_t *)&weak, sizeof(weak));
+  }
+  if (fd >= 0)
+    close(fd);
+}
+
 /**
  * Open the interface named by @p spec and initialise @p net on it: frame
  * buffers of DEMO_FRAME_SIZE, the default MAC and addresses, random
@@ -68,7 +84,7 @@ static inline int demo_net_open(net_t *net, demo_mac_t *nic, const char *spec,
     fprintf(stderr, "[%s] cannot open the network interface\n", tag);
     return -1;
   }
-  net_random_seed(net, (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16));
+  demo_seed(net);
 #if NET_USE_IPV6
   ipv6_start(net);
 #endif

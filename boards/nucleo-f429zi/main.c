@@ -112,6 +112,7 @@ static void link_service(uint8_t *link_up, int *announced) {
 }
 
 int main(void) {
+  uint8_t entropy[16];
   uint32_t last_tick, last_link;
   uint8_t link_up = 0;
   int announced = 0;
@@ -126,7 +127,9 @@ int main(void) {
     board_puts("Ethernet failed: no clock from the PHY\r\n");
     return 1;
   }
-  net_random_seed(&net, board_entropy());
+  if (!board_entropy(entropy, sizeof(entropy)))
+    board_puts("no random numbers: seeded from the unique ID\r\n");
+  net_random_seed(&net, entropy, sizeof(entropy));
   udp_set_ports(&net, udp_ports, 1);
 #if NET_USE_IPV6
   udp6_set_ports(&net, udp6_ports, 1);

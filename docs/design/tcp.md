@@ -157,10 +157,11 @@ static void echo_serve(void) {
     tcp_close(&net, &conn); /* the peer has closed; our FIN follows the echo */
 }
 
-void app_init(const net_mac_t *driver, void *driver_ctx, uint32_t entropy) {
+void app_init(const net_mac_t *driver, void *driver_ctx,
+              const uint8_t entropy[16]) {
   net_init(&net, frame_rx, sizeof frame_rx, frame_tx, sizeof frame_tx, NULL,
            driver, driver_ctx);
-  net_random_seed(&net, entropy); /* initial sequence numbers */
+  net_random_seed(&net, entropy, 16); /* initial sequence numbers */
   tcp_set_connections(&net, conns, 1);
   echo_listen();
 }

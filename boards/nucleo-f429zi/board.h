@@ -25,8 +25,9 @@ void board_puts(const char *s);
 /** LD1 (green) on or off. */
 void board_led(int on);
 
-/** A seed for net_random_seed(): the device's unique ID, mixed with the
- *  time since reset. */
-uint32_t board_entropy(void);
+/** @p len bytes for net_random_seed() from the hardware random number
+ *  generator: 1.  0 if it failed, and the bytes are the device's unique ID
+ *  and the SysTick count instead. */
+int board_entropy(uint8_t *buf, uint16_t len);
 
 #endif /* BOARD_H */

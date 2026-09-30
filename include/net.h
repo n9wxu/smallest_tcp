@@ -164,12 +164,13 @@ net_err_t net_transmit(net_t *net, uint16_t frame_len);
  * away the key or any other output */
 
 /**
- * Mix @p entropy into the secret.  net_init() seeds it from the MAC
- * address, which differs per device but is public: seed it from a true
- * random source where one exists (TCP initial sequence numbers and DHCP
- * transaction IDs depend on it).
+ * Mix @p len bytes of @p entropy into the secret, every byte of it.
+ * net_init() seeds it from the MAC address, which differs per device but is
+ * public: seed it from a true random source where one exists — 8 bytes or
+ * more fill the 64-bit key (TCP initial sequence numbers and DHCP
+ * transaction IDs depend on it).  Seeds add up.
  */
-void net_random_seed(net_t *net, uint32_t entropy);
+void net_random_seed(net_t *net, const uint8_t *entropy, uint16_t len);
 
 /** HalfSipHash-2-4 of @p data under the secret. */
 uint32_t net_hash(const net_t *net, const uint8_t *data, uint16_t len);
