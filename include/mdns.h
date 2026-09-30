@@ -116,6 +116,7 @@ struct mdns_s {
   void *ctx;
   uint32_t timer_ms; /**< Until the next probe / announcement */
   mdns_pending_t pending;
+  uint32_t live; /**< Records in use: not withdrawn */
   uint8_t count;
   uint8_t state;             /**< MDNS_STATE_* */
   uint8_t step;              /**< Probes / announcements sent so far */
@@ -165,6 +166,16 @@ void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
  */
 void mdns_readdress6(mdns_t *m);
 #endif
+
+/**
+ * Withdraw some records — a service's PTR, SRV and TXT, say — while the
+ * rest stay: a goodbye (TTL 0) for them if they were announced, with the
+ * meta-query listing of a service type no other record offers, and from
+ * then on they are neither answered, announced nor probed.  They stay
+ * withdrawn through mdns_start(); mdns_init() brings them back.
+ * @param records  Bit i = records[i].
+ */
+void mdns_withdraw(mdns_t *m, uint32_t records);
 
 /**
  * Withdraw all records: goodbye packet (TTL 0) if they were announced,

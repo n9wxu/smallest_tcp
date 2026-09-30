@@ -89,6 +89,9 @@ static uint32_t all_mask(const mdns_t *m) {
   return (m->count >= 32) ? 0xFFFFFFFFu : (BIT(m->count) - 1u);
 }
 
+/* Record i is in use: not withdrawn by mdns_withdraw() */
+static int live(const mdns_t *m, uint8_t i) { return (m->live & BIT(i)) != 0; }
+
 static uint32_t shared_mask(const mdns_t *m) {
   uint32_t mask = 0;
   uint8_t i;
@@ -104,17 +107,18 @@ static uint32_t service_type_mask(const mdns_t *m) {
   uint32_t mask = 0;
   uint8_t i;
   for (i = 0; i < m->count; i++) {
-    if (is_service_type(&m->records[i]))
+    if (live(m, i) && is_service_type(&m->records[i]))
       mask |= BIT(i);
   }
   return mask;
 }
 
-/* Index of the first unique record carrying the same name as record i */
+/* Index of the first unique record in use carrying the same name as
+ * record i */
 static uint8_t name_rep(const mdns_t *m, uint8_t i) {
   uint8_t j;
   for (j = 0; j < i; j++) {
-    if (!is_shared(&m->records[j]) &&
+    if (live(m, j) && !is_shared(&m->records[j]) &&
         dns_dotted_equal(m->records[j].name, m->records[i].name))
       return j;
   }
@@ -351,7 +355,8 @@ static int write_nsec(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
   memset(bitmap, 0, sizeof(bitmap));
   for (j = 0; j < m->count; j++) {
     const mdns_record_t *o = &m->records[j];
-    if (is_shared(o) || o->type >= 64 || !dns_dotted_equal(o->name, r->name))
+    if (!live(m, j) || is_shared(o) || o->type >= 64 ||
+        !dns_dotted_equal(o->name, r->name))
       continue;
     bitmap[o->type >> 3] |= (uint8_t)(0x80u >> (o->type & 7));
     if ((uint8_t)((o->type >> 3) + 1) > used)
@@ -524,7 +529,7 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
     }
   }
 #endif
-  return add & ~answers;
+  return add & ~answers & m->live;
 }
 
 /* Send a multicast response to the groups of @p families */
@@ -539,15 +544,15 @@ static void send_to_groups(mdns_t *m, uint8_t families, uint32_t answers,
     if (!(families & family))
       continue;
     o.dest = family_group(family);
-    send_response(m, answers, service_types, nsec, additionals_for(m, answers),
-                  &o);
+    send_response(m, answers, service_types, nsec,
+                  goodbye ? 0 : additionals_for(m, answers), &o);
   }
 }
 
 /* Every record; a goodbye withdraws the service types' listing under the
  * meta-query too, which queriers may have cached (REQ-DNSSD-018) */
 static void announce(mdns_t *m, int goodbye) {
-  send_to_groups(m, m->announce_families, all_mask(m),
+  send_to_groups(m, m->announce_families, m->live,
                  goodbye ? service_type_mask(m) : 0, 0, (uint8_t)goodbye);
 }
 
@@ -570,7 +575,7 @@ static int build_probe(mdns_t *m, pkt_t *p, const dest_t *d, uint32_t names) {
   }
   for (i = 0; i < m->count; i++) {
     const mdns_record_t *r = &m->records[i];
-    if (is_shared(r) || !(names & BIT(name_rep(m, i))))
+    if (!live(m, i) || is_shared(r) || !(names & BIT(name_rep(m, i))))
       continue;
     int n = write_rr(m, &p->w, r, r->ttl, DNS_CLASS_IN);
     if (n < 0)
@@ -585,7 +590,7 @@ static void send_probes_to(mdns_t *m, const dest_t *d) {
   uint8_t i;
   pkt_t p;
   for (i = 0; i < m->count; i++) {
-    if (!is_shared(&m->records[i]) && name_rep(m, i) == i)
+    if (live(m, i) && !is_shared(&m->records[i]) && name_rep(m, i) == i)
       pending |= BIT(i);
   }
   /* Greedily pack names into as few probes as the TX buffer allows */
@@ -706,7 +711,8 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
       continue; /* goodbyes and other classes never conflict */
     for (i = 0; i < m->count; i++) {
       const mdns_record_t *r = &m->records[i];
-      if (is_shared(r) || !dns_name_equals(msg, len, rr.name_off, r->name))
+      if (!live(m, i) || is_shared(r) ||
+          !dns_name_equals(msg, len, rr.name_off, r->name))
         continue;
       if (name_idx < 0)
         name_idx = i;
@@ -846,6 +852,7 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
   m->net = net;
   m->records = records;
   m->count = count;
+  m->live = all_mask(m);
   m->on_conflict = on_conflict;
   m->ctx = ctx;
   m->state = MDNS_STATE_STOPPED;
@@ -906,7 +913,7 @@ static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
   uint8_t i;
   for (i = 0; i < m->count; i++) {
     const mdns_record_t *r = &m->records[i];
-    if ((q->type == DNS_TYPE_ANY || q->type == r->type) &&
+    if (live(m, i) && (q->type == DNS_TYPE_ANY || q->type == r->type) &&
         dns_name_equals(msg, len, q->name_off, r->name))
       hit |= BIT(i);
   }
@@ -918,7 +925,8 @@ static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
     /* One of our unique names, a type it doesn't have (RFC 6762 §6.1) */
     for (i = 0; i < m->count && !nsec; i++) {
       const mdns_record_t *r = &m->records[i];
-      if (!is_shared(r) && dns_name_equals(msg, len, q->name_off, r->name))
+      if (live(m, i) && !is_shared(r) &&
+          dns_name_equals(msg, len, q->name_off, r->name))
         nsec = BIT(name_rep(m, i));
     }
   }
@@ -1102,6 +1110,39 @@ void mdns_readdress6(mdns_t *m) {
   }
 }
 #endif
+
+/* The service types of the PTR records in @p gone that no record still in
+ * use lists: their meta-query listing goes with them */
+static uint32_t types_gone(const mdns_t *m, uint32_t gone) {
+  uint32_t types = 0, kept = service_type_mask(m) & ~gone;
+  uint8_t i, j;
+  for (i = 0; i < m->count; i++) {
+    if (!(gone & BIT(i)) || !is_service_type(&m->records[i]))
+      continue;
+    for (j = 0; j < m->count; j++) {
+      if ((kept & BIT(j)) &&
+          dns_dotted_equal(m->records[j].name, m->records[i].name))
+        break;
+    }
+    if (j == m->count)
+      types |= BIT(i);
+  }
+  return types;
+}
+
+void mdns_withdraw(mdns_t *m, uint32_t records) {
+  uint32_t gone = records & m->live;
+  if (!gone)
+    return;
+  /* REQ-MDNS-032, REQ-DNSSD-018: a goodbye if they were announced, to
+   * every family (mdns_readdress6() may have narrowed the set) */
+  if (m->state == MDNS_STATE_ANNOUNCING || m->state == MDNS_STATE_RUNNING)
+    send_to_groups(m, ALL_FAMILIES, gone, types_gone(m, gone), 0, 1);
+  m->live &= ~gone;
+  m->pending.answers &= ~gone;
+  m->pending.service_types &= ~gone;
+  m->pending.nsec &= ~gone;
+}
 
 void mdns_stop(mdns_t *m) {
   if (m->state == MDNS_STATE_STOPPED)

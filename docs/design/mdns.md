@@ -23,7 +23,7 @@ The module is a **responder**: it probes for its unique names, announces its rec
 | mDNS responder (answer `.local` queries) | ✅ |
 | Probing + conflict detection | ✅ |
 | Gratuitous announcements | ✅ |
-| Goodbye packets on shutdown | ✅ |
+| Goodbye packets on shutdown, and for records withdrawn while running (`mdns_withdraw()`) | ✅ |
 | DNS-SD advertiser (PTR/SRV/TXT) | ✅ |
 | Service-type meta-query (`_services._dns-sd._udp.local.`) | ✅ |
 | Known-answer suppression, QU and legacy unicast responses | ✅ |
@@ -63,7 +63,7 @@ All three build into the optional `smallest_tcp_mdns` library (`smallest_tcp::md
 
 ## 4. Memory Model
 
-The application owns the record table and an `mdns_t` (44 bytes on 32-bit targets, IPv4-only or dual stack); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`; queries are read in place from `net->rx.buf`.
+The application owns the record table and an `mdns_t` (48 bytes on 32-bit targets, IPv4-only or dual stack); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`; queries are read in place from `net->rx.buf`.
 
 ```c
 static const char *const txt[] = {"txtvers=1", "fw=1.2.3", "serial=DEAD01", NULL};
@@ -236,6 +236,8 @@ pyro-dead01.local.                 120 IN A    10.0.0.2
 
 A PTR query returns the PTR in Answer and SRV + TXT + A (and AAAA) in Additional — one round trip gives a browser the full picture (RFC 6763 §12.1).  A TXT record with no metadata is sent as a single zero byte (RFC 6763 §6.1).
 
+**Withdrawing a service** while the host stays: `mdns_withdraw(&mdns, mask)` with the bits of its PTR, SRV and TXT (REQ-DNSSD-018).  If they were announced, one goodbye carries them with TTL 0 — and the meta-query PTR of the service type if no other record in use still offers it — to both families, without additionals.  `mdns_t.live` then lacks their bits, and every walk over the table skips them: answers, NSEC (a withdrawn name is no longer ours), additionals, announcements, probes, conflict checks and the pending response.  They stay out through `mdns_start()`; a new `mdns_init()` brings the table back whole, and `mdns_stop()` says goodbye to what is still in use.
+
 ---
 
 ## 10. Multicast, IGMP and MLD
@@ -286,6 +288,7 @@ udp6_set_ports(&net, udp6_ports, 1);
 mdns_tick(&mdns, elapsed_ms);   /* probes, announcements, delayed responses */
 
 /* shutdown */
+mdns_withdraw(&mdns, 0x0Eu);    /* one service gone: records 1..3 */
 mdns_stop(&mdns);               /* goodbye + IGMP/MLD leave */
 ```
 
@@ -303,7 +306,7 @@ Random delays — the 0–250 ms probe start and the 20–120 ms response delay 
 |---|---|---|
 | `tests/unit/test_dns_wire.c` | 23 | Encoding, compression (suffix, whole name, prefix), limits, rollback, decode, pointer loops, truncation, question/RR parsing |
 | `tests/unit/test_mcast.c` | 19 | Group table, multicast accept/drop (incl. aliased MACs), no ICMP errors / echo for multicast, `udp_send_inplace()` TTL, IGMP report/leave format |
-| `tests/unit/test_mdns.c` | 52 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression (after a truncated query too), QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
+| `tests/unit/test_mdns.c` | 57 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression (after a truncated query too), QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye, withdrawing a service (goodbye, no answers or NSEC, the type kept while another instance offers it, before announcing) |
 | `tests/unit/test_mdns6.c` | 19 | ff02::fb join, probes and goodbyes on both families, one AAAA per usable address (none for tentative ones), AAAA over either family, AAAA added to an A answer, SRV additionals, QU and legacy over IPv6, known answers, NSEC listing AAAA, delayed response on IPv6 only, explicit AAAA address, AAAA conflicts, `mdns_readdress6()` while running and while announcing |
 
 ### Blackbox (`tests/blackbox/test_mdns_conform.py`, 21 tests)
