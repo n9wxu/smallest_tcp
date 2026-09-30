@@ -13,11 +13,14 @@
 /** A running one's complement sum; carries are folded at the end. */
 typedef struct {
   uint32_t sum;
+  uint8_t odd; /**< The last piece ended half-way through a word */
 } net_cksum_t;
 
 void net_cksum_init(net_cksum_t *c);
 
-/** Add bytes (any alignment; an odd length is padded with a zero byte). */
+/** Add bytes (any alignment).  A piece may have an odd length: the next
+ *  one continues the word it began, and the last is padded with a zero
+ *  byte. */
 void net_cksum_add(net_cksum_t *c, const uint8_t *data, uint16_t len);
 
 /** Add one 16-bit word, host byte order. */

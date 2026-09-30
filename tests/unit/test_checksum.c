@@ -79,6 +79,34 @@ TEST(test_cksum_incremental_equals_oneshot) {
   ASSERT_EQ(oneshot, incremental);
 }
 
+/* REQ-CKSUM-006: pieces of odd length anywhere — the next piece's first
+ * byte is the low half of the word the last one began — and words added
+ * after an odd piece */
+TEST(test_cksum_incremental_odd_pieces) {
+  uint8_t data[23];
+  uint16_t i, cut, oneshot;
+  net_cksum_t c;
+  for (i = 0; i < sizeof(data); i++)
+    data[i] = (uint8_t)(0x31 * i + 7);
+  oneshot = net_cksum(data, sizeof(data));
+  for (cut = 0; cut <= sizeof(data); cut++) {
+    net_cksum_init(&c);
+    net_cksum_add(&c, data, cut);
+    net_cksum_add(&c, data + cut, (uint16_t)(sizeof(data) - cut));
+    ASSERT_EQ(net_cksum_finalize(&c), oneshot);
+  }
+  net_cksum_init(&c); /* 1 + 3 + 19 */
+  net_cksum_add(&c, data, 1);
+  net_cksum_add(&c, data + 1, 3);
+  net_cksum_add(&c, data + 4, 19);
+  ASSERT_EQ(net_cksum_finalize(&c), oneshot);
+  net_cksum_init(&c); /* a word straddling the pieces */
+  net_cksum_add(&c, data, 3);
+  net_cksum_add_u16(&c, (uint16_t)(data[3] << 8 | data[4]));
+  net_cksum_add(&c, data + 5, 18);
+  ASSERT_EQ(net_cksum_finalize(&c), oneshot);
+}
+
 TEST(test_cksum_add_u16) {
   /* REQ-CKSUM-007: add individual uint16 values */
   net_cksum_t c;
@@ -184,6 +212,7 @@ int main(void) {
   RUN_TEST(test_cksum_odd_byte);
   RUN_TEST(test_cksum_known_ipv4_header);
   RUN_TEST(test_cksum_incremental_equals_oneshot);
+  RUN_TEST(test_cksum_incremental_odd_pieces);
   RUN_TEST(test_cksum_add_u16);
   RUN_TEST(test_cksum_add_u32);
   RUN_TEST(test_cksum_verify_valid);

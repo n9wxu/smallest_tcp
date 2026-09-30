@@ -26,7 +26,7 @@ verified at both the unit and integration levels:
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
 | `test_endian` | tests/unit/test_endian.c | 10 | Byte-order utilities |
-| `test_checksum` | tests/unit/test_checksum.c | 12 | net_cksum (REQ-CKS-*) |
+| `test_checksum` | tests/unit/test_checksum.c | 13 | net_cksum (REQ-CKS-*), incl. pieces of odd length |
 | `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
 | `test_net` | tests/unit/test_net.c | 16 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()`, seeds that count every byte and add up, the key from the whole MAC |
 | `test_arp` | tests/unit/test_arp.c | 10 | ARP (REQ-ARP-*), incl. 0.0.0.0 neither ours nor the gateway's |

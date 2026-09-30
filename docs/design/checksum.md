@@ -44,9 +44,11 @@ add up without being copied into one buffer.
 - **Byte-wise, alignment-free.**  Each word is composed from two bytes
   (`data[i] << 8 | data[i + 1]`), so the data may start at any address and
   the result does not depend on host byte order.  An odd length is padded with
-  a zero byte, as RFC 1071 specifies.  A caller adding pieces must therefore
-  keep every piece but the last an even length; all callers do (pseudo-header
-  fields are 16 or 32 bits, and each message is added in one call).
+  a zero byte, as RFC 1071 specifies — and `odd` remembers it, so the next
+  piece's first byte goes in as the low half of that word (REQ-CKSUM-006).
+  Pieces may therefore be cut anywhere; the word helpers go through the same
+  path.  (Until the flag, every piece but the last had to be of even length,
+  which the stack's own callers kept to.)
 - **Host-order word helpers.**  `net_cksum_add_u16()` and
   `net_cksum_add_u32()` add values in host order as if they had been read
   big-endian, which is what the pseudo-header needs for addresses and
