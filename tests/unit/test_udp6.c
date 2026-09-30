@@ -350,6 +350,25 @@ TEST(test_udp6_send_too_big_for_tx_buffer) {
   ASSERT_EQ(send_count, 0);
 }
 
+/* 1452 bytes is the most in one Ethernet frame over IPv6, whatever the
+ * frame buffer holds */
+TEST(test_udp6_send_within_ethernet_mtu) {
+  static uint8_t big_rx[2048], big_tx[2048], d[1453];
+  int ctx = 0;
+  setup();
+  net_init(&net, big_rx, sizeof(big_rx), big_tx, sizeof(big_tx), NULL,
+           &stub_drv, &ctx);
+  ipv6_start(&net);
+  ipv6_tick(&net, 1000);
+  ipv6_tick(&net, 1000);
+  send_count = 0;
+  ASSERT_EQ(udp6_send(&net, peer_ll, peer_mac, 7, 7, d, sizeof(d)),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(udp6_send(&net, peer_ll, peer_mac, 7, 7, d, sizeof(d) - 1), NET_OK);
+  ASSERT_EQ(send_count, 1);
+}
+
 int main(void) {
   fprintf(stderr, "=== UDP over IPv6 tests ===\n");
   RUN_TEST(test_udp6_dispatch_to_handler6);
@@ -366,6 +385,7 @@ int main(void) {
   RUN_TEST(test_udp6_send_zero_checksum_sent_as_ffff);
   RUN_TEST(test_udp6_send_without_source_address_fails);
   RUN_TEST(test_udp6_send_too_big_for_tx_buffer);
+  RUN_TEST(test_udp6_send_within_ethernet_mtu);
   TEST_REPORT();
   return test_failures;
 }

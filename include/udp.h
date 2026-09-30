@@ -54,13 +54,16 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
 /** Where the payload goes in a frame built by udp_send_inplace(). */
 #define UDP_PAYLOAD_OFFSET (ETH_HDR_SIZE + IPV4_HDR_SIZE + UDP_HDR_SIZE)
 
-/** Send @p data_len bytes copied from @p data, from net->ipv4_addr. */
+/** Send @p data_len bytes copied from @p data, from net->ipv4_addr.
+ *  @return NET_ERR_BUF_TOO_SMALL if the datagram does not fit the TX frame
+ *          buffer or one Ethernet frame (1472 bytes of payload). */
 net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                    uint16_t src_port, uint16_t dst_port, const uint8_t *data,
                    uint16_t data_len);
 
 /** Send the @p data_len bytes the caller wrote at UDP_PAYLOAD_OFFSET in
- *  net->tx.buf, from net->ipv4_addr, with IP TTL @p ttl. */
+ *  net->tx.buf, from net->ipv4_addr, with IP TTL @p ttl (not 0:
+ *  NET_ERR_INVALID_PARAM). */
 net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                            uint16_t src_port, uint16_t dst_port,
                            uint16_t data_len, uint8_t ttl);

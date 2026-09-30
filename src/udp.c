@@ -37,6 +37,13 @@ static void write_header(uint8_t *udp, uint16_t src_port, uint16_t dst_port,
   net_write16be(udp + UDP_OFF_CKSUM, 0);
 }
 
+/* A payload of @p data_len at @p offset fits the TX frame buffer and one
+ * Ethernet frame: never fragmented, DF being set */
+static int fits_frame(const net_t *net, uint16_t offset, uint16_t data_len) {
+  uint32_t frame = (uint32_t)offset + data_len;
+  return frame <= net->tx.capacity && frame <= ETH_HDR_SIZE + ETH_MTU;
+}
+
 #if NET_USE_IPV4
 
 /* REQ-UDP-006..008, 016, 017, 020, 031, 037 */
@@ -68,7 +75,7 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                    uint16_t src_port, uint16_t dst_port, const uint8_t *data,
                    uint16_t data_len) {
-  if ((uint32_t)UDP_PAYLOAD_OFFSET + data_len > net->tx.capacity)
+  if (!fits_frame(net, UDP_PAYLOAD_OFFSET, data_len))
     return NET_ERR_BUF_TOO_SMALL;
   if (data_len > 0)
     memcpy(net->tx.buf + UDP_PAYLOAD_OFFSET, data, data_len);
@@ -92,8 +99,10 @@ net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
   uint8_t *udp = ip + IPV4_HDR_SIZE;
   uint16_t udp_len = (uint16_t)(UDP_HDR_SIZE + data_len);
 
-  if ((uint32_t)UDP_PAYLOAD_OFFSET + data_len > net->tx.capacity)
+  if (!fits_frame(net, UDP_PAYLOAD_OFFSET, data_len))
     return NET_ERR_BUF_TOO_SMALL;
+  if (ttl == 0) /* RFC 1122 §3.2.1.7 */
+    return NET_ERR_INVALID_PARAM;
   write_header(udp, src_port, dst_port, udp_len);
   net_write16be(
       udp + UDP_OFF_CKSUM,
@@ -135,7 +144,7 @@ void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
 net_err_t udp6_send(net_t *net, const uint8_t *dst_ip, const uint8_t *dst_mac,
                     uint16_t src_port, uint16_t dst_port, const uint8_t *data,
                     uint16_t data_len) {
-  if ((uint32_t)UDP6_PAYLOAD_OFFSET + data_len > net->tx.capacity)
+  if (!fits_frame(net, UDP6_PAYLOAD_OFFSET, data_len))
     return NET_ERR_BUF_TOO_SMALL;
   if (data_len > 0)
     memcpy(net->tx.buf + UDP6_PAYLOAD_OFFSET, data, data_len);
@@ -151,7 +160,7 @@ net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
   uint16_t udp_len = (uint16_t)(UDP_HDR_SIZE + data_len);
   const uint8_t *src = ipv6_src_for(net, dst_ip);
 
-  if ((uint32_t)UDP6_PAYLOAD_OFFSET + data_len > net->tx.capacity)
+  if (!fits_frame(net, UDP6_PAYLOAD_OFFSET, data_len))
     return NET_ERR_BUF_TOO_SMALL;
   if (!src)
     return NET_ERR_INVALID_PARAM;

@@ -100,7 +100,7 @@ Minimum: 8 bytes (header only, zero-length data).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-UDP-032 | MUST | Maximum UDP payload = tx buffer capacity - ETH header (14) - IP header (20) - UDP header (8) | Architecture | TEST-UDP-032 |
+| REQ-UDP-032 | MUST | Maximum UDP payload = tx buffer capacity - ETH header (14) - IP header (20) - UDP header (8), and at most the Ethernet MTU less the IP and UDP headers (1472; 1452 over IPv6): nothing is fragmented | Architecture, RFC 1122 §3.3.3 | TEST-UDP-032 |
 | REQ-UDP-033 | MUST | Reject application send requests that exceed maximum UDP payload for the buffer | Architecture | TEST-UDP-033 |
 | REQ-UDP-034 | MUST | If received datagram data exceeds rx buffer capacity, truncate or discard (implementation choice) | Architecture | TEST-UDP-034 |
 

@@ -163,7 +163,11 @@ net->tx.buf
                                          ↑ UDP_PAYLOAD_OFFSET = 42
 ```
 
-1. Size check: `42 + data_len ≤ tx.capacity`, else `NET_ERR_BUF_TOO_SMALL`.
+1. Size check: `42 + data_len` within `tx.capacity` and within one Ethernet
+   frame (1514 bytes: 1472 bytes of payload, 1452 over IPv6), else
+   `NET_ERR_BUF_TOO_SMALL` — every datagram goes with DF set and is never
+   fragmented, however large the frame buffer.  A TTL of 0 is refused with
+   `NET_ERR_INVALID_PARAM` (RFC 1122 §3.2.1.7).
 2. UDP header, checksum field 0; then the checksum over the pseudo-header,
    header and payload (`ipv4_cksum()`), a computed 0 written as `0xFFFF`.
 3. Ethernet header to `dst_mac`.
