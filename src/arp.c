@@ -52,10 +52,13 @@ void arp_input(net_t *net, const eth_frame_t *eth) {
   uint32_t sender_ip = net_read32be(pkt + ARP_OFF_SPA);
   const uint8_t *sender_mac = pkt + ARP_OFF_SHA;
 
-  if (oper == ARP_OPER_REQUEST &&
+  /* 0.0.0.0 is no one's address: not ours before DHCP configures one, nor
+   * the gateway's while there is none */
+  if (oper == ARP_OPER_REQUEST && net->ipv4_addr != 0 &&
       net_read32be(pkt + ARP_OFF_TPA) == net->ipv4_addr) {
     arp_send(net, ARP_OPER_REPLY, sender_mac, sender_mac, sender_ip);
-  } else if (oper == ARP_OPER_REPLY && sender_ip == net->gateway_ipv4) {
+  } else if (oper == ARP_OPER_REPLY && net->gateway_ipv4 != 0 &&
+             sender_ip == net->gateway_ipv4) {
     memcpy(net->gateway_mac, sender_mac, 6);
     net->gateway_mac_valid = 1;
   }

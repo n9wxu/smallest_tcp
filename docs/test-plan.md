@@ -29,7 +29,7 @@ verified at both the unit and integration levels:
 | `test_checksum` | tests/unit/test_checksum.c | 12 | net_cksum (REQ-CKS-*) |
 | `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
 | `test_net` | tests/unit/test_net.c | 16 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()`, seeds that count every byte and add up, the key from the whole MAC |
-| `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
+| `test_arp` | tests/unit/test_arp.c | 10 | ARP (REQ-ARP-*), incl. 0.0.0.0 neither ours nor the gateway's |
 | `test_ipv4` | tests/unit/test_ipv4.c | 13 | IPv4 (REQ-IPV4-*) |
 | `test_icmp` | tests/unit/test_icmp.c | 7 | ICMPv4 (REQ-ICMP-*), incl. the echo reply's Code 0, no error about a source that is no single host |
 | `test_udp` | tests/unit/test_udp.c | 9 | UDP (REQ-UDP-*), incl. nothing beyond one Ethernet frame whatever the buffer, no TTL 0 |

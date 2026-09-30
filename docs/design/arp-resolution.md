@@ -86,9 +86,10 @@ in RAM.
 ## 4. What `arp_input()` does
 
 - **Request for our address** (`TPA == net->ipv4_addr`): unicast a reply to
-  the requester's MAC.  The requester's mapping is not remembered.
+  the requester's MAC.  The requester's mapping is not remembered.  Before
+  an address is configured (0.0.0.0, waiting for DHCP) nothing is answered.
 - **Reply from the gateway** (`SPA == net->gateway_ipv4`): store its MAC and
-  set `gateway_mac_valid`.  Any such reply is accepted, solicited or not, so
+  set `gateway_mac_valid`.  Without a gateway (0.0.0.0) no reply is one.  Any such reply is accepted, solicited or not, so
   a gratuitous ARP reply from the gateway updates it; so would a spoofed one
   (ARP has no authentication).
 - **Everything else** — requests for other addresses, replies from other
