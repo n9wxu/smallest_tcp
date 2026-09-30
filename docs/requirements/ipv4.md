@@ -52,7 +52,7 @@ Minimum header: 20 bytes (IHL=5). Maximum header: 60 bytes (IHL=15).
 |---|---|---|---|---|
 | REQ-IPv4-008 | MUST | Accept packets where Destination Address matches our configured IPv4 address | RFC 791, RFC 1122 §3.2.1.3 | TEST-IPv4-008 |
 | REQ-IPv4-009 | MUST | Accept packets where Destination Address is the limited broadcast (255.255.255.255) | RFC 1122 §3.2.1.3 | TEST-IPv4-009 |
-| REQ-IPv4-010 | MUST | Accept packets where Destination Address is the subnet-directed broadcast | RFC 1122 §3.2.1.3 | TEST-IPv4-010 |
+| REQ-IPv4-010 | MUST | Accept packets where Destination Address is our own subnet's directed broadcast (not another subnet's; a /31 or /32 has none) | RFC 1122 §3.2.1.3, RFC 3021 | TEST-IPv4-010 |
 | REQ-IPv4-011 | MUST | Silently discard packets not addressed to us, broadcast, or a subscribed multicast group | RFC 1122 §3.2.1.3 | TEST-IPv4-011 |
 | REQ-IPv4-012 | SHOULD | Accept packets addressed to 0.0.0.0 during DHCP bootstrap (before address configured) | RFC 1122 §3.2.1.3, RFC 2131 | TEST-IPv4-012 |
 

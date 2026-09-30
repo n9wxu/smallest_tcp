@@ -134,6 +134,40 @@ TEST(test_ipv4_is_broadcast) {
   ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(10, 0, 0, 1)));
 }
 
+/* REQ-IPv4-010, 011: only our own subnet's broadcast is ours */
+TEST(test_ipv4_broadcast_of_another_subnet_is_not_ours) {
+  net_t n;
+  memset(&n, 0, sizeof(n));
+  n.ipv4_addr = NET_IPV4(10, 0, 0, 2);
+  n.subnet_mask = NET_IPV4(255, 255, 255, 0);
+
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(10, 0, 1, 255)));
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(192, 168, 7, 255)));
+}
+
+/* RFC 3021: a /31 has no broadcast address, nor has a /32 */
+TEST(test_ipv4_point_to_point_masks_have_no_directed_broadcast) {
+  net_t n;
+  memset(&n, 0, sizeof(n));
+  n.ipv4_addr = NET_IPV4(10, 0, 0, 2);
+  n.subnet_mask = NET_IPV4(255, 255, 255, 254);
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(10, 0, 0, 3)));
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(10, 0, 0, 2)));
+
+  n.subnet_mask = NET_IPV4(255, 255, 255, 255);
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(10, 0, 0, 2)));
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(8, 8, 8, 8)));
+  ASSERT_TRUE(ipv4_is_broadcast(&n, 0xFFFFFFFFu));
+}
+
+/* Before DHCP configures us, only the limited broadcast is broadcast */
+TEST(test_ipv4_unconfigured_broadcast_is_limited_only) {
+  net_t n;
+  memset(&n, 0, sizeof(n));
+  ASSERT_TRUE(ipv4_is_broadcast(&n, 0xFFFFFFFFu));
+  ASSERT_FALSE(ipv4_is_broadcast(&n, NET_IPV4(10, 0, 0, 255)));
+}
+
 TEST(test_ipv4_is_local) {
   net_t n;
   memset(&n, 0, sizeof(n));
@@ -157,6 +191,9 @@ int main(void) {
   RUN_TEST(test_ipv4_build_valid);
   RUN_TEST(test_ipv4_build_parse_roundtrip);
   RUN_TEST(test_ipv4_is_broadcast);
+  RUN_TEST(test_ipv4_broadcast_of_another_subnet_is_not_ours);
+  RUN_TEST(test_ipv4_point_to_point_masks_have_no_directed_broadcast);
+  RUN_TEST(test_ipv4_unconfigured_broadcast_is_limited_only);
   RUN_TEST(test_ipv4_is_local);
   TEST_REPORT();
   return test_failures;

@@ -30,7 +30,7 @@ verified at both the unit and integration levels:
 | `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
 | `test_net` | tests/unit/test_net.c | 13 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()` |
 | `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
-| `test_ipv4` | tests/unit/test_ipv4.c | 10 | IPv4 (REQ-IPV4-*) |
+| `test_ipv4` | tests/unit/test_ipv4.c | 13 | IPv4 (REQ-IPV4-*) |
 | `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 22 | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
