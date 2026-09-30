@@ -38,10 +38,14 @@ static void echo_reply(net_t *net, const ipv4_hdr_t *ip,
     return;
   memcpy(reply, ip->payload, ip->payload_len);
   reply[ICMP_OFF_TYPE] = ICMP_TYPE_ECHO_REPLY;
+  reply[ICMP_OFF_CODE] = 0;
   icmp_send(net, ip->payload_len, ip->src_ip, eth->src_mac);
 }
 
-/* REQ-ICMPv4-011, 019, 024, 028, 029, 031, 040 */
+/* REQ-ICMPv4-028, 031, 040: only Echo Request is answered.  Received
+ * errors — Destination Unreachable, Redirect, Time Exceeded, Parameter
+ * Problem (REQ-ICMPv4-011..016, 019..021, 024, 029) — are dropped too:
+ * no upper layer hears of them. */
 void icmp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   if (ip->payload_len < ICMP_HDR_SIZE ||
       !net_cksum_verify(ip->payload, ip->payload_len))
@@ -61,8 +65,10 @@ net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
   uint16_t icmp_len = (uint16_t)(ICMP_HDR_SIZE + quote);
   uint8_t *icmp = net->tx.buf + ICMP_OFFSET;
 
-  /* RFC 1122 §3.2.2: never about a broadcast or multicast */
-  if (sent_to_many(net, invoking) || net_mac_is_multicast(eth->dst_mac))
+  /* REQ-ICMPv4-035, 036 (RFC 1122 §3.2.2): never about a broadcast or
+   * multicast, nor a datagram from 0.0.0.0 or any source no single host */
+  if (sent_to_many(net, invoking) || net_mac_is_multicast(eth->dst_mac) ||
+      !ipv4_is_host(net, invoking->src_ip))
     return NET_ERR_INVALID_PARAM;
   if ((uint32_t)ICMP_OFFSET + icmp_len > net->tx.capacity)
     return NET_ERR_BUF_TOO_SMALL;

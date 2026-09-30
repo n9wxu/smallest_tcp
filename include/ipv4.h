@@ -111,6 +111,15 @@ static inline int ipv4_is_broadcast(const net_t *net, uint32_t ip) {
 static inline int ipv4_is_multicast(uint32_t ip) { return (ip >> 28) == 0xE; }
 
 /**
+ * @p ip names a single host (RFC 1122 §3.2.1.3, §3.2.2): not 0.0.0.0,
+ * loopback, multicast, class E or a broadcast.
+ */
+static inline int ipv4_is_host(const net_t *net, uint32_t ip) {
+  return ip != 0 && (ip >> 24) != 127 && (ip >> 28) < 0xE &&
+         !ipv4_is_broadcast(net, ip);
+}
+
+/**
  * A received datagram's destination is multicast.  Only joined groups get
  * past ipv4_input(), so without multicast support this is constant 0 and
  * the checks using it compile away.

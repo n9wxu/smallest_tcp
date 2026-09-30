@@ -31,7 +31,7 @@ verified at both the unit and integration levels:
 | `test_net` | tests/unit/test_net.c | 13 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()` |
 | `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
 | `test_ipv4` | tests/unit/test_ipv4.c | 13 | IPv4 (REQ-IPV4-*) |
-| `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
+| `test_icmp` | tests/unit/test_icmp.c | 7 | ICMPv4 (REQ-ICMP-*), incl. the echo reply's Code 0, no error about a source that is no single host |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 22 | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
 | `test_tcp` | tests/unit/test_tcp.c | **63** | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |

@@ -210,6 +210,66 @@ TEST(test_icmp_unknown_type_discarded) {
   ASSERT_EQ(send_count, 0); /* Unknown type → discarded */
 }
 
+/* REQ-ICMPv4-001: the reply's Code is 0 whatever the request's was */
+TEST(test_icmp_echo_reply_code_is_zero) {
+  setup();
+  uint8_t src_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x05};
+  uint8_t frame[200];
+  uint16_t len = build_echo_request(frame, NET_IPV4(10, 0, 0, 1), src_mac,
+                                    0x1234, 7, NULL, 0);
+  uint8_t *icmp = frame + ETH_HDR_SIZE + IPV4_HDR_SIZE;
+  icmp[ICMP_OFF_CODE] = 9;
+  net_write16be(icmp + ICMP_OFF_CKSUM, 0);
+  net_write16be(icmp + ICMP_OFF_CKSUM, net_cksum(icmp, ICMP_HDR_SIZE));
+
+  eth_frame_t eth;
+  eth_parse(frame, len, &eth);
+  ipv4_hdr_t ip;
+  ipv4_parse(eth.payload, eth.payload_len, &ip);
+  icmp_input(&net, &ip, &eth);
+
+  ASSERT_EQ(send_count, 1);
+  icmp = sent_frame + ETH_HDR_SIZE + IPV4_HDR_SIZE;
+  ASSERT_EQ(icmp[ICMP_OFF_TYPE], ICMP_TYPE_ECHO_REPLY);
+  ASSERT_EQ(icmp[ICMP_OFF_CODE], 0);
+  ASSERT_TRUE(net_cksum_verify(icmp, ICMP_HDR_SIZE));
+}
+
+/* A datagram of protocol 253 (unsupported) from @p src, through ipv4_input:
+ * 1 if it drew an ICMP Protocol Unreachable */
+static int protocol_unreachable_from(uint32_t src) {
+  static const uint8_t our_mac[6] = NET_DEFAULT_MAC;
+  static const uint8_t src_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x06};
+  uint8_t frame[64];
+  eth_frame_t eth;
+  setup();
+  memset(frame, 0, sizeof(frame));
+  memcpy(frame, our_mac, 6);
+  memcpy(frame + 6, src_mac, 6);
+  net_write16be(frame + 12, NET_ETHERTYPE_IPV4);
+  ipv4_build(frame + ETH_HDR_SIZE, 8, 253, src, NET_DEFAULT_IPV4_ADDR);
+  eth_parse(frame, ETH_HDR_SIZE + IPV4_HDR_SIZE + 8, &eth);
+  ipv4_input(&net, &eth);
+  return send_count == 1 &&
+         sent_frame[ETH_HDR_SIZE + IPV4_HDR_SIZE + ICMP_OFF_TYPE] ==
+             ICMP_TYPE_DEST_UNREACH;
+}
+
+TEST(test_icmp_error_about_a_host) {
+  ASSERT_TRUE(protocol_unreachable_from(NET_IPV4(10, 0, 0, 1)));
+  ASSERT_TRUE(protocol_unreachable_from(NET_IPV4(192, 168, 7, 255)));
+}
+
+/* REQ-ICMPv4-036: never about a datagram whose source names no single
+ * host — 0.0.0.0, a broadcast, multicast, class E (RFC 1122 §3.2.2) */
+TEST(test_icmp_no_error_about_a_source_that_is_no_host) {
+  ASSERT_FALSE(protocol_unreachable_from(0));
+  ASSERT_FALSE(protocol_unreachable_from(NET_IPV4(10, 0, 0, 255)));
+  ASSERT_FALSE(protocol_unreachable_from(NET_IPV4(224, 0, 0, 5)));
+  ASSERT_FALSE(protocol_unreachable_from(NET_IPV4(239, 1, 2, 3)));
+  ASSERT_FALSE(protocol_unreachable_from(NET_IPV4(240, 0, 0, 1)));
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -218,6 +278,9 @@ int main(void) {
   RUN_TEST(test_icmp_no_reply_to_broadcast_dst);
   RUN_TEST(test_icmp_bad_checksum_discarded);
   RUN_TEST(test_icmp_unknown_type_discarded);
+  RUN_TEST(test_icmp_echo_reply_code_is_zero);
+  RUN_TEST(test_icmp_error_about_a_host);
+  RUN_TEST(test_icmp_no_error_about_a_source_that_is_no_host);
   TEST_REPORT();
   return test_failures;
 }

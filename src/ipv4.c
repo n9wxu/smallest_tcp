@@ -155,9 +155,10 @@ int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac) {
   return 0;
 }
 
-/* REQ-IPv4-013..015 */
+/* REQ-IPv4-013..015: a single host other than us, or 0.0.0.0 — a DHCP
+ * client's (REQ-IPv4-016) */
 static int source_is_valid(const net_t *net, uint32_t src_ip) {
-  return src_ip != IPV4_BROADCAST && (src_ip >> 24) != 127 &&
+  return (src_ip == 0 || ipv4_is_host(net, src_ip)) &&
          (src_ip != net->ipv4_addr || net->ipv4_addr == 0);
 }
 

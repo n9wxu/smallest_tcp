@@ -60,7 +60,7 @@ Minimum header: 20 bytes (IHL=5). Maximum header: 60 bytes (IHL=15).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-IPv4-013 | MUST | Silently discard packets with Source Address = 255.255.255.255 | RFC 1122 §3.2.1.3 | TEST-IPv4-013 |
+| REQ-IPv4-013 | MUST | Silently discard packets whose Source Address names no single host: 255.255.255.255, our subnet's broadcast, multicast, class E (240/4) | RFC 1122 §3.2.1.3, RFC 1112 §4 | TEST-IPv4-013 |
 | REQ-IPv4-014 | MUST | Silently discard packets with Source Address = our own address (prevent loops) | RFC 1122 §3.2.1.3 | TEST-IPv4-014 |
 | REQ-IPv4-015 | SHOULD | Silently discard packets with Source Address = 127.x.x.x (loopback range) | RFC 1122 §3.2.1.3 | TEST-IPv4-015 |
 | REQ-IPv4-016 | SHOULD | Silently discard packets with Source Address = 0.0.0.0 except during DHCP | RFC 1122 §3.2.1.3 | TEST-IPv4-016 |
