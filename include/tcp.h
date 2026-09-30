@@ -104,6 +104,8 @@ typedef struct tcp_conn_s {
 #endif
   uint8_t remote_mac[6];
   uint8_t mac_valid;
+  uint8_t passive; /**< Opened by tcp_listen(): reset in SYN-RECEIVED, it
+                        listens again */
 #if NET_USE_IPV6
   uint8_t ip_ver;     /**< 4 or 6; always 6 without IPv4 */
   uint8_t local_slot; /**< IPv6: our address the peer used, in ip6.addr */
@@ -120,6 +122,8 @@ typedef struct tcp_conn_s {
   uint16_t snd_mss; /**< The peer's MSS, at most what our TX buffer carries */
   uint8_t fin_sent; /**< Our FIN is SND.NXT - 1; until then it waits for the
                          data queued before it */
+  uint8_t close_queued; /**< tcp_close() in SYN-RECEIVED: the FIN follows the
+                             ACK of our SYN */
 
   /* Receive sequence space */
   uint32_t irs;

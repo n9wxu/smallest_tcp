@@ -56,6 +56,8 @@ cost is throughput — one segment per round trip
 | `iss`, `snd_una`, `snd_nxt`, `snd_wnd`, `snd_wl1`, `snd_wl2` | Send sequence space (§3.3.1) |
 | `snd_mss` | Largest segment we send: the peer's MSS (or the family's default), at most what the TX frame buffer carries (section 4.4) |
 | `fin_sent` | Our FIN has been sent and is SND.NXT − 1.  Until then a closing connection's FIN waits behind the data queued before it (section 4.7) |
+| `passive` | Opened by `tcp_listen()`: a reset, a SYN or a give-up in SYN-RECEIVED returns it to LISTEN (section 3.4) |
+| `close_queued` | `tcp_close()` came in SYN-RECEIVED: the FIN follows the ACK of our SYN (section 4.7) |
 | `irs`, `rcv_nxt`, `rcv_wnd` | Receive sequence space; `rcv_wnd` is the RX buffer's free space as last advertised |
 | `our_mss` | The MSS we advertise: what the RX frame buffer takes (section 4.4) |
 | `timer_ms`, `timer`, `rto_ms`, `retransmits`, `persist_ms` | One timer at a time — retransmission, zero-window probe or TIME-WAIT (section 5) |
@@ -202,8 +204,8 @@ goes out after the next `TCP_EVT_WRITABLE`.
 | `tcp_tx_idle()` | True when the buffer's `queued()` is 0 and SND.UNA = SND.NXT: everything written — and any SYN or FIN — has been sent and acknowledged | any |
 | `tcp_recv()` | Copy received data out | any |
 | `tcp_window_update()` | ACK the space freed by reading, if it is worth advertising | ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2 |
-| `tcp_close()` | ESTABLISHED → FIN-WAIT-1, CLOSE-WAIT → LAST-ACK; our FIN goes once the data queued before it has been sent (section 4.7).  Does nothing in any other state | ESTABLISHED, CLOSE-WAIT |
-| `tcp_abort()` | RST if the peer's MAC is known; CLOSED; `TCP_EVT_RESET` | any |
+| `tcp_close()` | ESTABLISHED → FIN-WAIT-1, CLOSE-WAIT → LAST-ACK; our FIN goes once the data queued before it has been sent (section 4.7).  LISTEN and SYN-SENT → CLOSED at once; in SYN-RECEIVED the FIN follows the ACK of our SYN.  Nothing once closing | any |
+| `tcp_abort()` | RST where the peer holds the connection open (SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1/2, CLOSE-WAIT; §3.10.5); CLOSED; `TCP_EVT_RESET` | any |
 | `tcp_status()` | The state (CLOSED for NULL) | any |
 
 ---
@@ -280,9 +282,13 @@ SND.WL1/WL2 are taken from the SYN.  The connection enters SYN-RECEIVED, sends
 SYN,ACK and starts the retransmission timer.
 
 Data or a FIN on the SYN is not taken: RCV.NXT covers only the SYN, so the
-peer sends them again.  A SYN-RECEIVED connection that is reset or times out
-goes to CLOSED, not back to LISTEN (REQ-TCP-046 asks for LISTEN); the
-application listens again.
+peer sends them again.  `tcp_listen()` sets `passive`; a SYN-RECEIVED
+connection that has it goes back to LISTEN (`listen_again()`) when it is reset
+(REQ-TCP-046), when a SYN arrives in its window (§3.10.7.4 step 4) and when
+its SYN,ACK is given up, without telling the application, which never heard
+of the connection.  Only if the application closed it meanwhile does it go to
+CLOSED.  `tcp_listen()` also clears `mac_valid`, so nothing is sent to the
+last peer from LISTEN.
 
 ### 3.5 SYN-SENT: `syn_sent_input()`
 
@@ -325,15 +331,18 @@ does not).
 
 **Step 2 — `rst_input()`** (REQ-TCP-046..049).  A RST anywhere in the window is
 accepted; the exact-match test and challenge ACK of RFC 5961 §3 are not
-implemented (REQ-TCP-154).  The connection goes to CLOSED, reporting
+implemented (REQ-TCP-154).  A passive open in SYN-RECEIVED listens again
+(section 3.4).  Otherwise the connection goes to CLOSED, reporting
 `TCP_EVT_RESET` from SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2 and
-CLOSE-WAIT, and nothing from CLOSING, LAST-ACK and TIME-WAIT, where the
-application has already closed.
+CLOSE-WAIT (`peer_has_it_open()`), and nothing from CLOSING, LAST-ACK and
+TIME-WAIT, where the application has already closed.
 
 **Step 3** — the security check — is skipped (REQ-TCP-050).
 
-**Step 4 — SYN.**  A SYN in the window resets the connection
-(`reset_connection()`: RST, CLOSED) and raises `TCP_EVT_ERROR` (REQ-TCP-051).
+**Step 4 — SYN.**  A SYN in the window of a passive open in SYN-RECEIVED
+returns it to LISTEN (section 3.4).  In any other state it resets the
+connection (`reset_connection()`: RST, CLOSED) and raises `TCP_EVT_ERROR`
+(REQ-TCP-051).
 A SYN outside the window has already drawn an ACK in step 1.  The challenge ACK
 §3.10.7.4 recommends for every SYN (RFC 5961 §4, REQ-TCP-052) is not
 implemented, and a SYN cannot reopen a connection in TIME-WAIT.
@@ -344,7 +353,8 @@ dropped.  Then by state:
 - SYN-RECEIVED: if the ACK covers our SYN (`acks_our_syn()`), SND.UNA, SND.WND,
   SND.WL1 and SND.WL2 are set, the retransmission timer stops, the connection
   is ESTABLISHED and `TCP_EVT_CONNECTED` is raised; steps 7 and 8 continue on
-  the same segment.  Otherwise a RST is sent and the segment dropped.
+  the same segment.  If `tcp_close()` came first (`close_queued`) it goes to
+  FIN-WAIT-1 instead, raises nothing and `flush()` sends the FIN.  Otherwise a RST is sent and the segment dropped.
 - TIME-WAIT: the 2×MSL timer restarts and an ACK is sent.  Only an acceptable
   segment gets here; a retransmitted FIN does not (step 1 answers it and the
   timer runs on).
@@ -413,6 +423,9 @@ RCV.NXT, is acknowledged, and moves the connection:
 | SYN-SENT | SYN,ACK: ACK sent | ESTABLISHED | `syn_sent_input()` |
 | SYN-SENT | SYN: SYN,ACK sent | SYN-RECEIVED | `syn_sent_input()` |
 | SYN-RECEIVED | ACK of our SYN | ESTABLISHED | `ack_input()` |
+| SYN-RECEIVED | ACK of our SYN, `tcp_close()` already called: FIN sent | FIN-WAIT-1 | `ack_input()` |
+| SYN-RECEIVED, passive | RST or SYN in window; SYN,ACK given up | LISTEN | `listen_again()` |
+| LISTEN, SYN-SENT | `tcp_close()` | CLOSED | `tcp_close()` |
 | ESTABLISHED | `tcp_close()`: FIN queued, sent after the data | FIN-WAIT-1 | `tcp_close()` |
 | ESTABLISHED | FIN | CLOSE-WAIT | `fin_input()` |
 | FIN-WAIT-1 | ACK of our FIN | FIN-WAIT-2 | `ack_input()` |
@@ -425,7 +438,7 @@ RCV.NXT, is acknowledged, and moves the connection:
 | SYN-SENT | RST with acceptable ACK | CLOSED | `syn_sent_input()` |
 | synchronized | RST in window | CLOSED | `rst_input()` |
 | synchronized | SYN in window; retransmissions exhausted | CLOSED, RST sent | `reset_connection()` |
-| any | `tcp_abort()` | CLOSED, RST sent if the peer is known | `reset_connection()` |
+| any | `tcp_abort()` | CLOSED; RST sent where the peer holds the connection open | `tcp_abort()` |
 
 ---
 
@@ -606,8 +619,12 @@ with a zero window, the resends do not count toward `TCP_MAX_RETRANSMITS`
 (section 5.1).
 
 The FIN is acknowledged only when `fin_sent` is set and SEG.ACK ≥ SND.NXT
-(section 3.6, step 5).  In LISTEN, SYN-SENT and SYN-RECEIVED `tcp_close()` does
-nothing; use `tcp_abort()`.
+(section 3.6, step 5).
+
+Before the connection is open (§3.10.4): in LISTEN and SYN-SENT `tcp_close()`
+goes straight to CLOSED — no one has anything to be told; in SYN-RECEIVED it
+sets `close_queued`, and the FIN follows the ACK of our SYN (section 3.6,
+step 5), since one segment is in flight at a time.
 
 ---
 
@@ -663,7 +680,8 @@ On expiry `retransmission_timeout()`:
    (`in_flight()`), no unacknowledged FIN (`fin_sent` and SND.UNA < SND.NXT),
    not in SYN-SENT or SYN-RECEIVED;
 2. gives up after `TCP_MAX_RETRANSMITS` (8) retransmissions: the next expiry
-   resets the connection and raises `TCP_EVT_ERROR`;
+   resets the connection and raises `TCP_EVT_ERROR` — or, for a passive open
+   in SYN-RECEIVED, listens again (section 3.4);
 3. doubles `rto_ms`, up to `NET_DEFAULT_TCP_RTO_MAX_MS`, and restarts the timer
    with it (REQ-TCP-096);
 4. resends the earliest unacknowledged segment (REQ-TCP-095):
@@ -847,9 +865,7 @@ single-stack build reduces to its own family's.
 
 ### 8.2 Behaviour that differs from RFC 9293
 
-- RST in SYN-RECEIVED goes to CLOSED, not back to LISTEN (REQ-TCP-046).
 - With RCV.WND zero the ACK field of a segment carrying data is not processed.
-- `tcp_close()` does nothing in LISTEN, SYN-SENT or SYN-RECEIVED.
 - A retransmitted FIN in TIME-WAIT is acknowledged but does not restart the
   2×MSL timer (section 3.6, step 5).
 - A SYN cannot reopen a connection in TIME-WAIT; an in-window SYN resets it.

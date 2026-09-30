@@ -1547,6 +1547,141 @@ TEST(test_tcp_rst_in_last_ack_closes) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * CLOSE, ABORT and resets before the connection is open
+ * (RFC 9293 §3.10.4, §3.10.5, §3.10.7.4; REQ-TCP-015, 016, 046, 051)
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* LISTEN, then a SYN from the peer at 1000: SYN-RECEIVED; our ISS */
+static uint32_t syn_received(void) {
+  tcp_listen(&conn, LOCAL_PORT);
+  inject_from_peer(1000u, 0u, TCP_FLAG_SYN);
+  send_count = 0;
+  return conn.iss;
+}
+
+TEST(test_tcp_close_in_listen_closes) {
+  setup();
+  tcp_listen(&conn, LOCAL_PORT);
+  ASSERT_EQ(tcp_close(&net, &conn), NET_OK);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  ASSERT_EQ(send_count, 0);
+  inject_from_peer(1000u, 0u, TCP_FLAG_SYN); /* nobody listens: RST */
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_RST) != 0);
+}
+
+TEST(test_tcp_close_in_syn_sent_closes) {
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  send_count = 0;
+  ASSERT_EQ(tcp_close(&net, &conn), NET_OK);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  tcp_tick(&net, 60000u); /* no SYN again */
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(evt_reset + evt_error + evt_closed, 0);
+}
+
+/* The FIN follows the ACK of our SYN (§3.10.4: queued until ESTABLISHED) */
+TEST(test_tcp_close_in_syn_received_sends_fin_once_open) {
+  uint32_t iss;
+  setup();
+  iss = syn_received();
+  ASSERT_EQ(tcp_close(&net, &conn), NET_OK);
+  ASSERT_EQ(conn.state, TCP_SYN_RECEIVED);
+  ASSERT_EQ(send_count, 0);
+
+  inject_from_peer(1001u, iss + 1u, TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_1);
+  ASSERT_EQ(evt_connected, 0);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_EQ(sent_tcp_flags(0), TCP_FLAG_FIN | TCP_FLAG_ACK);
+  ASSERT_EQ(sent_tcp_seq(0), iss + 1u);
+
+  inject_from_peer(1001u, iss + 2u, TCP_FLAG_ACK);
+  ASSERT_EQ(conn.state, TCP_FIN_WAIT_2);
+}
+
+/* REQ-TCP-046: a passive open reset in SYN-RECEIVED listens again, and the
+ * application hears nothing */
+TEST(test_tcp_rst_in_syn_received_listens_again) {
+  uint8_t frame[128];
+  uint16_t len;
+  setup();
+  syn_received();
+  inject_from_peer(1001u, 0u, TCP_FLAG_RST);
+  ASSERT_EQ(conn.state, TCP_LISTEN);
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(evt_reset + evt_error + evt_closed, 0);
+
+  len = build_tcp_frame(frame, REMOTE_IP, REMOTE_PORT + 1u, LOCAL_PORT, 7000u,
+                        0u, TCP_FLAG_SYN, 4096, NULL, 0, 536);
+  inject(frame, len);
+  ASSERT_EQ(conn.state, TCP_SYN_RECEIVED);
+  ASSERT_EQ(conn.remote_port, REMOTE_PORT + 1u);
+}
+
+/* ... but an active open (a simultaneous one) is refused */
+TEST(test_tcp_rst_in_active_syn_received_closes) {
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  inject_from_peer(5000u, 0u, TCP_FLAG_SYN);
+  ASSERT_EQ(conn.state, TCP_SYN_RECEIVED);
+  inject_from_peer(5001u, 0u, TCP_FLAG_RST);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  ASSERT_EQ(evt_reset, 1);
+}
+
+/* REQ-TCP-051, §3.10.7.4 step 4: a SYN in the window of a passive open in
+ * SYN-RECEIVED returns it to LISTEN, without a RST */
+TEST(test_tcp_syn_in_syn_received_listens_again) {
+  setup();
+  syn_received();
+  inject_from_peer(1001u, 0u, TCP_FLAG_SYN);
+  ASSERT_EQ(conn.state, TCP_LISTEN);
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(evt_error, 0);
+}
+
+/* A SYN,ACK never acknowledged: the listener stays */
+TEST(test_tcp_syn_received_given_up_listens_again) {
+  int i;
+  setup();
+  syn_received();
+  for (i = 0; i <= 8 && conn.state == TCP_SYN_RECEIVED; i++)
+    expire_retransmission();
+  ASSERT_EQ(conn.state, TCP_LISTEN);
+  ASSERT_EQ(evt_error + evt_reset, 0);
+}
+
+/* §3.10.5: ABORT resets the peer only where it has the connection open —
+ * not from LISTEN (to the last peer's MAC) or SYN-SENT */
+TEST(test_tcp_abort_before_open_sends_nothing) {
+  setup();
+  syn_received();
+  inject_from_peer(1001u, 0u, TCP_FLAG_RST); /* LISTEN again */
+  ASSERT_EQ(tcp_abort(&net, &conn), NET_OK);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  ASSERT_EQ(send_count, 0);
+  ASSERT_EQ(evt_reset, 1);
+
+  setup();
+  tcp_connect(&net, &conn, REMOTE_IP, remote_mac, REMOTE_PORT, LOCAL_PORT);
+  send_count = 0;
+  tcp_abort(&net, &conn);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  ASSERT_EQ(send_count, 0);
+}
+
+TEST(test_tcp_abort_in_syn_received_sends_rst) {
+  setup();
+  syn_received();
+  tcp_abort(&net, &conn);
+  ASSERT_EQ(conn.state, TCP_CLOSED);
+  ASSERT_EQ(send_count, 1);
+  ASSERT_TRUE((sent_tcp_flags(0) & TCP_FLAG_RST) != 0);
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * Option parsing: NOP padding + unknown option skipped (REQ-TCP-109,
  * REQ-TCP-111, REQ-TCP-115), MSS still parsed (REQ-TCP-112)
  * ══════════════════════════════════════════════════════════════════ */
@@ -1782,6 +1917,15 @@ int main(void) {
   RUN_TEST(test_tcp_syn_in_established_gets_rst);
   RUN_TEST(test_tcp_no_ack_bit_discarded);
   RUN_TEST(test_tcp_rst_in_last_ack_closes);
+  RUN_TEST(test_tcp_close_in_listen_closes);
+  RUN_TEST(test_tcp_close_in_syn_sent_closes);
+  RUN_TEST(test_tcp_close_in_syn_received_sends_fin_once_open);
+  RUN_TEST(test_tcp_rst_in_syn_received_listens_again);
+  RUN_TEST(test_tcp_rst_in_active_syn_received_closes);
+  RUN_TEST(test_tcp_syn_in_syn_received_listens_again);
+  RUN_TEST(test_tcp_syn_received_given_up_listens_again);
+  RUN_TEST(test_tcp_abort_before_open_sends_nothing);
+  RUN_TEST(test_tcp_abort_in_syn_received_sends_rst);
   RUN_TEST(test_tcp_options_nop_unknown_ignored);
   /* ── Persist timer tests (REQ-TCP-085..087) ─── */
   RUN_TEST(test_tcp_persist_starts_on_zero_window);

@@ -34,7 +34,7 @@ verified at both the unit and integration levels:
 | `test_icmp` | tests/unit/test_icmp.c | 7 | ICMPv4 (REQ-ICMP-*), incl. the echo reply's Code 0, no error about a source that is no single host |
 | `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 22 | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
-| `test_tcp` | tests/unit/test_tcp.c | **63** | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
+| `test_tcp` | tests/unit/test_tcp.c | **72** | TCP (REQ-TCP-*), incl. CLOSE and ABORT before the connection is open, a passive open reset in SYN-RECEIVED listening again, data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
 | `test_tftp` | tests/unit/test_tftp.c | 28 | TFTP client (REQ-TFTP-*), incl. OACKs with options never asked for, truncated DATA and ERROR, port 0, the timer restarted only by progress |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 38 | DHCPv4 client + server (REQ-DHCPv4-*), incl. buffer checks at init, the 1–10 s start delay, renewals unicast to the server's MAC, the lease timed from the REQUEST, T1/T2 fuzz, NAKs only from the server asked, the server's §4.1 reply routing |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
@@ -84,7 +84,8 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 002 | Passive open (LISTEN) | test_tcp_passive_open_syn_synack_ack | ✅ |
 | 003 | Active open (SYN_SENT) | test_tcp_active_open_syn_synack_ack | ✅ |
 | 005 | Active close (FIN_WAIT_1) | test_tcp_active_close | ✅ |
-| 015 | `tcp_close()`: FIN queued behind unsent data (RFC 9293 §3.10.4) | test_tcp_close_sends_unsent_data_first, test_tcp_close_fin_waits_for_the_last_segment | ✅ |
+| 015 | `tcp_close()`: FIN queued behind unsent data; LISTEN and SYN-SENT → CLOSED; in SYN-RECEIVED the FIN follows the ACK of our SYN (RFC 9293 §3.10.4) | test_tcp_close_sends_unsent_data_first, test_tcp_close_fin_waits_for_the_last_segment, test_tcp_close_in_listen_closes, test_tcp_close_in_syn_sent_closes, test_tcp_close_in_syn_received_sends_fin_once_open | ✅ |
+| 016 | `tcp_abort()`: RST only where the peer holds the connection open (§3.10.5) | test_tcp_abort_before_open_sends_nothing, test_tcp_abort_in_syn_received_sends_rst | ✅ |
 | 006 | Passive close (CLOSE_WAIT) | test_tcp_passive_close | ✅ |
 | 008 | TIME_WAIT 2×MSL | test_tcp_timewait_expires | ✅ |
 | 014 | tcp_send() API | test_tcp_data_send | ✅ |
@@ -92,9 +93,9 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 019 | Checksum verify on RX | test_tcp_checksum_basic | ✅ |
 | 031 | ACK in LISTEN → RST | test_tcp_ack_in_listen_generates_rst | ✅ |
 | 041/042 | Out-of-window → ACK only | test_tcp_out_of_window_gets_ack | ✅ |
-| 046/047 | RST in ESTABLISHED → CLOSED | test_tcp_rst_in_established_aborts | ✅ |
+| 046/047 | RST in ESTABLISHED → CLOSED; in SYN-RECEIVED → LISTEN (passive open) or CLOSED (active) | test_tcp_rst_in_established_aborts, test_tcp_rst_in_syn_received_listens_again, test_tcp_rst_in_active_syn_received_closes, test_tcp_syn_received_given_up_listens_again | ✅ |
 | 048 | RST in LAST_ACK → CLOSED | test_tcp_rst_in_last_ack_closes | ✅ |
-| 051 | SYN in ESTABLISHED → error | test_tcp_syn_in_established_gets_rst | ✅ |
+| 051 | SYN in ESTABLISHED → error; in a passive SYN-RECEIVED → LISTEN | test_tcp_syn_in_established_gets_rst, test_tcp_syn_in_syn_received_listens_again | ✅ |
 | 053 | No ACK bit → discard | test_tcp_no_ack_bit_discarded | ✅ |
 | 054 | ESTABLISHED on ACK to SYN-ACK | test_tcp_passive_open | ✅ |
 | 058 | Window update from an ACK of nothing new | test_tcp_window_update_resumes_sending | ✅ |

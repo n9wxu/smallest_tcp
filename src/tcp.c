@@ -286,6 +286,29 @@ static void reset_connection(net_t *net, tcp_conn_t *conn) {
   close_with(conn, 0);
 }
 
+/* The states in which the peer holds the connection open and the
+ * application has not closed it: a RST received is reported, and ABORT
+ * sends one (§3.10.5, §3.10.7.4 step 2) */
+static int peer_has_it_open(const tcp_conn_t *conn) {
+  return conn->state == TCP_SYN_RECEIVED || conn->state == TCP_ESTABLISHED ||
+         conn->state == TCP_FIN_WAIT_1 || conn->state == TCP_FIN_WAIT_2 ||
+         conn->state == TCP_CLOSE_WAIT;
+}
+
+/* A connection opened by tcp_listen() and still in SYN-RECEIVED */
+static int passive_opening(const tcp_conn_t *conn) {
+  return conn->state == TCP_SYN_RECEIVED && conn->passive;
+}
+
+/* REQ-TCP-046: a passive open that fails listens again, the application
+ * none the wiser — unless it has closed it meanwhile */
+static void listen_again(tcp_conn_t *conn) {
+  if (conn->close_queued)
+    close_with(conn, 0);
+  else
+    tcp_listen(conn, conn->local_port);
+}
+
 /* ── Output ── */
 
 static int all_data_sent(const tcp_conn_t *conn) {
@@ -521,6 +544,7 @@ static void start_send_sequence(net_t *net, tcp_conn_t *conn) {
   conn->snd_una = conn->iss;
   conn->snd_nxt = conn->iss + 1u;
   conn->fin_sent = 0;
+  conn->close_queued = 0;
   conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
 }
 
@@ -598,11 +622,10 @@ static int in_window(const tcp_conn_t *conn, const tcp_seg_t *s) {
 
 /* Step 2, REQ-TCP-046..049 (the RST is in the window) */
 static void rst_input(tcp_conn_t *conn) {
-  int reported = conn->state == TCP_SYN_RECEIVED ||
-                 conn->state == TCP_ESTABLISHED ||
-                 conn->state == TCP_FIN_WAIT_1 ||
-                 conn->state == TCP_FIN_WAIT_2 || conn->state == TCP_CLOSE_WAIT;
-  close_with(conn, reported ? TCP_EVT_RESET : 0);
+  if (passive_opening(conn))
+    listen_again(conn);
+  else
+    close_with(conn, peer_has_it_open(conn) ? TCP_EVT_RESET : 0);
 }
 
 /* REQ-TCP-058: a newer segment, or a newer ACK of the same one */
@@ -660,9 +683,14 @@ static int ack_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
     conn->snd_wnd = s->window;
     conn->snd_wl1 = s->seq;
     conn->snd_wl2 = s->ack;
-    conn->state = TCP_ESTABLISHED;
     retransmit_timer_stop(conn);
-    notify(conn, TCP_EVT_CONNECTED);
+    if (conn->close_queued) { /* closed already: our FIN now */
+      conn->state = TCP_FIN_WAIT_1;
+      flush(net, conn);
+    } else {
+      conn->state = TCP_ESTABLISHED;
+      notify(conn, TCP_EVT_CONNECTED);
+    }
     return 1;
   }
   if (conn->state == TCP_TIME_WAIT) { /* REQ-TCP-008: in the window */
@@ -771,6 +799,10 @@ static void synchronized_input(net_t *net, tcp_conn_t *conn,
     return;
   }
   if (has(s, TCP_FLAG_SYN)) { /* step 4, REQ-TCP-051 */
+    if (passive_opening(conn)) {
+      listen_again(conn);
+      return;
+    }
     reset_connection(net, conn);
     notify(conn, TCP_EVT_ERROR);
     return;
@@ -863,6 +895,10 @@ static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
   }
   if (++conn->retransmits > TCP_MAX_RETRANSMITS) {
     NET_LOG("tcp: retransmissions exhausted, aborting");
+    if (passive_opening(conn)) {
+      listen_again(conn);
+      return;
+    }
     reset_connection(net, conn);
     notify(conn, TCP_EVT_ERROR);
     return;
@@ -946,13 +982,16 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
 net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port) {
   if (!conn || local_port == 0)
     return NET_ERR_INVALID_PARAM;
+  close_with(conn, 0); /* no timer, nothing retransmitted */
   conn->state = TCP_LISTEN;
+  conn->passive = 1;
+  conn->close_queued = 0;
   conn->local_port = local_port;
 #if NET_USE_IPV4
   conn->remote_ip = 0;
 #endif
   conn->remote_port = 0;
-  conn->timer_ms = 0;
+  conn->mac_valid = 0; /* no RST to the last peer from here */
   return NET_OK;
 }
 
@@ -966,6 +1005,7 @@ static void open_to(net_t *net, tcp_conn_t *conn, const uint8_t *remote_mac,
   conn->remote_port = remote_port;
   memcpy(conn->remote_mac, remote_mac, 6);
   conn->mac_valid = 1;
+  conn->passive = 0;
   conn_endpoint(net, conn, &peer);
   start_send_sequence(net, conn);
   conn->snd_mss = send_mss(net, &peer, default_mss(&peer)); /* until told */
@@ -1073,15 +1113,27 @@ void tcp_window_update(net_t *net, tcp_conn_t *conn) {
   send_ack(net, conn);
 }
 
+/* REQ-TCP-015, RFC 9293 §3.10.4 */
 net_err_t tcp_close(net_t *net, tcp_conn_t *conn) {
   if (!net || !conn)
     return NET_ERR_INVALID_PARAM;
-  if (conn->state == TCP_ESTABLISHED)
+  switch (conn->state) {
+  case TCP_LISTEN:
+  case TCP_SYN_SENT: /* nothing to tell the peer */
+    close_with(conn, 0);
+    return NET_OK;
+  case TCP_SYN_RECEIVED: /* the FIN once our SYN is acknowledged */
+    conn->close_queued = 1;
+    return NET_OK;
+  case TCP_ESTABLISHED:
     conn->state = TCP_FIN_WAIT_1;
-  else if (conn->state == TCP_CLOSE_WAIT)
+    break;
+  case TCP_CLOSE_WAIT:
     conn->state = TCP_LAST_ACK;
-  else
+    break;
+  default:
     return NET_OK; /* closed or closing already */
+  }
   flush(net, conn);
   return NET_OK;
 }
@@ -1089,8 +1141,10 @@ net_err_t tcp_close(net_t *net, tcp_conn_t *conn) {
 net_err_t tcp_abort(net_t *net, tcp_conn_t *conn) {
   if (!conn)
     return NET_ERR_INVALID_PARAM;
-  if (conn->state != TCP_CLOSED)
+  if (peer_has_it_open(conn))
     reset_connection(net, conn);
+  else
+    close_with(conn, 0);
   notify(conn, TCP_EVT_RESET);
   return NET_OK;
 }
