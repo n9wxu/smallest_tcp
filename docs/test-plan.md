@@ -288,13 +288,13 @@ sudo python3 -m pytest tests/blackbox/test_tcp_fuzz.py \
 
 | Test | REQ(s) | Description |
 |---|---|---|
-| test_udp_001 | REQ-UDP-001 | Echo on port 7 — data returned verbatim |
-| test_udp_002 | REQ-UDP-003 | Echo reply has src/dst ports correctly swapped |
-| test_udp_003 | REQ-UDP-005, REQ-ICMPv4-018 | Unknown port → ICMP Destination Unreachable, Port Unreachable (type 3 code 3) |
+| test_udp_001 | REQ-UDP-001, 016 | Echo on port 7 — data returned verbatim |
+| test_udp_002 | REQ-UDP-020, 021 | Echo reply has src/dst ports correctly swapped |
+| test_udp_003 | REQ-UDP-017, REQ-ICMPv4-018 | Unknown port → ICMP Destination Unreachable, Port Unreachable (type 3 code 3) |
 | test_udp_004 | REQ-ICMPv4-038 | ICMP Unreachable body contains original IP header + 8 UDP bytes |
-| test_udp_005 | REQ-UDP-006 | Bad UDP checksum → silent drop |
-| test_udp_006 | REQ-UDP-007 | Zero UDP checksum (disabled) accepted and echoed |
-| test_udp_007 | REQ-UDP-008 | UDP Length < 8 → silent drop |
+| test_udp_005 | REQ-UDP-006, 007 | Bad UDP checksum → silent drop |
+| test_udp_006 | REQ-UDP-008 | Zero UDP checksum (disabled) accepted and echoed |
+| test_udp_007 | REQ-UDP-002, 005 | UDP Length < 8 → silent drop |
 
 ### Blackbox mDNS + DNS-SD Conformance Coverage
 

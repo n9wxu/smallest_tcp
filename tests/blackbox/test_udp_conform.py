@@ -28,11 +28,11 @@ _OUR_SPORT       = 54321
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TEST-UDP-001  Echo on port 7 — data returned verbatim
-# REQ-UDP-001
+# REQ-UDP-001, 016
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_udp_001_echo_data_returned(ctx):
-    """REQ-UDP-001: UDP datagram to echo port MUST be echoed back."""
+    """REQ-UDP-001, 016: UDP datagram to echo port MUST be echoed back."""
     payload = b"hello-udp"
     pkt = build_udp(ctx, sport=_OUR_SPORT, dport=_UDP_ECHO_PORT, payload=payload)
     replies = send_recv_udp(ctx, pkt)
@@ -43,11 +43,11 @@ def test_udp_001_echo_data_returned(ctx):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TEST-UDP-002  Echo reply has src/dst ports correctly swapped
-# REQ-UDP-003
+# REQ-UDP-020, 021
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_udp_002_echo_ports_swapped(ctx):
-    """REQ-UDP-003: Echo reply MUST have sport=7 (SUT) and dport=our sport."""
+    """REQ-UDP-020, 021: Echo reply MUST have sport=7 (SUT) and dport=our sport."""
     pkt = build_udp(ctx, sport=_OUR_SPORT, dport=_UDP_ECHO_PORT, payload=b"ports")
     replies = send_recv_udp(ctx, pkt)
     assert replies, "No UDP reply"
@@ -62,11 +62,11 @@ def test_udp_002_echo_ports_swapped(ctx):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TEST-UDP-003  Unknown port → ICMP Destination Unreachable, Port Unreachable
-# REQ-UDP-005, REQ-ICMPv4-018
+# REQ-UDP-017, REQ-ICMPv4-018
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_udp_003_unknown_port_icmp_unreachable(ctx):
-    """REQ-UDP-005/REQ-ICMPv4-018: UDP to closed port MUST elicit ICMP type 3 code 3."""
+    """REQ-UDP-017/REQ-ICMPv4-018: UDP to closed port MUST elicit ICMP type 3 code 3."""
     pkt = build_udp(ctx, sport=_OUR_SPORT, dport=_UDP_CLOSED_PORT, payload=b"knock")
     replies = send_recv_icmp(ctx, pkt)
     assert replies, (
@@ -121,11 +121,11 @@ def test_udp_004_icmp_unreachable_body_correct(ctx):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TEST-UDP-005  Bad UDP checksum → silent drop
-# REQ-UDP-006
+# REQ-UDP-006, 007
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_udp_005_bad_checksum_silently_dropped(ctx):
-    """REQ-UDP-006: UDP datagram with bad checksum MUST be silently discarded."""
+    """REQ-UDP-006, 007: UDP datagram with bad checksum MUST be silently discarded."""
     pkt = build_udp(ctx, sport=_OUR_SPORT, dport=_UDP_ECHO_PORT,
                     payload=b"badcksum", bad_checksum=True)
     # Must receive neither a UDP echo nor an ICMP error
@@ -140,11 +140,11 @@ def test_udp_005_bad_checksum_silently_dropped(ctx):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TEST-UDP-006  Zero UDP checksum is accepted (optional checksum in IPv4)
-# REQ-UDP-007
+# REQ-UDP-008
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_udp_006_zero_checksum_accepted(ctx):
-    """REQ-UDP-007: UDP checksum=0 means 'not computed'; SUT MUST accept and echo."""
+    """REQ-UDP-008: UDP checksum=0 means 'not computed'; SUT MUST accept and echo."""
     payload = b"zerocksum"
     pkt = (
         Ether(dst=ctx.sut_mac, src=ctx.our_mac) /
@@ -162,11 +162,11 @@ def test_udp_006_zero_checksum_accepted(ctx):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TEST-UDP-007  UDP length field smaller than minimum (< 8) → silent drop
-# REQ-UDP-008
+# REQ-UDP-002, 005
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_udp_007_length_too_small_silently_dropped(ctx):
-    """REQ-UDP-008: UDP Length < 8 (minimum header size) MUST be silently dropped."""
+    """REQ-UDP-002, 005: UDP Length < 8 (minimum header size) MUST be silently dropped."""
     pkt = build_udp(ctx, sport=_OUR_SPORT, dport=_UDP_ECHO_PORT,
                     payload=b"toolong", udp_len_override=4)  # 4 < 8
     assert silence_any(ctx, pkt, timeout=2), (

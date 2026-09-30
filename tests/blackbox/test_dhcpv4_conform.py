@@ -119,8 +119,9 @@ def _complete_handshake(dctx, discover_pkt, timeout=5):
 # REQ-DHCPv4-008: op=1 (BOOTREQUEST)
 # REQ-DHCPv4-012: magic cookie present
 # REQ-DHCPv4-013: message-type option = 1 (DISCOVER)
-# REQ-DHCPv4-016: UDP dport = 67
-# REQ-DHCPv4-017: dst IP = 255.255.255.255
+# REQ-DHCPv4-015: dst IP = 255.255.255.255
+# REQ-DHCPv4-016: dst MAC = ff:ff:ff:ff:ff:ff
+# REQ-DHCPv4-017: UDP ports 68 → 67
 def test_sut_sends_discover(dhcp_ctx, dhcp_sut_fresh):
     """SUT broadcasts a well-formed DHCPDISCOVER on startup."""
     d = _wait_for_discover(dhcp_ctx)
@@ -135,9 +136,12 @@ def test_sut_sends_discover(dhcp_ctx, dhcp_sut_fresh):
     assert d[BOOTP].options == b"c\x82Sc", (
         "BOOTP magic cookie missing or wrong"
     )
-    # REQ-DHCPv4-016,017: broadcast destination
+    # REQ-DHCPv4-015, 016, 017: broadcast destination, ports 68 → 67
     assert d[IP].dst == "255.255.255.255", (
         f"DISCOVER not broadcast: dst={d[IP].dst}"
+    )
+    assert d[Ether].dst.lower() == "ff:ff:ff:ff:ff:ff", (
+        f"DISCOVER not to the broadcast MAC: dst={d[Ether].dst}"
     )
     assert d[UDP].dport == 67, f"DISCOVER UDP dport should be 67, got {d[UDP].dport}"
     assert d[UDP].sport == 68, f"DISCOVER UDP sport should be 68, got {d[UDP].sport}"
@@ -148,32 +152,33 @@ def test_sut_sends_discover(dhcp_ctx, dhcp_sut_fresh):
     )
 
 
-# REQ-DHCPv4-018: OFFER triggers REQUEST
-# REQ-DHCPv4-019: REQUEST echoes xid
-# REQ-DHCPv4-020: REQUEST contains Requested IP option = offered IP
+# REQ-DHCPv4-003: OFFER triggers REQUEST
+# REQ-DHCPv4-009: REQUEST keeps the transaction's xid
+# REQ-DHCPv4-024: REQUEST contains Requested IP option = offered IP
+# REQ-DHCPv4-023: and the Server Identifier of the offer it selects
 def test_offer_triggers_request(dhcp_ctx, dhcp_sut_fresh):
     """OFFER → SUT sends a valid DHCPREQUEST with correct XID and Requested IP."""
     d = _wait_for_discover(dhcp_ctx)
     xid = d[BOOTP].xid
     _, req = _offer_and_get_request(dhcp_ctx, d)
 
-    # REQ-DHCPv4-019: XID echoed
+    # REQ-DHCPv4-009: XID kept
     assert req[BOOTP].xid == xid, (
         f"REQUEST XID 0x{req[BOOTP].xid:08x} != DISCOVER XID 0x{xid:08x}"
     )
-    # REQ-DHCPv4-020: Requested IP option
+    # REQ-DHCPv4-024: Requested IP option
     req_ip = dhcp_get_opt(req, "requested_addr")
     assert req_ip == dhcp_ctx.offered_ip, (
         f"Requested IP {req_ip} != offered IP {dhcp_ctx.offered_ip}"
     )
-    # REQ-DHCPv4-021: Server ID option matches our server IP
+    # REQ-DHCPv4-023: Server ID option matches our server IP
     server_id = dhcp_get_opt(req, "server_id")
     assert server_id == dhcp_ctx.server_ip, (
         f"Server ID {server_id} != our server IP {dhcp_ctx.server_ip}"
     )
 
 
-# REQ-DHCPv4-028..036: ACK → SUT configures IP, replies to ARP
+# REQ-DHCPv4-004, 029: ACK → SUT configures IP, replies to ARP
 @pytest.mark.sut_specific
 def test_ack_binds_ip(dhcp_ctx, dhcp_sut_fresh):
     """Full DISCOVER→OFFER→REQUEST→ACK; after ACK the SUT's IP is reachable via ARP."""
@@ -224,7 +229,7 @@ def test_nak_triggers_rediscover(dhcp_ctx, dhcp_sut_fresh):
     )
 
 
-# REQ-DHCPv4-023: OFFER with wrong XID must be silently ignored
+# REQ-DHCPv4-018: OFFER with wrong XID must be silently ignored
 @pytest.mark.sut_specific
 def test_wrong_xid_offer_ignored(dhcp_ctx, dhcp_sut_fresh):
     """OFFER with a wrong XID must not trigger a REQUEST."""
@@ -255,7 +260,7 @@ def test_wrong_xid_offer_ignored(dhcp_ctx, dhcp_sut_fresh):
             )
 
 
-# REQ-DHCPv4-025: DISCOVER ciaddr must be 0.0.0.0 (no IP before binding)
+# REQ-DHCPv4-010: DISCOVER ciaddr must be 0.0.0.0 (no IP before binding)
 def test_discover_ciaddr_is_zero(dhcp_ctx, dhcp_sut_fresh):
     """DISCOVER ciaddr must be 0.0.0.0 (SUT has no IP yet)."""
     d = _wait_for_discover(dhcp_ctx)
@@ -277,14 +282,13 @@ def test_discover_retransmit(dhcp_ctx, dhcp_sut_fresh):
     assert dhcp_msg_type(d2) == MSG_DISCOVER, (
         "Expected retransmitted DISCOVER, got something else"
     )
-    # REQ-DHCPv4-046: XID must be stable across retransmits
+    # REQ-DHCPv4-009: one transaction, one XID, across retransmits
     assert d2[BOOTP].xid == xid1, (
         f"XID changed across retransmit: {xid1:#010x} → {d2[BOOTP].xid:#010x}"
     )
 
 
-# REQ-DHCPv4-070: RELEASE is sent when dhcp_echo_demo shuts down
-# (tested here as a parse-only check — the SUT must be killed externally)
+# REQ-DHCPv4-023: the REQUEST that selects an offer names its server
 # This test is marked 'sut_specific' and skipped in the reference-SUT run.
 @pytest.mark.sut_specific
 def test_request_contains_server_id(dhcp_ctx, dhcp_sut_fresh):
