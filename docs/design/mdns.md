@@ -30,7 +30,7 @@ The module is a **responder**: it probes for its unique names, announces its rec
 | NSEC negative answers for types a name lacks (RFC 6762 §6.1) | ✅ |
 | IPv6: ff02::fb, AAAA records, both families (§11) | ✅ (Milestone 12) |
 | Simultaneous-probe tiebreak (RFC 6762 §8.2) | — |
-| Multi-packet known-answer lists (TC bit, §7.2) | — |
+| Multi-packet known-answer lists (TC bit, §7.2) | ✅ (answering; never sent) |
 | mDNS querier (resolve `.local` names), DNS-SD browser | — |
 
 Also not implemented, as simplifications of the responder:
@@ -154,10 +154,13 @@ mdns_input() / mdns_input6()  →  input()
 |---|---|
 | Source port ≠ 5353 (legacy unicast, §6.7) | Unicast to the querier's address, MAC and port, at once, with its ID and the first answered question; TTLs capped at 10 s, no cache-flush bit.  A querier at 0.0.0.0 or `::` is ignored |
 | Every answered question has the QU bit and the querier has an address | Unicast to the querier, port 5353, at once |
+| The query has the TC bit set: more known answers follow (§7.2) | Owed: multicast after a random **400–500 ms**, and what is owed already waits with it |
 | Shared records involved (PTR or meta-query answers) | Owed: multicast after a random **20–120 ms**, aggregated (§7.2) |
 | Otherwise — unique records and NSEC only | Multicast **at once** (§6), to the group of the family the query came on |
 
 A QU query from a querier still at 0.0.0.0 falls through to the multicast rows.
+
+**Truncated queries** (§7.2).  A querier whose known answers do not fit one packet sets TC and sends the rest in packets without questions.  A query from port 5353 with TC set is owed rather than answered, whatever it asks, and the owed response waits 400–500 ms.  A query packet without questions that arrives while a response is owed goes through `suppress_known_answers()` against what is owed (`more_known_answers()`), so an answer the querier listed is not sent.  The querier's address is not kept, so known answers from any host count — which can only suppress, as §7.4's duplicate-answer rule would.  The responder never sets TC itself: its answers are split into packets instead (REQ-MDNS-042).
 
 > The requirements doc originally said 400–500 ms for all multicast responses.  In RFC 6762 §6 that delay applies only to queries with the TC bit set; unique answers go out immediately and shared answers after 20–120 ms.
 
@@ -300,7 +303,7 @@ Random delays — the 0–250 ms probe start and the 20–120 ms response delay 
 |---|---|---|
 | `tests/unit/test_dns_wire.c` | 23 | Encoding, compression (suffix, whole name, prefix), limits, rollback, decode, pointer loops, truncation, question/RR parsing |
 | `tests/unit/test_mcast.c` | 19 | Group table, multicast accept/drop (incl. aliased MACs), no ICMP errors / echo for multicast, `udp_send_inplace()` TTL, IGMP report/leave format |
-| `tests/unit/test_mdns.c` | 50 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression, QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
+| `tests/unit/test_mdns.c` | 52 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression (after a truncated query too), QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye |
 | `tests/unit/test_mdns6.c` | 19 | ff02::fb join, probes and goodbyes on both families, one AAAA per usable address (none for tentative ones), AAAA over either family, AAAA added to an A answer, SRV additionals, QU and legacy over IPv6, known answers, NSEC listing AAAA, delayed response on IPv6 only, explicit AAAA address, AAAA conflicts, `mdns_readdress6()` while running and while announcing |
 
 ### Blackbox (`tests/blackbox/test_mdns_conform.py`, 21 tests)

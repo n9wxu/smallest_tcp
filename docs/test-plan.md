@@ -39,7 +39,7 @@ verified at both the unit and integration levels:
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 38 | DHCPv4 client + server (REQ-DHCPv4-*), incl. buffer checks at init, the 1–10 s start delay, renewals unicast to the server's MAC, the lease timed from the REQUEST, T1/T2 fuzz, NAKs only from the server asked, the server's §4.1 reply routing |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
-| `test_mdns` | tests/unit/test_mdns.c | 50 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC, the meta-query's goodbye, a record too big for any packet refused |
+| `test_mdns` | tests/unit/test_mdns.c | 52 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC, the meta-query's goodbye, a record too big for any packet refused, truncated queries |
 | `test_http` | tests/unit/test_http.c | 51 | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot, no body for HEAD (errors too) or 204, `Allow` on every 405, one Host line (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
 | `test_udp6` | tests/unit/test_udp6.c | 14 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` (REQ-IPv6-044,045, REQ-ICMPv6-016) |

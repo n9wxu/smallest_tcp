@@ -24,7 +24,7 @@ mDNS uses the DNS wire format (RFC 1035 §4) with the following constraints:
 | ID | 0 for multicast messages (MUST); non-zero for unicast legacy queries (MAY) |
 | QR | 0 = query, 1 = response |
 | AA | 1 in all responses (mDNS responders are always authoritative for their records) |
-| TC | Not used (single-packet records) |
+| TC | Never set in our messages (answers are split across packets); a query with it set is answered after 400–500 ms, less the known answers that follow it (RFC 6762 §7.2) |
 | Multicast src port | 5353 |
 | Unicast src port | 5353 (for QU responses) |
 | Multicast dst addr | 224.0.0.251 (IPv4) / ff02::fb (IPv6) |

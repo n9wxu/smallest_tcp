@@ -931,6 +931,51 @@ TEST(test_known_answer_unique_record) {
   ASSERT_EQ(n_frames, 0);
 }
 
+/* RFC 6762 §7.2: a query with TC set has more known answers coming, so the
+ * response waits 400-500 ms — even one of unique records */
+TEST(test_truncated_query_answered_after_400_to_500ms) {
+  setup();
+  to_running();
+  q_begin(0, DNS_FLAG_TC);
+  q_question(HOST, DNS_TYPE_A, 0);
+  feed();
+  mdns_tick(&m, 399);
+  ASSERT_EQ(n_frames, 0);
+  mdns_tick(&m, 101);
+  ASSERT_EQ(count_mdns(), 1);
+}
+
+/* ... and the known answers that follow, in packets without questions,
+ * are not answered */
+TEST(test_known_answers_after_truncated_query_suppress) {
+  setup();
+  to_running();
+  q_begin(0, DNS_FLAG_TC);
+  q_question(SVC, DNS_TYPE_PTR, 0);
+  q_question(HOST, DNS_TYPE_A, 0);
+  feed();
+  q_begin(0, 0);
+  q_rr_ptr(0, SVC, INST, MDNS_TTL_OTHER);
+  feed();
+  mdns_tick(&m, 500);
+  ASSERT_EQ(count_mdns(), 1); /* the A record only */
+  uint16_t len;
+  dns_rr_t rr;
+  const uint8_t *msg = dns_msg(mdns_frame(0), &len);
+  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 1);
+  ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_A, &rr));
+
+  q_begin(0, DNS_FLAG_TC); /* all of them known: nothing is sent */
+  q_question(SVC, DNS_TYPE_PTR, 0);
+  feed();
+  q_begin(0, 0);
+  q_rr_ptr(0, SVC, INST, MDNS_TTL_OTHER);
+  feed();
+  n_frames = 0;
+  mdns_tick(&m, 500);
+  ASSERT_EQ(n_frames, 0);
+}
+
 /* REQ-MDNS-028: QU question → unicast reply to the querier */
 TEST(test_qu_question_gets_unicast_reply) {
   const uint8_t *f;
@@ -1227,6 +1272,8 @@ int main(void) {
   RUN_TEST(test_known_answer_suppression);
   RUN_TEST(test_known_answer_other_rdata_not_suppressed);
   RUN_TEST(test_known_answer_unique_record);
+  RUN_TEST(test_truncated_query_answered_after_400_to_500ms);
+  RUN_TEST(test_known_answers_after_truncated_query_suppress);
   RUN_TEST(test_qu_question_gets_unicast_reply);
   RUN_TEST(test_legacy_unicast_query);
   RUN_TEST(test_qu_from_unspecified_source_is_multicast);

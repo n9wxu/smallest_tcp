@@ -42,6 +42,8 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 #define MDNS_ANNOUNCE_WAIT_MS 1000
 #define MDNS_RESP_DELAY_MIN_MS 20 /**< Shared-record response delay (§6) */
 #define MDNS_RESP_DELAY_MAX_MS 120
+#define MDNS_TC_DELAY_MIN_MS 400 /**< Answer to a truncated query (§7.2) */
+#define MDNS_TC_DELAY_MAX_MS 500
 
 /* States */
 #define MDNS_STATE_STOPPED 0
