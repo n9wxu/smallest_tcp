@@ -11,8 +11,8 @@
 
 ## 1. Overview and Split Design
 
-DHCPv4 is two independent libraries — a client and a minimal stateless
-server.  An application links only what it needs:
+DHCPv4 is two independent libraries — a client and a minimal
+single-client server.  An application links only what it needs:
 
 | Use case | What to link |
 |---|---|
@@ -477,11 +477,24 @@ an application with a real entropy source mixes it in with
 
 ### 4.1 Design Rationale
 
-The server is **stateless and single-client**.  It always offers the same
-pre-configured IP regardless of which MAC sent the DISCOVER.  This is the
-correct model for a USB/CDC-ECM device where exactly one peer will ever
-connect.  There is no lease table, no lease expiry, no timers and no ARP
-conflict detection.
+The server is **single-client**: one pre-configured address for one
+peer.  This is the model for a USB/CDC-ECM device where one peer at a
+time connects.  There is no lease table, no lease expiry, no timers and
+no ARP conflict detection of its own.
+
+**Its one client.**  RFC 2131 §4.2: without a Client Identifier "the
+server MUST use the contents of the 'chaddr' field to identify the
+client".  The server keeps one record — the chaddr of the client it
+offered the address to (`client_mac`, `has_client`) — so that a second
+peer is not given an address the first holds.  The first DISCOVER fixes
+it; the address is free again when that client releases it (§4.3.4), or
+selects another server (§3.1 step 4: its REQUEST declines our offer), or
+when the application calls `dhcpv4_server_init()` again — for a new peer
+on the link, say.  A lease that runs out is not noticed: there is no
+timer, and the one peer normally renews.  A Client Identifier (option
+61) is not used to identify the client (out of scope): one that sends
+it is still known by its chaddr.  The server used to keep no record and
+offer the address to every client that asked.
 
 ### 4.2 Configuration and State
 
@@ -499,6 +512,8 @@ typedef struct {
   const dhcpv4_server_cfg_t *cfg;    /* application-owned, const in flash */
   dhcpv4_server_event_fn_t on_event; /* may be NULL */
   void *evt_ctx;
+  uint8_t client_mac[6];             /* the client's chaddr ... */
+  uint8_t has_client;                /* ... if 1 */
 } dhcpv4_server_t;
 
 net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
@@ -520,14 +535,31 @@ and the magic cookie.
 
 | Incoming | Condition | Response |
 |---|---|---|
-| DISCOVER | always | OFFER |
-| REQUEST | requested address (option 50, else `ciaddr`) = `offered_ip` | ACK |
+| DISCOVER | no client yet, or from it | OFFER; the sender becomes the client |
+| DISCOVER | from another | none: nothing to offer |
+| REQUEST | naming another server | none; from our client, the address is free again |
+| REQUEST | not ours to answer (below) | none |
+| REQUEST | requested address (option 50, else `ciaddr`) = `offered_ip`, from our client or with none yet | ACK; the sender becomes the client |
 | REQUEST | otherwise | NAK |
+| RELEASE | from our client, `ciaddr` = `offered_ip` | none; the address is free again |
 | INFORM | always | ACK without a lease |
-| RELEASE, anything else | — | none (no lease table) |
+| anything else | — | none |
 
-The Server Identifier in a REQUEST is not checked — with one peer there
-is no other server to have chosen.
+**Which REQUESTs it answers** (`ours_to_answer()`, RFC 2131 §4.3.2).  A
+REQUEST with a Server Identifier selects an offer: the server answers it
+if the identifier is its own; one that names another server is the
+client's notice that it "has declined that server's offer" (§3.1 step
+4), and is not answered — a NAK would be one server refusing what
+another granted.  A REQUEST without one verifies (INIT-REBOOT, `ciaddr`
+0) or extends (RENEWING, REBINDING) a lease: the server answers its own
+client, and stays silent for one it has no record of — §4.3.2: "If the
+DHCP server has no record of this client, then it MUST remain silent".
+One exception: a renewing or rebinding client whose `ciaddr` is the
+server's address while it has no client — the server was initialised
+again, by a reboot of the device, while the peer kept its lease — is
+taken back, and its lease extended.  The server used to ignore the
+Server Identifier and answer every REQUEST, NAKing any for another
+address.
 
 **Where a reply goes** (`reply_destination()`, RFC 2131 §4.1), in order:
 
@@ -618,7 +650,7 @@ the halving is a shift: no multiplication and no division.
 | First OFFER taken; offers not collected or compared | Simplicity |
 | One ARP probe and a 1 s wait, not RFC 5227's timing; no announcement or defence of the address | §3.1 |
 | `secs` field always 0 | — |
-| Server: no lease table, same address for every MAC | By design (§4.1) |
+| Server: one address for one client, known by chaddr; no lease expiry; a Client Identifier (61) not used | By design (§4.1) |
 
 ---
 

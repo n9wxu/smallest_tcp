@@ -1,7 +1,7 @@
 /**
  * @file dhcpv4_server.c
- * @brief DHCPv4 server for a single, fixed client (RFC 2131): no lease
- *        table, no timers.  REQ-DHCPv4-060..078.
+ * @brief DHCPv4 server for a single client (RFC 2131): one address for one
+ *        client, no timers.  REQ-DHCPv4-060..078, 085..087, 090, 096..100.
  */
 
 #include "dhcpv4_server.h"
@@ -111,19 +111,76 @@ net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
   if (net->tx.capacity < DHCPV4_SERVER_TX_MIN ||
       net->rx.capacity < DHCPV4_SERVER_RX_MIN)
     return NET_ERR_BUF_TOO_SMALL;
+  memset(s, 0, sizeof(*s));
   s->cfg = cfg;
   s->on_event = on_event;
   s->evt_ctx = evt_ctx;
   return NET_OK;
 }
 
-/* REQ-DHCPv4-064, 068..073 */
+/* REQ-DHCPv4-060: the client the address is kept for, known by its
+ * chaddr (RFC 2131 §4.2) */
+static int is_our_client(const dhcpv4_server_t *s, const uint8_t *msg) {
+  return s->has_client && net_mac_equal(s->client_mac, msg + DHCP_OFF_CHADDR);
+}
+
+/* The address is free, or this client's */
+static int may_have_address(const dhcpv4_server_t *s, const uint8_t *msg) {
+  return !s->has_client || is_our_client(s, msg);
+}
+
+static void keep_client(dhcpv4_server_t *s, const uint8_t *msg) {
+  memcpy(s->client_mac, msg + DHCP_OFF_CHADDR, 6);
+  s->has_client = 1;
+}
+
+/* REQ-DHCPv4-086, 087; RFC 2131 §4.3.2: a REQUEST is ours to answer if it
+ * selects us, or comes from our client — or renews our address while it
+ * is no one's (the server was initialised again).  An INIT-REBOOT client
+ * the server has no record of "MUST remain silent". */
+static int ours_to_answer(const dhcpv4_server_t *s, const uint8_t *msg,
+                          uint32_t server_id, uint32_t ciaddr) {
+  if (server_id)
+    return server_id == s->cfg->server_ip;
+  return is_our_client(s, msg) ||
+         (ciaddr == s->cfg->offered_ip && !s->has_client);
+}
+
+/* REQ-DHCPv4-068, 069, 086, 087 */
+static void request_input(net_t *net, dhcpv4_server_t *s, const request_t *rq,
+                          uint16_t len) {
+  const dhcpv4_server_cfg_t *cfg = s->cfg;
+  uint32_t server_id = dhcp_option_u32(rq->msg, len, DHCP_OPT_SERVER_ID, 0u);
+  uint32_t ciaddr = net_read32be(rq->msg + DHCP_OFF_CIADDR);
+  uint32_t requested =
+      dhcp_option_u32(rq->msg, len, DHCP_OPT_REQUESTED_IP, ciaddr);
+  if (server_id && server_id != cfg->server_ip && is_our_client(s, rq->msg))
+    s->has_client = 0; /* it declined our offer: the address is free */
+  if (!ours_to_answer(s, rq->msg, server_id, ciaddr))
+    return;
+  if (requested == cfg->offered_ip && may_have_address(s, rq->msg)) {
+    keep_client(s, rq->msg);
+    send_reply(net, cfg, rq, DHCP_MSG_ACK, cfg->offered_ip);
+    fire_event(s, DHCPV4_SRV_EVT_ACK);
+  } else {
+    send_reply(net, cfg, rq, DHCP_MSG_NAK, 0u);
+    fire_event(s, DHCPV4_SRV_EVT_NAK);
+  }
+}
+
+/* REQ-DHCPv4-070; RFC 2131 §4.3.4: our client's address is free again */
+static void release_input(dhcpv4_server_t *s, const uint8_t *msg) {
+  if (is_our_client(s, msg) &&
+      net_read32be(msg + DHCP_OFF_CIADDR) == s->cfg->offered_ip)
+    s->has_client = 0;
+}
+
+/* REQ-DHCPv4-060, 064, 068..073 */
 void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
                          const uint8_t *src_mac, const uint8_t *data,
                          uint16_t len) {
   const dhcpv4_server_cfg_t *cfg = s->cfg;
   request_t rq;
-  uint32_t requested;
   (void)src_ip;
 
   if (len < DHCP_OFF_OPTIONS + 4 || data[DHCP_OFF_OP] != DHCP_OP_REQUEST ||
@@ -133,26 +190,24 @@ void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
   rq.src_mac = src_mac;
 
   switch (dhcp_message_type(data, len)) {
-  case DHCP_MSG_DISCOVER:
-    send_reply(net, cfg, &rq, DHCP_MSG_OFFER, cfg->offered_ip);
-    fire_event(s, DHCPV4_SRV_EVT_OFFER);
-    break;
-  case DHCP_MSG_REQUEST: /* renewing: the address is in ciaddr */
-    requested = dhcp_option_u32(data, len, DHCP_OPT_REQUESTED_IP,
-                                net_read32be(data + DHCP_OFF_CIADDR));
-    if (requested == cfg->offered_ip) {
-      send_reply(net, cfg, &rq, DHCP_MSG_ACK, cfg->offered_ip);
-      fire_event(s, DHCPV4_SRV_EVT_ACK);
-    } else {
-      send_reply(net, cfg, &rq, DHCP_MSG_NAK, 0u);
-      fire_event(s, DHCPV4_SRV_EVT_NAK);
+  case DHCP_MSG_DISCOVER: /* another client's address: nothing to offer */
+    if (may_have_address(s, data)) {
+      keep_client(s, data);
+      send_reply(net, cfg, &rq, DHCP_MSG_OFFER, cfg->offered_ip);
+      fire_event(s, DHCPV4_SRV_EVT_OFFER);
     }
+    break;
+  case DHCP_MSG_REQUEST:
+    request_input(net, s, &rq, len);
+    break;
+  case DHCP_MSG_RELEASE:
+    release_input(s, data);
     break;
   case DHCP_MSG_INFORM: /* no address, so no lease */
     send_reply(net, cfg, &rq, DHCP_MSG_ACK, 0u);
     fire_event(s, DHCPV4_SRV_EVT_ACK);
     break;
-  default: /* RELEASE needs nothing without a lease table */
+  default:
     break;
   }
 }

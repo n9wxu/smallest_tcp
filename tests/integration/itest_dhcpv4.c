@@ -1170,9 +1170,9 @@ int main(void) {
   RUN_TEST(itest_dhcpv4_024_only_the_selecting_request_names_the_address);
   RUN_TEST(itest_dhcpv4_046_randomized_exponential_backoff);
   RUN_XFAIL(itest_dhcpv4_085_declined_address_offered_no_more);
-  RUN_XFAIL(itest_dhcpv4_086_request_for_another_server_unanswered);
-  RUN_XFAIL(itest_dhcpv4_087_unknown_init_reboot_client_unanswered);
-  RUN_XFAIL(itest_dhcpv4_060_address_kept_for_its_client);
+  RUN_TEST(itest_dhcpv4_086_request_for_another_server_unanswered);
+  RUN_TEST(itest_dhcpv4_087_unknown_init_reboot_client_unanswered);
+  RUN_TEST(itest_dhcpv4_060_address_kept_for_its_client);
   RUN_XFAIL(itest_dhcpv4_090_options_in_the_order_requested);
   RUN_TEST(itest_dhcpv4_096_offer_and_ack_options);
   RUN_TEST(itest_dhcpv4_097_requested_parameters_once_or_not_at_all);

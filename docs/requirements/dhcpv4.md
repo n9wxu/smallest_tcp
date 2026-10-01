@@ -18,7 +18,7 @@ This stack provides two independent compilation units:
   ACK, renewal, rebinding, lease expiry) plus an option handler callback API that
   lets higher-layer protocols (TFTP, NTP, DNS, …) receive option values without
   the DHCP layer knowing anything about them.
-- **`dhcpv4_server.c`** — minimal stateless single-client server, designed for
+- **`dhcpv4_server.c`** — minimal single-client server, designed for
   USB/CDC-ECM devices that must assign an IP address to a single connected peer.
 
 The two files are independent: link only what you need.  See
@@ -202,19 +202,19 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-060 | MUST | The server identifies its client by 'chaddr' and keeps one: the first it offers the address to gets it, and no other is offered it, until that client releases it or selects another server, or the application initialises the server again (a Client Identifier, option 61, is not used) | RFC 2131 §4.2 | TEST-DHCPv4-060 |
 | REQ-DHCPv4-061 | MUST | The server MUST NOT require dynamic memory allocation | Architecture | TEST-DHCPv4-061 |
 | REQ-DHCPv4-062 | MUST | All server configuration (offered IP, subnet, gateway, DNS, lease time) MUST be provided by the application via a `dhcpv4_server_cfg_t` struct at init time | Architecture | TEST-DHCPv4-062 |
-| REQ-DHCPv4-063 | MUST | The server MUST operate as a pure stimulus/response handler: `dhcpv4_server_input()` processes one message and may send one reply; no timers are needed | Architecture | TEST-DHCPv4-063 |
+| REQ-DHCPv4-063 | MUST | The server MUST operate as a stimulus/response handler: `dhcpv4_server_input()` processes one message and may send one reply; no timers are needed | Architecture | TEST-DHCPv4-063 |
 
 #### Server Message Handling
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-064 | MUST | On DHCPDISCOVER: reply with DHCPOFFER containing the configured `offered_ip` | RFC 2131 §4.3.1 | TEST-DHCPv4-064 |
+| REQ-DHCPv4-064 | MUST | On DHCPDISCOVER from a client that may have the address (REQ-DHCPv4-060): reply with DHCPOFFER containing the configured `offered_ip` | RFC 2131 §4.3.1 | TEST-DHCPv4-064 |
 | REQ-DHCPv4-065 | MUST | DHCPOFFER MUST include: yiaddr=offered_ip, Server Identifier option (54), IP Lease Time option (51), Subnet Mask option (1) | RFC 2131 §4.3.1, RFC 2132 | TEST-DHCPv4-065 |
 | REQ-DHCPv4-066 | SHOULD | DHCPOFFER SHOULD include Router option (3) if `gateway != 0` in the server config | RFC 2132 §3.5 | TEST-DHCPv4-066 |
 | REQ-DHCPv4-067 | SHOULD | DHCPOFFER SHOULD include DNS Server option (6) if `dns != 0` in the server config | RFC 2132 §3.8 | TEST-DHCPv4-067 |
-| REQ-DHCPv4-068 | MUST | On DHCPREQUEST with Requested IP = offered_ip: reply with DHCPACK | RFC 2131 §4.3.2 | TEST-DHCPv4-068 |
-| REQ-DHCPv4-069 | MUST | On DHCPREQUEST with Requested IP ≠ offered_ip: reply with DHCPNAK, carrying only the Message Type and Server Identifier options, ciaddr = yiaddr = siaddr = 0 | RFC 2131 §4.3.2, Table 3 | TEST-DHCPv4-069 |
-| REQ-DHCPv4-070 | MUST | On DHCPRELEASE: ignore silently (no lease table) | RFC 2131 §4.3.4 | TEST-DHCPv4-070 |
+| REQ-DHCPv4-068 | MUST | On a DHCPREQUEST it answers (REQ-DHCPv4-086, 087) with Requested IP (else ciaddr) = offered_ip, from a client that may have it: reply with DHCPACK | RFC 2131 §4.3.2 | TEST-DHCPv4-068 |
+| REQ-DHCPv4-069 | MUST | On a DHCPREQUEST it answers for another address, or for one another client has: reply with DHCPNAK, carrying only the Message Type and Server Identifier options, ciaddr = yiaddr = siaddr = 0 | RFC 2131 §4.3.2, Table 3 | TEST-DHCPv4-069 |
+| REQ-DHCPv4-070 | MUST | On DHCPRELEASE from the client of the address (its chaddr, ciaddr = offered_ip): the address is free again; no reply to any DHCPRELEASE | RFC 2131 §4.3.4 | TEST-DHCPv4-070 |
 | REQ-DHCPv4-071 | MUST NOT | The DHCPACK to a DHCPINFORM carries no lease time (51); it has yiaddr = 0 (SHOULD NOT fill it in), ciaddr = the client's, and the configuration options | RFC 2131 §4.3.5, Table 3 | TEST-DHCPv4-071 |
 | REQ-DHCPv4-072 | MUST | Silently ignore all other DHCP message types | RFC 2131 | TEST-DHCPv4-072 |
 | REQ-DHCPv4-085 | MUST | On DHCPDECLINE of the address (Requested IP = `offered_ip`, our Server Identifier): mark it not available — no OFFER or ACK of it until the application initialises the server again | RFC 2131 §4.3.3 | TEST-DHCPv4-085 |

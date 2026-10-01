@@ -121,7 +121,7 @@ in parentheses where it differs):
 | `http_server_t` | 36 B | The slot array and a `const` route table (and, optional, a clock and the HTTPS host names) |
 | `mdns_t` | 44 B | A `const` record table |
 | `dhcpv4_client_t` | 48 B | An optional option-handler table |
-| `dhcpv4_server_t` | 12 B | A `const dhcpv4_server_cfg_t` |
+| `dhcpv4_server_t` | 20 B | A `const dhcpv4_server_cfg_t` |
 | `dhcpv6_client_t` | 100 B | An optional option-handler table |
 | `tftp_client_t` | 172 B | — (128 B of it is the filename) |
 | `tls_conn_t` | 448 B | A receive and a transmit buffer ([tls.md §5](tls.md#5-buffers)); a shared `tls_config_t` (44 B) |

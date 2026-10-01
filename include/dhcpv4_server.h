@@ -1,10 +1,12 @@
 /**
  * @file dhcpv4_server.h
- * @brief DHCPv4 stateless single-client server.
+ * @brief DHCPv4 single-client server.
  *
  * Designed for USB/CDC-ECM devices that must assign a fixed IP to one peer.
- * Always offers the same pre-configured IP regardless of client MAC.
- * No lease table. No timers. No dynamic allocation.
+ * Offers one pre-configured IP to one client, known by its hardware
+ * address (chaddr): the first it offers it to, until that client releases
+ * it.  No lease table beyond that one entry, no timers, no dynamic
+ * allocation.
  *
  * Integrated like every protocol module (docs/integrating-modules.md):
  * dhcpv4_server_init(), and a UDP port-67 handler that calls
@@ -54,16 +56,19 @@ typedef struct {
 /* Server state (application owns) */
 
 /**
- * @brief DHCPv4 server state.  No dynamic state — pure stimulus/response.
+ * @brief DHCPv4 server state: the configuration, and the one client.
  */
 typedef struct {
   const dhcpv4_server_cfg_t *cfg;    /**< Application configuration */
   dhcpv4_server_event_fn_t on_event; /**< May be NULL */
   void *evt_ctx;                     /**< Passed to on_event */
+  uint8_t client_mac[6];             /**< The client's chaddr ... */
+  uint8_t has_client;                /**< ... if 1 */
 } dhcpv4_server_t;
 
 /**
  * Initialise the server.  cfg must remain valid for the server's lifetime.
+ * Initialising it again forgets its client.
  *
  * @param s         Application-owned server state.
  * @param net       The interface, whose frame buffers must hold
