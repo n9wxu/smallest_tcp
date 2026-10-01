@@ -3,7 +3,8 @@
  * @brief DNS wire-format helpers (RFC 1035 §3-4).
  *
  * Implements REQ-MDNS-003 (wire format), REQ-MDNS-043 (name compression)
- * and REQ-DNSSD-031 (label / name length limits).
+ * and REQ-MDNS-051, REQ-DNSSD-031 (label / name length limits: 63 and 255
+ * bytes, the name's terminating zero not counted, RFC 6762 App. C).
  */
 
 #include "dns_wire.h"
@@ -60,20 +61,20 @@ int dns_dotted_equal(const char *a, const char *b) {
 int dns_name_wire_len(const char *name) {
   const char *p = dotted_begin(name);
   const char *label;
-  int n, total = 1; /* root terminator */
+  int n, total = 0; /* the labels, before the terminating zero */
   while ((n = dotted_next(&p, &label)) > 0) {
     total += 1 + n;
     if (total > DNS_MAX_NAME)
       return -2;
   }
-  return (n < 0) ? -2 : total;
+  return (n < 0) ? -2 : total + 1;
 }
 
 typedef struct {
   const uint8_t *msg;
   uint16_t len;
   uint16_t off;
-  uint16_t total; /* uncompressed wire length so far */
+  uint16_t total; /* uncompressed wire length so far, without the zero */
   uint8_t hops;
 } wire_iter_t;
 
@@ -102,7 +103,7 @@ static int wire_next(wire_iter_t *it, const uint8_t **label) {
     if ((uint32_t)it->off + 1 + b > it->len)
       return -1;
     it->total = (uint16_t)(it->total + 1 + b);
-    if (it->total + 1 > DNS_MAX_NAME)
+    if (it->total > DNS_MAX_NAME)
       return -1;
     *label = it->msg + it->off + 1;
     it->off = (uint16_t)(it->off + 1 + b);

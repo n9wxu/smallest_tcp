@@ -53,7 +53,9 @@
 
 /* Limits */
 #define DNS_MAX_LABEL 63
-#define DNS_MAX_NAME 255 /**< Wire length including length bytes + root */
+/** Wire length of a name, not counting its terminating zero byte (RFC 6762
+ *  App. C): 256 bytes with it */
+#define DNS_MAX_NAME 255
 
 /** Label offsets remembered per writer for compression targets. */
 #ifndef DNS_COMPRESS_MAX
@@ -86,7 +88,8 @@ int dns_write_u32(dns_writer_t *w, uint32_t v);
 /**
  * Write a dotted name, compressed against names already in the message.
  * @return 0 on success, -1 on overflow, -2 if the name is invalid
- *         (empty label, label > 63 bytes, or wire length > 255).
+ *         (empty label, label > 63 bytes, or more than DNS_MAX_NAME bytes
+ *         before the terminating zero).
  */
 int dns_write_name(dns_writer_t *w, const char *name);
 
@@ -96,7 +99,8 @@ int dns_dotted_equal(const char *a, const char *b);
 
 /**
  * Validate a dotted name.
- * @return Its wire length (1..255), or -2 if it is invalid.
+ * @return Its wire length with the terminating zero (1..DNS_MAX_NAME + 1),
+ *         or -2 if it is invalid.
  */
 int dns_name_wire_len(const char *name);
 

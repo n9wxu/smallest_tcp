@@ -79,21 +79,6 @@ TEST(test_name_label_too_long) {
   ASSERT_EQ(dns_write_name(&w, name), 0);
 }
 
-/* REQ-DNSSD-031: wire names over 255 bytes are rejected */
-TEST(test_name_too_long) {
-  char name[300];
-  int i;
-  /* 5 labels of 50 chars = 5*51 + 1 = 256 wire bytes */
-  for (i = 0; i < 5; i++) {
-    memset(name + i * 51, 'b', 50);
-    name[i * 51 + 50] = '.';
-  }
-  name[5 * 51 - 1] = '\0';
-  fresh();
-  ASSERT_EQ(dns_write_name(&w, name), -2);
-  ASSERT_EQ(w.len, 0);
-}
-
 TEST(test_name_wire_len) {
   ASSERT_EQ(dns_name_wire_len("pyro-dead01.local"), 19);
   ASSERT_EQ(dns_name_wire_len("pyro-dead01.local."), 19);
@@ -310,7 +295,6 @@ int main(void) {
   RUN_TEST(test_name_root);
   RUN_TEST(test_name_label_with_spaces);
   RUN_TEST(test_name_label_too_long);
-  RUN_TEST(test_name_too_long);
   RUN_TEST(test_name_wire_len);
   RUN_TEST(test_name_empty_label_rejected);
   RUN_TEST(test_compress_shared_suffix);

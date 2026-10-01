@@ -1455,7 +1455,7 @@ int main(void) {
   RUN_TEST(itest_mdns_048_compressed_names_decoded);
   RUN_TEST(itest_mdns_049_no_compression_in_other_rdata);
   RUN_XFAIL(itest_mdns_050_names_utf8_without_bom);
-  RUN_XFAIL(itest_mdns_051_names_of_255_bytes);
+  RUN_TEST(itest_mdns_051_names_of_255_bytes);
   RUN_XFAIL(itest_dnssd_033_instance_name_control_characters_refused);
   RUN_TEST(itest_dnssd_034_dots_separate_labels);
   RUN_XFAIL(itest_dnssd_035_txt_keys_checked);
