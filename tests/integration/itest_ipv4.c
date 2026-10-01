@@ -659,7 +659,7 @@ int main(void) {
   RUN_TEST(itest_ipv4_068_unknown_and_malformed_options);
   RUN_TEST(itest_ipv4_035_default_ttl);
   RUN_TEST(itest_ipv4_069_ttl_settable);
-  RUN_XFAIL(itest_ipv4_041_tos_settable);
+  RUN_TEST(itest_ipv4_041_tos_settable);
   RUN_TEST(itest_ipv4_083_atomic_id_ignored);
   RUN_TEST(itest_ipv4_070_never_to_or_from_unspecified);
   RUN_TEST(itest_ipv4_071_never_loopback);

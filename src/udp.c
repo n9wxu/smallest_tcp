@@ -90,14 +90,6 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                                dst_port, data_len, ttl);
 }
 
-net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
-                                const uint8_t *dst_mac, uint16_t src_port,
-                                uint16_t dst_port, uint16_t data_len,
-                                const udp_tx_opts_t *opts) {
-  return udp_send_inplace_from(net, opts->src_ip, dst_ip, dst_mac, src_port,
-                               dst_port, data_len, opts->ttl);
-}
-
 uint32_t udp_rx_dst_ip(const net_t *net) {
   (void)net;
   return 0; /* not implemented yet */
@@ -117,11 +109,13 @@ static int addresses_valid(const net_t *net, uint32_t src_ip, uint32_t dst_ip,
           ipv4_is_multicast(dst_ip));
 }
 
-/* REQ-UDP-009, 021..023 */
-net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
+/* REQ-UDP-009, 021..023, 044 */
+net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,
                                 uint16_t dst_port, uint16_t data_len,
-                                uint8_t ttl) {
+                                const udp_tx_opts_t *opts) {
+  uint32_t src_ip = opts->src_ip;
+  uint8_t ttl = opts->ttl;
   uint8_t *ip = net->tx.buf + ETH_HDR_SIZE;
   uint8_t *udp = ip + IPV4_HDR_SIZE;
   uint16_t udp_len = (uint16_t)(UDP_HDR_SIZE + data_len);
@@ -137,8 +131,20 @@ net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
       udp_wire_cksum(ipv4_cksum(src_ip, dst_ip, IPV4_PROTO_UDP, udp, udp_len)));
   eth_build(net->tx.buf, net->tx.capacity, dst_mac, net->mac,
             NET_ETHERTYPE_IPV4);
-  ipv4_build_ttl(ip, udp_len, IPV4_PROTO_UDP, src_ip, dst_ip, ttl);
+  ipv4_build_tos(ip, udp_len, IPV4_PROTO_UDP, src_ip, dst_ip, ttl, opts->tos);
   return net_transmit(net, (uint16_t)(UDP_PAYLOAD_OFFSET + data_len));
+}
+
+net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
+                                const uint8_t *dst_mac, uint16_t src_port,
+                                uint16_t dst_port, uint16_t data_len,
+                                uint8_t ttl) {
+  udp_tx_opts_t opts;
+  opts.src_ip = src_ip;
+  opts.ttl = ttl;
+  opts.tos = 0;
+  return udp_send_inplace_opts(net, dst_ip, dst_mac, src_port, dst_port,
+                               data_len, &opts);
 }
 
 #endif

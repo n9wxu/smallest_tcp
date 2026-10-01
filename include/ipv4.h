@@ -67,9 +67,16 @@ net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out);
 void ipv4_input(net_t *net, const eth_frame_t *eth);
 
 /** Write a 20-byte header (DF set, ID 0: every datagram is atomic,
- *  RFC 6864 §4.1) with the header checksum. */
-void ipv4_build_ttl(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
-                    uint32_t src_ip, uint32_t dst_ip, uint8_t ttl);
+ *  RFC 6864 §4.1) with TTL @p ttl, TOS @p tos (RFC 1122 §3.2.1.6) and the
+ *  header checksum. */
+void ipv4_build_tos(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
+                    uint32_t src_ip, uint32_t dst_ip, uint8_t ttl, uint8_t tos);
+
+static inline void ipv4_build_ttl(uint8_t *buf, uint16_t payload_len,
+                                  uint8_t protocol, uint32_t src_ip,
+                                  uint32_t dst_ip, uint8_t ttl) {
+  ipv4_build_tos(buf, payload_len, protocol, src_ip, dst_ip, ttl, 0);
+}
 
 static inline void ipv4_build(uint8_t *buf, uint16_t payload_len,
                               uint8_t protocol, uint32_t src_ip,

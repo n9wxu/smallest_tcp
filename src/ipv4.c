@@ -70,12 +70,12 @@ net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
   return NET_OK;
 }
 
-/* REQ-IPv4-030..040, 045 */
+/* REQ-IPv4-030..041, 045 */
 static void build_header(uint8_t *buf, uint8_t header_len, uint16_t payload_len,
                          uint8_t protocol, uint32_t src_ip, uint32_t dst_ip,
-                         uint8_t ttl) {
+                         uint8_t ttl, uint8_t tos) {
   buf[IPV4_OFF_VER_IHL] = (uint8_t)(0x40 | (header_len >> 2));
-  buf[IPV4_OFF_TOS] = 0;
+  buf[IPV4_OFF_TOS] = tos;
   net_write16be(buf + IPV4_OFF_TOTLEN, (uint16_t)(header_len + payload_len));
   net_write16be(buf + IPV4_OFF_ID, 0);
   net_write16be(buf + IPV4_OFF_FLAGS_FRAG, IPV4_FLAG_DF);
@@ -87,9 +87,11 @@ static void build_header(uint8_t *buf, uint8_t header_len, uint16_t payload_len,
   net_write16be(buf + IPV4_OFF_CKSUM, net_cksum(buf, header_len));
 }
 
-void ipv4_build_ttl(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
-                    uint32_t src_ip, uint32_t dst_ip, uint8_t ttl) {
-  build_header(buf, IPV4_HDR_SIZE, payload_len, protocol, src_ip, dst_ip, ttl);
+void ipv4_build_tos(uint8_t *buf, uint16_t payload_len, uint8_t protocol,
+                    uint32_t src_ip, uint32_t dst_ip, uint8_t ttl,
+                    uint8_t tos) {
+  build_header(buf, IPV4_HDR_SIZE, payload_len, protocol, src_ip, dst_ip, ttl,
+               tos);
 }
 
 void ipv4_build_router_alert(uint8_t *buf, uint16_t payload_len,
@@ -98,7 +100,7 @@ void ipv4_build_router_alert(uint8_t *buf, uint16_t payload_len,
   static const uint8_t router_alert[4] = {IPV4_OPT_ROUTER_ALERT, 4, 0, 0};
   memcpy(buf + IPV4_HDR_SIZE, router_alert, sizeof(router_alert));
   build_header(buf, IPV4_ROUTER_ALERT_HDR_SIZE, payload_len, protocol, src_ip,
-               dst_ip, 1);
+               dst_ip, 1, 0);
 }
 
 uint16_t ipv4_cksum(uint32_t src_ip, uint32_t dst_ip, uint8_t protocol,
