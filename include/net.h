@@ -126,6 +126,10 @@ typedef struct {
 #if NET_USE_UDP
 #if NET_USE_IPV4
   const struct udp_port_entry_s *udp_ports;
+  uint32_t udp_rx_dst; /**< In a handler: udp_rx_dst_ip() */
+  /** udp_set_error_handler()'s udp_error_handler_t (udp.h), kept as the
+   *  generic function pointer type and converted back to be called */
+  void (*udp_error_handler)(void);
   uint8_t udp_port_count;
 #endif
 #if NET_USE_IPV6

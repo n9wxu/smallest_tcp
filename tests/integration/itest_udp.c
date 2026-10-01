@@ -32,17 +32,21 @@ static void on_datagram(net_t *net, uint32_t src_ip, uint16_t src_port,
   seen_dst = udp_rx_dst_ip(net);
 }
 
-static void on_error(net_t *net, uint16_t local_port, uint32_t dst_ip,
-                     uint16_t dst_port, uint8_t type, uint8_t code,
-                     uint16_t mtu) {
+static uint8_t err_quote[64];
+static uint16_t err_quote_len;
+
+static void on_error(net_t *net, const udp_icmp_error_t *e) {
   (void)net;
   errors++;
-  err_port = local_port;
-  err_dst = dst_ip;
-  err_dst_port = dst_port;
-  err_type = type;
-  err_code = code;
-  err_mtu = mtu;
+  err_port = e->local_port;
+  err_dst = e->dst_ip;
+  err_dst_port = e->dst_port;
+  err_type = e->type;
+  err_code = e->code;
+  err_mtu = e->mtu;
+  err_quote_len = e->quote_len;
+  memcpy(err_quote, e->quote,
+         e->quote_len < sizeof(err_quote) ? e->quote_len : sizeof(err_quote));
 }
 
 static const udp_port_entry_t ports[] = {{OPEN_PORT, on_datagram}};
@@ -112,6 +116,30 @@ TEST(itest_udp_038_port_unreachable_reported) {
   ASSERT_EQ(err_dst_port, PEER_PORT);
   ASSERT_EQ(err_type, 3);
   ASSERT_EQ(err_code, 3);
+  ASSERT_EQ(err_mtu, 0);
+  ASSERT_EQ(err_quote_len, 28); /* all the error quoted, unchanged */
+  ASSERT_MEM_EQ(err_quote, wire_sent(&t, 0)->data + 14, 28);
+}
+
+/* REQ-UDP-038, REQ-ICMPv4-042: an error about a datagram that was not ours
+ * (another source), or that quotes TCP, reaches no UDP handler */
+TEST(itest_udp_038_only_our_datagrams_errors) {
+  uint8_t msg[128], f[192], quoted[28];
+  peer_ip_t ip = peer_ip(PEER_IP, t.net.ipv4_addr, 1);
+  uint16_t n;
+  up();
+  udp_send(&t.net, PEER_IP, peer_mac, APP_PORT, PEER_PORT,
+           (const uint8_t *)"hello", 5);
+  memcpy(quoted, wire_sent(&t, 0)->data + 14, 28);
+  quoted[12] = 0x0A; /* another source: 10.0.0.99 */
+  quoted[15] = 99;
+  n = peer_icmp(msg, 3, 3, NULL, quoted, 28);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
+  memcpy(quoted, wire_sent(&t, 0)->data + 14, 28);
+  quoted[9] = 6; /* TCP */
+  n = peer_icmp(msg, 3, 3, NULL, quoted, 28);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
+  ASSERT_EQ(errors, 0);
 }
 
 /* REQ-UDP-039, REQ-ICMPv4-016, 024, 029, 028: Fragmentation Needed (with
@@ -137,10 +165,11 @@ TEST(itest_udp_038_errors_of_every_kind_reported) {
 
 int main(void) {
   fprintf(stderr, "=== itest_udp ===\n");
-  RUN_XFAIL(itest_udp_040_destination_address_passed_up);
+  RUN_TEST(itest_udp_040_destination_address_passed_up);
   RUN_TEST(itest_udp_041_source_must_be_ours);
-  RUN_XFAIL(itest_udp_038_port_unreachable_reported);
-  RUN_XFAIL(itest_udp_038_errors_of_every_kind_reported);
+  RUN_TEST(itest_udp_038_port_unreachable_reported);
+  RUN_TEST(itest_udp_038_errors_of_every_kind_reported);
+  RUN_TEST(itest_udp_038_only_our_datagrams_errors);
   ITEST_REPORT();
   return test_failures;
 }

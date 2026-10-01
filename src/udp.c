@@ -1,6 +1,6 @@
 /**
  * @file udp.c
- * @brief UDP (RFC 768).  REQ-UDP-001..039, REQ-IPv6-045.
+ * @brief UDP (RFC 768).  REQ-UDP-001..044, REQ-IPv6-045.
  */
 
 #include "udp.h"
@@ -60,6 +60,7 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     return;
 
   dst_port = net_read16be(udp + UDP_OFF_DPORT);
+  net->udp_rx_dst = ip->dst_ip; /* REQ-UDP-040 */
   for (i = 0; i < net->udp_port_count; i++) {
     if (net->udp_ports[i].port == dst_port) {
       net->udp_ports[i].handler(
@@ -90,14 +91,29 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                                dst_port, data_len, ttl);
 }
 
-uint32_t udp_rx_dst_ip(const net_t *net) {
-  (void)net;
-  return 0; /* not implemented yet */
-}
+uint32_t udp_rx_dst_ip(const net_t *net) { return net->udp_rx_dst; }
 
 void udp_set_error_handler(net_t *net, udp_error_handler_t handler) {
-  (void)net;
-  (void)handler; /* not implemented yet */
+  net->udp_error_handler = (void (*)(void))handler;
+}
+
+/* REQ-UDP-038, 039, REQ-ICMPv4-012: the quoted UDP header's ports, the
+ * whole quote, to the application */
+void udp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
+                    const uint8_t *quote, uint16_t quote_len) {
+  udp_icmp_error_t e;
+  uint16_t ihl = (uint16_t)((quote[IPV4_OFF_VER_IHL] & 0x0F) * 4);
+  if (!net->udp_error_handler || quote_len < ihl + 4u)
+    return;
+  e.local_port = net_read16be(quote + ihl + UDP_OFF_SPORT);
+  e.dst_port = net_read16be(quote + ihl + UDP_OFF_DPORT);
+  e.dst_ip = net_read32be(quote + IPV4_OFF_DST);
+  e.type = type;
+  e.code = code;
+  e.mtu = mtu;
+  e.quote = quote;
+  e.quote_len = quote_len;
+  ((udp_error_handler_t)net->udp_error_handler)(net, &e);
 }
 
 /* REQ-IPv4-070..072: never to 0.0.0.0, never to or from 127/8, and the

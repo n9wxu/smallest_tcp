@@ -85,6 +85,8 @@ udp_set_ports(&net, ports, 1);
 - The handler runs inside `net_poll()`, before the driver's frame is
   released (see [mac-hal.md §3](mac-hal.md#3-the-receive-lifecycle-net_poll)):
   keep it short.
+- `udp_rx_dst_ip(net)`, called in the handler, gives the datagram's
+  destination address: ours, a broadcast or a group (RFC 1122 §4.1.3.5).
 - The handler **may send**.  `net->tx.buf` is separate from `net->rx.buf`, so
   `udp_send()` with `payload` as its data (the echo above) is safe, as is
   building a reply in place.  The application protocol modules answer from
@@ -95,9 +97,8 @@ udp_set_ports(&net, ports, 1);
 `udp_input()` scans the table linearly and calls the first entry whose `port`
 matches the destination port; one handler per datagram.  Ports are not bound
 to addresses: a handler receives the port's datagrams sent to our unicast
-address, to broadcast, and to any joined multicast group.  It can tell these
-apart only by what it is given (source address and MAC), not by the
-destination address.
+address, to broadcast, and to any joined multicast group.  It tells these
+apart with `udp_rx_dst_ip()`.
 
 ---
 
@@ -129,6 +130,33 @@ sent to a broadcast or multicast IP address or received in a
 broadcast/multicast frame (RFC 1122 §3.2.2).  So a broadcast to a closed port
 is dropped silently, and every caller gets the rule for free.
 
+### ICMP errors to the application
+
+`icmp_input()` takes Destination Unreachable, Time Exceeded and Parameter
+Problem (Source Quench is discarded, RFC 6633) and, if the quoted IPv4
+header is whole and its source is our address, hands the error to the
+transport the quoted header names (RFC 1122 §3.2.2).  For UDP,
+`udp_icmp_error()` reads the quoted ports and calls the handler set with
+`udp_set_error_handler()`:
+
+```c
+typedef struct {
+  uint16_t local_port, dst_port; /* from the quoted UDP header */
+  uint32_t dst_ip;
+  uint8_t type, code;            /* ICMP */
+  uint16_t mtu;                  /* Fragmentation Needed: next-hop MTU */
+  const uint8_t *quote;          /* the quoted IP header and data */
+  uint16_t quote_len;
+} udp_icmp_error_t;
+```
+
+One handler per interface, not one per port: a port table entry with a
+second function would make every application initializer name it.  The
+handler is stored in `net_t` as `void (*)(void)` (net.h cannot see
+`udp.h`'s types) and converted back to be called.  Without a handler the
+error is dropped.  The quote, like a payload, is valid only until the
+handler returns.
+
 ---
 
 ## 5. Transmit path
@@ -144,14 +172,20 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                            uint16_t src_port, uint16_t dst_port,
                            uint16_t data_len, uint8_t ttl);
 
-/* The same, from an explicit IPv4 source address */
+/* The same, from an explicit IPv4 source address: ours or 0.0.0.0 */
 net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,
                                 uint16_t dst_port, uint16_t data_len,
                                 uint8_t ttl);
+
+/* The same, with the source, TTL and TOS in udp_tx_opts_t */
+net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
+                                const uint8_t *dst_mac, uint16_t src_port,
+                                uint16_t dst_port, uint16_t data_len,
+                                const udp_tx_opts_t *opts);
 ```
 
-All three end in `udp_send_inplace_from()`, which builds the frame around the
+All four end in `udp_send_inplace_opts()`, which builds the frame around the
 payload:
 
 ```
@@ -166,12 +200,16 @@ net->tx.buf
 1. Size check: `42 + data_len` within `tx.capacity` and within one Ethernet
    frame (1514 bytes: 1472 bytes of payload, 1452 over IPv6), else
    `NET_ERR_BUF_TOO_SMALL` — every datagram goes with DF set and is never
-   fragmented, however large the frame buffer.  A TTL of 0 is refused with
-   `NET_ERR_INVALID_PARAM` (RFC 1122 §3.2.1.7).
+   fragmented, however large the frame buffer.  `NET_ERR_INVALID_PARAM`
+   refuses a TTL of 0 (RFC 1122 §3.2.1.7), a source other than
+   `net->ipv4_addr` or 0.0.0.0 (§4.1.3.6), a destination of 0.0.0.0, an
+   address in 127/8 at either end (§3.2.1.3), and the broadcast MAC with a
+   destination that is no IP broadcast or multicast (§3.3.6).
 2. UDP header, checksum field 0; then the checksum over the pseudo-header,
    header and payload (`ipv4_cksum()`), a computed 0 written as `0xFFFF`.
 3. Ethernet header to `dst_mac`.
-4. IPv4 header (`ipv4_build_ttl()`: DF set, ID 0, header checksum).
+4. IPv4 header (`ipv4_build_tos()`: DF set, ID 0, the TTL and TOS,
+   header checksum).
 5. `net_transmit()`.
 
 Notes:
@@ -185,7 +223,8 @@ Notes:
   `data` must not point into `net->tx.buf` itself.
 - **Why `udp_send_inplace_from()`.**  A DHCP client must send from 0.0.0.0
   until its lease is bound (and from its leased address when renewing), and
-  the DHCP server sends from its configured address.  They pass that address
+  the DHCP server sends from its configured address — which must be the
+  host's (`dhcpv4_server_init()` checks).  They pass that address
   explicitly; previously the modules overwrote `net->ipv4_addr` around each
   send, which briefly changed the interface's address for everything else.
 - **TTL.**  `udp_send()` uses `NET_DEFAULT_TTL`; mDNS passes 255
@@ -277,10 +316,9 @@ Problem).  See [configuration.md §5](configuration.md#5-compile-time-protocol-s
 | Item | Consequence |
 |---|---|
 | Ephemeral port allocation, port binding, connected sockets | The application picks source and destination ports on every send and filters sources in its handler. |
-| Per-address dispatch | A handler cannot see the destination address. |
+| Per-address dispatch | One table for every address; the handler reads `udp_rx_dst_ip()`. |
 | IP fragmentation | Datagrams are limited by the buffers and the MTU; received fragments are dropped. |
 | Receive queues | A datagram is delivered during `net_poll()` or not at all. |
-| ICMP errors to the application | Received ICMP errors are dropped. |
 | UDP-Lite, zero-checksum IPv6 tunnels (RFC 6935) | — |
 
 ---

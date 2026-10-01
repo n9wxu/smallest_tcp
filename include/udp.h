@@ -71,18 +71,29 @@ net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
  *  ours, a broadcast or a group (RFC 1122 §4.1.3.5). */
 uint32_t udp_rx_dst_ip(const net_t *net);
 
-/**
- * Told of an ICMP error about a datagram sent from @p local_port to
- * @p dst_ip : @p dst_port (RFC 1122 §4.1.3.3): its type and code, and for
- * Fragmentation Needed the next-hop MTU (else 0).
- */
-typedef void (*udp_error_handler_t)(net_t *net, uint16_t local_port,
-                                    uint32_t dst_ip, uint16_t dst_port,
-                                    uint8_t icmp_type, uint8_t icmp_code,
-                                    uint16_t mtu);
+/** An ICMP error about a datagram we sent (RFC 1122 §4.1.3.3) */
+typedef struct {
+  uint16_t local_port; /**< The datagram's source port: ours */
+  uint32_t dst_ip;     /**< Where it was going */
+  uint16_t dst_port;
+  uint8_t type; /**< ICMP_TYPE_DEST_UNREACH, _TIME_EXCEEDED, _PARAM_PROBLEM */
+  uint8_t code;
+  uint16_t mtu;         /**< Fragmentation Needed: the next-hop MTU, else 0 */
+  const uint8_t *quote; /**< The IP header and data the error quotes,
+                             unchanged (valid in the handler only) */
+  uint16_t quote_len;
+} udp_icmp_error_t;
 
-/** Where ICMP errors about UDP datagrams go; NULL: nowhere. */
+typedef void (*udp_error_handler_t)(net_t *net, const udp_icmp_error_t *err);
+
+/** Where ICMP errors about UDP datagrams go; NULL: nowhere.  Source Quench
+ *  is discarded (RFC 6633). */
 void udp_set_error_handler(net_t *net, udp_error_handler_t handler);
+
+/** From icmp_input(): an error quoting a UDP datagram of ours.
+ *  @p quote is the quoted IP header and data, @p quote_len bytes. */
+void udp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
+                    const uint8_t *quote, uint16_t quote_len);
 
 /** Send @p data_len bytes copied from @p data, from net->ipv4_addr.
  *  @return NET_ERR_BUF_TOO_SMALL if the datagram does not fit the TX frame

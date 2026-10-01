@@ -9,6 +9,10 @@
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_UDP
+#include "udp.h"
+#endif
+
 #define ICMP_OFFSET (ETH_HDR_SIZE + IPV4_HDR_SIZE)
 
 /* REQ-ICMPv4-009 */
@@ -45,16 +49,52 @@ static void echo_reply(net_t *net, const ipv4_hdr_t *ip,
   icmp_send(net, ip->payload_len, ip->src_ip, eth->src_mac);
 }
 
-/* REQ-ICMPv4-028, 031, 040: only Echo Request is answered.  Received
- * errors — Destination Unreachable, Redirect, Time Exceeded, Parameter
- * Problem (REQ-ICMPv4-011..016, 019..021, 024, 029) — are dropped too:
- * no upper layer hears of them. */
+/* REQ-ICMPv4-011..016, 024, 029, 042: an error quoting a datagram we sent
+ * goes to the transport the quoted header names, with the whole quote */
+static void error_input(net_t *net, const ipv4_hdr_t *ip) {
+  const uint8_t *icmp = ip->payload;
+  const uint8_t *quote = icmp + ICMP_HDR_SIZE;
+  uint16_t quote_len = (uint16_t)(ip->payload_len - ICMP_HDR_SIZE);
+  uint16_t mtu = 0;
+  if (quote_len < IPV4_HDR_SIZE || (quote[IPV4_OFF_VER_IHL] >> 4) != 4 ||
+      (uint16_t)((quote[IPV4_OFF_VER_IHL] & 0x0F) * 4) > quote_len ||
+      net_read32be(quote + IPV4_OFF_SRC) != net->ipv4_addr)
+    return;
+  if (icmp[ICMP_OFF_TYPE] == ICMP_TYPE_DEST_UNREACH &&
+      icmp[ICMP_OFF_CODE] == ICMP_CODE_FRAG_NEEDED)
+    mtu = net_read16be(icmp + 6); /* RFC 1191 §4 */
+  switch (quote[IPV4_OFF_PROTO]) {
+#if NET_USE_UDP
+  case IPV4_PROTO_UDP:
+    udp_icmp_error(net, icmp[ICMP_OFF_TYPE], icmp[ICMP_OFF_CODE], mtu, quote,
+                   quote_len);
+    break;
+#endif
+  default:
+    (void)mtu;
+    break;
+  }
+}
+
+/* REQ-ICMPv4-028, 031, 040: only Echo Request is answered.  Errors go up
+ * (error_input()); Source Quench (RFC 6633), Redirect (REQ-ICMPv4-019) and
+ * the rest are dropped. */
 void icmp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   if (ip->payload_len < ICMP_HDR_SIZE ||
       !net_cksum_verify(ip->payload, ip->payload_len))
     return;
-  if (ip->payload[ICMP_OFF_TYPE] == ICMP_TYPE_ECHO_REQUEST)
+  switch (ip->payload[ICMP_OFF_TYPE]) {
+  case ICMP_TYPE_ECHO_REQUEST:
     echo_reply(net, ip, eth);
+    break;
+  case ICMP_TYPE_DEST_UNREACH:
+  case ICMP_TYPE_TIME_EXCEEDED:
+  case ICMP_TYPE_PARAM_PROBLEM:
+    error_input(net, ip);
+    break;
+  default:
+    break;
+  }
 }
 
 /* REQ-ICMPv4-038 */
