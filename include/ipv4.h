@@ -162,15 +162,21 @@ static inline void ipv4_mcast_mac(uint32_t group, uint8_t mac[6]) {
   mac[5] = (uint8_t)(group & 0xFF);
 }
 
+/** The all-hosts group, joined from the start with any multicast table
+ *  (RFC 1112 §7.2, REQ-IPv4-050) — and never reported (REQ-IGMP-008) */
+#define IPV4_ALL_HOSTS 0xE0000001u
+
 /**
  * Accept frames and datagrams for @p group.  Sends nothing (igmp_join()
  * does); a MAC with a hardware multicast filter must also pass
- * ipv4_mcast_mac(group).
+ * ipv4_mcast_mac(group) — and 01:00:5E:00:00:01, IPV4_ALL_HOSTS's, which
+ * takes no slot.
  * @return NET_OK (also if already joined), NET_ERR_INVALID_PARAM if not
  *         multicast, NET_ERR_BUF_TOO_SMALL if every slot is in use.
  */
 net_err_t ipv4_mcast_join(net_t *net, uint32_t group);
 
+/** Stop accepting @p group; IPV4_ALL_HOSTS cannot be left. */
 void ipv4_mcast_leave(net_t *net, uint32_t group);
 
 int ipv4_mcast_is_member(const net_t *net, uint32_t group);

@@ -34,7 +34,7 @@ One `net_t` per network interface (`include/net.h`):
 | `secret`, `random_count` | The 64-bit key of `net_hash()` and the count of `net_random()` outputs ([architecture.md §9](../architecture.md#9-randomness)) | always |
 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` | IPv4 configuration, host byte order; 0 = unconfigured | always |
 | `gateway_mac`, `gateway_mac_valid` | The gateway's MAC, learned from ARP replies | always |
-| `mcast_groups[]` | Joined IPv4 groups (0 = free slot) | `NET_MAX_MCAST_GROUPS > 0` |
+| `mcast_groups[]` | Joined IPv4 groups (0 = free slot; 224.0.0.1, always joined, takes none) | `NET_MAX_MCAST_GROUPS > 0` |
 | `ip6` | Address slots with DAD state and lifetimes, hop limit, RA flags, default router, router-solicitation and lifetime timers, MLD timers | `NET_USE_IPV6` |
 | `mcast6_groups[][16]` | Joined IPv6 groups (`::` = free slot) | `NET_USE_IPV6` and `NET_MAX_MCAST6_GROUPS > 0` |
 | `udp_ports`, `udp_port_count` | The UDP port table | `NET_USE_UDP` |

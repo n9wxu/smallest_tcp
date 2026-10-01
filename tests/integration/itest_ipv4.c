@@ -518,16 +518,25 @@ TEST(itest_ipv4_072_link_broadcast_needs_ip_broadcast) {
             NET_OK);
 }
 
-/* REQ-IPv4-050: a host with a multicast table is in the all-hosts group */
+/* REQ-IPv4-050: a host with a multicast table is in the all-hosts group
+ * from the start, whatever it joins and leaves */
 TEST(itest_ipv4_050_all_hosts_group) {
   static const uint8_t all_hosts_mac[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0x01};
   uint8_t f[128], s2[64];
   peer_ip_t ip = peer_ip(PEER_IP, 0xE0000001u, 17);
   uint16_t n;
+  uint32_t g;
   up();
   n = peer_udp(s2, &ip, 5000, OPEN_PORT, "x", 1);
   itest_receive(&t, f, peer_ipv4_frame(f, all_hosts_mac, peer_mac, &ip, s2, n));
   ASSERT_EQ(delivered, 1);
+  /* joining it takes no slot; leaving it does nothing */
+  ASSERT_EQ(ipv4_mcast_join(&t.net, IPV4_ALL_HOSTS), NET_OK);
+  for (g = 0; g < NET_MAX_MCAST_GROUPS; g++)
+    ASSERT_EQ(ipv4_mcast_join(&t.net, 0xE0000100u + g), NET_OK);
+  ipv4_mcast_leave(&t.net, IPV4_ALL_HOSTS);
+  itest_receive(&t, f, peer_ipv4_frame(f, all_hosts_mac, peer_mac, &ip, s2, n));
+  ASSERT_EQ(delivered, 2);
 }
 
 /* REQ-IPv4-073 (deviation): what the host multicasts is never delivered
@@ -655,7 +664,7 @@ int main(void) {
   RUN_TEST(itest_ipv4_070_never_to_or_from_unspecified);
   RUN_TEST(itest_ipv4_071_never_loopback);
   RUN_TEST(itest_ipv4_072_link_broadcast_needs_ip_broadcast);
-  RUN_XFAIL(itest_ipv4_050_all_hosts_group);
+  RUN_TEST(itest_ipv4_050_all_hosts_group);
   RUN_TEST(itest_ipv4_073_no_multicast_loopback);
   RUN_TEST(itest_ipv4_079_never_pings_the_gateway);
   RUN_XFAIL(itest_icmpv4_008_large_echo_truncated);

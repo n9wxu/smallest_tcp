@@ -119,6 +119,8 @@ net_err_t ipv4_mcast_join(net_t *net, uint32_t group) {
 #if NET_MAX_MCAST_GROUPS > 0
   uint8_t i;
   int free_slot = -1;
+  if (group == IPV4_ALL_HOSTS)
+    return NET_OK;
   for (i = 0; i < NET_MAX_MCAST_GROUPS; i++) {
     if (net->mcast_groups[i] == group)
       return NET_OK;
@@ -151,6 +153,8 @@ void ipv4_mcast_leave(net_t *net, uint32_t group) {
 int ipv4_mcast_is_member(const net_t *net, uint32_t group) {
 #if NET_MAX_MCAST_GROUPS > 0
   uint8_t i;
+  if (group == IPV4_ALL_HOSTS) /* REQ-IPv4-050 */
+    return 1;
   for (i = 0; group != 0 && i < NET_MAX_MCAST_GROUPS; i++) {
     if (net->mcast_groups[i] == group)
       return 1;
@@ -165,6 +169,9 @@ int ipv4_mcast_is_member(const net_t *net, uint32_t group) {
 int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac) {
 #if NET_MAX_MCAST_GROUPS > 0
   uint8_t i, group_mac[6];
+  ipv4_mcast_mac(IPV4_ALL_HOSTS, group_mac);
+  if (net_mac_equal(mac, group_mac))
+    return 1;
   for (i = 0; i < NET_MAX_MCAST_GROUPS; i++) {
     if (net->mcast_groups[i] == 0)
       continue;
