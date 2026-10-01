@@ -272,7 +272,7 @@ int main(void) {
   RUN_TEST(itest_arp_011_gateway_learned_only_from_the_gateway);
   RUN_XFAIL(itest_arp_038_gateway_mac_expires);
   RUN_XFAIL(itest_arp_039_no_flooding);
-  RUN_XFAIL(itest_arp_041_broadcast_and_multicast_next_hop);
+  RUN_TEST(itest_arp_041_broadcast_and_multicast_next_hop);
   RUN_TEST(itest_udp_032_one_ethernet_frame_at_most);
   RUN_TEST(itest_udp_032_frame_buffer_limit);
   RUN_TEST(itest_ipv4_058_never_ttl_zero);

@@ -33,12 +33,15 @@ traffic is replies — which need no resolution at all (§2).
 The stack provides the pieces; the application sequences them.
 
 ```c
-uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip); /* dst_ip if on-link, else gateway */
+uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip); /* dst_ip if on-link, a broadcast or a group, else gateway */
 net_err_t arp_request(net_t *net, uint32_t target_ip);    /* broadcast a request */
 ```
 
 `arp_next_hop()` compares the destination with our address under
-`net->subnet_mask` (`ipv4_is_local()`).  Because the only MAC the stack
+`net->subnet_mask` (`ipv4_is_local()`).  The limited broadcast and multicast
+groups are their own next hop, never the gateway: they go straight to the
+link, at the broadcast MAC or the group's (RFC 1122 §3.3.1.1, RFC 1112 §6.2;
+REQ-ARP-041).  Because the only MAC the stack
 learns from ARP is the gateway's, a peer on the local subnet is resolved by
 pointing the gateway at it for the duration — this is what the `tls_client`
 demo does:

@@ -69,7 +69,11 @@ net_err_t arp_request(net_t *net, uint32_t target_ip) {
   return arp_send(net, ARP_OPER_REQUEST, broadcast_mac, unknown_mac, target_ip);
 }
 
-/* REQ-ARP-025, 026 */
+/* REQ-ARP-025, 026, 041: the limited broadcast and multicast groups go
+ * straight to the link (RFC 1122 §3.3.1.1, RFC 1112 §6.2) */
 uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip) {
-  return ipv4_is_local(net, dst_ip) ? dst_ip : net->gateway_ipv4;
+  if (dst_ip == IPV4_BROADCAST || ipv4_is_multicast(dst_ip) ||
+      ipv4_is_local(net, dst_ip))
+    return dst_ip;
+  return net->gateway_ipv4;
 }

@@ -38,8 +38,9 @@ void arp_input(net_t *net, const eth_frame_t *eth);
 /** Broadcast a request for @p target_ip (host byte order). */
 net_err_t arp_request(net_t *net, uint32_t target_ip);
 
-/** The address to resolve for @p dst_ip: itself if on-link, else the
- *  gateway (host byte order). */
+/** The next hop for @p dst_ip: itself if on-link, the limited broadcast
+ *  or a multicast group (sent straight to the link), else the gateway
+ *  (host byte order). */
 uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip);
 
 #endif /* ARP_H */
