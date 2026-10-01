@@ -312,6 +312,17 @@ keep their values.  Then the option handlers run
 (`run_option_handlers()`).  T1 and T2 default to 0.5 and 0.875 of the
 lease (RFC 2131 §4.4.5).  The first REQUEST is due at T1.
 
+**T1 < T2 < the end of the lease** (RFC 2131 §4.4.5: "T1 MUST be
+earlier than T2, which, in turn, MUST be earlier than the time at which
+the client's lease will expire").  `set_renewal_times()` takes the ACK's
+T1 and T2, or the default for one it lacks, and if the two are not in
+that order replaces both with the defaults, which always are.  Both, not
+just the one out of place: a server's T2 below half the lease and a T1
+past it would otherwise give a default T1 still later than T2.  The
+times used to be taken as sent: a T1 after T2 skipped renewing and went
+straight to rebinding, and a T2 past the end of the lease never
+rebound.
+
 **The lease starts with the REQUEST** (RFC 2131 §4.4.1, §4.4.5: "the time
 at which the original request was sent").  The lease clock runs from the
 first REQUEST for an offer, through REQUESTING; `request_s` marks where

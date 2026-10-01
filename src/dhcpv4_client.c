@@ -139,6 +139,20 @@ static void fuzz_renewal_times(net_t *net, dhcpv4_client_t *c) {
   c->t2 -= share_of(c->t2, f);
 }
 
+/* REQ-DHCPv4-035, 036, 088: the server's T1 and T2, else 0.5 and 0.875 of
+ * the lease — and those for both when the two are not in RFC 2131
+ * §4.4.5's order, T1 < T2 < the end of the lease */
+static void set_renewal_times(dhcpv4_client_t *c, uint32_t t1, uint32_t t2) {
+  uint32_t half = c->lease_time / 2u;
+  uint32_t seven_eighths = c->lease_time - c->lease_time / 8u;
+  c->t1 = t1 ? t1 : half;
+  c->t2 = t2 ? t2 : seven_eighths;
+  if (c->t1 >= c->t2 || c->t2 >= c->lease_time) {
+    c->t1 = half;
+    c->t2 = seven_eighths;
+  }
+}
+
 /* REQ-DHCPv4-048: the gateway's MAC is its own — a new gateway's the
  * application resolves (docs/design/arp-resolution.md) */
 static void set_gateway(net_t *net, uint32_t gateway) {
@@ -159,13 +173,9 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
               dhcp_option_u32(msg, len, DHCP_OPT_ROUTER, net->gateway_ipv4));
   c->lease_time = dhcp_option_u32(msg, len, DHCP_OPT_LEASE_TIME, 0u);
   c->server_ip = dhcp_option_u32(msg, len, DHCP_OPT_SERVER_ID, c->server_ip);
-  c->t1 = dhcp_option_u32(msg, len, DHCP_OPT_T1, 0u);
-  c->t2 = dhcp_option_u32(msg, len, DHCP_OPT_T2, 0u);
+  set_renewal_times(c, dhcp_option_u32(msg, len, DHCP_OPT_T1, 0u),
+                    dhcp_option_u32(msg, len, DHCP_OPT_T2, 0u));
   run_option_handlers(c, msg, len);
-  if (c->t1 == 0) /* REQ-DHCPv4-035: 0.5 × lease */
-    c->t1 = c->lease_time / 2u;
-  if (c->t2 == 0) /* REQ-DHCPv4-036: 0.875 × lease */
-    c->t2 = c->lease_time - c->lease_time / 8u;
   fuzz_renewal_times(net, c);
   c->since_s -= c->request_s;
   c->next_request_s = c->t1;
