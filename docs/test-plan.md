@@ -457,8 +457,8 @@ programs run in their own source tree, which they insist on.
 | `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS and DTLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide — and `arm-check-links` — fails if TLS's objects need DTLS's record layer or DTLS's TLS's | push/PR |
 | `board-nucleo-f429zi` | ci.yml | ubuntu-latest | Builds the NUCLEO-F429ZI `tcp_echo_demo.elf` of the hardware fuzz job (§4) — build only | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Builds and runs `examples/fetchcontent` against the checkout | push/PR |
-| `release-check` | ci.yml | ubuntu-latest | The version has its CHANGELOG section; CMake and the library report it | push/PR |
-| `release` | release.yml | ubuntu-latest | Tags and publishes the version once CI passes on `main`, if not yet released ([release-process.md](release-process.md)) | CI completed on main |
+| `release-check` | ci.yml | ubuntu-latest | `scripts/release.py check` (version, `[Unreleased]`, a trial stamp); CMake and the library report the version | push/PR |
+| `release` | release.yml | ubuntu-latest | Commits the next version, tags it and publishes the release for every push to `main` that passes CI ([release-process.md](release-process.md)) | CI completed on main |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz and conformance on a NUCLEO-F429ZI (§4) | Nightly (when enabled) |
 

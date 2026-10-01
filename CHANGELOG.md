@@ -1,12 +1,21 @@
 # Changelog
 
-Every release of smallest_tcp, newest first.  The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html): while the major
-version is 0, a minor release may change the API, and the entry says how.
-How a release is made: [docs/release-process.md](docs/release-process.md).
+Every release of smallest_tcp, newest first: CI releases every push to
+`main` that passes, and moves what is under [Unreleased] into the release.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
+while the major version is 0, a minor release may change the API, and the
+entry says how.  How a release is made:
+[docs/release-process.md](docs/release-process.md).
 
 ## [Unreleased]
+
+### Changed
+
+- Every push to `main` that passes CI is released: CI commits the next
+  patch version to `main`, tags it and publishes the release
+  (`scripts/release.py`, `.github/workflows/release.yml`).  Pull before your
+  next push.
 
 ## [0.1.0] - 2026-10-01
 

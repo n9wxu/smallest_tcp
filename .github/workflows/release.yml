@@ -1,10 +1,13 @@
 name: Release
 
-# A release is made by raising the version in include/net_version.h, with
-# its section in CHANGELOG.md, on main.  When CI passes for a push to main
-# whose version has not been released, this job tags that commit vX.Y.Z
-# and publishes the GitHub Release, the CHANGELOG section as its notes.
-# Every other green push finds the release already there and does nothing.
+# Every push to main that passes CI is released.  When "CI — Build & Unit
+# Tests" succeeds for a push to main, and main still points at the commit
+# it tested, this job takes the next version (scripts/release.py next: the
+# one in include/net_version.h if it has no tag yet, else its PATCH + 1),
+# writes it into net_version.h, closes CHANGELOG.md's [Unreleased] section
+# under it, commits "release: X.Y.Z" to main, tags that commit vX.Y.Z and
+# publishes the GitHub Release.  A push made with the job's token starts no
+# workflow, so the release commit does not release itself.
 # See docs/release-process.md.
 
 on:
@@ -25,7 +28,7 @@ env:
 
 jobs:
   release:
-    name: Tag and publish
+    name: Version, tag and publish
     # CI passed for a push to this repository's main — not a pull request,
     # whose branch may be called main too
     if: >-
@@ -36,38 +39,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: main
+          fetch-depth: 0 # the tags and the log since the last one
 
-      - name: Version
-        id: version
+      - name: The commit CI tested is still main
+        id: current
         env:
-          GH_TOKEN: ${{ github.token }}
+          TESTED: ${{ github.event.workflow_run.head_sha }}
         run: |
-          v=$(scripts/release_info.sh version)
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          if gh release view "v$v" > /dev/null 2>&1; then
-            echo "v$v is released already: nothing to do"
-            echo "new=false" >> "$GITHUB_OUTPUT"
+          if [ "$(git rev-parse HEAD)" = "$TESTED" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "v$v is not released yet"
-            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "main has moved past $TESTED: its own CI run releases it"
+            echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Release notes
-        if: steps.version.outputs.new == 'true'
-        run: scripts/release_info.sh notes "${{ steps.version.outputs.version }}" > notes.md
+      - name: Stamp the version
+        id: version
+        if: steps.current.outputs.release == 'true'
+        run: |
+          v=$(python3 scripts/release.py next)
+          python3 scripts/release.py stamp "$v"
+          python3 scripts/release.py notes "$v" > "$RUNNER_TEMP/notes.md"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          git diff --stat
 
-      - name: Tag and publish
-        if: steps.version.outputs.new == 'true'
+      - name: Commit, tag and publish
+        if: steps.current.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          gh release create "v$VERSION" --target "$SHA" \
-            --title "smallest_tcp $VERSION" --notes-file notes.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -am "release: $VERSION"
+          git tag "v$VERSION"
+          # Atomic: neither lands if main moved meanwhile
+          git push --atomic origin HEAD:main "v$VERSION"
+          gh release create "v$VERSION" --verify-tag \
+            --title "smallest_tcp $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
           {
             echo "## Released smallest_tcp $VERSION"
             echo
-            echo "Tag \`v$VERSION\` at \`$SHA\`."
+            echo "Tested commit \`${{ github.event.workflow_run.head_sha }}\`;"
+            echo "tag \`v$VERSION\` on \`$(git rev-parse HEAD)\`."
           } >> "$GITHUB_STEP_SUMMARY"

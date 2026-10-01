@@ -3,7 +3,8 @@
  * @brief The release of smallest_tcp this source is (Semantic Versioning).
  *
  * The one place the version is written: CMakeLists.txt reads it for
- * project(VERSION), and a release is cut by raising it on main
+ * project(VERSION).  CI raises PATCH with every release, one per push to
+ * main that passes; MAJOR and MINOR are raised by hand
  * (docs/release-process.md).
  */
 

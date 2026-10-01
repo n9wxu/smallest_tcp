@@ -792,24 +792,24 @@ jobs:
         run: ./examples/fetchcontent/build/example_app
 
   # ── Release readiness ───────────────────────────────────────────────
-  # The version in include/net_version.h must have its CHANGELOG.md
-  # section, which release.yml publishes as the notes once this workflow
-  # passes on main (docs/release-process.md); CMake and a consumer see it.
+  # release.yml releases every push to main that passes this workflow; this
+  # job checks it will be able to: the version in include/net_version.h
+  # parses, CHANGELOG.md has its [Unreleased] section, stamping the next
+  # version works, and CMake and the compiled library report the version
+  # (docs/release-process.md).
   release-check:
     name: Release — version and notes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Version and release notes
+        with:
+          fetch-depth: 0 # the tags decide the next version
+      - name: Version, changelog, a trial stamp
         run: |
-          v=$(scripts/release_info.sh version)
-          echo "smallest_tcp $v"
-          scripts/release_info.sh notes "$v" > /dev/null
-          echo "## smallest_tcp $v" >> "$GITHUB_STEP_SUMMARY"
-          scripts/release_info.sh notes "$v" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/release.py check | tee -a "$GITHUB_STEP_SUMMARY"
       - name: CMake and the library report the same version
         run: |
-          v=$(scripts/release_info.sh version)
+          v=$(python3 scripts/release.py version)
           cmake -S examples/fetchcontent -B build-fc | grep -Fx -- "-- smallest_tcp $v"
           cmake --build build-fc > /dev/null
           ./build-fc/example_app | grep -F "smallest_tcp $v "

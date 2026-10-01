@@ -94,7 +94,7 @@ RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TL
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
 | Build | `CMakeLists.txt`, `Makefile` | — | CMake: libraries, tests, demos, FetchContent integration.  Makefile: Cortex-M0 size benchmarks and the no-division check |
 | CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds and unit tests, IPv4-only and IPv6-only builds, full blackbox suites over TAP and raw socket (DTLS against a pinned wolfSSL), the ARM size benchmark and the release check on every push |
-| Releases | `.github/workflows/release.yml`, `CHANGELOG.md` | — | A version raised in `net_version.h` is tagged and published once CI passes on `main` ([release-process.md](docs/release-process.md)) |
+| Releases | `.github/workflows/release.yml`, `scripts/release.py`, `CHANGELOG.md` | — | Every push to `main` that passes CI is released as the next version: CI commits it, tags it and publishes it ([release-process.md](docs/release-process.md)) |
 | Fuzz (nightly) | `.github/workflows/fuzz.yml` | 5 fuzz | TCP adversarial fuzz + full conformance regression nightly |
 | **Total** | **31 source + 5 drivers** | **857 unit + 209 blackbox + 5 fuzz** | |
 
@@ -504,7 +504,7 @@ When included via FetchContent, smallest_tcp builds its libraries only — no te
 
 ### Versions
 
-Releases follow [Semantic Versioning](https://semver.org/) and are listed, with what changed, in [CHANGELOG.md](CHANGELOG.md); while the version is 0.x, a minor release may change the API.  Pin a release tag (`vX.Y.Z`) rather than `main`.  The version is in `net_version.h` — `NET_VERSION_STRING`, and `NET_VERSION` (`0x00MMmmpp`) for `#if`.  How releases are made: [release-process.md](docs/release-process.md).
+Every push to `main` that passes CI is released, as the next patch version, with what changed listed in [CHANGELOG.md](CHANGELOG.md).  Versions follow [Semantic Versioning](https://semver.org/); while the version is 0.x, a minor release may change the API.  Pin a release tag (`vX.Y.Z`) rather than `main`.  The version is in `net_version.h` — `NET_VERSION_STRING`, and `NET_VERSION` (`0x00MMmmpp`) for `#if`.  How releases are made: [release-process.md](docs/release-process.md).
 
 ### Available CMake Targets
 
@@ -605,7 +605,7 @@ Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
   - [DNS-SD](docs/requirements/dns-sd.md) — RFC 6763: PTR/SRV/TXT advertisement, service-type enumeration, conflict detection
 - **[Test Plan](docs/test-plan.md)** — Unit and black-box conformance testing with Python/Scapy/pytest, CI jobs
 - **[CI Debugging](docs/ci-debugging.md)** — Known CI failures and how to diagnose them
-- **[Release Process](docs/release-process.md)** — Versions, the changelog, and the release CI publishes on its own
+- **[Release Process](docs/release-process.md)** — Versions, the changelog, and the release CI makes of every green push
 - **[Changelog](CHANGELOG.md)** — What each release changed
 
 ---
@@ -642,7 +642,7 @@ We'd love your help making **smallest_tcp** even better! Whether it's a bug fix,
    ```
 8. **Open a Pull Request** against `main` on the upstream repo
 
-If your change is one a user of the library would notice, add a line for it under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).  Releases are made by raising the version on `main`; CI tags and publishes them ([release-process.md](docs/release-process.md)).
+If your change is one a user of the library would notice, add a line for it under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).  Every push to `main` that passes CI is released: CI commits the new version, tags and publishes it, so pull before your next push ([release-process.md](docs/release-process.md)).
 
 ### Guidelines
 

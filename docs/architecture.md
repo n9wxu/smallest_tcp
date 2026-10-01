@@ -370,7 +370,7 @@ smallest_tcp/
 ├── cmake/                  arm-none-eabi.cmake: cross-compiling the libraries
 ├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
 ├── examples/fetchcontent/  consuming the library with CMake FetchContent
-├── scripts/                release_info.sh: the version and its release notes
+├── scripts/                release.py: the next version, stamping it, its release notes
 └── docs/
     ├── architecture.md     this document
     ├── integrating-modules.md

@@ -402,10 +402,10 @@ that failed on the code before it.
       citing the wrong requirements
 
 The project had no versions or releases.  `include/net_version.h` now holds
-the version; `CHANGELOG.md` the notes; when CI passes on `main` for a
-version not yet released, `.github/workflows/release.yml` tags it and
-publishes the release ([release-process.md](docs/release-process.md)).
-v0.1.0 is the first.
+the version; `CHANGELOG.md` the notes; `.github/workflows/release.yml`
+releases every push to `main` that passes CI, committing the next version
+and tagging it ([release-process.md](docs/release-process.md)).  v0.1.0 is
+the first.
 
 Left for later, from the same audit: received ICMP errors (and with them
 Path MTU Discovery), TCP's RTT measurement and congestion control, IP

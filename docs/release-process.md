@@ -1,14 +1,14 @@
 # Release Process
 
-**Status:** in use from v0.1.0
-**Files:** `include/net_version.h`, `CHANGELOG.md`, `scripts/release_info.sh`,
+**Status:** in use from v0.1.0; every green push to `main` released from v0.1.1
+**Files:** `include/net_version.h`, `CHANGELOG.md`, `scripts/release.py`,
 `.github/workflows/release.yml`, the `release-check` job of
 `.github/workflows/ci.yml`
 
-A release is a commit on `main` that CI has passed, tagged `vX.Y.Z`, with a
-GitHub Release whose notes are its section of `CHANGELOG.md`.  Nobody tags
-by hand: raising the version on `main` is the decision to release, and the
-release follows automatically once CI is green.
+Every push to `main` that passes CI is released.  A release is a commit
+`release: X.Y.Z` on `main` that CI made on top of the tested commit, tagged
+`vX.Y.Z`, with a GitHub Release whose notes are its section of
+`CHANGELOG.md`.  Nobody tags by hand, and nobody has to remember to release.
 
 ---
 
@@ -16,11 +16,11 @@ release follows automatically once CI is green.
 
 smallest_tcp follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
-| Part | Raised for |
-|---|---|
-| PATCH | Fixes that change no API and no documented behaviour callers rely on |
-| MINOR | New features; while MAJOR is 0, also API changes, which the CHANGELOG entry spells out under **Changed** |
-| MAJOR | API changes once 1.0 is released |
+| Part | Raised by | For |
+|---|---|---|
+| PATCH | CI, on every release | Whatever the push contained |
+| MINOR | You, in `include/net_version.h` | New features; while MAJOR is 0, also API changes, which the CHANGELOG entry spells out under **Changed** |
+| MAJOR | You | API changes once 1.0 is released |
 
 The version is written once, in `include/net_version.h`:
 
@@ -32,9 +32,14 @@ The version is written once, in `include/net_version.h`:
 
 Everything else reads it.  `CMakeLists.txt` parses the three numbers into
 `project(VERSION)` and prints `-- smallest_tcp X.Y.Z` when it configures.
-`scripts/release_info.sh version` prints them for the workflows.  Code gets
+`scripts/release.py version` prints them for the workflows.  Code gets
 `NET_VERSION_STRING` (`"0.1.0"`) and `NET_VERSION` (`0x000100`, for `#if`).
-`test_net` checks that the macros agree.
+Between releases, `main` states the last released version; the release
+commit raises it.
+
+**Which version a release takes** (`scripts/release.py next`): the one in
+`net_version.h` if it has no tag yet — the first release after you raise
+MINOR or MAJOR (set PATCH to 0 when you do) — else that version's PATCH + 1.
 
 ## 2. The changelog
 
@@ -42,75 +47,73 @@ Everything else reads it.  `CMakeLists.txt` parses the three numbers into
 Changes that a user of the library would notice go under `## [Unreleased]`
 as they land, in the sections **Added**, **Changed** (anything a caller
 may have to adapt to), **Fixed**, **Removed** and **Known limitations**.
-Internal changes such as refactoring, tests and CI don't need an entry.
 
-`scripts/release_info.sh notes X.Y.Z` prints the lines between
-`## [X.Y.Z]` and the next `## ` heading (or the link definitions at the end),
-and fails if there are none.  Links in a version's section must be absolute
-(`https://github.com/n9wxu/smallest_tcp/blob/vX.Y.Z/...`), because the same
-text becomes the release notes on GitHub, where relative links break.
+At release, `scripts/release.py stamp X.Y.Z` turns `## [Unreleased]` into
+`## [X.Y.Z] - YYYY-MM-DD` under a new empty `## [Unreleased]`, and updates
+the link definitions at the end.  If nothing was written under
+`[Unreleased]`, the release's notes are the subjects of the commits since
+the last tag, so no release goes out without notes.  Notes written by hand
+under `## [X.Y.Z]` itself are used as they are.
 
-## 3. Making a release
+Links in a version's section must be absolute
+(`https://github.com/n9wxu/smallest_tcp/blob/vX.Y.Z/...`): the same text
+becomes the release notes on GitHub, where relative links break.
 
-1. **Pick the version** by the table in section 1.
-2. **Raise it** in `include/net_version.h`.
-3. **Close the changelog section.**  Rename `## [Unreleased]` to
-   `## [X.Y.Z] - YYYY-MM-DD` with a sentence on what the release is, open a
-   new empty `## [Unreleased]` above it, and update the two link
-   definitions at the end of the file:
-   ```
-   [Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/vX.Y.Z...HEAD
-   [X.Y.Z]: https://github.com/n9wxu/smallest_tcp/compare/vPREVIOUS...vX.Y.Z
-   ```
-4. **Check what CI does not run** (section 5).
-5. **Commit and push to `main`** — directly or by merging a pull request —
-   as `release: X.Y.Z`.
+## 3. What happens on a push to `main`
 
-When the push's CI run passes, **Release** (`release.yml`) runs:
+1. **CI** ("CI — Build & Unit Tests") runs every job: the compiler builds,
+   the unit and integration tests on Linux and macOS, the IPv4-only and
+   IPv6-only builds, the Cortex-M0 size and link checks, the board
+   firmware, every blackbox suite over both Linux drivers, FetchContent,
+   and `release-check`, which runs `scripts/release.py check` — the version
+   parses, `[Unreleased]` exists, and a trial stamp of the next version
+   works — and confirms that CMake and the compiled library report the
+   version.
+2. **Release** (`release.yml`) starts on `workflow_run` when CI completes.
+   It goes on only if CI succeeded for a push to this repository's `main`
+   (not a pull request, even one from a fork's branch named `main`) and
+   `main` still points at the commit CI tested.  If a newer push has
+   arrived, that push's own CI run releases both.
+3. It stamps the next version, commits `release: X.Y.Z` as
+   `github-actions[bot]`, tags the commit `vX.Y.Z`, and pushes both
+   atomically: if `main` moved in the meantime, neither lands and the newer
+   push's run releases it.  Then `gh release create` publishes the release
+   with the notes; GitHub attaches the source archives.
+4. A push made with the workflow's own token starts no workflow, so the
+   release commit is not tested or released again.  It differs from the
+   tested commit only in `net_version.h` and `CHANGELOG.md`.
 
-1. It starts on `workflow_run` when "CI — Build & Unit Tests" completes,
-   and goes on only if CI succeeded for a push to this repository's
-   `main`.  A pull request does not count, even one from a fork's branch
-   named `main`.
-2. It checks out the commit CI tested and reads its version.
-3. If the version already has a GitHub Release, it stops.  This is the
-   ordinary case: most green pushes don't change the version.
-4. Otherwise it extracts the notes and runs `gh release create vX.Y.Z
-   --target <commit>`, which creates the tag on that commit and publishes
-   the release.  GitHub attaches the source archives.
+Releases run one at a time (`concurrency: release`).
 
-The release can only tag a commit that passed every CI job: the compiler
-builds, the unit tests on Linux and macOS, the IPv4-only and IPv6-only
-builds, the Cortex-M0 size and link checks, the board firmware, every
-blackbox suite over both Linux drivers, FetchContent, and the
-`release-check` job.  `release-check` confirms the version has its
-changelog section and that CMake and the compiled library both report it.
-A version raised without notes therefore fails CI, before the release could.
+**After you push, pull.**  The release commit lands on `main` a few minutes
+after your push; `git pull --rebase` before your next push.
 
-## 4. When something goes wrong
+## 4. Raising MINOR or MAJOR
+
+1. Raise it in `include/net_version.h` and set PATCH to 0.
+2. Make sure `[Unreleased]` says what changed — **Changed** for anything
+   callers must adapt to.
+3. Push.  The release takes exactly that version.
+
+## 5. When something goes wrong
 
 | Situation | What to do |
 |---|---|
-| CI fails on the release commit | Nothing is released.  Fix it and push; the first green push with the new version releases it |
-| The Release job itself fails (a network error, say) | Re-run it from the Actions tab: it starts again from the same CI run and commit |
-| A pushed tag `vX.Y.Z` exists without a release | The job publishes the release on that existing tag, wherever the tag points.  Don't push version tags by hand |
-| A release turns out bad | Release a new PATCH version with the fix.  Never move or delete a published tag: users pin them |
-| Two pushes in quick succession | Releases run one at a time (`concurrency: release`); the second finds the version released and stops |
+| CI fails | Nothing is released.  Fix it and push; the next green push is released, and its notes include everything since the last release |
+| The Release job fails (a network error, say) | Re-run it from the Actions tab.  It only acts if `main` is still the tested commit |
+| `main` moved before the job pushed | Nothing to do: the newer push's run releases it |
+| A release turns out bad | Push the fix; the next release supersedes it.  Never move or delete a published tag: users pin them |
 
-## 5. Before releasing: what CI does not cover
+## 6. What CI does not cover
 
 - **macOS blackbox:** `tests/blackbox/run_blackbox_macos.sh` over the feth
   pair, with the mDNSResponder and browser interop
   ([ci-debugging.md](ci-debugging.md) explains the suites).
-- **The nightly fuzz workflow** (`fuzz.yml`) should be green for the commit
-  or one close to it.
+- **The nightly fuzz workflow** (`fuzz.yml`).
 - **Hardware:** the NUCLEO-F429ZI firmware is built in CI but has not been
-  run on a board yet; say so in the release notes until it has.
-- **Sizes and counts:** the README's size table, test counts and the
-  [size history](design/size-comparison.md) should be current.  Each change
-  keeps them so, but check them.
+  run on a board yet.
 
-## 6. Using a release
+## 7. Using a release
 
 Pin the tag, not `main`:
 
