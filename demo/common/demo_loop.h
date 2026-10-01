@@ -99,7 +99,8 @@ static inline void demo_net_close(demo_mac_t *nic) {
 typedef struct {
   void (*tick)(uint32_t elapsed_ms); /**< Every DEMO_TICK_MS, after net_tick */
   void (*service)(void);             /**< Every time round the loop */
-  void (*ipv6_address_ready)(void);  /**< An IPv6 address became usable */
+  /** An IPv6 address became usable or stopped being usable */
+  void (*ipv6_address_ready)(void);
 } demo_hooks_t;
 
 /**

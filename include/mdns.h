@@ -178,9 +178,11 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx);
 
 /**
- * Join 224.0.0.251 (IGMP) and start probing after a random 0-250 ms delay.
- * Call again after a conflict, a link-up or an address change
- * to re-probe and re-announce.
+ * Join 224.0.0.251 (IGMP) and start probing after a random 0-250 ms delay
+ * (5 s after fifteen conflicts in ten seconds, RFC 6762 §8.1).  Call again
+ * to re-probe and re-announce every record: after a conflict, a link-up,
+ * a new IPv4 address, or a change to a record's rdata — its strings, its
+ * port — which RFC 6762 §8.4 requires to be announced again.
  */
 void mdns_start(mdns_t *m);
 
@@ -207,11 +209,13 @@ void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
                  uint16_t src_port, const uint8_t *msg, uint16_t len);
 
 /**
- * Our IPv6 addresses changed (e.g. SLAAC or DHCPv6 added one): announce
- * again over IPv6 (RFC 6762 §8.4), without re-probing.  While running,
- * over IPv6 only; while still announcing, the announcement sequence starts
- * over with IPv6 added.  No-op while probing (the announcements to come
- * include the new addresses).
+ * Our IPv6 addresses changed: one became usable (DAD done for a link-local,
+ * SLAAC or DHCPv6 address) or stopped being usable (removed, expired):
+ * announce the records again over IPv6, AAAA records with the addresses
+ * usable now (RFC 6762 §8.4), without re-probing.  While running, over
+ * IPv6 only; while still announcing, the announcement sequence starts over
+ * with IPv6 added; while probing, the announcements to come include every
+ * record and IPv6.
  */
 void mdns_readdress6(mdns_t *m);
 #endif

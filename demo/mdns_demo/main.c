@@ -111,7 +111,7 @@ static void mdns_udp6_input(net_t *n, const uint8_t *src_ip, uint16_t src_port,
 
 static const udp6_port_entry_t udp6_ports[] = {{MDNS_PORT, mdns_udp6_input}};
 
-/* RFC 6762 §8.4: announce the new address */
+/* RFC 6762 §8.4: announce the addresses usable now */
 static void ipv6_address_ready(void) { mdns_readdress6(&mdns); }
 #endif
 
