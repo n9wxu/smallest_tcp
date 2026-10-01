@@ -1,10 +1,19 @@
 cmake_minimum_required(VERSION 3.14)
 
+# The version is written once, in include/net_version.h
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/include/net_version.h _net_version
+     REGEX "^#define NET_VERSION_(MAJOR|MINOR|PATCH) [0-9]+$")
+foreach(_part MAJOR MINOR PATCH)
+    string(REGEX REPLACE ".*NET_VERSION_${_part} ([0-9]+).*" "\\1"
+           _net_version_${_part} "${_net_version}")
+endforeach()
+
 project(smallest_tcp
-    VERSION 0.1.0
+    VERSION ${_net_version_MAJOR}.${_net_version_MINOR}.${_net_version_PATCH}
     LANGUAGES C
     DESCRIPTION "Portable minimal TCP/IP stack — zero-alloc, application-owned memory"
 )
+message(STATUS "smallest_tcp ${PROJECT_VERSION}")
 
 # ── Options ───────────────────────────────────────────────────────────
 

@@ -9,6 +9,7 @@
 #include "eth.h"
 #include "net.h"
 #include "net_cksum.h"
+#include "net_version.h"
 #include <stdio.h>
 
 /* Minimal stub driver for demonstration */
@@ -57,7 +58,8 @@ int main(void) {
     return 1;
   }
 
-  printf("smallest_tcp FetchContent integration works!\n");
+  printf("smallest_tcp %s FetchContent integration works!\n",
+         NET_VERSION_STRING);
   printf("  MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", net.mac[0], net.mac[1],
          net.mac[2], net.mac[3], net.mac[4], net.mac[5]);
   printf("  Checksum of empty data: 0x%04X\n", net_cksum(NULL, 0));

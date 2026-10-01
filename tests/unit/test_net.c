@@ -4,6 +4,7 @@
  */
 
 #include "net.h"
+#include "net_version.h"
 #include "tcp.h"
 #include "test_main.h"
 #include <string.h>
@@ -299,6 +300,21 @@ TEST(test_net_init_keys_from_the_whole_mac) {
   ASSERT_TRUE(first_output(m1, NULL, 0) != first_output(m2, NULL, 0));
 }
 
+/* The version string and number say the same as the three parts, and a
+ * release compares by them */
+TEST(test_net_version_agrees_with_itself) {
+  char expect[16];
+  snprintf(expect, sizeof(expect), "%d.%d.%d", NET_VERSION_MAJOR,
+           NET_VERSION_MINOR, NET_VERSION_PATCH);
+  ASSERT_TRUE(strcmp(NET_VERSION_STRING, expect) == 0);
+  ASSERT_EQ(NET_VERSION >> 16, NET_VERSION_MAJOR);
+  ASSERT_EQ((NET_VERSION >> 8) & 0xFF, NET_VERSION_MINOR);
+  ASSERT_EQ(NET_VERSION & 0xFF, NET_VERSION_PATCH);
+#if NET_VERSION < 0x000100
+#error "the version macros do not work in #if"
+#endif
+}
+
 int main(void) {
   fprintf(stderr, "=== test_net ===\n");
 
@@ -320,6 +336,7 @@ int main(void) {
   RUN_TEST(test_net_random_seed_uses_every_byte);
   RUN_TEST(test_net_random_seeds_accumulate);
   RUN_TEST(test_net_init_keys_from_the_whole_mac);
+  RUN_TEST(test_net_version_agrees_with_itself);
 
   TEST_REPORT();
   return test_failures;

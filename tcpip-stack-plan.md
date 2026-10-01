@@ -1,6 +1,6 @@
 # Portable Minimal TCP/IP Stack — Design & Implementation Plan
 
-**Last updated:** 2026-09-28 (Tasks 1–15 complete: through Milestone 14, DTLS 1.3, with the Linux raw-socket driver and the issues found in the review.  809 unit tests on macOS (820 on Linux as root) + 209 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too; DTLS interoperates with wolfSSL.  Cortex-M0: 2.8 KB for a UDP echo, 7.8 KB dual stack, 6.0 KB IPv6 only, 7.5 KB of TLS protocol code for a server, 11.3 KB of DTLS.)
+**Last updated:** 2026-10-01 (Tasks 1–16 complete: through Milestone 14, DTLS 1.3, with the Linux raw-socket driver, the issues found in the review and the bugs found by the V1 requirements audit; release 0.1.0 and the automatic release process.  846 unit tests on macOS (857 on Linux as root) + 209 blackbox + 5 fuzz + interop checks passing, blackbox over both Linux drivers, and the IPv6 suite against an IPv6-only build too; DTLS interoperates with wolfSSL.  Cortex-M0: 3.0 KB for a UDP echo, 8.1 KB dual stack, 6.1 KB IPv6 only, 7.5 KB of TLS protocol code for a server, 11.3 KB of DTLS.)
 
 This is the original plan, kept as the record of the design decisions and the
 order of work.  Where the implementation departed from it, the text below says
@@ -146,9 +146,9 @@ typedef struct {
 | TCP + HTTP | above + http | ~7-9 KB | ~30 bytes state |
 | Full (UDP+TCP+DHCP+HTTP) | everything | ~10-14 KB | ~50 bytes state |
 
-Measured on Cortex-M0 (2026-09-27, [size-comparison.md](docs/design/size-comparison.md)):
-UDP echo 2,802 B, UDP + TCP 6,626 B, UDP + HTTP (with TCP) 10,990 B, UDP +
-mDNS 9,244 B, dual-stack UDP 7,805 B, IPv6-only UDP 5,977 B; the TLS 1.3
+Measured on Cortex-M0 (2026-10-01, [size-comparison.md](docs/design/size-comparison.md)):
+UDP echo 3,026 B, UDP + TCP 6,968 B, UDP + HTTP (with TCP) 11,482 B, UDP +
+mDNS 10,004 B, dual-stack UDP 8,053 B, IPv6-only UDP 6,077 B; the TLS 1.3
 protocol 7,460 B for a server, DTLS 1.3 11,263 B — with **no** stack-internal
 static state at all: every byte of RAM is application-owned.
 
@@ -373,6 +373,43 @@ is built in CI but has not run on a board, excepted).
       `cmake/arm-none-eabi.cmake` builds the libraries for it — the
       NUCLEO-F429ZI port (`boards/nucleo-f429zi`, `src/driver/stm32f4_eth.c`),
       built in CI; **not yet run on hardware**
+
+### ✅ Task 16: The V1 requirements audit's bugs, and release 0.1.0 *(DONE)*
+An audit of every V1 MUST against the code (2026-09-29: 591 MUSTs, 492
+implemented, 30 partial, 40 left out by design, the 28 of the DNS resolver
+and one more not built) found these bugs.  Each fix started with a unit test
+that failed on the code before it.
+
+- [x] IPv4 took another subnet's directed broadcast as ours, and with a /31
+      or /32 mask every address ([ipv4.md](docs/requirements/ipv4.md))
+- [x] Datagrams from broadcast, multicast and class E sources were accepted,
+      and ICMP errors went back to them and to 0.0.0.0; the echo reply copied
+      the request's Code
+- [x] `tcp_close()` did nothing in LISTEN, SYN-SENT and SYN-RECEIVED; a
+      passive open reset in SYN-RECEIVED closed instead of listening again
+      (REQ-TCP-046); `tcp_abort()` sent a RST from LISTEN to the last peer
+      ([tcp.md](docs/design/tcp.md) §3.4, §4.7)
+- [x] The key of TCP's initial sequence numbers took 32 bits of seed at most:
+      `net_random_seed()` takes bytes; the demos seed from `/dev/urandom`,
+      the board port from the STM32F4's RNG
+- [x] HTTP: HEAD errors had a body, as had a 204; a 405 could lack `Allow`;
+      two `Host` lines were accepted ([http.md](docs/design/http.md))
+- [x] mDNS: no goodbye for the meta-query PTRs; a record too large for a
+      packet silently never sent; the TC bit ignored; no way to withdraw one
+      service — `mdns_withdraw()` ([mdns.md](docs/design/mdns.md))
+- [x] UDP sends beyond the Ethernet MTU and with TTL 0; ARP answering for
+      0.0.0.0; the incremental checksum with odd pieces; blackbox tests
+      citing the wrong requirements
+
+The project had no versions or releases.  `include/net_version.h` now holds
+the version; `CHANGELOG.md` the notes; when CI passes on `main` for a
+version not yet released, `.github/workflows/release.yml` tags it and
+publishes the release ([release-process.md](docs/release-process.md)).
+v0.1.0 is the first.
+
+Left for later, from the same audit: received ICMP errors (and with them
+Path MTU Discovery), TCP's RTT measurement and congestion control, IP
+reassembly, and the DNS stub resolver.
 
 ## Language & Build
 

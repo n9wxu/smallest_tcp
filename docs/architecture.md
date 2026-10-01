@@ -333,9 +333,11 @@ smallest_tcp/
 ├── CMakeLists.txt          CMake: core + optional libraries, tests, demos
 ├── Makefile                Cortex-M0 size builds and the no-division check
 ├── README.md
+├── CHANGELOG.md            what each release changed
 ├── include/
 │   ├── net.h               net_t, net_init/poll/tick/transmit, random, timer helpers
 │   ├── net_config.h        compile-time settings
+│   ├── net_version.h       the release: NET_VERSION_STRING, NET_VERSION
 │   ├── net_mac.h           MAC driver interface
 │   ├── net_endian.h        wire field access, byte order
 │   ├── net_cksum.h         Internet checksum
@@ -368,10 +370,11 @@ smallest_tcp/
 ├── cmake/                  arm-none-eabi.cmake: cross-compiling the libraries
 ├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
 ├── examples/fetchcontent/  consuming the library with CMake FetchContent
+├── scripts/                release_info.sh: the version and its release notes
 └── docs/
     ├── architecture.md     this document
     ├── integrating-modules.md
-    ├── test-plan.md  ci-debugging.md
+    ├── test-plan.md  ci-debugging.md  release-process.md
     ├── design/             one document per subsystem
     └── requirements/       RFC-traced requirements per protocol
 ```

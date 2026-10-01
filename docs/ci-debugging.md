@@ -25,8 +25,12 @@ CMake is the only host build; the `Makefile` is used only by `arm-size`.
 | `blackbox-validate` | The same suites against the Linux kernel as reference SUT (§1) |
 | `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls`, `blackbox-dtls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks (DTLS against wolfSSL, built by `tests/blackbox/build_wolfssl.sh` and cached) |
 | `fetchcontent` | Builds and runs `examples/fetchcontent` against the checkout |
+| `release-check` | The version in `net_version.h` has its section in `CHANGELOG.md`, and CMake and the compiled library report that version.  Fails when a version is raised without release notes — add the `## [X.Y.Z]` section ([release-process.md](release-process.md)) |
 
-`fuzz.yml` runs the TCP fuzz suite nightly.  The full matrix is in
+`fuzz.yml` runs the TCP fuzz suite nightly.  `release.yml` runs when this
+workflow completes on `main`: if every job passed and the version has no
+release yet, it tags the commit and publishes the release; otherwise it
+does nothing.  The full matrix is in
 [test-plan.md §3](test-plan.md#3-ci-job-matrix).
 
 ## 1. Two-Job Interpretation Rule

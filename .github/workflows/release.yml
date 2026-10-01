@@ -1,0 +1,73 @@
+name: Release
+
+# A release is made by raising the version in include/net_version.h, with
+# its section in CHANGELOG.md, on main.  When CI passes for a push to main
+# whose version has not been released, this job tags that commit vX.Y.Z
+# and publishes the GitHub Release, the CHANGELOG section as its notes.
+# Every other green push finds the release already there and does nothing.
+# See docs/release-process.md.
+
+on:
+  workflow_run:
+    workflows: ["CI — Build & Unit Tests"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    name: Tag and publish
+    # CI passed for a push to this repository's main — not a pull request,
+    # whose branch may be called main too
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(scripts/release_info.sh version)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" > /dev/null 2>&1; then
+            echo "v$v is released already: nothing to do"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$v is not released yet"
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release notes
+        if: steps.version.outputs.new == 'true'
+        run: scripts/release_info.sh notes "${{ steps.version.outputs.version }}" > notes.md
+
+      - name: Tag and publish
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          gh release create "v$VERSION" --target "$SHA" \
+            --title "smallest_tcp $VERSION" --notes-file notes.md
+          {
+            echo "## Released smallest_tcp $VERSION"
+            echo
+            echo "Tag \`v$VERSION\` at \`$SHA\`."
+          } >> "$GITHUB_STEP_SUMMARY"

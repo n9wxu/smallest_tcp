@@ -10,7 +10,7 @@
 #   FetchContent_Declare(
 #       smallest_tcp
 #       GIT_REPOSITORY https://github.com/n9wxu/smallest_tcp.git
-#       GIT_TAG        main   # or a specific tag/commit
+#       GIT_TAG        v0.1.0   # a release tag (docs/release-process.md)
 #   )
 #   FetchContent_MakeAvailable(smallest_tcp)
 #
@@ -25,7 +25,7 @@ include(FetchContent)
 
 # In a real project, this would point to the remote repo:
 #   GIT_REPOSITORY https://github.com/n9wxu/smallest_tcp.git
-#   GIT_TAG        main
+#   GIT_TAG        v0.1.0
 #
 # For local testing we use a source directory instead:
 FetchContent_Declare(

@@ -21,7 +21,7 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**29 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **809 tests on macOS; on Linux 812, or 820 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites and `test_dtls` need `SMALLEST_TCP_TLS` (Mbed TLS; `test_dtls` also `SMALLEST_TCP_DTLS`) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 19 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
+**29 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **846 tests on macOS; on Linux 849, or 857 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites and `test_dtls` need `SMALLEST_TCP_TLS` (Mbed TLS; `test_dtls` also `SMALLEST_TCP_DTLS`) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 19 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
@@ -457,6 +457,8 @@ programs run in their own source tree, which they insist on.
 | `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS and DTLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide — and `arm-check-links` — fails if TLS's objects need DTLS's record layer or DTLS's TLS's | push/PR |
 | `board-nucleo-f429zi` | ci.yml | ubuntu-latest | Builds the NUCLEO-F429ZI `tcp_echo_demo.elf` of the hardware fuzz job (§4) — build only | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Builds and runs `examples/fetchcontent` against the checkout | push/PR |
+| `release-check` | ci.yml | ubuntu-latest | The version has its CHANGELOG section; CMake and the library report it | push/PR |
+| `release` | release.yml | ubuntu-latest | Tags and publishes the version once CI passes on `main`, if not yet released ([release-process.md](release-process.md)) | CI completed on main |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
 | `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz and conformance on a NUCLEO-F429ZI (§4) | Nightly (when enabled) |
 
