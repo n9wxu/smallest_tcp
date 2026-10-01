@@ -3,17 +3,97 @@
  * @brief ARP, UDP sending and the checksum API, black box.
  */
 
+#include "arp.h"
 #include "itest.h"
 #include "net_cksum.h"
 #include "udp.h"
 #include <string.h>
 
 static itest_t t;
+static int delivered;
+
+static void on_datagram(net_t *net, uint32_t src_ip, uint16_t src_port,
+                        const uint8_t *src_mac, const uint8_t *data,
+                        uint16_t len) {
+  (void)net;
+  (void)src_ip;
+  (void)src_port;
+  (void)src_mac;
+  (void)data;
+  (void)len;
+  delivered++;
+}
+
+#define OPEN_PORT 7000
+#define CLOSED_PORT 7001
+static const udp_port_entry_t ports[] = {{OPEN_PORT, on_datagram}};
+
+static void up(void) {
+  itest_up(&t, 1514, 1514);
+  udp_set_ports(&t.net, ports, 1);
+  delivered = 0;
+}
+
+/* ── Ethernet ── */
+
+/* REQ-ETH-021: every frame sent is Ethernet II: an EtherType, not an 802.3
+ * length, and never a trailer encapsulation */
+TEST(itest_eth_021_ethernet_ii_only) {
+  uint8_t f[128];
+  static const uint8_t zero[6] = {0};
+  uint16_t i;
+  up();
+  itest_receive(&t, f,
+                peer_arp_frame(f, broadcast_mac, 1, peer_mac, PEER_IP, zero,
+                               t.net.ipv4_addr));
+  itest_receive(&t, f,
+                peer_udp_frame(f, &t.net, PEER_IP, t.net.ipv4_addr, 5000,
+                               CLOSED_PORT, "x", 1));
+  udp_send(&t.net, PEER_IP, peer_mac, 7, 7, (const uint8_t *)"y", 1);
+  ASSERT_EQ(t.wire.tx_count, 3);
+  for (i = 0; i < t.wire.tx_count; i++) {
+    uint16_t type = peer_get16(wire_sent(&t, i)->data + 12);
+    ASSERT_TRUE(type == 0x0800 || type == 0x0806);
+  }
+}
+
+/* REQ-ETH-022, REQ-ICMPv4-035: a datagram to our address in a link-layer
+ * broadcast frame draws no ICMP error */
+TEST(itest_eth_022_link_broadcast_draws_no_error) {
+  uint8_t f[128], seg[64];
+  peer_ip_t ip;
+  uint16_t n;
+  up();
+  ip = peer_ip(PEER_IP, t.net.ipv4_addr, 17);
+  n = peer_udp(seg, &ip, 5000, CLOSED_PORT, "x", 1);
+  itest_receive(&t, f,
+                peer_ipv4_frame(f, broadcast_mac, peer_mac, &ip, seg, n));
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, seg, n));
+  ASSERT_EQ(t.wire.tx_count, 1); /* the same datagram, unicast: answered */
+}
+
+/* REQ-ETH-025 (RFC 1112 §7.3): a broadcast or multicast frame the host
+ * sent itself, looped back by the medium, is not delivered */
+TEST(itest_eth_025_own_frames_not_delivered) {
+  uint8_t f[128], seg[64];
+  peer_ip_t ip;
+  uint16_t n;
+  up();
+  ip = peer_ip(PEER_IP, 0xFFFFFFFFu, 17);
+  n = peer_udp(seg, &ip, 5000, OPEN_PORT, "x", 1);
+  itest_receive(&t, f,
+                peer_ipv4_frame(f, broadcast_mac, t.net.mac, &ip, seg, n));
+  ASSERT_EQ(delivered, 0);
+  itest_receive(&t, f,
+                peer_ipv4_frame(f, broadcast_mac, peer_mac, &ip, seg, n));
+  ASSERT_EQ(delivered, 1);
+}
 
 /* ── ARP ── */
 
-/* REQ-ARP-001, 002, 003: a request for our address is answered, unicast,
- * with our MAC and address */
+/* REQ-ARP-001, 002, 003, 040: a request for our address is answered,
+ * unicast, with our MAC and address */
 TEST(itest_arp_001_request_for_our_address_answered) {
   uint8_t f[64];
   static const uint8_t zero[6] = {0};
@@ -61,6 +141,61 @@ TEST(itest_arp_011_gateway_learned_only_from_the_gateway) {
                                t.net.ipv4_addr));
   ASSERT_TRUE(t.net.gateway_mac_valid);
   ASSERT_MEM_EQ(t.net.gateway_mac, gw, 6);
+}
+
+#ifndef NET_ARP_GATEWAY_TIMEOUT_MS
+#define NET_ARP_GATEWAY_TIMEOUT_MS 300000u /* until the stack defines it */
+#endif
+
+/* The gateway's ARP reply, received */
+static void gateway_replies(const uint8_t mac[6]) {
+  uint8_t f[64];
+  itest_receive(&t, f,
+                peer_arp_frame(f, t.net.mac, 2, mac, t.net.gateway_ipv4,
+                               t.net.mac, t.net.ipv4_addr));
+}
+
+/* REQ-ARP-038: the gateway's MAC is flushed once it is out of date, and a
+ * reply from the gateway refreshes it */
+TEST(itest_arp_038_gateway_mac_expires) {
+  static const uint8_t gw[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
+  up();
+  t.net.gateway_ipv4 = 0x0A0000FEu;
+  gateway_replies(gw);
+  ASSERT_TRUE(t.net.gateway_mac_valid);
+  itest_advance(&t, NET_ARP_GATEWAY_TIMEOUT_MS - 1000u, 1000);
+  gateway_replies(gw); /* refreshed: the timeout starts again */
+  itest_advance(&t, NET_ARP_GATEWAY_TIMEOUT_MS - 1000u, 1000);
+  ASSERT_TRUE(t.net.gateway_mac_valid);
+  itest_advance(&t, 2000, 1000);
+  ASSERT_FALSE(t.net.gateway_mac_valid);
+}
+
+/* REQ-ARP-039: no more than one request a second for the same address */
+TEST(itest_arp_039_no_flooding) {
+  up();
+  arp_request(&t.net, PEER_IP);
+  arp_request(&t.net, PEER_IP);
+  arp_request(&t.net, PEER_IP);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  itest_advance(&t, 999, 100);
+  arp_request(&t.net, PEER_IP);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  itest_advance(&t, 1, 1);
+  arp_request(&t.net, PEER_IP);
+  ASSERT_EQ(t.wire.tx_count, 2);
+}
+
+/* REQ-ARP-025, 026, 041: on-link destinations are their own next hop,
+ * off-link ones the gateway's — but the limited broadcast and multicast
+ * groups always go straight to the link */
+TEST(itest_arp_041_broadcast_and_multicast_next_hop) {
+  up();
+  t.net.gateway_ipv4 = 0x0A0000FEu;
+  ASSERT_EQ(arp_next_hop(&t.net, PEER2_IP), PEER2_IP);
+  ASSERT_EQ(arp_next_hop(&t.net, REMOTE_IP), 0x0A0000FEu);
+  ASSERT_EQ(arp_next_hop(&t.net, 0xFFFFFFFFu), 0xFFFFFFFFu);
+  ASSERT_EQ(arp_next_hop(&t.net, 0xE00000FBu), 0xE00000FBu);
 }
 
 /* ── UDP sending ── */
@@ -129,9 +264,15 @@ TEST(itest_cksum_006_pieces_of_any_length) {
 
 int main(void) {
   fprintf(stderr, "=== itest_link ===\n");
+  RUN_TEST(itest_eth_021_ethernet_ii_only);
+  RUN_TEST(itest_eth_022_link_broadcast_draws_no_error);
+  RUN_XFAIL(itest_eth_025_own_frames_not_delivered);
   RUN_TEST(itest_arp_001_request_for_our_address_answered);
   RUN_TEST(itest_arp_004_unconfigured_answers_nothing);
   RUN_TEST(itest_arp_011_gateway_learned_only_from_the_gateway);
+  RUN_XFAIL(itest_arp_038_gateway_mac_expires);
+  RUN_XFAIL(itest_arp_039_no_flooding);
+  RUN_XFAIL(itest_arp_041_broadcast_and_multicast_next_hop);
   RUN_TEST(itest_udp_032_one_ethernet_frame_at_most);
   RUN_TEST(itest_udp_032_frame_buffer_limit);
   RUN_TEST(itest_ipv4_058_never_ttl_zero);

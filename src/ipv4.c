@@ -166,6 +166,23 @@ int ipv4_is_host(const net_t *net, uint32_t ip) {
          !ipv4_is_broadcast(net, ip);
 }
 
+net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size) {
+  (void)net;
+  (void)buf;
+  (void)size;
+  return NET_ERR_INVALID_PARAM; /* not implemented yet */
+}
+
+uint16_t ipv4_mms_r(const net_t *net) {
+  (void)net;
+  return 0; /* not implemented yet */
+}
+
+uint16_t ipv4_mms_s(const net_t *net) {
+  (void)net;
+  return 0; /* not implemented yet */
+}
+
 /* REQ-IPv4-013..015: a single host other than us, or 0.0.0.0 — a DHCP
  * client's (REQ-IPv4-016) */
 static int source_is_valid(const net_t *net, uint32_t src_ip) {

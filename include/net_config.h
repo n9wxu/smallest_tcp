@@ -34,6 +34,12 @@
 #endif
 
 /* Multicast groups joined at once (0 compiles multicast RX out) */
+/** The link MTU net_init() sets (net_t.mtu, RFC 1122 §3.3.3): the most
+ *  any datagram sent carries, headers included */
+#ifndef NET_DEFAULT_MTU
+#define NET_DEFAULT_MTU 1500
+#endif
+
 #ifndef NET_MAX_MCAST_GROUPS
 #define NET_MAX_MCAST_GROUPS 1
 #endif

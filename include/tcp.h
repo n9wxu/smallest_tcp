@@ -93,6 +93,12 @@ typedef enum {
 #define TCP_EVT_ERROR                                                          \
   0x20u /**< Protocol error or retransmissions exhausted                       \
          */
+/** A soft error: an ICMP error that does not abort, or retransmissions
+ *  reaching R1 — tcp_last_error() says which (RFC 9293 MUST-47) */
+#define TCP_EVT_SOFT_ERROR 0x40u
+
+/** tcp_last_error() after retransmissions reached R1 */
+#define TCP_SOFT_RETRANSMITTING 0xFFFFu
 
 /** One connection; initialise with tcp_conn_init(). */
 typedef struct tcp_conn_s {
@@ -203,6 +209,18 @@ net_err_t tcp_close(net_t *net, tcp_conn_t *conn);
 net_err_t tcp_abort(net_t *net, tcp_conn_t *conn);
 
 tcp_state_t tcp_status(const tcp_conn_t *conn);
+
+/** The last soft error: ICMP type << 8 | code, TCP_SOFT_RETRANSMITTING, or
+ *  0 for none. */
+uint16_t tcp_last_error(const tcp_conn_t *conn);
+
+/** The TOS (DSCP) byte of the connection's segments (RFC 9293 MUST-48). */
+net_err_t tcp_set_tos(tcp_conn_t *conn, uint8_t tos);
+
+/** R2: how many retransmissions of one segment before the connection is
+ *  given up (RFC 9293 MUST-21); a SYN is retransmitted for at least
+ *  3 minutes whatever it is (MUST-23). */
+net_err_t tcp_set_max_retransmits(tcp_conn_t *conn, uint8_t r2);
 
 /**
  * Queue data without sending it, e.g. to build one segment from several

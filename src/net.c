@@ -51,6 +51,7 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
   memcpy(net->mac, mac ? mac : default_mac, 6);
   net->mac_driver = driver;
   net->mac_ctx = driver_ctx;
+  net->mtu = NET_DEFAULT_MTU;
 #if NET_USE_IPV4
   net->ipv4_addr = NET_DEFAULT_IPV4_ADDR;
   net->subnet_mask = NET_DEFAULT_SUBNET_MASK;

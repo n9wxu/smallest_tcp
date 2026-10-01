@@ -54,6 +54,36 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
 /** Where the payload goes in a frame built by udp_send_inplace(). */
 #define UDP_PAYLOAD_OFFSET (ETH_HDR_SIZE + IPV4_HDR_SIZE + UDP_HDR_SIZE)
 
+/** What a send may set besides addresses and ports */
+typedef struct {
+  uint32_t src_ip; /**< 0.0.0.0 only while DHCP acquires an address */
+  uint8_t ttl;     /**< Not 0 */
+  uint8_t tos;     /**< The IP TOS / DSCP byte (RFC 1122 §3.2.1.6) */
+} udp_tx_opts_t;
+
+/** As udp_send_inplace_from(), with @p opts. */
+net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
+                                const uint8_t *dst_mac, uint16_t src_port,
+                                uint16_t dst_port, uint16_t data_len,
+                                const udp_tx_opts_t *opts);
+
+/** In a handler: the destination address of the datagram being handled —
+ *  ours, a broadcast or a group (RFC 1122 §4.1.3.5). */
+uint32_t udp_rx_dst_ip(const net_t *net);
+
+/**
+ * Told of an ICMP error about a datagram sent from @p local_port to
+ * @p dst_ip : @p dst_port (RFC 1122 §4.1.3.3): its type and code, and for
+ * Fragmentation Needed the next-hop MTU (else 0).
+ */
+typedef void (*udp_error_handler_t)(net_t *net, uint16_t local_port,
+                                    uint32_t dst_ip, uint16_t dst_port,
+                                    uint8_t icmp_type, uint8_t icmp_code,
+                                    uint16_t mtu);
+
+/** Where ICMP errors about UDP datagrams go; NULL: nowhere. */
+void udp_set_error_handler(net_t *net, udp_error_handler_t handler);
+
 /** Send @p data_len bytes copied from @p data, from net->ipv4_addr.
  *  @return NET_ERR_BUF_TOO_SMALL if the datagram does not fit the TX frame
  *          buffer or one Ethernet frame (1472 bytes of payload). */

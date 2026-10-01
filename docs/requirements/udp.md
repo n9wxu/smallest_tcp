@@ -42,7 +42,7 @@ Minimum: 8 bytes (header only, zero-length data).
 | REQ-UDP-006 | MUST | If received UDP checksum ≠ 0, verify checksum over pseudo-header + header + data | RFC 768, RFC 1122 §4.1.3.4 | TEST-UDP-006 |
 | REQ-UDP-007 | MUST | Silently discard datagrams with checksum mismatch (when checksum is non-zero) | RFC 1122 §4.1.3.4 | TEST-UDP-007 |
 | REQ-UDP-008 | MUST | If received UDP checksum = 0 over IPv4, accept without verification (checksum was not computed) | RFC 768 | TEST-UDP-008 |
-| REQ-UDP-009 | SHOULD | Compute and include UDP checksum on transmitted IPv4 datagrams | RFC 1122 §4.1.3.4 | TEST-UDP-009 |
+| REQ-UDP-009 | MUST | Compute and include UDP checksum on transmitted IPv4 datagrams (RFC 1122: "MUST default to checksumming on") | RFC 1122 §4.1.3.4 | itest_udp_032_one_ethernet_frame_at_most |
 | REQ-UDP-010 | MAY | Transmit with checksum = 0 over IPv4 (no checksum) if application explicitly requests | RFC 768 | TEST-UDP-010 |
 
 ### Checksum — IPv6
@@ -116,8 +116,18 @@ Minimum: 8 bytes (header only, zero-length data).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-UDP-038 | SHOULD | Process ICMP Destination Unreachable directed at a UDP flow (match by port + IP from ICMP error body) | RFC 1122 §4.1.3.3 | TEST-UDP-038 |
-| REQ-UDP-039 | SHOULD | Report ICMP errors to application handler if applicable | RFC 1122 §4.1.3.3 | TEST-UDP-039 |
+| REQ-UDP-038 | MUST | Process ICMP Destination Unreachable directed at a UDP flow (match by port + IP from ICMP error body) | RFC 1122 §4.1.3.3 | itest_udp_038_port_unreachable_reported |
+| REQ-UDP-039 | MUST | Pass every ICMP error message received about a UDP datagram up to the application (`udp_set_error_handler()`) | RFC 1122 §4.1.3.3 | itest_udp_038_errors_of_every_kind_reported |
+
+### Application Interface
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-UDP-040 | MUST | Pass the specific destination address of a received datagram up to the application (`udp_rx_dst_ip()` in a handler) | RFC 1122 §4.1.3.5 | itest_udp_040_destination_address_passed_up |
+| REQ-UDP-041 | MUST | Let the application choose the source address of a datagram or leave it unspecified (`udp_send_inplace_from()`, `udp_send()`); the source must be one of the host's addresses — or 0.0.0.0 while it acquires one | RFC 1122 §4.1.3.5, §4.1.3.6 | itest_udp_041_source_must_be_ours |
+| REQ-UDP-042 | MUST | Pass IP options through, both ways — **deviation:** options are neither passed up nor settable (REQ-IPv4-065, 066) | RFC 1122 §4.1.3.2 | itest_ipv4_026_options_skipped |
+| REQ-UDP-043 | MUST | Provide the IP/transport interface: the source address (`net_t.ipv4_addr`), the maximum sizes (`ipv4_mms_s()`, `ipv4_mms_r()`), ICMP messages (REQ-UDP-039) — **deviation:** no ADVISE_DELIVPROB: there is no gateway choice to advise (REQ-IPv4-075) | RFC 1122 §4.1.4, §3.4 | itest_ipv4_063_mms_s |
+| REQ-UDP-044 | MUST | Let the application set the TTL and the TOS of a datagram (`udp_send_inplace_opts()`); IP options: REQ-UDP-042 | RFC 1122 §4.1.4 | itest_ipv4_041_tos_settable |
 
 ## Notes
 

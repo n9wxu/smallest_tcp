@@ -38,6 +38,8 @@ Minimum frame: 64 bytes (with FCS) = 60 bytes (without FCS). Maximum frame: 1518
 | REQ-ETH-008 | MUST | Silently discard frames with unrecognized EtherType | RFC 1122 §2.3.3 | TEST-ETH-008 |
 | REQ-ETH-009 | MUST | Silently discard frames shorter than 14 bytes (no valid header) | IEEE 802.3 | TEST-ETH-009 |
 | REQ-ETH-010 | SHOULD | Accept multicast frames for subscribed multicast groups (e.g., IPv6 solicited-node) | IEEE 802.3 | TEST-ETH-010 |
+| REQ-ETH-022 | MUST | Tell the IP layer whether a frame was addressed to a link-layer broadcast (or multicast) address, so no ICMP error answers it | RFC 1122 §2.4 | itest_eth_022_link_broadcast_draws_no_error |
+| REQ-ETH-025 | MUST NOT | Deliver up a multicast or broadcast frame the host itself sent (one the medium loops back: its source MAC is ours) | RFC 1112 §7.3 | itest_eth_025_own_frames_not_delivered |
 
 ### Frame Transmission
 
@@ -49,6 +51,9 @@ Minimum frame: 64 bytes (with FCS) = 60 bytes (without FCS). Maximum frame: 1518
 | REQ-ETH-014 | MUST | EtherType MUST be 0x0806 for ARP payloads | RFC 894 | TEST-ETH-014 |
 | REQ-ETH-015 | MUST | EtherType MUST be 0x86DD for IPv6 payloads | RFC 2464 §3 | TEST-ETH-015 |
 | REQ-ETH-016 | SHOULD | Pad frames shorter than 60 bytes (minimum Ethernet frame without FCS) to 60 bytes | IEEE 802.3 §3.2.8 | TEST-ETH-016 |
+| REQ-ETH-021 | MUST | Send Ethernet II (RFC 894) frames only: trailer encapsulation off, no IEEE 802.2/802.3 framing | RFC 1122 §2.3.1, §2.3.3 | itest_eth_021_ethernet_ii_only |
+| REQ-ETH-023 | MUST | The link layer's send interface carries the IP TOS: frames are handed to the driver whole, with the TOS the IP header was built with | RFC 1122 §2.4 | — (covered by REQ-IPv4-041) |
+| REQ-ETH-024 | MUST NOT | Report Destination Unreachable to IP because no ARP entry exists | RFC 1122 §2.4 | — (not observable: there is no ARP cache; sends take the MAC from the caller) |
 
 ### Frame Validation
 

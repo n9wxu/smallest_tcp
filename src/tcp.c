@@ -1113,6 +1113,23 @@ void tcp_window_update(net_t *net, tcp_conn_t *conn) {
   send_ack(net, conn);
 }
 
+uint16_t tcp_last_error(const tcp_conn_t *conn) {
+  (void)conn;
+  return 0; /* not implemented yet */
+}
+
+net_err_t tcp_set_tos(tcp_conn_t *conn, uint8_t tos) {
+  (void)conn;
+  (void)tos;
+  return NET_OK; /* not implemented yet */
+}
+
+net_err_t tcp_set_max_retransmits(tcp_conn_t *conn, uint8_t r2) {
+  (void)conn;
+  (void)r2;
+  return NET_OK; /* not implemented yet */
+}
+
 /* REQ-TCP-015, RFC 9293 §3.10.4 */
 net_err_t tcp_close(net_t *net, tcp_conn_t *conn) {
   if (!net || !conn)

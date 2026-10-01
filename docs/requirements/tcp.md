@@ -170,7 +170,7 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-TCP-063 | MAY | Ignore URG flag and Urgent Pointer (urgent data not supported) | RFC 9293 §3.10.7.4 Step 6, Architecture | TEST-TCP-063 |
+| REQ-TCP-063 | MUST | Support the urgent mechanism: urgent data of any length, the Urgent Pointer pointing at the octet after it, the application told when one arrives and how much urgent data remains (RFC 9293 MUST-30, 31, 32, 33, 62) — **deviation:** the URG flag and Urgent Pointer are ignored and the data delivered in line; RFC 9293 tells applications not to use urgent data (SHLD-13) | RFC 9293 §3.8.5, §3.10.7.4 step 6 | itest_tcp_063_urgent_data_in_line |
 
 #### Step 7: Segment Text (Data) Processing
 
@@ -236,7 +236,7 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | REQ-TCP-096 | MUST | On timeout: double RTO (exponential backoff) | RFC 6298 §5.5 | TEST-TCP-096 |
 | REQ-TCP-097 | MUST | On ACK for new data: restart retransmission timer | RFC 6298 §5.3 | TEST-TCP-097 |
 | REQ-TCP-098 | MUST | When all data acknowledged, stop retransmission timer | RFC 6298 §5.2 | TEST-TCP-098 |
-| REQ-TCP-099 | MUST | Measure RTT per RFC 6298 (at most one measurement per RTT) | RFC 6298 §3 | TEST-TCP-099 |
+| REQ-TCP-099 | MUST | Measure RTT per RFC 6298: at least one measurement per RTT (unless Karn's algorithm prevents it) | RFC 6298 §3 | TEST-TCP-099 |
 | REQ-TCP-100 | MUST NOT | MUST NOT measure RTT for retransmitted segments (Karn's algorithm) | RFC 6298 §3, RFC 9293 §3.8.1 | TEST-TCP-100 |
 
 ### Congestion Control (RFC 5681)
@@ -312,9 +312,9 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-TCP-135 | MUST | Process ICMP Destination Unreachable for TCP connections | RFC 1122 §4.2.3.9 | TEST-TCP-135 |
-| REQ-TCP-136 | SHOULD | Treat soft ICMP errors (e.g., Network Unreachable) as advisory, not connection-fatal | RFC 1122 §4.2.3.9 | TEST-TCP-136 |
-| REQ-TCP-137 | MUST | Treat ICMP Host Unreachable/Protocol Unreachable as soft errors | RFC 1122 §4.2.3.9 | TEST-TCP-137 |
+| REQ-TCP-135 | MUST | Process ICMP Destination Unreachable for TCP connections — Fragmentation Needed lowers the connection's segment size to fit the next-hop MTU (RFC 1191) | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2, RFC 1191 | itest_tcp_135_unreachable_in_syn_sent, itest_tcp_135_fragmentation_needed_lowers_mss |
+| REQ-TCP-136 | MUST NOT | Abort a connection on a soft error — Destination Unreachable codes 0, 1, 5, Time Exceeded, Parameter Problem; report it to the application instead (MUST-56) | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2 | itest_tcp_136_soft_errors_do_not_abort |
+| REQ-TCP-137 | SHOULD | Treat Destination Unreachable codes 2–4 (Protocol, Port Unreachable; Fragmentation Needed without a usable MTU) as hard errors and abort the connection | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2 | itest_tcp_137_hard_errors_abort |
 | REQ-TCP-138 | SHOULD | After multiple soft errors without successful data exchange, abort connection | RFC 1122 §4.2.3.9 | TEST-TCP-138 |
 
 ### Checksum
@@ -359,11 +359,45 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | REQ-TCP-154 | SHOULD | Implement challenge ACK for in-window SYN/RST (RFC 5961 blind attack mitigation) | RFC 5961, RFC 9293 §3.10.7.4 | TEST-TCP-154 |
 | REQ-TCP-155 | SHOULD | Rate-limit RST generation to mitigate RST attacks | RFC 5961, RFC 9293 | TEST-TCP-155 |
 
+### Further MUSTs of RFC 9293, RFC 1122 and RFC 6298
+
+RFC 9293's requirement numbers (MUST-n) in brackets.
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-TCP-156 | MUST | Treat the window as an unsigned number [MUST-1] | RFC 9293 §3.1 | itest_tcp_156_window_unsigned |
+| REQ-TCP-157 | MUST | Receive a TCP option in any segment, not only a SYN [MUST-5] | RFC 9293 §3.1 | itest_tcp_157_options_in_any_segment |
+| REQ-TCP-158 | MUST | Handle an illegal option length (e.g. zero) without harm [MUST-7] | RFC 9293 §3.1 | itest_tcp_158_illegal_option_length |
+| REQ-TCP-159 | MUST | Process options that do not start on a word boundary [MUST-64] | RFC 9293 §3.2 | itest_tcp_157_options_in_any_segment |
+| REQ-TCP-160 | MUST | Process the RST field of every incoming segment, even with the receive window zero — a RST carrying data included [MUST-66]; URG: REQ-TCP-063 | RFC 9293 §3.4 | itest_tcp_160_rst_into_zero_window |
+| REQ-TCP-161 | MUST | Tell the application whether a connection closed normally or was aborted [MUST-12] | RFC 9293 §3.6 | itest_tcp_161_closed_or_aborted |
+| REQ-TCP-162 | MUST | Handle excessive retransmissions: at R1, report a soft error to the application (REQ-TCP-173); at R2, close the connection [MUST-20] — **deviation:** no negative advice to the IP layer at R1: there is no gateway choice to advise (REQ-IPv4-075) | RFC 9293 §3.8.3, RFC 1122 §4.2.3.5 | itest_tcp_162_r1_and_r2 |
+| REQ-TCP-163 | MUST | Handle SYN retransmissions like data retransmissions, the application notified when they end [MUST-22] | RFC 9293 §3.8.3 | itest_tcp_164_syn_retransmitted_three_minutes |
+| REQ-TCP-164 | MUST | Retransmit a SYN for at least 3 minutes before giving up [MUST-23], whatever R2 the application chose | RFC 9293 §3.8.3, RFC 1122 §4.2.3.5 | itest_tcp_164_syn_retransmitted_three_minutes |
+| REQ-TCP-165 | MUST | Let the application set R2 for a connection [MUST-21] (`tcp_set_max_retransmits()`) | RFC 9293 §3.8.3, RFC 1122 §4.2.3.5 | itest_tcp_162_r1_and_r2 |
+| REQ-TCP-166 | MUST | Be robust against the peer shrinking its window [MUST-34] | RFC 9293 §3.8.6 | itest_tcp_166_window_shrunk |
+| REQ-TCP-167 | MUST | Keep a connection open while the peer advertises a zero window and answers probes [MUST-37] | RFC 9293 §3.8.6.1, RFC 1122 §4.2.2.17 | itest_tcp_167_zero_window_kept_open |
+| REQ-TCP-168 | MUST NOT | Let a LISTEN affect a connection record already in use (`tcp_listen()` refuses a connection that is not CLOSED or LISTEN) [MUST-41] | RFC 9293 §3.9.1.1 | itest_tcp_168_listen_on_a_live_connection |
+| REQ-TCP-169 | MUST | Allow LISTEN on a port while another connection on it is in SYN-SENT or SYN-RECEIVED [MUST-42] | RFC 9293 §3.9.1.1 | itest_tcp_169_listen_beside_an_open |
+| REQ-TCP-170 | MUST | Support the optional local IP address parameter of OPEN [MUST-43]: over IPv4 the host has one address; over IPv6, `tcp6_bind_local()` | RFC 9293 §3.9.1.1 | itest_tcp_170_local_address |
+| REQ-TCP-171 | MUST | Ask the IP layer for a local address before sending the first SYN [MUST-44], and use it for the connection's whole life [MUST-45] — if the host's address changes, the connection is aborted rather than continued from another | RFC 9293 §3.9.1.1 | itest_tcp_171_same_local_address |
+| REQ-TCP-172 | MUST | Refuse an OPEN to a broadcast or multicast remote address [MUST-46] | RFC 9293 §3.9.1.1 | itest_tcp_172_open_to_broadcast_refused |
+| REQ-TCP-173 | MUST | Report soft errors to the application — ICMP errors that do not abort, and R1 reached [MUST-47]: `TCP_EVT_SOFT_ERROR`, `tcp_last_error()` | RFC 9293 §3.9.1.8, RFC 1122 §4.2.4.1 | itest_tcp_136_soft_errors_do_not_abort |
+| REQ-TCP-174 | MUST | Let the application set the DSCP (TOS) of a connection's segments [MUST-48] (`tcp_set_tos()`) | RFC 9293 §3.9.1.9 | itest_tcp_174_tos |
+| REQ-TCP-175 | MUST | Make the TTL of TCP segments configurable [MUST-49] (`NET_DEFAULT_TTL`; the IPv6 hop limit from the router) | RFC 9293 §3.9.2 | itest_ipv4_035_default_ttl |
+| REQ-TCP-176 | MUST | Silently discard a SYN addressed to a broadcast or multicast address [MUST-57] | RFC 9293 §3.9.2.3 | itest_tcp_176_syn_to_broadcast_dropped |
+| REQ-TCP-177 | MUST | Ignore a SYN with an invalid source address — 0.0.0.0 included [MUST-63] | RFC 9293 §3.9.2.3 | itest_tcp_177_syn_from_unspecified_ignored |
+| REQ-TCP-178 | MUST | Aggregate ACKs, processing every queued segment before acknowledging [MUST-58, 59] — met trivially: `net_poll()` hands TCP one segment at a time, and each is acknowledged as it is processed | RFC 9293 §3.10.7.4 | — (not observable: no queue of segments forms) |
+| REQ-TCP-179 | MUST NOT | Retransmit a segment less than one RTO after its previous transmission, or more aggressively than RFC 6298 allows | RFC 6298 §1, §5 | itest_tcp_179_retransmit_not_early |
+| REQ-TCP-180 | MUST | Set PSH on the last buffered segment — the one that empties the send buffer [MUST-61]; never buffer data indefinitely [MUST-60] | RFC 9293 §3.9.1.2, RFC 1122 §4.2.2.2 | itest_tcp_180_push_and_no_indefinite_buffering |
+| REQ-TCP-181 | MUST | After a SYN timed out with an RTO under 3 s, start data transmission with an RTO of 3 s | RFC 6298 §5 (5.7) | itest_tcp_181_rto_three_seconds_after_syn_timeout |
+| REQ-TCP-182 | MUST | Pass IP options to and from TCP, and support source routes: save a received return route, let the application give one [MUST-50, 51, 52, 53] — **deviation:** source-routed datagrams are dropped (REQ-IPv4-067) and options are not passed up or settable | RFC 9293 §3.9.2.1, RFC 1122 §4.2.3.8 | itest_ipv4_067_source_routed_dropped |
+
 ## Notes
 
 - **RFC 9293 consolidates RFC 793:** All TCP requirements now reference RFC 9293 as the primary source. Section numbers refer to RFC 9293.
 - **Congestion control is mandatory:** RFC 5681 compliance is required. However, for the stop-and-wait buffer mode (1 segment in flight), congestion control is inherently satisfied since cwnd ≥ 1 MSS.
-- **Urgent data not supported:** The URG flag and Urgent Pointer are parsed but the urgent mechanism is not implemented. This is acceptable per RFC 9293 §3.8.6 which notes urgent data is rarely used.
+- **Urgent data not supported:** a recorded deviation from RFC 9293 MUST-30..33 and 62 (REQ-TCP-063): the URG flag and Urgent Pointer are ignored and urgent data delivered in line.  RFC 9293 §3.8.5 asks implementations to keep supporting it but applications not to use it (SHLD-13).
 - **No SACK in V1:** SACK (RFC 2018) is a MAY. The stop-and-wait and circular buffer modes don't benefit from SACK since they handle loss via retransmit timeout.
 - **Window Scale and Timestamps are optional:** For small MCUs with < 64 KB buffers, the 16-bit window field is sufficient. Window Scale is only needed if RX buffer exceeds 65535 bytes.
 - **Active open needed for:** TCP clients (HTTP client, future TFTP-over-TCP, etc.). Not needed for server-only use cases but included for completeness.

@@ -90,6 +90,24 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                                dst_port, data_len, ttl);
 }
 
+net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
+                                const uint8_t *dst_mac, uint16_t src_port,
+                                uint16_t dst_port, uint16_t data_len,
+                                const udp_tx_opts_t *opts) {
+  return udp_send_inplace_from(net, opts->src_ip, dst_ip, dst_mac, src_port,
+                               dst_port, data_len, opts->ttl);
+}
+
+uint32_t udp_rx_dst_ip(const net_t *net) {
+  (void)net;
+  return 0; /* not implemented yet */
+}
+
+void udp_set_error_handler(net_t *net, udp_error_handler_t handler) {
+  (void)net;
+  (void)handler; /* not implemented yet */
+}
+
 /* REQ-UDP-009, 021..023 */
 net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,

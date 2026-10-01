@@ -72,6 +72,8 @@ Total: 28 bytes. Encapsulated in Ethernet frame with EtherType 0x0806.
 | REQ-ARP-022 | SHOULD | ARP request timeout SHOULD be approximately 1 second | RFC 1122 §2.3.2.1 | TEST-ARP-022 |
 | REQ-ARP-023 | MUST | Limit ARP retransmissions (SHOULD NOT exceed ~5 retries) | RFC 1122 §2.3.2.1 | TEST-ARP-023 |
 | REQ-ARP-024 | MUST | Report failure to upper layer after ARP resolution timeout | RFC 1122 §2.3.2.1 | TEST-ARP-024 |
+| REQ-ARP-038 | MUST | Flush out-of-date entries: the gateway's MAC expires `NET_ARP_GATEWAY_TIMEOUT_MS` after it was learned or last refreshed by the gateway's reply; the timeout is configurable | RFC 1122 §2.3.2.1 | itest_arp_038_gateway_mac_expires |
+| REQ-ARP-039 | MUST | Prevent ARP flooding: at most one request per second for the same target address | RFC 1122 §2.3.2.1 | itest_arp_039_no_flooding |
 
 ### Routing and Gateway
 
@@ -81,6 +83,8 @@ Total: 28 bytes. Encapsulated in Ethernet frame with EtherType 0x0806.
 | REQ-ARP-026 | MUST | For destinations off-subnet, ARP the gateway IP instead of the destination IP | RFC 1122 §3.3.1.1 | TEST-ARP-026 |
 | REQ-ARP-027 | MUST | Store gateway MAC in `net_t` (not in per-connection state) | Architecture | TEST-ARP-027 |
 | REQ-ARP-028 | MAY | Support "gateway-only" mode where ALL packets are sent to gateway MAC regardless of subnet | Architecture (minimal config) | TEST-ARP-028 |
+| REQ-ARP-040 | MUST | Map IP addresses to Ethernet addresses with ARP: the stack provides `arp_request()`, `arp_next_hop()` and the gateway's MAC; the application sequences them ([arp-resolution.md](../design/arp-resolution.md)) | RFC 1122 §2.3.3 | itest_arp_001_request_for_our_address_answered |
+| REQ-ARP-041 | MUST | A datagram to the limited broadcast or a multicast group goes straight to the link layer: its next hop is the destination itself, never the gateway | RFC 1122 §3.3.1.1, RFC 1112 §6.2 | itest_arp_041_broadcast_and_multicast_next_hop |
 
 ### Distributed Cache Model
 

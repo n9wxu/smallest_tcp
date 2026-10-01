@@ -87,6 +87,7 @@ typedef struct {
   net_buf_t rx;
   net_buf_t tx;
   uint8_t mac[6];
+  uint16_t mtu; /**< The link MTU: datagrams sent are no longer */
   const net_mac_t *mac_driver;
   void *mac_ctx;
   uint32_t secret[2];    /**< net_hash() key */

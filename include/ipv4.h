@@ -77,6 +77,30 @@ static inline void ipv4_build(uint8_t *buf, uint16_t payload_len,
   ipv4_build_ttl(buf, payload_len, protocol, src_ip, dst_ip, NET_DEFAULT_TTL);
 }
 
+/* ── Reassembly and message sizes (RFC 1122 §3.3.2, §3.3.3) ── */
+
+/** Bookkeeping at the start of a reassembly buffer */
+#define IPV4_REASM_OVERHEAD 84
+/** The size of a reassembly buffer that reassembles datagrams of up to
+ *  @p emtu_r bytes (header included; at least 576 to comply) */
+#define IPV4_REASSEMBLY_BUFFER(emtu_r)                                         \
+  (IPV4_REASM_OVERHEAD + ((emtu_r) - 20 + 63) / 64 + (emtu_r) - 20)
+
+/**
+ * Give IPv4 a buffer, owned by the application, to reassemble fragmented
+ * datagrams in, one at a time.  Without one, fragments are dropped.
+ * @return NET_ERR_BUF_TOO_SMALL if it cannot hold any data.
+ */
+net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size);
+
+/** MMS_R: the largest transport message this host can receive in one
+ *  datagram, whole or reassembled. */
+uint16_t ipv4_mms_r(const net_t *net);
+
+/** MMS_S: the largest transport message it can send in one datagram — the
+ *  TX frame buffer and the MTU less the IP header. */
+uint16_t ipv4_mms_s(const net_t *net);
+
 #define IPV4_ROUTER_ALERT_HDR_SIZE 24
 
 /** Write a 24-byte header carrying the Router Alert option (RFC 2113),
