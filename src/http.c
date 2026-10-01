@@ -312,6 +312,9 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
         return 400;
       cl = n;
       cl_seen = 1;
+    } else if (eq_ci(line, name_len, "expect")) {
+      if (version == 11 && eq_ci(v, vlen, "100-continue"))
+        req->flags |= HTTP_RQ_CONTINUE; /* HTTP/1.0's is ignored */
     } else if (eq_ci(line, name_len, "if-match")) {
       if (!eq_ci(v, vlen, "*")) /* entity tags: none can match ours */
         req->flags |= HTTP_RQ_IF_MATCH;
@@ -390,6 +393,8 @@ const char *http_reason(uint16_t status) {
     return "Content Too Large";
   case 414:
     return "URI Too Long";
+  case 417:
+    return "Expectation Failed";
   case 421:
     return "Misdirected Request";
   case 431:
@@ -818,11 +823,15 @@ static int misdirected(const http_server_t *s, const http_conn_t *c) {
 
 /* What the header section alone decides, before any content is read: the
  * status to answer with (*allow: for a 405), or HTTP_PARSE_OK to read the
- * content and run the handler.  REQ-HTTP-054, 055: the preconditions come
- * last, once the request would otherwise succeed (RFC 9110 §13.2.1), in
- * §13.2.2's order.  The server sends no entity tags, so If-Match with tags
- * fails and If-None-Match with tags holds; "*" names the route's
- * representation, which exists. */
+ * content and run the handler.  REQ-HTTP-053: a client waiting for 100
+ * (Continue) before it sends the content must not be kept waiting (RFC
+ * 9110 §10.1.1), and this HTTP/1.0 server cannot send a 1xx (§15.2): 417
+ * at once, which tells the client to repeat the request without the
+ * expectation — unless content has begun to arrive, so it did not wait.
+ * REQ-HTTP-054, 055: the preconditions come last, once the request would
+ * otherwise succeed (RFC 9110 §13.2.1), in §13.2.2's order.  The server sends
+ * no entity tags, so If-Match with tags fails and If-None-Match with tags
+ * holds; "*" names the route's representation, which exists. */
 static uint16_t admit(const http_server_t *s, const http_conn_t *c,
                       uint8_t *allow) {
   const http_request_t *rq = &c->request;
@@ -841,6 +850,9 @@ static uint16_t admit(const http_server_t *s, const http_conn_t *c,
     return 412;
   if (rq->flags & HTTP_RQ_IF_NONE_ANY)
     return (rq->method & (HTTP_GET | HTTP_HEAD)) ? 304 : 412;
+  if ((rq->flags & HTTP_RQ_CONTINUE) && c->content_length &&
+      c->req_len == c->hdr_len)
+    return 417; /* REQ-HTTP-053 */
   return HTTP_PARSE_OK;
 }
 

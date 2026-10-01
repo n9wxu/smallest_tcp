@@ -159,7 +159,8 @@ bytes arrive (transport read → request buffer)
        yes → parse (in place, NUL-terminating path and query) → 400/421/501/505
               └─ admit() — what the header section alone decides, at once:
                  too big for the buffer → 413, misdirected → 421,
-                 route lookup → 404 / 405, preconditions → 412 / 304
+                 route lookup → 404 / 405, preconditions → 412 / 304,
+                 Expect: 100-continue and no content yet → 417
                  └─ Content-Length body complete?  no → keep reading (or end the
                                                      stream if the client is done)
                     → handler → response
@@ -180,6 +181,19 @@ representation, which a route has: `If-Match: *` proceeds, `If-None-Match:
 If-Modified-Since and If-Unmodified-Since are ignored, as RFC 9110
 §13.1.3–4 requires of a resource with no modification date.
 
+**Expect: 100-continue** (RFC 9110 §10.1.1).  A client that sends it may
+hold back the content until it sees 100 (Continue), and the server must
+not wait for the content first: it must answer at once, with 100 or with
+a final status.  An HTTP/1.0 server cannot send 100 (HTTP/1.0 has no 1xx,
+§15.2), so an HTTP/1.1 request carrying the expectation, with content
+announced and none of it arrived yet, gets whatever final status the
+header section decides (404, 405, 412, 413, …) or else 417 (Expectation
+Failed) — the status for an expectation the server cannot meet (§15.5.18),
+on which a client SHOULD repeat the request without it.  If
+content has begun to arrive, the client did not wait, and the request is
+processed.  An HTTP/1.0 request's expectation is ignored, as §10.1.1
+requires.
+
 | Condition | Status |
 |---|---|
 | Request line not `METHOD SP target SP HTTP/x.y`, header line without `:`, obsolete line folding, bad or conflicting Content-Length | 400 |
@@ -192,6 +206,7 @@ If-Modified-Since and If-Unmodified-Since are ignored, as RFC 9110
 | Version other than HTTP/1.0 or HTTP/1.1 | 505 |
 | If-Match with entity tags (none can match), or `If-None-Match: *` on a POST (RFC 9110 §13.1.1, §13.1.2) | 412 |
 | `If-None-Match: *` on a GET or HEAD (RFC 9110 §13.1.2) | 304 |
+| HTTP/1.1 with `Expect: 100-continue`, content announced, none arrived (RFC 9110 §10.1.1) | 417 |
 | Path not in the route table | 404 |
 | Path known, method not allowed for it (with `Allow:`, empty for a route that allows nothing — RFC 9110 §15.5.6) | 405 |
 | Body larger than the request buffer | 413 |
