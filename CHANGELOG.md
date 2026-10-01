@@ -10,6 +10,8 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-01
+
 The RFC MUSTs the requirement documents left out: an inventory of RFC 1122,
 791, 792, 826, 1112, 2236, 768, 9293, 6298, 2131, 2132, 1123, 1350, 9110,
 9112, 6762 and 6763 added a row for each, a black-box integration test for
@@ -208,7 +210,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.0...v0.1.1
