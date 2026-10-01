@@ -792,7 +792,7 @@ int main(void) {
   RUN_TEST(itest_http_020_head_length_is_gets);
   RUN_TEST(itest_http_024_405_always_has_allow);
   RUN_TEST(itest_http_010_one_host_line);
-  RUN_XFAIL(itest_http_044_bare_cr_and_nul_rejected);
+  RUN_TEST(itest_http_044_bare_cr_and_nul_rejected);
   RUN_XFAIL(itest_http_045_invalid_host_value);
   RUN_XFAIL(itest_http_046_transfer_encoding);
   RUN_XFAIL(itest_http_047_absolute_form);

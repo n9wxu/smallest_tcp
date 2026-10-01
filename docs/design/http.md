@@ -4,7 +4,7 @@
 **Files:** `include/http.h`, `src/http.c` (parser, formatter, server, the TCP transport); `include/http_tls.h`, `src/http_tls.c` (the TLS transport)  
 **Requirements:** [docs/requirements/http.md](../requirements/http.md) (REQ-HTTP-001..041 implemented; 042, 043 — chunked coding, MAY — not)  
 **Status:** implemented (Milestone 11; over TLS since Milestone 13)  
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-01
 
 ---
 
@@ -148,6 +148,7 @@ bytes arrive (transport read → request buffer)
 | Condition | Status |
 |---|---|
 | Request line not `METHOD SP target SP HTTP/x.y`, header line without `:`, obsolete line folding, bad or conflicting Content-Length | 400 |
+| A control octet (a bare CR, a NUL, …) in the target, or a bare CR or a NUL in a field value (RFC 9112 §2.2, RFC 9110 §5.5) — rejected rather than handed to the application | 400 |
 | HTTP/1.1 request without `Host`, or any request with more than one `Host` line (RFC 9112 §3.2) | 400 |
 | Method other than GET, HEAD, POST (RFC 9110 §15.6.2) | 501 |
 | `Transfer-Encoding` in the request (chunked not supported) | 501 |

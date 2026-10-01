@@ -19,6 +19,28 @@ static int is_tchar(char c) {
 
 static int is_ows(char c) { return c == ' ' || c == '\t'; }
 
+/* REQ-HTTP-044: a bare CR (RFC 9112 §2.2) or a NUL (RFC 9110 §5.5) in
+ * s[0..len) — a CR before the line's LF is already gone */
+static int has_cr_or_nul(const char *s, uint16_t len) {
+  uint16_t i;
+  for (i = 0; i < len; i++) {
+    if (s[i] == '\r' || s[i] == '\0')
+      return 1;
+  }
+  return 0;
+}
+
+/* RFC 9112 §3.2: no whitespace or other control octet in a request target
+ * (a bare CR and a NUL among them, REQ-HTTP-044) */
+static int target_valid(const char *t, uint16_t len) {
+  uint16_t i;
+  for (i = 0; i < len; i++) {
+    if ((uint8_t)t[i] <= ' ' || t[i] == 0x7F)
+      return 0;
+  }
+  return 1;
+}
+
 /* Case-insensitive: a[0..alen) equals the lower-case string b */
 static int eq_ci(const char *a, uint16_t alen, const char *b) {
   uint16_t i;
@@ -143,6 +165,8 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
   /* ── Request target: origin-form, or absolute-form reduced to its path ── */
   char *target = line + sp1 + 1;
   const char *path = target;
+  if (!target_valid(target, (uint16_t)(sp2 - sp1 - 1)))
+    return 400;
   line[sp2] = '\0';
   if (target[0] != '/') {
     if (sp2 - sp1 - 1 < 7 || !eq_ci(target, 7, "http://"))
@@ -171,7 +195,7 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
       if (!is_tchar(line[i]))
         return 400; /* includes whitespace before ':' (§5.1) */
     }
-    if (i == 0 || i >= len)
+    if (i == 0 || i >= len || has_cr_or_nul(line + i, (uint16_t)(len - i)))
       return 400;
     uint16_t name_len = i;
     const char *v = line + i + 1;
