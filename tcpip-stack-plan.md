@@ -411,7 +411,7 @@ Left for later, from the same audit: received ICMP errors (and with them
 Path MTU Discovery), TCP's RTT measurement and congestion control, IP
 reassembly, and the DNS stub resolver.
 
-### 🚧 Task 17: Black-box tests traced to requirements, and the RFC MUSTs with no row *(IN PROGRESS)*
+### ✅ Task 17: Black-box tests traced to requirements, and the RFC MUSTs with no row *(COMPLETE)*
 Testing rules (2026-10-01; [test-plan.md §0](docs/test-plan.md#0-policy-and-the-integration-tests)):
 tests drive the stack only through its API and the wire, every test names
 the requirements it verifies, and an error found outside the tests becomes a
@@ -422,13 +422,16 @@ failing test before it is fixed.
       `traceability` and `coverage`
 - [x] The audit's bugs as integration tests, each checked to fail on the code
       before its fix; the unit tests they replace removed
-- [ ] A row for every RFC MUST the requirement documents left out, and the
+- [x] A row for every RFC MUST the requirement documents left out, and the
       rows that contradict their RFC corrected — an inventory of RFC 1122,
       791, 792, 826, 1112, 2236, 768, 9293, 6298, 2131, 2132, 3396, 1123,
-      9112, 9110, 6762 and 6763 (2026-10-01) found about 140 MUSTs with no
-      row and 17 contradicting rows
-- [ ] A test for each, `RUN_XFAIL` where the stack does not meet it yet
-- [ ] The fixes
+      1350, 9112, 9110, 6762 and 6763 (2026-10-01) found about 140 MUSTs with
+      no row and 17 contradicting rows.  Where the design leaves a MUST out
+      on purpose the row says **deviation** and why: one default gateway,
+      no route cache, Redirects ignored, source routes dropped, IP options
+      not passed to the transports, no TCP urgent data
+- [x] A test for each, `RUN_XFAIL` until the stack met it
+- [x] The fixes: none is left expected to fail
 
 ## Language & Build
 
@@ -469,28 +472,29 @@ Detailed documentation is maintained in `docs/`:
 - **[docs/design/tls.md](docs/design/tls.md)** — TLS 1.3 (Task 13, implemented)
 - **[docs/design/dtls.md](docs/design/dtls.md)** — DTLS 1.3 (Task 14): the datagram record layer on the TLS handshake
 
-### RFC Requirements (~960 total, traced to RFC sections)
+### RFC Requirements (1243 total, traced to RFC sections)
 
-**V1 — IPv4 Core (~546 requirements):**
-- **[docs/requirements/ethernet.md](docs/requirements/ethernet.md)** — Ethernet II framing (20 reqs, RFC 894)
-- **[docs/requirements/arp.md](docs/requirements/arp.md)** — ARP address resolution (37 reqs, RFC 826)
+**V1 — IPv4 Core (703 requirements):**
+- **[docs/requirements/ethernet.md](docs/requirements/ethernet.md)** — Ethernet II framing (25 reqs, RFC 894)
+- **[docs/requirements/arp.md](docs/requirements/arp.md)** — ARP address resolution (41 reqs, RFC 826)
 - **[docs/requirements/checksum.md](docs/requirements/checksum.md)** — Internet checksum (29 reqs, RFC 1071)
-- **[docs/requirements/ipv4.md](docs/requirements/ipv4.md)** — IPv4 host behavior (57 reqs, RFC 791/1122)
-- **[docs/requirements/icmpv4.md](docs/requirements/icmpv4.md)** — ICMPv4 echo + errors (41 reqs, RFC 792)
-- **[docs/requirements/udp.md](docs/requirements/udp.md)** — UDP datagrams (39 reqs, RFC 768)
-- **[docs/requirements/tcp.md](docs/requirements/tcp.md)** — TCP full state machine (155 reqs, RFC 9293/5681/6298)
-- **[docs/requirements/dhcpv4.md](docs/requirements/dhcpv4.md)** — DHCPv4 client (51 reqs, RFC 2131)
+- **[docs/requirements/ipv4.md](docs/requirements/ipv4.md)** — IPv4 host behavior (81 reqs, RFC 791/1122)
+- **[docs/requirements/icmpv4.md](docs/requirements/icmpv4.md)** — ICMPv4 echo + errors (48 reqs, RFC 792)
+- **[docs/requirements/igmp.md](docs/requirements/igmp.md)** — IGMPv2 host (14 reqs, RFC 2236)
+- **[docs/requirements/udp.md](docs/requirements/udp.md)** — UDP datagrams (44 reqs, RFC 768)
+- **[docs/requirements/tcp.md](docs/requirements/tcp.md)** — TCP full state machine (182 reqs, RFC 9293/5681/6298)
+- **[docs/requirements/dhcpv4.md](docs/requirements/dhcpv4.md)** — DHCPv4 client (99 reqs, RFC 2131)
 - **[docs/requirements/dns.md](docs/requirements/dns.md)** — DNS stub resolver (36 reqs, RFC 1035)
-- **[docs/requirements/tftp.md](docs/requirements/tftp.md)** — TFTP client (38 reqs, RFC 1350)
-- **[docs/requirements/http.md](docs/requirements/http.md)** — HTTP/1.0 server (43 reqs, RFC 9110/9112)
+- **[docs/requirements/tftp.md](docs/requirements/tftp.md)** — TFTP client (40 reqs, RFC 1350)
+- **[docs/requirements/http.md](docs/requirements/http.md)** — HTTP/1.0 server (64 reqs, RFC 9110/9112)
 
 **Service discovery (75 requirements):**
-- **[docs/requirements/mdns.md](docs/requirements/mdns.md)** — Multicast DNS (43 reqs, RFC 6762)
-- **[docs/requirements/dns-sd.md](docs/requirements/dns-sd.md)** — DNS-Based Service Discovery (32 reqs, RFC 6763)
+- **[docs/requirements/mdns.md](docs/requirements/mdns.md)** — Multicast DNS (79 reqs, RFC 6762)
+- **[docs/requirements/dns-sd.md](docs/requirements/dns-sd.md)** — DNS-Based Service Discovery (38 reqs, RFC 6763)
 
 **Security (99 requirements):**
-- **[docs/requirements/tls.md](docs/requirements/tls.md)** — TLS 1.3 (43 reqs, RFC 8446)
-- **[docs/requirements/dtls.md](docs/requirements/dtls.md)** — DTLS 1.3 (56 reqs, RFC 9147)
+- **[docs/requirements/tls.md](docs/requirements/tls.md)** — TLS 1.3 (73 reqs, RFC 8446)
+- **[docs/requirements/dtls.md](docs/requirements/dtls.md)** — DTLS 1.3 (111 reqs, RFC 9147)
 
 **V2 — IPv6 Fast-Follow (~239 requirements):**
 - **[docs/requirements/ipv6.md](docs/requirements/ipv6.md)** — IPv6 host behavior (47 reqs, RFC 8200)

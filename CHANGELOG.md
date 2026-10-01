@@ -10,6 +10,91 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+The RFC MUSTs the requirement documents left out: an inventory of RFC 1122,
+791, 792, 826, 1112, 2236, 768, 9293, 6298, 2131, 2132, 1123, 1350, 9110,
+9112, 6762 and 6763 added a row for each, a black-box integration test for
+each, and the fixes below.  What the stack does not do by design is a
+**deviation** row, with the behaviour it guarantees instead tested: one
+default gateway and no route cache, Redirects ignored, source-routed
+datagrams dropped, IP options not passed to the transports, no TCP urgent
+data.
+
+### Added
+
+- **IPv4 reassembly** in a buffer the application gives
+  (`ipv4_set_reassembly()`, `IPV4_REASSEMBLY_BUFFER(emtu_r)`): one datagram
+  at a time, fragments in any order and overlapping, a 60 s timeout with
+  Time Exceeded (code 1).  `ipv4_mms_r()` and `ipv4_mms_s()` give the
+  largest message the buffers and the MTU allow; `net_t.mtu` (default
+  1500) bounds every frame sent.
+- **ICMP errors reach the transports.**  UDP: `udp_set_error_handler()`
+  with `udp_icmp_error_t` (ports, type, code, next-hop MTU, the whole
+  quote); `udp_rx_dst_ip()` gives a handler the datagram's destination.
+  TCP: hard errors abort, soft ones raise `TCP_EVT_SOFT_ERROR`
+  (`tcp_last_error()`), Fragmentation Needed lowers the segment size.
+- **TCP:** `tcp_set_max_retransmits()` (R2; R1 is reported),
+  `tcp_set_tos()`, `tcp6_connect_from()` (OPEN's local address).
+- **UDP:** `udp_send_inplace_opts()` sets the TOS.
+- **IGMP** answers queries: report delays, suppression by another host's
+  report, IGMPv1 routers.
+- **TFTP:** netascii (`tftp_client_set_mode()`); an adaptive
+  retransmission timeout (RFC 1123 §4.2.3.2).
+- **DHCPv4:** the client probes an offered address with ARP and declines
+  it if it is in use (`DHCPV4_CLI_CHECKING`, `DHCPV4_EVT_DECLINED`);
+  options in `file` and `sname`, and split options, are read.
+- **HTTP:** a `Date` field from `http_server_t.clock`; 421 for an https
+  request the connection cannot vouch for (`https_hosts`); `If-Match`,
+  `If-None-Match`; `Expect: 100-continue`.
+
+### Changed
+
+- `udp_send*()` refuse a destination of 0.0.0.0, an address in 127/8, the
+  broadcast MAC with a destination that is no IP broadcast or multicast,
+  and a source other than our address or 0.0.0.0.
+  `dhcpv4_server_init()` therefore requires `cfg->server_ip` to be
+  `net->ipv4_addr`.
+- `tcp_connect()` refuses a remote address that is no single host, and a
+  host with no address; `tcp_listen()` refuses a connection in use
+  (`NET_ERR_BUSY`); a connection keeps its local address, and is aborted if
+  the host's changes.  `tcp_conn_t` grows by 8 bytes (4 dual-stack).
+- The DHCPv4 client reports `DHCPV4_EVT_BOUND` one second after the ACK,
+  once the address probe has found it free; the server keeps one client,
+  known by its hardware address.
+- `http_format_header()` takes a date; `HTTP_HDR_MAX` is 224.
+- The all-hosts group 224.0.0.1 is always joined with a group table.
+- mDNS multicasts a record at most once a second (goodbyes excepted), and
+  a unique record set whole or not at all; TXT records' TTL is 75 minutes.
+  In a conflict, `mdns_withdraw()` says goodbye to the shared records
+  announced under the old name and keeps them for the renamed announcement.
+  `mdns_t` grows from 48 to 96 bytes.
+
+### Fixed
+
+- ARP: broadcasts and multicasts go straight to the link; requests are
+  rate-limited; a gateway MAC learned by ARP expires after 5 minutes.
+- Ethernet: a frame we sent, looped back, is dropped.
+- IPv4: our classful network's directed broadcasts are recognised;
+  source-routed datagrams are dropped; an Echo Reply too long for one
+  frame is truncated; no ICMP error is sent about an ICMP error.
+- TCP: a RST is taken into a zero window; the segment that empties the
+  send buffer carries PSH, and data written is never left unsent; after a
+  SYN timed out, data starts with a 3 s RTO; a SYN from 0.0.0.0 is
+  ignored.
+- HTTP: bare CR, NUL, a bad Host value and an unframeable
+  Transfer-Encoding are refused (400); a handler's response the server
+  cannot send validly is refused.
+- DHCPv4: an OFFER without a Server Identifier is dropped; T1 < T2 < the
+  lease is enforced; the server's options follow the Parameter Request
+  List.
+- mDNS: probing starts again after a conflict, simultaneous probes are
+  tiebroken, and after fifteen conflicts probes are five seconds apart;
+  responses received before the first probe, off-link responses and
+  messages with a non-zero OPCODE or RCODE are ignored; known answers
+  suppress an answer only from its querier; names over 255 bytes and TXT
+  strings RFC 6763 forbids are refused; legacy unicast replies do not
+  compress the SRV target; only addresses usable on the interface are
+  announced, with NSEC when there are none.
+
 ## [0.1.3] - 2026-10-01
 
 ### Changes

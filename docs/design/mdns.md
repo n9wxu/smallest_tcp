@@ -38,7 +38,6 @@ Also not implemented, as simplifications of the responder:
 - **Duplicate-answer suppression** (§7.4): a delayed answer is sent even if another responder multicasts the same record meanwhile.
 - **QU answers are always unicast**; the §5.4 rule to multicast instead when the record has not been multicast within a quarter of its TTL is not applied.
 - **QU answers to off-subnet queriers** (§11): a QU query from a source off our subnet is answered by unicast, where §11 recommends multicast.  Responses, which §11 requires to come from the local link, are checked (§7.1).
-- **IGMP queries** are not answered (§10).
 
 ---
 
@@ -48,7 +47,7 @@ mDNS reuses the DNS wire format (RFC 1035 §4) byte-for-byte, so the wire code i
 
 ```
 dns_wire.h / dns_wire.c   — names (with compression), header/question/RR read + write
-igmp.h / igmp.c           — minimal IGMPv2 join/leave
+igmp.h / igmp.c           — IGMPv2 host: join/leave, queries answered
 mdns.h / mdns.c           — responder state machine, answering, DNS-SD composition
 ```
 
@@ -283,7 +282,7 @@ A PTR query returns the PTR in Answer and SRV + TXT + A (and AAAA) in Additional
 1. **Join:** `mdns_start()` calls `igmp_join(net, 224.0.0.251)` — adds the group to `net_t`'s table and sends an IGMPv2 Membership Report (IP TTL 1, Router Alert option, RFC 2236 §2) every time it runs.  In IPv6 builds it also calls `ipv6_mcast_join(net, ff02::fb)`; MLD reports a new membership and repeats it once after 1 s.  A join before `ipv6_start()` is kept and reported with the first MLD report.
 2. **Repeat:** the IGMP report is repeated once when announcing starts (~0.75 s after the join).
 3. **Leave:** `mdns_stop()` sends the goodbye first — every record with TTL 0, and each service type's PTR under `_services._dns-sd._udp.local.`, which a querier may have cached from a meta-query answer — then an IGMPv2 Leave Group to 224.0.0.2 and the MLD leave for ff02::fb.
-4. **IGMP queries are not answered.**  224.0.0.251 is in the link-local control block (224.0.0.0/24), which IGMP-snooping switches must flood regardless of membership (RFC 4541 §2.1.2), so the responder only signals joins and leaves.  MLD queries are answered by `mld.c` for every joined group, ff02::fb included.
+4. **Queries are answered.**  Once `igmp_join()` has run, IGMP answers General and Group-Specific queries for 224.0.0.251 (and any other joined group) after a random delay within the query's Max Response Time, stays quiet if another host's report is heard first, and speaks IGMPv1 for 400 s after an IGMPv1 query ([igmp.md](../requirements/igmp.md), `igmp.h`).  224.0.0.251 is in the link-local control block (224.0.0.0/24), which IGMP-snooping switches flood regardless of membership (RFC 4541 §2.1.2), so the answers matter mostly to multicast routers.  MLD queries are answered by `mld.c` for every joined group, ff02::fb included.
 5. **Hardware MACs:** TAP and BPF deliver every frame.  A MAC with a multicast hash filter (e.g. ENC28J60) must be configured to pass 01:00:5E:00:00:FB, and 33:33:00:00:00:FB for IPv6.
 6. **TTL / Hop Limit 255** on every mDNS packet, including unicast responses (RFC 6762 §11).
 7. **Source address:** `net->ipv4_addr` over IPv4; over IPv6, `ipv6_src_for()` — the link-local address, the group being link-scope.  Start the responder once the IPv4 address is known (static, or on the DHCP BOUND event).

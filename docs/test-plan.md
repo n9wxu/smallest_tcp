@@ -62,15 +62,22 @@ RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
 
 | Suite | REQ areas | Tests |
 |---|---|---|
-| `itest_ipv4` | IPv4 destination and source checks, ICMP errors and echo | 9 |
-| `itest_link` | ARP, UDP sending limits, TTL, the checksum API | 7 |
-| `itest_tcp` | CLOSE/ABORT in every state, a listener outliving a failed handshake, ISNs and the seed | 10 |
-| `itest_http` | GET/HEAD, error responses without bodies, 204, Allow, Host | 6 |
-| `itest_mdns` | Goodbyes, the table's size check, truncated queries, withdrawing records | 7 |
-| **Total** | | **39** |
+| `itest_ipv4` | IPv4 destination and source checks, every broadcast form, options and source routes, reassembly and its timeout, MMS_R/MMS_S and the MTU, TTL/TOS, addresses never sent, the all-hosts group; ICMP echo (truncated), errors, Redirect and Address Mask ignored | 41 |
+| `itest_link` | Ethernet (looped-back frames), ARP (next hop, rate limit, gateway MAC expiry), UDP sending limits, the checksum API | 13 |
+| `itest_udp` | The destination address passed up, the source ours, ICMP errors to the application | 5 |
+| `itest_igmp` | Reports and leaves, queries answered, timers, suppression, IGMPv1 routers, all-hosts never reported | 10 |
+| `itest_tcp` | CLOSE/ABORT in every state, a listener outliving a failed handshake, ISNs; RST into a zero window, R1/R2, LISTEN on a live connection, local address (IPv4 and IPv6), broadcast opens, TOS, PSH, RTO after a SYN timeout, ICMP errors, the MTU | 37 |
+| `itest_http` | Request parsing and framing, Host, Date, conditional requests, Expect, 4xx/5xx without bodies, HTTPS hosts (421) | 31 |
+| `itest_dhcpv4` | Client and server: options in file/sname and split options, T1/T2, the address probe and DECLINE, the server's one client, option order | 30 |
+| `itest_tftp` | The adaptive retransmission timeout, netascii | 5 |
+| `itest_mdns` | Probing, conflicts and tiebreaking, rate limiting, known answers, names and TXT strings, legacy unicast, goodbyes, DNS-SD | 50 |
+| `itest_mdns6` | mDNS over IPv6 (dual stack) | 4 |
+| **Total** | | **226** |
 
 Each test of the audit's bugs (2026-09-29) was checked to fail on the code
-before its fix (commit `ec4a388`).
+before its fix (commit `ec4a388`).  The tests of the RFC MUSTs the
+requirement documents left out (2026-10-01) began as `RUN_XFAIL` where the
+stack did not meet them, and each became `RUN_TEST` with its fix.
 
 ---
 
