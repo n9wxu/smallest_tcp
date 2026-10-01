@@ -613,6 +613,20 @@ lease only with an address).  A reply is sent from `server_ip` via
 (RFC 1122 §4.1.3.6, REQ-UDP-041).  Replies used to go out from
 `server_ip` whatever `net->ipv4_addr` was.
 
+**The order of the options** (`put_parameters()`).  RFC 2132 §9.8: the
+server "MUST try to insert the requested options in the order requested
+by the client".  The parameters the server has — lease time (51), subnet
+mask (1), router (3), DNS server (6) — go first in the order of the
+request's Parameter Request List (all its parts, RFC 3396), then those
+it was not asked for, in that order.  `put_parameter()` puts each once,
+however often it is asked for, and leaves out one it has no value for
+(no router or DNS server configured) or does not know (RFC 2131 §4.3.1).
+One exception to the client's order: RFC 2132 §3.3 — "If both the subnet
+mask and the router option are specified in a DHCP reply, the subnet
+mask option MUST be first" — so a router asked for before the mask
+brings the mask with it.  The options used to go in one fixed order,
+whatever was asked.
+
 ---
 
 ## 5. Buffer Requirements

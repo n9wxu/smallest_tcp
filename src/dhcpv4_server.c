@@ -10,9 +10,10 @@
 
 static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-/* A request, and the source MAC of its frame */
+/* A request, its length, and the source MAC of its frame */
 typedef struct {
   const uint8_t *msg;
+  uint16_t len;
   const uint8_t *src_mac;
 } request_t;
 
@@ -27,19 +28,70 @@ static void fire_event(const dhcpv4_server_t *s, uint8_t evt) {
     s->on_event(evt, s->evt_ctx);
 }
 
-/* REQ-DHCPv4-065..067: the lease — only with an address (RFC 2131 §4.3.5)
- * — and the configuration */
+/* The parameters a reply may carry: a bit each, and their values (0: not
+ * configured, left out — but for the mask, always sent) */
+static uint8_t parameter_bit(uint8_t code) {
+  switch (code) {
+  case DHCP_OPT_LEASE_TIME:
+    return 1u;
+  case DHCP_OPT_SUBNET_MASK:
+    return 2u;
+  case DHCP_OPT_ROUTER:
+    return 4u;
+  case DHCP_OPT_DNS:
+    return 8u;
+  default:
+    return 0u;
+  }
+}
+
+static uint32_t parameter_value(const dhcpv4_server_cfg_t *cfg, uint8_t code) {
+  switch (code) {
+  case DHCP_OPT_LEASE_TIME:
+    return cfg->lease_time_s ? cfg->lease_time_s : DHCP_LEASE_INFINITE;
+  case DHCP_OPT_SUBNET_MASK:
+    return cfg->subnet_mask;
+  case DHCP_OPT_ROUTER:
+    return cfg->gateway;
+  default:
+    return cfg->dns;
+  }
+}
+
+/* REQ-DHCPv4-097, 098: parameter @p code if the server has it and it is
+ * not in yet (@p *put) — the Subnet Mask first if it is the Router (RFC
+ * 2132 §3.3) */
+static uint16_t put_parameter(uint8_t *msg, uint16_t pos,
+                              const dhcpv4_server_cfg_t *cfg, uint8_t code,
+                              uint8_t *put) {
+  uint8_t bit = parameter_bit(code);
+  uint32_t v = parameter_value(cfg, code);
+  if (code == DHCP_OPT_ROUTER)
+    pos = put_parameter(msg, pos, cfg, DHCP_OPT_SUBNET_MASK, put);
+  if (!bit || (*put & bit) || (v == 0u && code != DHCP_OPT_SUBNET_MASK))
+    return pos;
+  *put |= bit;
+  return dhcp_put_u32(msg, pos, code, v);
+}
+
+/* REQ-DHCPv4-065..067, 090: the parameters the client asked for, in the
+ * order of its Parameter Request List (RFC 2132 §9.8, its parts joined),
+ * then the rest; the lease only with an address (RFC 2131 §4.3.5) */
 static uint16_t put_parameters(uint8_t *msg, uint16_t pos,
-                               const dhcpv4_server_cfg_t *cfg, int with_lease) {
-  if (with_lease)
-    pos = dhcp_put_u32(msg, pos, DHCP_OPT_LEASE_TIME,
-                       cfg->lease_time_s ? cfg->lease_time_s
-                                         : DHCP_LEASE_INFINITE);
-  pos = dhcp_put_u32(msg, pos, DHCP_OPT_SUBNET_MASK, cfg->subnet_mask);
-  if (cfg->gateway)
-    pos = dhcp_put_u32(msg, pos, DHCP_OPT_ROUTER, cfg->gateway);
-  if (cfg->dns)
-    pos = dhcp_put_u32(msg, pos, DHCP_OPT_DNS, cfg->dns);
+                               const dhcpv4_server_cfg_t *cfg,
+                               const request_t *rq, int with_lease) {
+  static const uint8_t all[] = {DHCP_OPT_LEASE_TIME, DHCP_OPT_SUBNET_MASK,
+                                DHCP_OPT_ROUTER, DHCP_OPT_DNS};
+  uint8_t put = with_lease ? 0u : parameter_bit(DHCP_OPT_LEASE_TIME);
+  dhcp_walk_t w;
+  const uint8_t *v;
+  uint8_t code, n, i;
+  dhcp_walk_begin(&w, rq->msg, rq->len);
+  while ((code = dhcp_walk_next(&w, &v, &n)) != DHCP_OPT_END)
+    for (i = 0; code == DHCP_OPT_PARAM_REQ && i < n; i++)
+      pos = put_parameter(msg, pos, cfg, v[i], &put);
+  for (i = 0; i < sizeof(all); i++)
+    pos = put_parameter(msg, pos, cfg, all[i], &put);
   return pos;
 }
 
@@ -96,7 +148,7 @@ static void send_reply(net_t *net, const dhcpv4_server_cfg_t *cfg,
       memcpy(msg + DHCP_OFF_CIADDR, req + DHCP_OFF_CIADDR, 4);
     net_write32be(msg + DHCP_OFF_YIADDR, yiaddr);
     net_write32be(msg + DHCP_OFF_SIADDR, cfg->server_ip);
-    pos = put_parameters(msg, pos, cfg, yiaddr != 0u);
+    pos = put_parameters(msg, pos, cfg, rq, yiaddr != 0u);
   }
   udp_send_inplace_from(net, cfg->server_ip, to.ip, to.mac, DHCP_SERVER_PORT,
                         to.port, dhcp_end(msg, pos), NET_DEFAULT_TTL);
@@ -147,9 +199,9 @@ static int ours_to_answer(const dhcpv4_server_t *s, const uint8_t *msg,
 }
 
 /* REQ-DHCPv4-068, 069, 086, 087 */
-static void request_input(net_t *net, dhcpv4_server_t *s, const request_t *rq,
-                          uint16_t len) {
+static void request_input(net_t *net, dhcpv4_server_t *s, const request_t *rq) {
   const dhcpv4_server_cfg_t *cfg = s->cfg;
+  uint16_t len = rq->len;
   uint32_t server_id = dhcp_option_u32(rq->msg, len, DHCP_OPT_SERVER_ID, 0u);
   uint32_t ciaddr = net_read32be(rq->msg + DHCP_OFF_CIADDR);
   uint32_t requested =
@@ -201,6 +253,7 @@ void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
       net_read32be(data + DHCP_OFF_MAGIC) != DHCP_MAGIC)
     return;
   rq.msg = data;
+  rq.len = len;
   rq.src_mac = src_mac;
 
   switch (dhcp_message_type(data, len)) {
@@ -212,7 +265,7 @@ void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
     }
     break;
   case DHCP_MSG_REQUEST:
-    request_input(net, s, &rq, len);
+    request_input(net, s, &rq);
     break;
   case DHCP_MSG_DECLINE:
     decline_input(s, data, len);
