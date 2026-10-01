@@ -108,6 +108,15 @@ void udp_set_error_handler(net_t *net, udp_error_handler_t handler) {
   (void)handler; /* not implemented yet */
 }
 
+/* REQ-IPv4-070..072: never to 0.0.0.0, never to or from 127/8, and the
+ * link-layer broadcast only for an IP broadcast or multicast */
+static int addresses_valid(const net_t *net, uint32_t src_ip, uint32_t dst_ip,
+                           const uint8_t *dst_mac) {
+  return dst_ip != 0 && (src_ip >> 24) != 127 && (dst_ip >> 24) != 127 &&
+         (!net_mac_is_broadcast(dst_mac) || ipv4_is_broadcast(net, dst_ip) ||
+          ipv4_is_multicast(dst_ip));
+}
+
 /* REQ-UDP-009, 021..023 */
 net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,
@@ -119,7 +128,8 @@ net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
 
   if (!fits_frame(net, UDP_PAYLOAD_OFFSET, data_len))
     return NET_ERR_BUF_TOO_SMALL;
-  if (ttl == 0) /* RFC 1122 §3.2.1.7 */
+  if (ttl == 0 || /* RFC 1122 §3.2.1.7 */
+      !addresses_valid(net, src_ip, dst_ip, dst_mac))
     return NET_ERR_INVALID_PARAM;
   write_header(udp, src_port, dst_port, udp_len);
   net_write16be(

@@ -20,6 +20,8 @@ static int sent_to_many(const net_t *net, const ipv4_hdr_t *ip) {
 static net_err_t icmp_send(net_t *net, uint16_t icmp_len, uint32_t dst_ip,
                            const uint8_t *dst_mac) {
   uint8_t *icmp = net->tx.buf + ICMP_OFFSET;
+  if (net->ipv4_addr == 0) /* REQ-IPv4-070: not from 0.0.0.0 */
+    return NET_ERR_INVALID_PARAM;
   net_write16be(icmp + ICMP_OFF_CKSUM, 0);
   net_write16be(icmp + ICMP_OFF_CKSUM, net_cksum(icmp, icmp_len));
   eth_build(net->tx.buf, net->tx.capacity, dst_mac, net->mac,
@@ -29,11 +31,12 @@ static net_err_t icmp_send(net_t *net, uint16_t icmp_len, uint32_t dst_ip,
   return net_transmit(net, (uint16_t)(ICMP_OFFSET + icmp_len));
 }
 
-/* REQ-ICMPv4-001..009: the request's identifier, sequence and data back */
+/* REQ-ICMPv4-001..009: the request's identifier, sequence and data back;
+ * REQ-IPv4-070: none to a source of 0.0.0.0 */
 static void echo_reply(net_t *net, const ipv4_hdr_t *ip,
                        const eth_frame_t *eth) {
   uint8_t *reply = net->tx.buf + ICMP_OFFSET;
-  if (sent_to_many(net, ip) ||
+  if (sent_to_many(net, ip) || ip->src_ip == 0 ||
       (uint32_t)ICMP_OFFSET + ip->payload_len > net->tx.capacity)
     return;
   memcpy(reply, ip->payload, ip->payload_len);

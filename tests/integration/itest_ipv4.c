@@ -652,9 +652,9 @@ int main(void) {
   RUN_TEST(itest_ipv4_069_ttl_settable);
   RUN_XFAIL(itest_ipv4_041_tos_settable);
   RUN_TEST(itest_ipv4_083_atomic_id_ignored);
-  RUN_XFAIL(itest_ipv4_070_never_to_or_from_unspecified);
-  RUN_XFAIL(itest_ipv4_071_never_loopback);
-  RUN_XFAIL(itest_ipv4_072_link_broadcast_needs_ip_broadcast);
+  RUN_TEST(itest_ipv4_070_never_to_or_from_unspecified);
+  RUN_TEST(itest_ipv4_071_never_loopback);
+  RUN_TEST(itest_ipv4_072_link_broadcast_needs_ip_broadcast);
   RUN_XFAIL(itest_ipv4_050_all_hosts_group);
   RUN_TEST(itest_ipv4_073_no_multicast_loopback);
   RUN_TEST(itest_ipv4_079_never_pings_the_gateway);

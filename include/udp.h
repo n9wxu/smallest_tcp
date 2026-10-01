@@ -92,8 +92,11 @@ net_err_t udp_send(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                    uint16_t data_len);
 
 /** Send the @p data_len bytes the caller wrote at UDP_PAYLOAD_OFFSET in
- *  net->tx.buf, from net->ipv4_addr, with IP TTL @p ttl (not 0:
- *  NET_ERR_INVALID_PARAM). */
+ *  net->tx.buf, from net->ipv4_addr, with IP TTL @p ttl.
+ *  @return NET_ERR_INVALID_PARAM for a TTL of 0, a destination of 0.0.0.0,
+ *          an address in 127/8, or the broadcast MAC with a destination
+ *          that is no IP broadcast or multicast (RFC 1122 §3.2.1.3,
+ *          §3.3.6). */
 net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                            uint16_t src_port, uint16_t dst_port,
                            uint16_t data_len, uint8_t ttl);
