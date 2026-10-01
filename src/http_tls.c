@@ -52,8 +52,8 @@ static int tls_delivered(http_conn_t *c) {
 static void tls_released(http_conn_t *c) { tls_release(slot_tls(c)); }
 
 static const http_transport_t tls_transport = {
-    tls_accepted, tls_read_some,   tls_write_some, tls_flush,
-    tls_finish,   tls_client_done, tls_delivered,  tls_released,
+    tls_accepted,    tls_read_some, tls_write_some, tls_flush, tls_finish,
+    tls_client_done, tls_delivered, tls_released,   1,
 };
 
 void http_conn_use_tls(http_conn_t *c, tls_conn_t *tls) {

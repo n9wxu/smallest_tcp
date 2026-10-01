@@ -144,6 +144,9 @@ typedef struct {
    *  listens again: forget the stream (e.g. wipe TLS secrets).  May be
    *  NULL. */
   void (*release)(struct http_conn_s *c);
+  /** 1: the stream is secured (TLS), so requests are for https
+   *  resources (RFC 9110 §4.2.2); 0: plain, for http ones */
+  uint8_t secure;
 } http_transport_t;
 
 /** One connection slot.  Initialise with http_conn_init(). */

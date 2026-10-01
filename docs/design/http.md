@@ -163,7 +163,7 @@ bytes arrive (transport read → request buffer)
 | Body larger than the request buffer | 413 |
 | Request line longer than the request buffer | 414 |
 | Headers larger than the request buffer (RFC 6585) | 431 |
-| An absolute-form target whose scheme is not http or https (RFC 9110 §15.5.20) | 421 |
+| An absolute-form target whose scheme is not http or https (RFC 9110 §15.5.20); an https target on a plain TCP slot; over TLS, a host the certificate is not valid for (section 7.2, RFC 9110 §7.4) | 421 |
 | Handler returned < 0, or the response header does not fit `HTTP_HDR_MAX` | 500 |
 
 RFC 9110 reserves 405 for a method the *resource* does not allow and uses 501
@@ -223,6 +223,7 @@ typedef struct {
   int (*client_done)(const struct http_conn_s *c);        /* the client can send no more */
   int (*delivered)(struct http_conn_s *c);                /* everything queued reached the client */
   void (*release)(struct http_conn_s *c);                 /* the client is gone; may be NULL */
+  uint8_t secure;                                         /* 1: TLS — requests are for https resources */
 } http_transport_t;
 ```
 
@@ -245,6 +246,7 @@ its connection ended.
 | `client_done` | TCP is in CLOSE-WAIT (the client's FIN arrived) |
 | `delivered` | `tcp_tx_idle()`: everything written has been sent and acknowledged |
 | `release` | None (NULL) |
+| `secure` | 0: a request for an https resource is misdirected (421) |
 
 ### 7.2 TLS (`http_tls.c`)
 
@@ -262,6 +264,22 @@ re-initialises it for each client with the same configuration and buffers.
 | `client_done` | TCP in CLOSE-WAIT, or the TLS connection `CLOSED` (the client's close_notify) or in `ERROR` |
 | `delivered` | `tls_tcp_idle()`: no TLS records pending and TCP idle |
 | `release` | `tls_release()`: the client's secrets, record keys and the plaintext left in the TLS buffers are wiped at once, not at the next client's `tls_init()` |
+| `secure` | 1 |
+
+**Which hosts a TLS slot answers for.**  RFC 9110 §7.4 has an origin
+server reject (421 Misdirected Request) a request for an https resource
+unless it came over a connection secured with a certificate valid for the
+target's host.  The server cannot read the names out of the certificate
+(the crypto backend holds it), so the application lists them alongside it:
+`http_server_t.https_hosts`, the DNS names and IP addresses the
+certificate carries, as a URI writes them (`device.example`, `10.0.0.2`,
+`[2001:db8::1]`).  A request over TLS whose host — the absolute-form
+target's, else Host's, without the port, compared ignoring case — is not
+one of them, or that names no host at all, gets 421.  Without the list
+(NULL, the default) hosts are not checked: the requirement is then met
+only if the certificate is valid for every name a client can reach the
+device by.  The HTTPS demo leaves it NULL, since its certificate is loaded
+from a file.
 
 The TLS handshake happens while the slot is in `S_RECV` (section 8), so it
 counts against the request timeout.  A failed handshake makes `client_done`

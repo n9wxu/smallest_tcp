@@ -804,7 +804,7 @@ int main(void) {
   RUN_XFAIL(itest_http_053_expect_100_continue);
   RUN_XFAIL(itest_http_054_if_match);
   RUN_XFAIL(itest_http_055_if_none_match);
-  RUN_XFAIL(itest_http_056_https_target_over_plain_tcp);
+  RUN_TEST(itest_http_056_https_target_over_plain_tcp);
   RUN_TEST(itest_http_057_invalid_content_length);
   RUN_TEST(itest_http_058_incomplete_content);
   RUN_TEST(itest_http_059_field_whitespace);
@@ -819,7 +819,7 @@ int main(void) {
     return 1;
   }
   RUN_TEST(itest_http_047_https_absolute_form_over_tls);
-  RUN_XFAIL(itest_http_056_host_not_in_the_certificate);
+  RUN_TEST(itest_http_056_host_not_in_the_certificate);
   tls_mbedtls_free(&backend);
 #endif
   ITEST_REPORT();

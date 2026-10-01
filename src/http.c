@@ -91,11 +91,11 @@ static int authority_valid(const char *a, uint16_t len, uint16_t *host_len) {
   return 1;
 }
 
-/* Case-insensitive: a[0..alen) equals the lower-case string b */
+/* Case-insensitive: a[0..alen) equals the string b */
 static int eq_ci(const char *a, uint16_t alen, const char *b) {
   uint16_t i;
   for (i = 0; i < alen; i++) {
-    if (b[i] == '\0' || net_tolower(a[i]) != b[i])
+    if (b[i] == '\0' || net_tolower(a[i]) != net_tolower(b[i]))
       return 0;
   }
   return b[alen] == '\0';
@@ -380,6 +380,8 @@ const char *http_reason(uint16_t status) {
     return "Content Too Large";
   case 414:
     return "URI Too Long";
+  case 421:
+    return "Misdirected Request";
   case 431:
     return "Request Header Fields Too Large";
   case 500:
@@ -504,8 +506,8 @@ static int tcp_client_done(const http_conn_t *c) {
 static int tcp_delivered(http_conn_t *c) { return tcp_tx_idle(&c->tcp); }
 
 static const http_transport_t tcp_transport = {
-    tcp_accepted, tcp_read,        tcp_write_some, tcp_flush,
-    tcp_finish,   tcp_client_done, tcp_delivered,  NULL,
+    tcp_accepted,    tcp_read,      tcp_write_some, tcp_flush, tcp_finish,
+    tcp_client_done, tcp_delivered, NULL,           0,
 };
 
 /* ── Server ── */
@@ -694,6 +696,34 @@ static void drain(http_server_t *s, http_conn_t *c) {
     ;
 }
 
+/* REQ-HTTP-056: a request for an https resource must arrive over TLS with
+ * a certificate valid for its host (RFC 9110 §7.4) — over TLS, one of the
+ * hosts the application lists for its certificate */
+static int misdirected(const http_server_t *s, const http_conn_t *c) {
+  const http_request_t *rq = &c->request;
+  uint8_t i;
+  if (!c->transport->secure)
+    return (rq->flags & HTTP_RQ_HTTPS) != 0;
+  if (!s->https_hosts)
+    return 0;
+  for (i = 0; rq->host && i < s->n_https_hosts; i++) {
+    if (eq_ci(rq->host, rq->host_len, s->https_hosts[i]))
+      return 0;
+  }
+  return 1;
+}
+
+/* What the header section alone decides, before any content is read: the
+ * status to answer with, or HTTP_PARSE_OK to read the content and run the
+ * handler */
+static uint16_t admit(const http_server_t *s, const http_conn_t *c) {
+  if ((uint32_t)c->hdr_len + c->content_length > c->req_size)
+    return 413; /* REQ-HTTP-033, 034 */
+  if (misdirected(s, c))
+    return 421;
+  return HTTP_PARSE_OK;
+}
+
 static void do_recv(http_server_t *s, http_conn_t *c) {
   uint16_t n;
   while (c->req_len < c->req_size &&
@@ -714,12 +744,10 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
     uint16_t status =
         http_parse_request(c->req, end, &c->request, &c->content_length);
     c->hdr_len = end;
+    if (status == HTTP_PARSE_OK)
+      status = admit(s, c);
     if (status != HTTP_PARSE_OK) {
       respond_error(c, status, 0);
-      return;
-    }
-    if ((uint32_t)end + c->content_length > c->req_size) {
-      respond_error(c, 413, 0); /* REQ-HTTP-033, 034 */
       return;
     }
   }
