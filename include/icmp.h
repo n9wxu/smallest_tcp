@@ -48,4 +48,10 @@ net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
                                  const ipv4_hdr_t *invoking,
                                  const eth_frame_t *eth);
 
+/** As icmp_send_dest_unreach(), Time Exceeded (type 11) — code 1 when
+ *  reassembly gives up on a datagram (RFC 1122 §3.3.2). */
+net_err_t icmp_send_time_exceeded(net_t *net, uint8_t code,
+                                  const ipv4_hdr_t *invoking,
+                                  const eth_frame_t *eth);
+
 #endif /* ICMP_H */

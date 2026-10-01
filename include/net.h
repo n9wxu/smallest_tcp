@@ -112,6 +112,8 @@ typedef struct {
 #if NET_MAX_MCAST_GROUPS > 0
   uint32_t mcast_groups[NET_MAX_MCAST_GROUPS]; /**< Joined; 0 = free */
 #endif
+  uint8_t *reasm;     /**< ipv4_set_reassembly()'s buffer; NULL: none */
+  uint16_t reasm_cap; /**< The data it holds: MMS_R when reassembling */
 #endif
 
 #if NET_USE_IPV6

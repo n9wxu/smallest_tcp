@@ -265,6 +265,63 @@ TEST(itest_ipv4_024_reassembly) {
   ASSERT_EQ(delivered, 1);
 }
 
+/* REQ-IPv4-024, 062: a datagram larger than any frame the RX buffer takes
+ * is reassembled whole, up to MMS_R */
+TEST(itest_ipv4_024_larger_than_a_frame) {
+  static uint8_t reasm[IPV4_REASSEMBLY_BUFFER(4000)];
+  up();
+  ASSERT_EQ(ipv4_set_reassembly(&t.net, reasm, sizeof(reasm)), NET_OK);
+  ASSERT_EQ(ipv4_mms_r(&t.net), 3980);
+  make_datagram(3972); /* 3980 bytes of UDP: all MMS_R allows */
+  fragment(2960, 1020, 0, 80);
+  fragment(1480, 1480, 1, 80);
+  fragment(0, 1480, 1, 80);
+  ASSERT_EQ(delivered, 1);
+  ASSERT_EQ(got_len, 3972);
+  ASSERT_MEM_EQ(got, seg + 8, 3972);
+}
+
+/* REQ-IPv4-024: a datagram larger than the buffer is dropped — and the
+ * buffer is free again for the next */
+TEST(itest_ipv4_024_too_large_dropped) {
+  static uint8_t reasm[IPV4_REASSEMBLY_BUFFER(1500)];
+  up();
+  ASSERT_EQ(ipv4_set_reassembly(&t.net, reasm, sizeof(reasm)), NET_OK);
+  make_datagram(2000);
+  fragment(0, 1480, 1, 81);
+  fragment(1480, 528, 0, 81);
+  ASSERT_EQ(delivered, 0);
+  make_datagram(1000);
+  fragment(0, 512, 1, 82);
+  fragment(512, 496, 0, 82);
+  ASSERT_EQ(delivered, 1);
+}
+
+/* REQ-IPv4-024: one datagram at a time — another's fragments are dropped
+ * until the first is complete */
+TEST(itest_ipv4_024_one_at_a_time) {
+  static uint8_t reasm[IPV4_REASSEMBLY_BUFFER(1500)];
+  up();
+  ASSERT_EQ(ipv4_set_reassembly(&t.net, reasm, sizeof(reasm)), NET_OK);
+  make_datagram(1000);
+  fragment(0, 512, 1, 83);
+  fragment(0, 512, 1, 84);
+  fragment(512, 496, 0, 84);
+  ASSERT_EQ(delivered, 0);
+  fragment(512, 496, 0, 83);
+  ASSERT_EQ(delivered, 1);
+}
+
+/* REQ-IPv4-024: without a reassembly buffer, fragments are dropped */
+TEST(itest_ipv4_024_no_buffer_no_reassembly) {
+  up();
+  ASSERT_EQ(ipv4_mms_r(&t.net), 1480);
+  make_datagram(1000);
+  fragment(0, 512, 1, 85);
+  fragment(512, 496, 0, 85);
+  ASSERT_EQ(delivered, 0);
+}
+
 /* REQ-IPv4-025, 060, REQ-ICMPv4-025: after 60 s an incomplete datagram is
  * discarded; Time Exceeded (code 1) goes to its source if fragment zero
  * arrived, quoting it */
@@ -291,6 +348,25 @@ TEST(itest_ipv4_025_reassembly_timeout) {
   /* Fragment zero never came: discarded without a word */
   wire_clear(&t);
   fragment(512, 496, 0, 79);
+  itest_advance(&t, 61000, 1000);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* REQ-ICMPv4-034: a reassembly timeout draws no Time Exceeded about an
+ * ICMP error message */
+TEST(itest_icmpv4_034_no_error_about_an_error) {
+  static uint8_t reasm[IPV4_REASSEMBLY_BUFFER(1500)];
+  uint8_t msg[64], quoted[28], f[128];
+  peer_ip_t ip = peer_ip(PEER_IP, 0, 1);
+  up();
+  ASSERT_EQ(ipv4_set_reassembly(&t.net, reasm, sizeof(reasm)), NET_OK);
+  memset(quoted, 0, sizeof(quoted));
+  peer_icmp(msg, 3, 1, NULL, quoted, 28); /* Host Unreachable, 36 bytes */
+  ip.dst = t.net.ipv4_addr;
+  ip.id = 86;
+  ip.mf = 1;
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, 16));
+  wire_clear(&t);
   itest_advance(&t, 61000, 1000);
   ASSERT_EQ(t.wire.tx_count, 0);
 }
@@ -647,10 +723,15 @@ int main(void) {
   RUN_TEST(itest_ipv4_059_every_broadcast_form);
   RUN_TEST(itest_ipv4_059_supernet_has_no_classful_broadcast);
   RUN_TEST(itest_ipv4_021_unknown_protocol_unreachable);
-  RUN_XFAIL(itest_ipv4_024_reassembly);
-  RUN_XFAIL(itest_ipv4_025_reassembly_timeout);
+  RUN_TEST(itest_ipv4_024_reassembly);
+  RUN_TEST(itest_ipv4_024_larger_than_a_frame);
+  RUN_TEST(itest_ipv4_024_too_large_dropped);
+  RUN_TEST(itest_ipv4_024_one_at_a_time);
+  RUN_TEST(itest_ipv4_024_no_buffer_no_reassembly);
+  RUN_TEST(itest_ipv4_025_reassembly_timeout);
+  RUN_TEST(itest_icmpv4_034_no_error_about_an_error);
   RUN_TEST(itest_ipv4_061_576_octet_datagrams);
-  RUN_XFAIL(itest_ipv4_062_mms_r);
+  RUN_TEST(itest_ipv4_062_mms_r);
   RUN_TEST(itest_ipv4_063_mms_s);
   RUN_TEST(itest_ipv4_064_mtu_configurable);
   RUN_TEST(itest_ipv4_028_no_options_sent);

@@ -114,7 +114,7 @@ Minimum: 8 bytes (header only, no additional data).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-ICMPv4-034 | MUST NOT | MUST NOT send ICMP error in response to an ICMP error message | RFC 792, RFC 1122 §3.2.2 | TEST-ICMPv4-034 |
+| REQ-ICMPv4-034 | MUST NOT | MUST NOT send ICMP error in response to an ICMP error message | RFC 792, RFC 1122 §3.2.2 | TEST-ICMPv4-034, itest_icmpv4_034_no_error_about_an_error |
 | REQ-ICMPv4-035 | MUST NOT | MUST NOT send ICMP error in response to a broadcast/multicast packet | RFC 1122 §3.2.2 | TEST-ICMPv4-035 |
 | REQ-ICMPv4-036 | MUST NOT | MUST NOT send ICMP error in response to a packet whose source names no single host (0.0.0.0, loopback, broadcast, multicast, class E) | RFC 1122 §3.2.2 | TEST-ICMPv4-036 |
 | REQ-ICMPv4-037 | MUST NOT | MUST NOT send ICMP error in response to a fragment (offset ≠ 0) | RFC 1122 §3.2.2 | TEST-ICMPv4-037 |

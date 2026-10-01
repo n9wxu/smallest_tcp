@@ -108,7 +108,7 @@ apart with `udp_rx_dst_ip()`.
 net_poll()
  └─ eth_input()                          MAC filter, EtherType
      └─ ipv4_input()                     ipv4_parse(): version, lengths, header
-         │                               checksum, no fragments; source and
+         │                               checksum; fragments to reassembly; source and
          │                               destination checks
          └─ udp_input()                  protocol 17 (only if NET_USE_UDP)
              ├─ udp_length()             IP payload ≥ 8, 8 ≤ Length ≤ IP payload
@@ -318,7 +318,7 @@ Problem).  See [configuration.md §5](configuration.md#5-compile-time-protocol-s
 |---|---|
 | Ephemeral port allocation, port binding, connected sockets | The application picks source and destination ports on every send and filters sources in its handler. |
 | Per-address dispatch | One table for every address; the handler reads `udp_rx_dst_ip()`. |
-| IP fragmentation | Datagrams are limited by the buffers and the MTU; received fragments are dropped. |
+| IP fragmentation | Datagrams sent are limited by the TX buffer and the MTU; received fragments are reassembled only with a reassembly buffer (`ipv4_set_reassembly()`). |
 | Receive queues | A datagram is delivered during `net_poll()` or not at all. |
 | UDP-Lite, zero-checksum IPv6 tunnels (RFC 6935) | — |
 

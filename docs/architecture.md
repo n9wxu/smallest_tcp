@@ -159,16 +159,33 @@ Source addresses: IPv4 sends from `net->ipv4_addr`, except
 sends from 0.0.0.0 before it has a lease; the DHCP server from its configured
 address).  IPv6 picks the source with `ipv6_src_for()` (RFC 6724).
 
-Error reports check their own rules: `icmp_send_dest_unreach()` quotes the
-invoking header and up to 8 bytes of its payload and sends nothing about a
-broadcast or multicast datagram (RFC 1122 §3.2.2); `icmpv6_send_error()`
-applies RFC 4443 §2.4(e).  Callers just report.
+Error reports check their own rules: `icmp_send_dest_unreach()` and
+`icmp_send_time_exceeded()` quote the invoking header and up to 8 bytes of
+its payload and send nothing about a broadcast or multicast datagram, an
+ICMP error, or a source that is no single host (RFC 1122 §3.2.2);
+`icmpv6_send_error()` applies RFC 4443 §2.4(e).  Callers just report.
+Received ICMP errors about a datagram we sent go to the transport the
+quoted header names: UDP's error handler (`udp_set_error_handler()`).
 
 `net->tx.buf` holds one frame at a time and is reused by the next send, so
 nothing keeps a built frame: TCP retransmits from the connection's TX buffer,
 and the DHCP, TFTP and mDNS modules rebuild a message to resend it.  Because
 `tx.buf` is separate from `rx.buf`, a handler may send while it still reads
-the request.  There is no IP fragmentation in either direction.
+the request.  Nothing is fragmented on the way out: every datagram fits
+the MTU (`net->mtu`, `ipv4_mms_s()`) and goes with DF set.
+
+Fragments received are reassembled in a buffer the application gives
+(`ipv4_set_reassembly(net, buf, size)`, sized with
+`IPV4_REASSEMBLY_BUFFER(emtu_r)`), one datagram at a time; without one
+they are dropped.  The buffer starts with 96 bytes of bookkeeping — the
+datagram's key, a 60 s timer (`ipv4_tick()`), the sender's MAC and a copy
+of fragment zero's header with 8 bytes of data, which is what Time
+Exceeded (code 1) quotes when the timer runs out — then a bitmap of the
+8-byte blocks received and the data.  Fragments may come in any order and
+overlap; the whole datagram goes up through the same switch as an
+unfragmented one, its payload in the reassembly buffer.  `ipv4_mms_r()` is
+the larger of what an RX frame and the reassembly buffer hold
+(RFC 1122 §3.3.2).
 
 ## 7. Address resolution
 

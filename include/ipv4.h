@@ -59,7 +59,8 @@ typedef struct {
 
 /**
  * Parse and check an IPv4 header: version, length, header checksum.
- * @return NET_OK, or NET_ERR_INVALID_PARAM (fragments included).
+ * @return NET_OK, or NET_ERR_INVALID_PARAM (fragments included: received,
+ *         they go to reassembly).
  */
 net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out);
 
@@ -86,19 +87,31 @@ static inline void ipv4_build(uint8_t *buf, uint16_t payload_len,
 
 /* ── Reassembly and message sizes (RFC 1122 §3.3.2, §3.3.3) ── */
 
-/** Bookkeeping at the start of a reassembly buffer */
-#define IPV4_REASM_OVERHEAD 84
+/** Bookkeeping at the start of a reassembly buffer: the datagram's key,
+ *  state, timer, sender's MAC, and fragment zero's header with 8 bytes of
+ *  its data (what Time Exceeded quotes) */
+#define IPV4_REASM_OVERHEAD 96
 /** The size of a reassembly buffer that reassembles datagrams of up to
  *  @p emtu_r bytes (header included; at least 576 to comply) */
 #define IPV4_REASSEMBLY_BUFFER(emtu_r)                                         \
   (IPV4_REASM_OVERHEAD + ((emtu_r) - 20 + 63) / 64 + (emtu_r) - 20)
 
+/** How long a partly reassembled datagram waits for the rest (RFC 1122
+ *  §3.3.2: 60 to 120 s, fixed) */
+#define IPV4_REASM_TIMEOUT_MS 60000u
+
 /**
  * Give IPv4 a buffer, owned by the application, to reassemble fragmented
- * datagrams in, one at a time.  Without one, fragments are dropped.
- * @return NET_ERR_BUF_TOO_SMALL if it cannot hold any data.
+ * datagrams in, one at a time: fragments of another datagram are dropped
+ * while one is being put together.  Without a buffer (the default, or
+ * @p buf NULL), fragments are dropped.  Size it with
+ * IPV4_REASSEMBLY_BUFFER().
+ * @return NET_ERR_BUF_TOO_SMALL if it cannot hold 8 bytes of data.
  */
 net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size);
+
+/** Time out reassembly (from net_tick()). */
+void ipv4_tick(net_t *net, uint32_t elapsed_ms);
 
 /** MMS_R: the largest transport message this host can receive in one
  *  datagram, whole or reassembled. */

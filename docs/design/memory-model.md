@@ -124,6 +124,7 @@ in parentheses where it differs):
 | `tftp_client_t` | 172 B | — (128 B of it is the filename) |
 | `tls_conn_t` | 448 B | A receive and a transmit buffer ([tls.md §5](tls.md#5-buffers)); a shared `tls_config_t` (44 B) |
 | `dtls_conn_t` | 904 B | Its `tls_conn_t` included; a receive and a transmit buffer ([dtls.md §11](dtls.md#11-sizing)) |
+| IPv4 reassembly buffer | `IPV4_REASSEMBLY_BUFFER(emtu_r)`: 96 B + `emtu_r` − 20 + a bit per 8 bytes (1600 B for 1500, 661 B for 576) | Optional (`ipv4_set_reassembly()`); 576 complies with RFC 1122 §3.3.2 ([architecture.md §6](../architecture.md)) |
 
 The TCP receive window is the free space in the connection's own RX buffer,
 not in `net->rx.buf`: TCP copies arriving data out of the frame during

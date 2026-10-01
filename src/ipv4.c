@@ -42,19 +42,20 @@ static int source_routed(const uint8_t *opt, uint16_t len) {
   return 0;
 }
 
-/* REQ-IPv4-001..007, 024, 027, 067 */
-net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
+/* REQ-IPv4-001..007, 027, 067: a datagram or a fragment of one; the
+ * fragment fields are left in *@p frag */
+static net_err_t parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out,
+                       uint16_t *frag) {
   if (data_len < IPV4_HDR_SIZE || (data[IPV4_OFF_VER_IHL] >> 4) != 4)
     return NET_ERR_INVALID_PARAM;
 
   uint16_t header_len = (uint16_t)((data[IPV4_OFF_VER_IHL] & 0x0F) * 4);
   uint16_t total_len = net_read16be(data + IPV4_OFF_TOTLEN);
-  uint16_t flags_frag = net_read16be(data + IPV4_OFF_FLAGS_FRAG);
-  int is_fragment = (flags_frag & (IPV4_FLAG_MF | IPV4_FRAG_MASK)) != 0;
 
+  *frag = net_read16be(data + IPV4_OFF_FLAGS_FRAG) &
+          (IPV4_FLAG_MF | IPV4_FRAG_MASK);
   if (header_len < IPV4_HDR_SIZE || total_len < header_len ||
       total_len > data_len || !net_cksum_verify(data, header_len) ||
-      is_fragment ||
       source_routed(data + IPV4_HDR_SIZE, header_len - IPV4_HDR_SIZE))
     return NET_ERR_INVALID_PARAM;
 
@@ -68,6 +69,12 @@ net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
   out->payload = data + header_len;
   out->payload_len = total_len - header_len;
   return NET_OK;
+}
+
+net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
+  uint16_t frag;
+  net_err_t err = parse(data, data_len, out, &frag);
+  return err == NET_OK && frag ? NET_ERR_INVALID_PARAM : err;
 }
 
 /* REQ-IPv4-030..041, 045 */
@@ -219,13 +226,6 @@ int ipv4_is_host(const net_t *net, uint32_t ip) {
          !ipv4_is_broadcast(net, ip);
 }
 
-net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size) {
-  (void)net;
-  (void)buf;
-  (void)size;
-  return NET_ERR_INVALID_PARAM; /* not implemented yet */
-}
-
 /* The transport message a frame of @p capacity carries */
 static uint16_t frame_mms(const net_t *net, uint16_t capacity) {
   uint16_t room = eth_frame_room(net, capacity);
@@ -236,7 +236,8 @@ static uint16_t frame_mms(const net_t *net, uint16_t capacity) {
 
 /* REQ-IPv4-062 */
 uint16_t ipv4_mms_r(const net_t *net) {
-  return frame_mms(net, net->rx.capacity);
+  uint16_t whole = frame_mms(net, net->rx.capacity);
+  return net->reasm_cap > whole ? net->reasm_cap : whole;
 }
 
 /* REQ-IPv4-063, 064 */
@@ -259,30 +260,203 @@ static int destination_is_us(const net_t *net, uint32_t dst_ip) {
          (ipv4_is_multicast(dst_ip) && ipv4_mcast_is_member(net, dst_ip));
 }
 
-/* REQ-IPv4-017..021 */
-void ipv4_input(net_t *net, const eth_frame_t *eth) {
-  ipv4_hdr_t ip;
-
-  if (ipv4_parse(eth->payload, eth->payload_len, &ip) != NET_OK ||
-      !source_is_valid(net, ip.src_ip) || !destination_is_us(net, ip.dst_ip))
-    return;
-
-  switch (ip.protocol) {
+/* REQ-IPv4-018..021: a whole datagram to its protocol */
+static void deliver(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
+  switch (ip->protocol) {
   case IPV4_PROTO_ICMP:
-    icmp_input(net, &ip, eth);
+    icmp_input(net, ip, eth);
     break;
 #if NET_USE_UDP
   case IPV4_PROTO_UDP:
-    udp_input(net, &ip, eth);
+    udp_input(net, ip, eth);
     break;
 #endif
 #if NET_USE_TCP
   case IPV4_PROTO_TCP:
-    tcp_input(net, &ip, eth);
+    tcp_input(net, ip, eth);
     break;
 #endif
   default:
-    icmp_send_dest_unreach(net, ICMP_CODE_PROTO_UNREACH, &ip, eth);
+    icmp_send_dest_unreach(net, ICMP_CODE_PROTO_UNREACH, ip, eth);
     break;
   }
+}
+
+/* ── Reassembly (RFC 791 §3.2, RFC 1122 §3.3.2) ──
+ *
+ * The application's buffer: IPV4_REASM_OVERHEAD bytes of bookkeeping, a
+ * bitmap of the 8-byte blocks received, then the data. */
+#define RA_SRC 0
+#define RA_DST 4
+#define RA_ID 8
+#define RA_PROTO 10
+#define RA_STATE 11
+#define RA_TOTAL 12  /* the data's length, once the last fragment came */
+#define RA_MS 14     /* milliseconds left (32 bits) */
+#define RA_MAC 18    /* the sender's, for Time Exceeded */
+#define RA_IHL 24    /* fragment zero's header length */
+#define RA_HEADER 28 /* fragment zero's header and its first 8 data bytes */
+
+#define RA_BUSY 0x01
+#define RA_LAST 0x02    /* the fragment without MF came */
+#define RA_FIRST 0x04   /* fragment zero came */
+#define RA_TO_MANY 0x08 /* in a broadcast or multicast frame */
+
+net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size) {
+  uint16_t avail, bitmap;
+  if (!buf) {
+    net->reasm = NULL;
+    net->reasm_cap = 0;
+    return NET_OK;
+  }
+  if (size < IPV4_REASM_OVERHEAD + 9u)
+    return NET_ERR_BUF_TOO_SMALL;
+  /* The most data D with D + ceil(D / 64) <= avail, without division */
+  avail = (uint16_t)(size - IPV4_REASM_OVERHEAD);
+  bitmap = (uint16_t)(avail >> 6);
+  if ((avail & 63u) > bitmap)
+    bitmap++;
+  net->reasm = buf;
+  net->reasm_cap = (uint16_t)(avail - bitmap);
+  buf[RA_STATE] = 0;
+  return NET_OK;
+}
+
+static uint8_t *ra_bitmap(const net_t *net) {
+  return net->reasm + IPV4_REASM_OVERHEAD;
+}
+
+static uint8_t *ra_data(const net_t *net) {
+  return ra_bitmap(net) + ((net->reasm_cap + 63u) >> 6);
+}
+
+/* The fragment is part of the datagram being reassembled */
+static int ra_same(const uint8_t *ra, const ipv4_hdr_t *ip, uint16_t id) {
+  return net_read32be(ra + RA_SRC) == ip->src_ip &&
+         net_read32be(ra + RA_DST) == ip->dst_ip &&
+         net_read16be(ra + RA_ID) == id && ra[RA_PROTO] == ip->protocol;
+}
+
+/* Blocks [0, (total + 7) / 8) all received */
+static int ra_complete(const net_t *net, uint16_t total) {
+  const uint8_t *bitmap = ra_bitmap(net);
+  uint16_t blocks = (uint16_t)((total + 7u) >> 3), i;
+  for (i = 0; i + 8u <= blocks; i += 8)
+    if (bitmap[i >> 3] != 0xFF)
+      return 0;
+  return i == blocks ||
+         (bitmap[i >> 3] | (uint8_t)(0xFFu << (blocks - i))) == 0xFF;
+}
+
+/* REQ-IPv4-024: a fragment into the buffer, in any order, overlaps
+ * included (a later copy of a byte wins); the datagram goes up whole once
+ * every block from zero to the last fragment's end is in */
+static void reassemble(net_t *net, const ipv4_hdr_t *ip, uint16_t frag,
+                       uint16_t id, const eth_frame_t *eth) {
+  uint8_t *ra = net->reasm;
+  uint32_t offset = (uint32_t)(frag & IPV4_FRAG_MASK) << 3;
+  uint32_t end = offset + ip->payload_len;
+  int more = (frag & IPV4_FLAG_MF) != 0;
+  uint16_t block;
+  ipv4_hdr_t whole;
+
+  if (!ra)
+    return;
+  if (!(ra[RA_STATE] & RA_BUSY)) { /* a new datagram */
+    net_write32be(ra + RA_SRC, ip->src_ip);
+    net_write32be(ra + RA_DST, ip->dst_ip);
+    net_write16be(ra + RA_ID, id);
+    ra[RA_PROTO] = ip->protocol;
+    ra[RA_STATE] = RA_BUSY;
+    net_write32be(ra + RA_MS, IPV4_REASM_TIMEOUT_MS);
+    memset(ra_bitmap(net), 0, (net->reasm_cap + 63u) >> 6);
+  } else if (!ra_same(ra, ip, id)) {
+    return; /* one at a time */
+  }
+  /* A malformed fragment, or one past what the buffer or a datagram
+   * holds, ends the datagram */
+  if (ip->payload_len == 0 || (more && (ip->payload_len & 7u)) ||
+      end > net->reasm_cap || end + ip->header_len > 0xFFFFu ||
+      ((ra[RA_STATE] & RA_LAST) &&
+       (end > net_read16be(ra + RA_TOTAL) ||
+        (!more && end != net_read16be(ra + RA_TOTAL))))) {
+    ra[RA_STATE] = 0;
+    return;
+  }
+  if (!more) {
+    net_write16be(ra + RA_TOTAL, (uint16_t)end);
+    ra[RA_STATE] |= RA_LAST;
+  }
+  if (offset == 0) {
+    memcpy(ra + RA_HEADER, ip->header, ip->header_len + 8u);
+    ra[RA_IHL] = (uint8_t)ip->header_len;
+    memcpy(ra + RA_MAC, eth->src_mac, 6);
+    ra[RA_STATE] |= RA_FIRST;
+    if (net_mac_is_multicast(eth->dst_mac))
+      ra[RA_STATE] |= RA_TO_MANY;
+  }
+  memcpy(ra_data(net) + offset, ip->payload, ip->payload_len);
+  for (block = (uint16_t)(offset >> 3); block < (end + 7u) >> 3; block++)
+    ra_bitmap(net)[block >> 3] |= (uint8_t)(1u << (block & 7u));
+
+  if ((ra[RA_STATE] & (RA_FIRST | RA_LAST)) != (RA_FIRST | RA_LAST) ||
+      !ra_complete(net, net_read16be(ra + RA_TOTAL)))
+    return;
+  whole = *ip;
+  whole.header = ra + RA_HEADER;
+  whole.header_len = ra[RA_IHL];
+  whole.ttl = ra[RA_HEADER + IPV4_OFF_TTL];
+  whole.payload = ra_data(net);
+  whole.payload_len = net_read16be(ra + RA_TOTAL);
+  whole.total_len = (uint16_t)(whole.header_len + whole.payload_len);
+  ra[RA_STATE] = 0;
+  deliver(net, &whole, eth);
+}
+
+/* REQ-IPv4-025, 060, REQ-ICMPv4-025: after IPV4_REASM_TIMEOUT_MS the
+ * partial datagram goes; Time Exceeded (code 1) to its source if fragment
+ * zero came */
+void ipv4_tick(net_t *net, uint32_t elapsed_ms) {
+  static const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  uint8_t *ra = net->reasm;
+  uint32_t ms;
+  ipv4_hdr_t quote;
+  eth_frame_t eth;
+
+  if (!ra || !(ra[RA_STATE] & RA_BUSY))
+    return;
+  ms = net_read32be(ra + RA_MS);
+  if (elapsed_ms < ms) {
+    net_write32be(ra + RA_MS, ms - elapsed_ms);
+    return;
+  }
+  if (ra[RA_STATE] & RA_FIRST) {
+    memset(&quote, 0, sizeof(quote));
+    quote.protocol = ra[RA_PROTO];
+    quote.src_ip = net_read32be(ra + RA_SRC);
+    quote.dst_ip = net_read32be(ra + RA_DST);
+    quote.header = ra + RA_HEADER;
+    quote.header_len = ra[RA_IHL];
+    quote.payload = ra + RA_HEADER + ra[RA_IHL];
+    quote.payload_len = 8;
+    memset(&eth, 0, sizeof(eth));
+    eth.src_mac = ra + RA_MAC;
+    eth.dst_mac = (ra[RA_STATE] & RA_TO_MANY) ? broadcast : net->mac;
+    icmp_send_time_exceeded(net, 1, &quote, &eth);
+  }
+  ra[RA_STATE] = 0;
+}
+
+/* REQ-IPv4-017..024 */
+void ipv4_input(net_t *net, const eth_frame_t *eth) {
+  ipv4_hdr_t ip;
+  uint16_t frag;
+
+  if (parse(eth->payload, eth->payload_len, &ip, &frag) != NET_OK ||
+      !source_is_valid(net, ip.src_ip) || !destination_is_us(net, ip.dst_ip))
+    return;
+  if (frag)
+    reassemble(net, &ip, frag, net_read16be(ip.header + IPV4_OFF_ID), eth);
+  else
+    deliver(net, &ip, eth);
 }

@@ -101,10 +101,21 @@ void icmp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   }
 }
 
+/* An ICMP error message, whose type is neither a query nor a reply */
+static int is_icmp_error(const ipv4_hdr_t *ip) {
+  uint8_t type;
+  if (ip->protocol != IPV4_PROTO_ICMP || ip->payload_len == 0)
+    return 0;
+  type = ip->payload[ICMP_OFF_TYPE];
+  return type == ICMP_TYPE_DEST_UNREACH || type == ICMP_TYPE_SOURCE_QUENCH ||
+         type == ICMP_TYPE_REDIRECT || type == ICMP_TYPE_TIME_EXCEEDED ||
+         type == ICMP_TYPE_PARAM_PROBLEM;
+}
+
 /* REQ-ICMPv4-038 */
-net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
-                                 const ipv4_hdr_t *invoking,
-                                 const eth_frame_t *eth) {
+static net_err_t send_error(net_t *net, uint8_t type, uint8_t code,
+                            const ipv4_hdr_t *invoking,
+                            const eth_frame_t *eth) {
   uint16_t payload = invoking->payload_len < ICMP_QUOTED_PAYLOAD
                          ? invoking->payload_len
                          : ICMP_QUOTED_PAYLOAD;
@@ -112,17 +123,31 @@ net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
   uint16_t icmp_len = (uint16_t)(ICMP_HDR_SIZE + quote);
   uint8_t *icmp = net->tx.buf + ICMP_OFFSET;
 
-  /* REQ-ICMPv4-035, 036 (RFC 1122 §3.2.2): never about a broadcast or
-   * multicast, nor a datagram from 0.0.0.0 or any source no single host */
+  /* REQ-ICMPv4-034..036 (RFC 1122 §3.2.2): never about an ICMP error, a
+   * broadcast or multicast, nor a datagram from 0.0.0.0 or any source no
+   * single host */
   if (sent_to_many(net, invoking) || net_mac_is_multicast(eth->dst_mac) ||
-      !ipv4_is_host(net, invoking->src_ip))
+      !ipv4_is_host(net, invoking->src_ip) || is_icmp_error(invoking))
     return NET_ERR_INVALID_PARAM;
   if (icmp_len > ipv4_mms_s(net))
     return NET_ERR_BUF_TOO_SMALL;
 
-  icmp[ICMP_OFF_TYPE] = ICMP_TYPE_DEST_UNREACH;
+  icmp[ICMP_OFF_TYPE] = type;
   icmp[ICMP_OFF_CODE] = code;
   net_write32be(icmp + 4, 0); /* unused / next-hop MTU */
   memcpy(icmp + ICMP_HDR_SIZE, invoking->header, quote);
   return icmp_send(net, icmp_len, invoking->src_ip, eth->src_mac);
+}
+
+net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
+                                 const ipv4_hdr_t *invoking,
+                                 const eth_frame_t *eth) {
+  return send_error(net, ICMP_TYPE_DEST_UNREACH, code, invoking, eth);
+}
+
+/* REQ-ICMPv4-025 */
+net_err_t icmp_send_time_exceeded(net_t *net, uint8_t code,
+                                  const ipv4_hdr_t *invoking,
+                                  const eth_frame_t *eth) {
+  return send_error(net, ICMP_TYPE_TIME_EXCEEDED, code, invoking, eth);
 }
