@@ -122,6 +122,8 @@ it is a helper, not a setting.
 | `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and close. |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client.h` | 20 | Largest server DUID kept (layout-affecting). |
 | `DHCPV4_START_DELAY_MAX_MS` | `dhcpv4_client.h` | 10000 | The first DISCOVER waits a random 1 s up to this (RFC 2131 §4.4.1); 0 sends it at once, else 1000..65535. |
+| `DHCPV4_PROBE_WAIT_MS` | `dhcpv4_client.h` | 1000 | How long the client waits after its ARP probe of an ACK's address before using it (RFC 2131 §4.4.1). |
+| `DHCPV4_SPLIT_OPTION_MAX` | `dhcpv4_client.h` | 255 | Buffer, on the stack, in which an option split in parts (RFC 3396) is joined for its handler; 1..255. |
 | `TFTP_RTO_MIN_MS`, `TFTP_RTO_MAX_MS` | `tftp.h` | 1000, 16000 | Bounds of the TFTP client's adaptive retransmission timeout (RFC 1123 §4.2.3.2); the maximum also caps its backoff. |
 
 Other protocol constants are plain `#define`s — fixed by their RFCs or by the
