@@ -1183,12 +1183,20 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
 net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
                        const uint8_t *remote_mac, uint16_t remote_port,
                        uint16_t local_port) {
-  const uint8_t *src;
-  if (!net || !conn || !remote_ip || !remote_mac || remote_port == 0 ||
+  const uint8_t *src = net && remote_ip ? ipv6_src_for(net, remote_ip) : NULL;
+  if (!src)
+    return NET_ERR_INVALID_PARAM;
+  return tcp6_connect_from(net, conn, src, remote_ip, remote_mac, remote_port,
+                           local_port);
+}
+
+/* REQ-TCP-170..172: from one of our addresses, to a unicast one */
+net_err_t tcp6_connect_from(net_t *net, tcp_conn_t *conn, const uint8_t *src,
+                            const uint8_t *remote_ip, const uint8_t *remote_mac,
+                            uint16_t remote_port, uint16_t local_port) {
+  if (!net || !conn || !src || !remote_ip || !remote_mac || remote_port == 0 ||
       local_port == 0 || ipv6_is_multicast(remote_ip) ||
-      ipv6_is_unspecified(remote_ip))
-    return NET_ERR_INVALID_PARAM; /* REQ-TCP-172 */
-  if (!(src = ipv6_src_for(net, remote_ip)))
+      ipv6_is_unspecified(remote_ip) || !ipv6_is_ours(net, src))
     return NET_ERR_INVALID_PARAM;
   conn->ip_ver = 6;
   conn->local_slot = (uint8_t)ipv6_addr_slot(net, src);

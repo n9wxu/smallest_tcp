@@ -545,6 +545,45 @@ TEST(itest_tcp_170_local_address) {
   ASSERT_EQ(ip.src, t.net.ipv4_addr);
 }
 
+#if NET_USE_IPV6
+/* REQ-TCP-170, 172: over IPv6 OPEN takes a local address — one of ours —
+ * and no multicast remote */
+TEST(itest_tcp_170_local_address_ipv6) {
+  static const uint8_t global[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                     0,    0,    0,    0,    0, 0, 0, 0x0a};
+  static const uint8_t not_ours[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                       0,    0,    0,    0,    0, 0, 0, 0x0c};
+  static const uint8_t remote[16] = {0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+                                     0,    0,    0, 0, 0, 0, 0, 0x99};
+  static const uint8_t group[16] = {0xff, 0x02, 0, 0, 0, 0, 0, 0,
+                                    0,    0,    0, 0, 0, 0, 0, 0xfb};
+  const uint8_t *src_for, *f;
+  up();
+  ipv6_start(&t.net);
+  ASSERT_EQ(ipv6_addr_add(&t.net, global, 0xFFFFFFFFu, 0xFFFFFFFFu), NET_OK);
+  itest_advance(&t, 3000, 100);           /* past Duplicate Address Detection */
+  src_for = ipv6_src_for(&t.net, remote); /* link-local, by default */
+  ASSERT_TRUE(src_for != NULL && memcmp(src_for, global, 16) != 0);
+  ASSERT_EQ(tcp6_connect_from(&t.net, &conn, not_ours, remote, peer_mac, RPORT,
+                              LPORT),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(
+      tcp6_connect_from(&t.net, &conn, global, group, peer_mac, RPORT, LPORT),
+      NET_ERR_INVALID_PARAM);
+  wire_clear(&t);
+  ASSERT_EQ(
+      tcp6_connect_from(&t.net, &conn, global, remote, peer_mac, RPORT, LPORT),
+      NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  f = wire_sent(&t, 0)->data;
+  ASSERT_EQ(peer_get16(f + 12), 0x86DD); /* IPv6 */
+  ASSERT_EQ(f[14 + 6], 6);               /* TCP */
+  ASSERT_MEM_EQ(f + 14 + 8, global, 16); /* from the address chosen */
+  ASSERT_MEM_EQ(f + 14 + 24, remote, 16);
+  ASSERT_EQ(f[54 + 13], TCPF_SYN);
+}
+#endif
+
 /* REQ-TCP-171: the connection keeps its local address; if the host's
  * address changes, the connection ends rather than continue from another */
 TEST(itest_tcp_171_same_local_address) {
@@ -792,6 +831,9 @@ int main(void) {
   RUN_TEST(itest_tcp_168_listen_on_a_live_connection);
   RUN_TEST(itest_tcp_169_listen_beside_an_open);
   RUN_TEST(itest_tcp_170_local_address);
+#if NET_USE_IPV6
+  RUN_TEST(itest_tcp_170_local_address_ipv6);
+#endif
   RUN_TEST(itest_tcp_171_same_local_address);
   RUN_TEST(itest_tcp_172_open_to_broadcast_refused);
   RUN_TEST(itest_tcp_174_tos);

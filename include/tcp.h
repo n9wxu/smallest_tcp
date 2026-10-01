@@ -210,6 +210,17 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
 net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
                        const uint8_t *remote_mac, uint16_t remote_port,
                        uint16_t local_port);
+
+/**
+ * As tcp6_connect(), from @p local_ip, the OPEN call's optional local
+ * address (RFC 9293 MUST-43): one of ours, usable (ipv6_is_ours()).
+ * @return NET_OK, or NET_ERR_INVALID_PARAM — also for a @p local_ip that
+ *         is not ours.
+ */
+net_err_t tcp6_connect_from(net_t *net, tcp_conn_t *conn,
+                            const uint8_t *local_ip, const uint8_t *remote_ip,
+                            const uint8_t *remote_mac, uint16_t remote_port,
+                            uint16_t local_port);
 #endif
 
 /** Close our side: ESTABLISHED → FIN-WAIT-1, CLOSE-WAIT → LAST-ACK.  The

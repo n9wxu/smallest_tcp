@@ -203,7 +203,7 @@ goes out after the next `TCP_EVT_WRITABLE`.
 |---|---|---|
 | `tcp_conn_init()` | Zero the connection, attach buffers and callback; CLOSED | any |
 | `tcp_listen()` | LISTEN on a port | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
-| `tcp_connect()`, `tcp6_connect()` | Send the SYN now; SYN-SENT.  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  An error, and still CLOSED, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED |
+| `tcp_connect()`, `tcp6_connect()`, `tcp6_connect_from()` | Send the SYN now; SYN-SENT.  `tcp6_connect_from()` names the local address — one of the host's (REQ-TCP-170).  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  An error, and still CLOSED, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED |
 | `tcp_set_tos()`, `tcp_set_max_retransmits()` | The TOS of the connection's IPv4 segments (REQ-TCP-174); R2, its retransmission limit (REQ-TCP-165, section 5.1) | any, after `tcp_conn_init()` |
 | `tcp_last_error()` | The last ICMP error (type << 8 \| code) or `TCP_SOFT_RETRANSMITTING`; 0 for none (section 3.8) | any |
 | `tcp_write()` | Queue data; returns bytes accepted — 0 while the stop-and-wait buffer has a segment in flight | ESTABLISHED, CLOSE-WAIT (else < 0) |
@@ -884,7 +884,9 @@ addresses of that family.  A listener has none until its SYN arrives, so it
 accepts IPv4 and IPv6 peers alike.  Over IPv6 our address is the one the SYN
 was sent to (passive open) or the one `ipv6_src_for()` picks — link-local for a
 link-local peer, else a preferred global address, else a deprecated one
-(active open; `tcp6_connect()` fails if none is usable).  It is stored as a slot
+(active open; `tcp6_connect()` fails if none is usable) — or the one the
+application names with `tcp6_connect_from()`, which must be one of the
+host's usable addresses (RFC 9293 MUST-43).  It is stored as a slot
 index, so the connection sends from whatever address that slot holds.
 TCP is unicast only: `tcp_input()` drops a segment not sent to our IPv4
 address (a broadcast or a joined group), and `tcp6_input()` one sent to a
