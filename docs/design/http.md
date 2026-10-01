@@ -2,7 +2,7 @@
 
 **Protocol:** HTTP/1.0 server semantics (RFC 9110, RFC 9112)  
 **Files:** `include/http.h`, `src/http.c` (parser, formatter, server, the TCP transport); `include/http_tls.h`, `src/http_tls.c` (the TLS transport)  
-**Requirements:** [docs/requirements/http.md](../requirements/http.md) (REQ-HTTP-001..041 implemented; 042, 043 — chunked coding, MAY — not)  
+**Requirements:** [docs/requirements/http.md](../requirements/http.md) (REQ-HTTP-001..064 implemented, but for 042, 043 — chunked coding, MAY)  
 **Status:** implemented (Milestone 11; over TLS since Milestone 13)  
 **Last updated:** 2026-10-01
 
@@ -82,8 +82,8 @@ that finds none is refused with RST.
 
 | | Cortex-M0 |
 |---|---:|
-| `http_conn_t` | 200 B (224 dual stack) |
-| `http_server_t` | 24 B |
+| `http_conn_t` | 212 B (236 dual stack) |
+| `http_server_t` | 36 B |
 
 plus each slot's TCP buffers and request buffer (and, for HTTPS, a
 `tls_conn_t` with its record buffers, section 7.2).  The request buffer
@@ -447,10 +447,21 @@ complete program.
 
 ## 10. Tests
 
-- **Unit, parser and formatter** (`test_http.c`, 22): header end, request
-  line, versions, methods, absolute-form, query split, headers
-  (Content-Length, Host, Transfer-Encoding), LF-only lines, leading empty
-  lines, every error status, reason phrases, header formatting (Allow, 204).
+- **Integration** (`tests/integration/itest_http.c`, 31): a client on the
+  scripted wire (`peer_client_t`) talks to the server over the stack's TCP,
+  traced to the requirements: GET, HEAD (errors too), 204/205 without
+  content, Allow, Host (one, valid), bare CR and NUL, Transfer-Encoding,
+  absolute-form, Date from a clock (leap years, 2100, 2106), the handler's
+  statuses and content types, Expect: 100-continue, If-Match /
+  If-None-Match, invalid and incomplete Content-Length, field whitespace,
+  obs-fold, octet parsing, always HTTP/1.0, never Transfer-Encoding.  With
+  `SMALLEST_TCP_TLS` also over TLS 1.3 (the client's TLS is the stack's own
+  TLS client with a PSK, only the transport): https absolute-form, and the
+  421 for a host the certificate is not valid for.
+- **Unit, parser and formatter** (`test_http.c`, 20): header end, request
+  line, versions, methods, query split, headers (Content-Length, Host),
+  LF-only lines, leading empty lines, every error status, reason phrases,
+  header formatting (Allow, 204).
 - **Unit, server** (`test_http.c`, 24): a simulated client drives the real
   TCP stack with injected segments: GET/HEAD/POST, 404/405/501/400/413/414/431/500,
   responses larger than the TX buffer, requests arriving in pieces, the
@@ -481,6 +492,7 @@ include/http.h, src/http.c           parser, formatter, server, TCP transport
 include/http_tls.h, src/http_tls.c   TLS transport (http_conn_use_tls)
 demo/http_demo/main.c                pages, JSON API, POST echo, advertised over mDNS
 demo/https_demo/main.c               the same server over TLS 1.3 on port 443
+tests/integration/itest_http.c
 tests/unit/test_http.c
 tests/blackbox/test_http_conform.py, test_https_conform.py
 ```

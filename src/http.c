@@ -2,7 +2,8 @@
  * @file http.c
  * @brief Minimal HTTP/1.0 server (RFC 9110 semantics, RFC 9112 syntax).
  *
- * Implements REQ-HTTP-001..041 (V1 scope).  See docs/design/http.md.
+ * Implements REQ-HTTP-001..064, but for 042, 043 (chunked coding, MAY).
+ * See docs/design/http.md.
  */
 
 #include "http.h"

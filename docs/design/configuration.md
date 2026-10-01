@@ -117,7 +117,7 @@ it is a helper, not a setting.
 | `NET_DEFAULT_TTL` | `ipv4.h` | 64 | TTL of IPv4 datagrams sent through `ipv4_build()` / `udp_send()`. |
 | `NDP_MAX_RTR_SOLICITATIONS` | `ndp.h` | 3 | Router Solicitations sent at start-up if no Router Advertisement arrives. |
 | `DNS_COMPRESS_MAX` | `dns_wire.h` | 16 | Label offsets a DNS writer remembers as compression targets. |
-| `HTTP_HDR_MAX` | `http.h` | 192 | Largest response header block, formatted on the C stack. |
+| `HTTP_HDR_MAX` | `http.h` | 224 | Largest response header block, formatted on the C stack. |
 | `HTTP_REQUEST_TIMEOUT_MS` | `http.h` | 10000 | Time a connection slot may take to receive a complete request. |
 | `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and close. |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client.h` | 20 | Largest server DUID kept (layout-affecting). |

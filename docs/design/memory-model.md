@@ -115,8 +115,8 @@ in parentheses where it differs):
 | Structure | Size | Plus |
 |---|---|---|
 | `tcp_conn_t` | 96 B (116 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
-| `http_conn_t` (one slot) | about 200 B (230 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
-| `http_server_t` | 24 B | The slot array and a `const` route table |
+| `http_conn_t` (one slot) | about 212 B (236 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
+| `http_server_t` | 36 B | The slot array and a `const` route table (and, optional, a clock and the HTTPS host names) |
 | `mdns_t` | 44 B | A `const` record table |
 | `dhcpv4_client_t` | 48 B | An optional option-handler table |
 | `dhcpv4_server_t` | 12 B | A `const dhcpv4_server_cfg_t` |
@@ -131,7 +131,7 @@ not in `net->rx.buf`: TCP copies arriving data out of the frame during
 `net_poll()`.
 
 Stack (automatic) memory is modest; the largest locals are HTTP's response
-header (`HTTP_HDR_MAX`, 192 bytes), mDNS's DNS writer (about 44 bytes with
+header (`HTTP_HDR_MAX`, 224 bytes), mDNS's DNS writer (about 44 bytes with
 `DNS_COMPRESS_MAX` 16) and MLD's list of reported groups
 (16 × (`NET_IPV6_ADDRS` + `NET_MAX_MCAST6_GROUPS`) bytes).
 
