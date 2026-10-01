@@ -184,16 +184,40 @@ TEST(itest_igmp_012_v1_querier) {
   ASSERT_EQ(sent(V2_REPORT, GROUP), 1);
 }
 
+/* REQ-IGMP-013: the v1 state follows the v1 queries heard — a v2 query
+ * after one does not end it */
+TEST(itest_igmp_013_v1_state_outlasts_a_v2_query) {
+  joined();
+  query(0, 0);
+  itest_advance(&t, 10000, 10);
+  wire_clear(&t);
+  query(10, 0); /* IGMPv2 */
+  itest_advance(&t, 1000, 10);
+  ASSERT_EQ(sent(V1_REPORT, GROUP), 1);
+  ASSERT_EQ(sent(V2_REPORT, GROUP), 0);
+}
+
+/* REQ-IGMP-008: joining or leaving all-hosts sends nothing */
+TEST(itest_igmp_008_all_hosts_never_reported) {
+  itest_up(&t, 1514, 1514);
+  ASSERT_EQ(igmp_join(&t.net, ALL_HOSTS), NET_OK);
+  ASSERT_EQ(igmp_report(&t.net, ALL_HOSTS), NET_OK);
+  ASSERT_EQ(igmp_leave(&t.net, ALL_HOSTS), NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
 int main(void) {
   fprintf(stderr, "=== itest_igmp ===\n");
   RUN_TEST(itest_igmp_001_report_format);
   RUN_TEST(itest_igmp_007_leave_to_all_routers);
-  RUN_XFAIL(itest_igmp_009_general_query_answered);
-  RUN_XFAIL(itest_igmp_002_bad_checksum_ignored);
-  RUN_XFAIL(itest_igmp_004_longer_query_answered);
-  RUN_XFAIL(itest_igmp_010_shorter_query_resets_timer);
-  RUN_XFAIL(itest_igmp_011_report_suppressed);
-  RUN_XFAIL(itest_igmp_012_v1_querier);
+  RUN_TEST(itest_igmp_009_general_query_answered);
+  RUN_TEST(itest_igmp_002_bad_checksum_ignored);
+  RUN_TEST(itest_igmp_004_longer_query_answered);
+  RUN_TEST(itest_igmp_010_shorter_query_resets_timer);
+  RUN_TEST(itest_igmp_011_report_suppressed);
+  RUN_TEST(itest_igmp_012_v1_querier);
+  RUN_TEST(itest_igmp_013_v1_state_outlasts_a_v2_query);
+  RUN_TEST(itest_igmp_008_all_hosts_never_reported);
   ITEST_REPORT();
   return test_failures;
 }

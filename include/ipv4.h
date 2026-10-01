@@ -207,4 +207,12 @@ int ipv4_mcast_is_member(const net_t *net, uint32_t group);
 /** @p mac is the Ethernet address of a joined group. */
 int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac);
 
+/** What IGMP (igmp.c, linked with the protocols that join groups) gives
+ *  the IP layer through net->igmp_ops once a group is joined: the IGMP
+ *  messages received, and the time passing (from ipv4_tick()) */
+struct net_igmp_ops_s {
+  void (*input)(net_t *net, const ipv4_hdr_t *ip);
+  void (*tick)(net_t *net, uint32_t elapsed_ms);
+};
+
 #endif /* IPV4_H */

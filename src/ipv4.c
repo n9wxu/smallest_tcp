@@ -276,6 +276,15 @@ static void deliver(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
     tcp_input(net, ip, eth);
     break;
 #endif
+#if NET_MAX_MCAST_GROUPS > 0
+  case IPV4_PROTO_IGMP:
+    if (net->igmp_ops) {
+      net->igmp_ops->input(net, ip);
+      break;
+    }
+    icmp_send_dest_unreach(net, ICMP_CODE_PROTO_UNREACH, ip, eth);
+    break;
+#endif
   default:
     icmp_send_dest_unreach(net, ICMP_CODE_PROTO_UNREACH, ip, eth);
     break;
@@ -416,7 +425,7 @@ static void reassemble(net_t *net, const ipv4_hdr_t *ip, uint16_t frag,
 /* REQ-IPv4-025, 060, REQ-ICMPv4-025: after IPV4_REASM_TIMEOUT_MS the
  * partial datagram goes; Time Exceeded (code 1) to its source if fragment
  * zero came */
-void ipv4_tick(net_t *net, uint32_t elapsed_ms) {
+static void reassembly_tick(net_t *net, uint32_t elapsed_ms) {
   static const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t *ra = net->reasm;
   uint32_t ms;
@@ -445,6 +454,14 @@ void ipv4_tick(net_t *net, uint32_t elapsed_ms) {
     icmp_send_time_exceeded(net, 1, &quote, &eth);
   }
   ra[RA_STATE] = 0;
+}
+
+void ipv4_tick(net_t *net, uint32_t elapsed_ms) {
+  reassembly_tick(net, elapsed_ms);
+#if NET_MAX_MCAST_GROUPS > 0
+  if (net->igmp_ops)
+    net->igmp_ops->tick(net, elapsed_ms);
+#endif
 }
 
 /* REQ-IPv4-017..024 */

@@ -111,6 +111,10 @@ typedef struct {
   } arp_recent[NET_ARP_RATE_SLOTS];
 #if NET_MAX_MCAST_GROUPS > 0
   uint32_t mcast_groups[NET_MAX_MCAST_GROUPS]; /**< Joined; 0 = free */
+  /** IGMP, installed by igmp_join(): its input and timer (ipv4.h) */
+  const struct net_igmp_ops_s *igmp_ops;
+  uint32_t igmp_v1_ms; /**< An IGMPv1 querier heard: ms left of 400 s */
+  uint16_t igmp_delay_ms[NET_MAX_MCAST_GROUPS]; /**< Report due; 0 = none */
 #endif
   uint8_t *reasm; /**< ipv4_set_reassembly()'s buffer; NULL: none */
   /* An address being checked before use (RFC 5227: the DHCP client's) */

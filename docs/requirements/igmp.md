@@ -36,7 +36,7 @@ them.
 |---|---|---|---|---|
 | REQ-IGMP-006 | SHOULD | On joining a group, send an unsolicited Membership Report at once, and repeat it | RFC 2236 §3 | itest_igmp_001_report_format |
 | REQ-IGMP-007 | MUST | Send Leave Group to the all-routers group 224.0.0.2 | RFC 2236 §3, §9 | itest_igmp_007_leave_to_all_routers |
-| REQ-IGMP-008 | MUST NOT | Report membership of the all-systems group 224.0.0.1 | RFC 2236 §3, §6 | itest_igmp_009_general_query_answered |
+| REQ-IGMP-008 | MUST NOT | Report membership of the all-systems group 224.0.0.1 | RFC 2236 §3, §6 | itest_igmp_009_general_query_answered, itest_igmp_008_all_hosts_never_reported |
 
 ### Answering queries
 
@@ -51,7 +51,7 @@ them.
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-IGMP-012 | MUST | Interpret a query's Max Response Time of 0 (an IGMPv1 query) as 100 (10 s) | RFC 2236 §4 | itest_igmp_012_v1_querier |
-| REQ-IGMP-013 | MUST | Keep the state "an IGMPv1 querier was heard in the last 400 s" (the Version 1 Router Present Timeout), based on v1 queries heard, not on the type of the last query | RFC 2236 §4, §8.11 | itest_igmp_012_v1_querier |
+| REQ-IGMP-013 | MUST | Keep the state "an IGMPv1 querier was heard in the last 400 s" (the Version 1 Router Present Timeout), based on v1 queries heard, not on the type of the last query | RFC 2236 §4, §8.11 | itest_igmp_012_v1_querier, itest_igmp_013_v1_state_outlasts_a_v2_query |
 | REQ-IGMP-014 | MUST | While that state holds, send Version 1 Membership Reports, solicited and unsolicited, and no IGMPv2 message (Leave Group included) | RFC 2236 §4, §8.11 | itest_igmp_012_v1_querier |
 
 ## Notes

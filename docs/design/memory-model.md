@@ -35,6 +35,7 @@ One `net_t` per network interface (`include/net.h`):
 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` | IPv4 configuration, host byte order; 0 = unconfigured | always |
 | `gateway_mac`, `gateway_mac_valid` | The gateway's MAC, learned from ARP replies | always |
 | `mcast_groups[]` | Joined IPv4 groups (0 = free slot; 224.0.0.1, always joined, takes none) | `NET_MAX_MCAST_GROUPS > 0` |
+| `igmp_ops`, `igmp_delay_ms[]`, `igmp_v1_ms` | IGMP, once `igmp_join()` installs it: its input and timer, each group's report delay after a query, and the IGMPv1-querier state (RFC 2236; [mdns.md §10](mdns.md#10-multicast-igmp-and-mld)) | `NET_MAX_MCAST_GROUPS > 0` |
 | `arp_probe_ip`, `arp_probe_conflict` | An address being checked before use, and whether `arp_input()` saw it in use (RFC 5227; the DHCPv4 client's, [dhcpv4.md §3.1](dhcpv4.md#31-state-machine)) | IPv4 |
 | `reasm`, `reasm_cap` | The application's reassembly buffer, and the data it holds (`ipv4_set_reassembly()`) | IPv4 |
 | `ip6` | Address slots with DAD state and lifetimes, hop limit, RA flags, default router, router-solicitation and lifetime timers, MLD timers | `NET_USE_IPV6` |
