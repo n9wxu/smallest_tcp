@@ -112,7 +112,11 @@ typedef struct {
   uint32_t answers;
   uint32_t service_types; /**< Answers to the DNS-SD meta-query */
   uint32_t nsec;          /**< Names owed a negative answer */
-  uint8_t families;       /**< MDNS_FAMILY_* the queries came on */
+  /** The host whose known answers may strike answers (RFC 6762 §7.2): the
+   *  last to send a truncated query, or the first to ask */
+  uint32_t querier;
+  uint32_t others;  /**< Answers and types other hosts wait for too */
+  uint8_t families; /**< MDNS_FAMILY_* the queries came on */
 } mdns_pending_t;
 
 struct mdns_s {

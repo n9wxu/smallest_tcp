@@ -1489,7 +1489,7 @@ int main(void) {
   RUN_TEST(itest_mdns_074_only_valid_ipv4_addresses);
   RUN_XFAIL(itest_mdns_075_low_ttl_copy_of_our_record_corrected);
   RUN_TEST(itest_mdns_076_no_cache_flush_in_legacy_responses);
-  RUN_XFAIL(itest_mdns_077_known_answers_only_from_the_querier);
+  RUN_TEST(itest_mdns_077_known_answers_only_from_the_querier);
   RUN_TEST(itest_mdns_078_cache_flush_on_unique_records_only);
   RUN_TEST(itest_mdns_079_whole_unique_rrset);
   ITEST_REPORT();

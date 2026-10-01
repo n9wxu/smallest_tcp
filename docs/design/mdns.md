@@ -161,7 +161,7 @@ mdns_input() / mdns_input6()  →  input()
 
 A QU query from a querier still at 0.0.0.0 falls through to the multicast rows.
 
-**Truncated queries** (§7.2).  A querier whose known answers do not fit one packet sets TC and sends the rest in packets without questions.  A query from port 5353 with TC set is owed rather than answered, whatever it asks, and the owed response waits 400–500 ms.  A query packet without questions that arrives while a response is owed goes through `suppress_known_answers()` against what is owed (`more_known_answers()`), so an answer the querier listed is not sent.  The querier's address is not kept, so known answers from any host count — which can only suppress, as §7.4's duplicate-answer rule would.  The responder never sets TC itself: its answers are split into packets instead (REQ-MDNS-042).
+**Truncated queries** (§7.2).  A querier whose known answers do not fit one packet sets TC and sends the rest in packets without questions.  A query from port 5353 with TC set is owed rather than answered, whatever it asks, and the owed response waits 400–500 ms.  A query packet without questions that arrives while a response is owed goes through `suppress_known_answers()` against what is owed (`more_known_answers()`), so an answer the querier listed is not sent — if it comes from the querier, and only for answers no other host waits for (§7.2, REQ-MDNS-077).  `mdns_pending_t` keeps the querier — the last host to send a truncated query, else the first to ask; its IPv4 address, or a keyed hash of its IPv6 address (`host_of()`) — and `others`, the answers and service types another host asked for too, which known answers cannot strike.  When a second host sends a truncated query, it becomes the querier and everything owed so far goes into `others`.  The responder never sets TC itself: its answers are split into packets instead (REQ-MDNS-042).
 
 > The requirements doc originally said 400–500 ms for all multicast responses.  In RFC 6762 §6 that delay applies only to queries with the TC bit set; unique answers go out immediately and shared answers after 20–120 ms.
 
@@ -173,6 +173,8 @@ typedef struct {
   uint32_t answers;       /* record sets owed (bit i = records[i]) */
   uint32_t service_types; /* answers to the meta-query */
   uint32_t nsec;          /* names owed a negative answer */
+  uint32_t querier;       /* whose known answers count (§7.2) */
+  uint32_t others;        /* answers other hosts wait for too */
   uint8_t families;       /* MDNS_FAMILY_V4 | MDNS_FAMILY_V6: where the queries came from */
 } mdns_pending_t;
 ```

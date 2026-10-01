@@ -749,12 +749,32 @@ static void send_pending(mdns_t *m) {
                  0);
 }
 
-/* Shared records: aggregated and delayed 20-120 ms (RFC 6762 §6).  The
+/* Who sent a message: the IPv4 address, or a hash of the IPv6 one */
+static uint32_t host_of(const mdns_t *m, const dest_t *from) {
+  (void)m; /* IPv6 only */
+  return BY_FAMILY(from, from->ip, net_hash(m->net, from->ip6, 16));
+}
+
+/*
+ * Shared records: aggregated and delayed 20-120 ms (RFC 6762 §6).  The
  * answer to a truncated query waits 400-500 ms for the rest of its known
- * answers (§7.2), and what is owed already waits with it. */
-static void owe_response(mdns_t *m, uint8_t family, uint32_t answers,
-                         uint32_t service_types, uint32_t nsec, int truncated) {
+ * answers (§7.2), and what is owed already waits with it.  REQ-MDNS-077:
+ * what another host than the querier asked for is kept in `others`, which
+ * the querier's known answers cannot strike.
+ */
+static void owe_response(mdns_t *m, uint32_t from, uint8_t family,
+                         uint32_t answers, uint32_t service_types,
+                         uint32_t nsec, int truncated) {
   mdns_pending_t *p = &m->pending;
+  if (!p->timer_ms) {
+    p->querier = from;
+    p->others = 0;
+  } else if (from != p->querier && truncated) {
+    p->others |= p->answers | p->service_types;
+    p->querier = from;
+  } else if (from != p->querier) {
+    p->others |= answers | service_types;
+  }
   p->families |= family;
   p->answers |= answers;
   p->service_types |= service_types;
@@ -1154,25 +1174,29 @@ static void answer(mdns_t *m, const dest_t *from, uint16_t id,
   } else if (w->all_unicast && has_address(from)) {
     o.dest = from; /* REQ-MDNS-028 */
   } else if (truncated || w->service_types || (w->answers & shared_mask(m))) {
-    owe_response(m, from_family(from), w->answers, w->service_types, w->nsec,
-                 truncated);
+    owe_response(m, host_of(m, from), from_family(from), w->answers,
+                 w->service_types, w->nsec, truncated);
     return;
   }
   send_response(m, w->answers, w->service_types, w->nsec,
                 additionals_for(m, w->answers), &o);
 }
 
-/* RFC 6762 §7.2: known answers that follow a truncated query, in a packet
- * without questions, strike what is still owed.  From any host: the
- * querier's address is not kept. */
-static void more_known_answers(mdns_t *m, const uint8_t *msg, uint16_t len) {
+/* RFC 6762 §7.2, REQ-MDNS-077: known answers that follow a truncated query,
+ * in a packet without questions from the querier, strike what is still
+ * owed — but not what another host waits for too */
+static void more_known_answers(mdns_t *m, const dest_t *from,
+                               const uint8_t *msg, uint16_t len) {
+  mdns_pending_t *p = &m->pending;
   wanted_t w;
+  if (host_of(m, from) != p->querier)
+    return;
   memset(&w, 0, sizeof(w));
-  w.answers = m->pending.answers;
-  w.service_types = m->pending.service_types;
+  w.answers = p->answers & ~p->others;
+  w.service_types = p->service_types & ~p->others;
   suppress_known_answers(m, msg, len, DNS_HDR_SIZE, &w);
-  m->pending.answers = w.answers;
-  m->pending.service_types = w.service_types;
+  p->answers = w.answers | (p->answers & p->others);
+  p->service_types = w.service_types | (p->service_types & p->others);
 }
 
 /* A query: answered unless malformed (REQ-MDNS-041) or while probing */
@@ -1185,7 +1209,7 @@ static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
 
   if (qd == 0) {
     if (m->pending.timer_ms)
-      more_known_answers(m, msg, len);
+      more_known_answers(m, from, msg, len);
     return;
   }
 
