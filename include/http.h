@@ -65,8 +65,15 @@ typedef struct {
 } http_request_t;
 
 typedef struct {
-  uint16_t status;          /**< Preset to 200 */
-  const char *content_type; /**< Preset to "text/html" */
+  /** Preset to 200.  A final status, 200..599 — but not 206, 401 or 426,
+   *  which need fields the server cannot add (Content-Range,
+   *  WWW-Authenticate, Upgrade); a 1xx or any of those is answered with
+   *  500 instead.  A 204, 205 or 304 is sent without content; a 405 with
+   *  the route's methods in Allow. */
+  uint16_t status;
+  /** Preset to "text/html"; NULL for none.  A control character in it
+   *  (CR, LF, ...) is answered with 500. */
+  const char *content_type;
   const uint8_t *body;      /**< Must stay valid until the response is sent */
   uint32_t body_len;
   uint8_t *scratch; /**< Free space for a generated body */

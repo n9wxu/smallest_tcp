@@ -111,8 +111,8 @@ typedef struct {
 } http_request_t;
 
 typedef struct {
-  uint16_t status;           /* preset 200 */
-  const char *content_type;  /* preset "text/html" */
+  uint16_t status;           /* preset 200; 200..599, not 206, 401, 426 */
+  const char *content_type;  /* preset "text/html"; NULL: none; no control characters */
   const uint8_t *body;       /* must stay valid until the response is sent */
   uint32_t body_len;
   uint8_t *scratch;          /* free space in this slot's request buffer */
@@ -128,14 +128,24 @@ typedef int (*http_handler_t)(const http_request_t *req,
 - Generated pages can be written into `scratch` (the unused tail of the
   request buffer, after the request), then pointed to by `body`.  Nothing
   else touches it until the response is done.
-- A handler returning < 0 produces **500**.
+- A handler returning < 0 produces **500**.  So does a response the
+  server cannot send whole and valid (RFC 9110 §2.2: a sender must not
+  generate protocol elements outside the grammar): a status outside
+  200..599 — a 1xx included, since this HTTP/1.0 server sends one final
+  response and never a 1xx (§15.2) — a 206, 401 or 426, which require a
+  field the server cannot add (Content-Range, WWW-Authenticate, Upgrade:
+  §15.3.7.1, §15.5.2, §15.5.22), or a content type with a control
+  character (a CR or LF in it would end the field early).
+- A handler's 405 gets an `Allow` field listing its route's methods
+  (§15.5.6).
 - A HEAD request calls the GET handler and sends only the headers, with the
   same Content-Length (RFC 9110 §9.3.2).  Every response to HEAD is headers
   only, an error too: whether the request is HEAD is read from the request
   line itself, so a 400, 414, 431 or 505 about a request that could not be
   parsed has no body either.
-- A 204 or 304 is sent without the body the handler gave (RFC 9110 §15.3.5,
-  §15.4.5).
+- A 204, 205 or 304 is sent without the body the handler gave (RFC 9110
+  §15.3.5, §15.3.6, §15.4.5) — a 205 with `Content-Length: 0`, the others
+  without Content-Type and Content-Length.
 
 ---
 
@@ -169,7 +179,7 @@ bytes arrive (transport read → request buffer)
 | Request line longer than the request buffer | 414 |
 | Headers larger than the request buffer (RFC 6585) | 431 |
 | An absolute-form target whose scheme is not http or https (RFC 9110 §15.5.20); an https target on a plain TCP slot; over TLS, a host the certificate is not valid for (section 7.2, RFC 9110 §7.4) | 421 |
-| Handler returned < 0, or the response header does not fit `HTTP_HDR_MAX` | 500 |
+| Handler returned < 0, or a status or content type it cannot send (section 4), or the response header does not fit `HTTP_HDR_MAX` | 500 |
 
 RFC 9110 reserves 405 for a method the *resource* does not allow and uses 501
 for methods the server does not implement; 431 is the status for headers too

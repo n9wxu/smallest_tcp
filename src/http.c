@@ -358,6 +358,8 @@ const char *http_reason(uint16_t status) {
     return "Created";
   case 204:
     return "No Content";
+  case 205:
+    return "Reset Content";
   case 301:
     return "Moved Permanently";
   case 302:
@@ -657,8 +659,8 @@ static void respond(const http_server_t *s, http_conn_t *c, uint16_t status,
                     const char *content_type, const uint8_t *body,
                     uint32_t body_len, uint8_t allow) {
   char hdr[HTTP_HDR_MAX];
-  if (status == 204 || status == 304) /* RFC 9110 §15.3.5, §15.4.5 */
-    body_len = 0;
+  if (status == 204 || status == 205 || status == 304)
+    body_len = 0; /* RFC 9110 §15.3.5, §15.3.6, §15.4.5; REQ-HTTP-051 */
   c->date = s->clock ? s->clock() : 0;
   c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status, content_type,
                                        body_len, allow, c->date);
@@ -717,6 +719,24 @@ static void end_stream(http_server_t *s, http_conn_t *c) {
   close_when_delivered(s, c);
 }
 
+/* REQ-HTTP-049, 050, 052: what a handler answers must make a response the
+ * server can send whole: a final status of three digits (RFC 9110 §15,
+ * §2.2) — no 1xx, since this HTTP/1.0 server sends one final response
+ * (§15.2), and no 206, 401 or 426, which need fields it cannot add
+ * (§15.3.7.1, §15.5.2, §15.5.22) — and a content type without control
+ * characters (§5.5) */
+static int response_valid(const http_response_t *rs) {
+  const char *t = rs->content_type;
+  if (rs->status < 200 || rs->status > 599 || rs->status == 206 ||
+      rs->status == 401 || rs->status == 426)
+    return 0;
+  for (; t && *t; t++) {
+    if (((uint8_t)*t < ' ' && *t != '\t') || *t == 0x7F)
+      return 0;
+  }
+  return 1;
+}
+
 static void dispatch(http_server_t *s, http_conn_t *c) {
   http_request_t *rq = &c->request;
   uint32_t need = (uint32_t)c->hdr_len + c->content_length;
@@ -755,12 +775,12 @@ static void dispatch(http_server_t *s, http_conn_t *c) {
   rs.body_len = 0;
   rs.scratch = (uint8_t *)c->req + need;
   rs.scratch_size = (uint16_t)(c->req_size - need);
-  if (route->handler(rq, &rs, route->ctx) < 0) {
+  if (route->handler(rq, &rs, route->ctx) < 0 || !response_valid(&rs)) {
     respond_error(s, c, 500, 0); /* REQ-HTTP-027 */
     return;
   }
   respond(s, c, rs.status, rs.content_type, rs.body, rs.body ? rs.body_len : 0,
-          0);
+          rs.status == 405 ? allowed : 0); /* REQ-HTTP-024 */
 }
 
 /* Discard whatever the client still sends once the request has been
