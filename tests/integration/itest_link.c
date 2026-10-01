@@ -262,7 +262,7 @@ int main(void) {
   fprintf(stderr, "=== itest_link ===\n");
   RUN_TEST(itest_eth_021_ethernet_ii_only);
   RUN_TEST(itest_eth_022_link_broadcast_draws_no_error);
-  RUN_XFAIL(itest_eth_025_own_frames_not_delivered);
+  RUN_TEST(itest_eth_025_own_frames_not_delivered);
   RUN_TEST(itest_arp_001_request_for_our_address_answered);
   RUN_TEST(itest_arp_004_unconfigured_answers_nothing);
   RUN_TEST(itest_arp_011_gateway_learned_only_from_the_gateway);

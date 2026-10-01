@@ -110,7 +110,7 @@ the defaults and 208 dual stack ([memory-model.md](design/memory-model.md)).
 net_poll(net)
  ├─ driver->poll()                      a frame waiting? (non-blocking)
  ├─ driver->peek(0, net->rx.buf, len)   the one copy (len clamped to rx.capacity)
- ├─ eth_input()                         our MAC, broadcast or a joined group; EtherType
+ ├─ eth_input()                         our MAC, broadcast or a joined group, not sent by us; EtherType
  │   ├─ arp_input()                     answer requests; learn the gateway's MAC
  │   ├─ ipv4_input()                    ipv4_parse(); source and destination checks
  │   │   ├─ icmp_input()                echo replies

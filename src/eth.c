@@ -58,12 +58,14 @@ static int addressed_to_us(const net_t *net, const uint8_t *dst_mac) {
   return 0;
 }
 
-/* REQ-ETH-005..008 */
+/* REQ-ETH-005..008, 025: a frame we sent ourselves, looped back by the
+ * medium, is not delivered (RFC 1112 §7.3) */
 void eth_input(net_t *net, uint8_t *frame, uint16_t len) {
   eth_frame_t eth;
 
   if (eth_parse(frame, len, &eth) != NET_OK ||
-      !addressed_to_us(net, eth.dst_mac))
+      !addressed_to_us(net, eth.dst_mac) ||
+      net_mac_equal(eth.src_mac, net->mac))
     return;
 
   switch (eth.ethertype) {
