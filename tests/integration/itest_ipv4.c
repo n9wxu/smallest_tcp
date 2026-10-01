@@ -651,8 +651,8 @@ int main(void) {
   RUN_XFAIL(itest_ipv4_025_reassembly_timeout);
   RUN_TEST(itest_ipv4_061_576_octet_datagrams);
   RUN_XFAIL(itest_ipv4_062_mms_r);
-  RUN_XFAIL(itest_ipv4_063_mms_s);
-  RUN_XFAIL(itest_ipv4_064_mtu_configurable);
+  RUN_TEST(itest_ipv4_063_mms_s);
+  RUN_TEST(itest_ipv4_064_mtu_configurable);
   RUN_TEST(itest_ipv4_028_no_options_sent);
   RUN_TEST(itest_ipv4_026_options_skipped);
   RUN_TEST(itest_ipv4_067_source_routed_dropped);
@@ -667,7 +667,7 @@ int main(void) {
   RUN_TEST(itest_ipv4_050_all_hosts_group);
   RUN_TEST(itest_ipv4_073_no_multicast_loopback);
   RUN_TEST(itest_ipv4_079_never_pings_the_gateway);
-  RUN_XFAIL(itest_icmpv4_008_large_echo_truncated);
+  RUN_TEST(itest_icmpv4_008_large_echo_truncated);
   RUN_TEST(itest_icmpv4_019_redirect_ignored);
   RUN_TEST(itest_icmpv4_043_quote_unchanged);
   RUN_TEST(itest_icmpv4_045_address_mask_ignored);

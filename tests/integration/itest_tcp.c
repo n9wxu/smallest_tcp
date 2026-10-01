@@ -294,6 +294,33 @@ static int nth_segment(int n, peer_ip_t *ip, peer_tcp_t *tcp) {
   return i >= 0;
 }
 
+/* REQ-IPv4-063, 064, REQ-TCP-077: with a 576-byte MTU the MSS we announce
+ * and the segments we send fit it */
+TEST(itest_tcp_077_mtu_bounds_segments) {
+  static uint8_t big[1400];
+  static tcp_saw_tx_ctx_t btx;
+  static uint8_t btx_mem[1460];
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  up();
+  t.net.mtu = 576;
+  tcp_saw_tx_init(&btx, btx_mem, sizeof(btx_mem));
+  conn.txbuf_ctx = &btx;
+  tcp_listen(&conn, LPORT);
+  wire_clear(&t);
+  segment(RPORT, 1000, 0, TCPF_SYN);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.mss, 536);
+  segment(RPORT, 1001, tcp.seq + 1, TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  wire_clear(&t);
+  ASSERT_EQ(tcp_send(&t.net, &conn, big, sizeof(big)), (int)sizeof(big));
+  itest_advance(&t, 200, 100);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.data_len, 536);
+  ASSERT_TRUE(ip.total_len <= 576);
+}
+
 /* REQ-TCP-063 (deviation): URG and the urgent pointer are ignored; the
  * data arrives in line */
 TEST(itest_tcp_063_urgent_data_in_line) {
@@ -730,6 +757,7 @@ int main(void) {
   RUN_TEST(itest_tcp_016_abort_before_open_sends_nothing);
   RUN_TEST(itest_tcp_016_abort_in_syn_received_sends_rst);
   RUN_TEST(itest_tcp_153_iss_depends_on_every_seed_byte);
+  RUN_TEST(itest_tcp_077_mtu_bounds_segments);
   RUN_TEST(itest_tcp_063_urgent_data_in_line);
   RUN_TEST(itest_tcp_156_window_unsigned);
   RUN_TEST(itest_tcp_157_options_in_any_segment);

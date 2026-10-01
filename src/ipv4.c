@@ -226,14 +226,22 @@ net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size) {
   return NET_ERR_INVALID_PARAM; /* not implemented yet */
 }
 
-uint16_t ipv4_mms_r(const net_t *net) {
-  (void)net;
-  return 0; /* not implemented yet */
+/* The transport message a frame of @p capacity carries */
+static uint16_t frame_mms(const net_t *net, uint16_t capacity) {
+  uint16_t room = eth_frame_room(net, capacity);
+  return room > ETH_HDR_SIZE + IPV4_HDR_SIZE
+             ? (uint16_t)(room - ETH_HDR_SIZE - IPV4_HDR_SIZE)
+             : 0u;
 }
 
+/* REQ-IPv4-062 */
+uint16_t ipv4_mms_r(const net_t *net) {
+  return frame_mms(net, net->rx.capacity);
+}
+
+/* REQ-IPv4-063, 064 */
 uint16_t ipv4_mms_s(const net_t *net) {
-  (void)net;
-  return 0; /* not implemented yet */
+  return frame_mms(net, net->tx.capacity);
 }
 
 /* REQ-IPv4-013..015: a single host other than us, or 0.0.0.0 — a DHCP

@@ -197,8 +197,9 @@ net->tx.buf
                                          ↑ UDP_PAYLOAD_OFFSET = 42
 ```
 
-1. Size check: `42 + data_len` within `tx.capacity` and within one Ethernet
-   frame (1514 bytes: 1472 bytes of payload, 1452 over IPv6), else
+1. Size check: `42 + data_len` within `tx.capacity` and within the link's
+   MTU (`eth_frame_room()`: 14 + `net->mtu`, 1514 bytes by default — 1472
+   bytes of payload, 1452 over IPv6; `ipv4_mms_s()` − 8), else
    `NET_ERR_BUF_TOO_SMALL` — every datagram goes with DF set and is never
    fragmented, however large the frame buffer.  `NET_ERR_INVALID_PARAM`
    refuses a TTL of 0 (RFC 1122 §3.2.1.7), a source other than

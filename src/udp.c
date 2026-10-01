@@ -37,11 +37,11 @@ static void write_header(uint8_t *udp, uint16_t src_port, uint16_t dst_port,
   net_write16be(udp + UDP_OFF_CKSUM, 0);
 }
 
-/* A payload of @p data_len at @p offset fits the TX frame buffer and one
- * Ethernet frame: never fragmented, DF being set */
+/* A payload of @p data_len at @p offset fits the TX frame buffer and the
+ * link's MTU: never fragmented, DF being set (REQ-IPv4-063, 064) */
 static int fits_frame(const net_t *net, uint16_t offset, uint16_t data_len) {
   uint32_t frame = (uint32_t)offset + data_len;
-  return frame <= net->tx.capacity && frame <= ETH_HDR_SIZE + ETH_MTU;
+  return frame <= eth_frame_room(net, net->tx.capacity);
 }
 
 #if NET_USE_IPV4

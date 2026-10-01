@@ -204,7 +204,7 @@ Minimum header: 20 bytes (Data Offset = 5). Maximum header: 60 bytes (Data Offse
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-TCP-076 | MUST | Send MSS option in SYN and SYN,ACK segments | RFC 9293 §3.7.1, RFC 6691 | TEST-TCP-076 |
-| REQ-TCP-077 | MUST | The MSS we advertise is what the RX frame buffer takes: min(rx buffer capacity, one Ethernet frame) − Ethernet, IP and TCP headers — at most 1460 over IPv4, 1440 over IPv6 | RFC 6691 §3, RFC 9293 §3.7.1 | TEST-TCP-077 |
+| REQ-TCP-077 | MUST | The MSS we advertise is what the RX frame buffer takes: min(rx buffer capacity, 14 + the MTU) − Ethernet, IP and TCP headers — at most 1460 over IPv4, 1440 over IPv6 with the default MTU | RFC 6691 §3, RFC 9293 §3.7.1 | TEST-TCP-077, itest_tcp_077_mtu_bounds_segments |
 | REQ-TCP-078 | MUST | If peer sends MSS option, limit outbound segment size to peer's MSS | RFC 9293 §3.7.1 | TEST-TCP-078 |
 | REQ-TCP-079 | MUST | If peer does not send MSS option, assume default MSS = 536 (IPv4) | RFC 9293 §3.7.1 | TEST-TCP-079 |
 | REQ-TCP-080 | MUST | IPv6 default MSS (no option) = 1220 | RFC 9293 §3.7.1 | TEST-TCP-080 |

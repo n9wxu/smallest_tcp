@@ -35,18 +35,22 @@ static net_err_t icmp_send(net_t *net, uint16_t icmp_len, uint32_t dst_ip,
   return net_transmit(net, (uint16_t)(ICMP_OFFSET + icmp_len));
 }
 
-/* REQ-ICMPv4-001..009: the request's identifier, sequence and data back;
- * REQ-IPv4-070: none to a source of 0.0.0.0 */
+/* REQ-ICMPv4-001..009: the request's identifier, sequence and data back,
+ * truncated to what one datagram carries (MMS_S); REQ-IPv4-070: none to a
+ * source of 0.0.0.0 */
 static void echo_reply(net_t *net, const ipv4_hdr_t *ip,
                        const eth_frame_t *eth) {
   uint8_t *reply = net->tx.buf + ICMP_OFFSET;
-  if (sent_to_many(net, ip) || ip->src_ip == 0 ||
-      (uint32_t)ICMP_OFFSET + ip->payload_len > net->tx.capacity)
+  uint16_t len = ip->payload_len;
+  uint16_t room = ipv4_mms_s(net);
+  if (sent_to_many(net, ip) || ip->src_ip == 0 || room < ICMP_HDR_SIZE)
     return;
-  memcpy(reply, ip->payload, ip->payload_len);
+  if (len > room)
+    len = room;
+  memcpy(reply, ip->payload, len);
   reply[ICMP_OFF_TYPE] = ICMP_TYPE_ECHO_REPLY;
   reply[ICMP_OFF_CODE] = 0;
-  icmp_send(net, ip->payload_len, ip->src_ip, eth->src_mac);
+  icmp_send(net, len, ip->src_ip, eth->src_mac);
 }
 
 /* REQ-ICMPv4-011..016, 024, 029, 042: an error quoting a datagram we sent
@@ -113,7 +117,7 @@ net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
   if (sent_to_many(net, invoking) || net_mac_is_multicast(eth->dst_mac) ||
       !ipv4_is_host(net, invoking->src_ip))
     return NET_ERR_INVALID_PARAM;
-  if ((uint32_t)ICMP_OFFSET + icmp_len > net->tx.capacity)
+  if (icmp_len > ipv4_mms_s(net))
     return NET_ERR_BUF_TOO_SMALL;
 
   icmp[ICMP_OFF_TYPE] = ICMP_TYPE_DEST_UNREACH;

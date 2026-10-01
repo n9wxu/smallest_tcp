@@ -87,22 +87,22 @@ static uint16_t default_mss(const tcp_ep_t *ep) {
   return BY_FAMILY(ep, TCP_DEFAULT_MSS_IPV4, TCP_DEFAULT_MSS_IPV6);
 }
 
-/* REQ-TCP-077: the largest segment a frame buffer of @p capacity holds,
- * to or from @p ep, within an Ethernet frame */
-static uint16_t segment_room(uint16_t capacity, const tcp_ep_t *ep) {
+/* REQ-TCP-077, REQ-IPv4-063: the largest segment a frame buffer of
+ * @p capacity holds, to or from @p ep, within the link's MTU */
+static uint16_t segment_room(const net_t *net, uint16_t capacity,
+                             const tcp_ep_t *ep) {
   uint16_t headers = ETH_HDR_SIZE + ip_header_size(ep) + TCP_HDR_SIZE;
-  if (capacity > ETH_HDR_SIZE + ETH_MTU)
-    capacity = ETH_HDR_SIZE + ETH_MTU;
+  capacity = eth_frame_room(net, capacity);
   return capacity > headers ? (uint16_t)(capacity - headers) : 0u;
 }
 
 static uint16_t receive_mss(const net_t *net, const tcp_ep_t *ep) {
-  return segment_room(net->rx.capacity, ep);
+  return segment_room(net, net->rx.capacity, ep);
 }
 
-/* @p mss, but no more than our TX frame buffer carries */
+/* @p mss, but no more than our TX frame buffer and the MTU carry */
 static uint16_t send_mss(const net_t *net, const tcp_ep_t *ep, uint16_t mss) {
-  uint16_t room = segment_room(net->tx.capacity, ep);
+  uint16_t room = segment_room(net, net->tx.capacity, ep);
   return mss < room ? mss : room;
 }
 

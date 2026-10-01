@@ -15,6 +15,13 @@
 #define ETH_HDR_SIZE 14
 #define ETH_MTU 1500 /**< The largest payload a frame carries */
 
+/** The longest frame a buffer of @p capacity sends or takes on this link:
+ *  no more than the header and the interface's MTU (net->mtu) */
+static inline uint16_t eth_frame_room(const net_t *net, uint16_t capacity) {
+  uint32_t link = (uint32_t)ETH_HDR_SIZE + net->mtu;
+  return capacity < link ? capacity : (uint16_t)link;
+}
+
 #define NET_ETHERTYPE_IPV4 0x0800
 #define NET_ETHERTYPE_ARP 0x0806
 #define NET_ETHERTYPE_IPV6 0x86DD

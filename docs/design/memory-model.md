@@ -68,7 +68,9 @@ objects is undefined in C.
 **Receive buffer.**  Must hold the largest frame the device should accept.
 A longer frame is truncated and then rejected by IPv4/IPv6, so the buffer
 size is the largest datagram the device can receive; 1514 bytes accepts
-everything Ethernet carries.  The TFTP client sizes its requested block to
+everything Ethernet carries.  `ipv4_mms_r()` and `ipv4_mms_s()` tell the
+transports the largest message each buffer, and the MTU (`net->mtu`,
+default `NET_DEFAULT_MTU` 1500), allow (RFC 1122 §3.4).  The TFTP client sizes its requested block to
 it (`largest_blksize()` in `tftp.c`).
 
 **Transmit buffer.**  Must hold the largest frame the device builds.  A

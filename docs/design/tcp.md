@@ -522,11 +522,12 @@ segments in flight needs `send_data()` changed first
 
 ### 4.4 Segment size
 
-`segment_room(capacity, ep)` is the largest segment a frame buffer of
-`capacity` bytes holds, to or from the endpoint's address family, within one
-Ethernet frame: min(capacity, 14 + `ETH_MTU`) − 14 − IP header − 20, where
-`ETH_MTU` (`eth.h`) is 1500.  That is at most 1460 over IPv4 and 1440 over
-IPv6 (REQ-TCP-077).  Each direction uses its own buffer:
+`segment_room(net, capacity, ep)` is the largest segment a frame buffer of
+`capacity` bytes holds, to or from the endpoint's address family, within the
+link's MTU: min(capacity, 14 + `net->mtu`) − 14 − IP header − 20
+(`eth_frame_room()`).  With the default MTU of 1500 (`NET_DEFAULT_MTU`) that
+is at most 1460 over IPv4 and 1440 over IPv6 (REQ-TCP-077, REQ-IPv4-063,
+064).  Each direction uses its own buffer:
 
 - `our_mss` = `receive_mss()` = `segment_room(rx.capacity)`.  It is advertised
   in our SYN and tells the peer what we can *receive*, so it comes from the
