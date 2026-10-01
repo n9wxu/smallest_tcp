@@ -48,8 +48,18 @@ extern "C" {
 /* TFTP constants */
 #define TFTP_SERVER_PORT 69      /**< Well-known TFTP port */
 #define TFTP_DEFAULT_BLKSIZE 512 /**< Default block size */
-#define TFTP_TIMEOUT_MS 3000     /**< Retransmit timeout in ms */
+#define TFTP_TIMEOUT_MS 3000     /**< First retransmission timeout, ms */
 #define TFTP_MAX_RETRIES 5       /**< Retransmissions before giving up */
+
+/** The retransmission timeout adapts to the round trips measured (RFC 1123
+ *  §4.2.3.2), within these bounds, and doubles on each retransmission up
+ *  to the upper one. */
+#ifndef TFTP_RTO_MIN_MS
+#define TFTP_RTO_MIN_MS 1000
+#endif
+#ifndef TFTP_RTO_MAX_MS
+#define TFTP_RTO_MAX_MS 16000
+#endif
 #define TFTP_MAX_FILENAME 128    /**< Max filename length including NUL */
 
 /* Application callbacks */
@@ -94,6 +104,10 @@ typedef struct {
   uint8_t server_mac[6];            /**< Resolved server MAC address */
   uint32_t timer_ms;                /**< Retransmit countdown */
   uint8_t retries;                  /**< Retransmit attempt counter */
+  uint8_t resent;   /**< What awaits its answer went more than once */
+  uint32_t rto_ms;  /**< Retransmission timeout */
+  uint32_t srtt8;   /**< Smoothed round trip × 8, ms; 0 = none yet */
+  uint32_t rttvar4; /**< Round-trip variation × 4, ms */
   char filename[TFTP_MAX_FILENAME]; /**< Filename to request */
   tftp_data_fn_t on_data;           /**< Block delivery callback */
   tftp_done_fn_t on_done;           /**< Completion/error callback */

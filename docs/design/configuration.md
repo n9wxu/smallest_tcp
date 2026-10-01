@@ -122,10 +122,11 @@ it is a helper, not a setting.
 | `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and close. |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client.h` | 20 | Largest server DUID kept (layout-affecting). |
 | `DHCPV4_START_DELAY_MAX_MS` | `dhcpv4_client.h` | 10000 | The first DISCOVER waits a random 1 s up to this (RFC 2131 §4.4.1); 0 sends it at once, else 1000..65535. |
+| `TFTP_RTO_MIN_MS`, `TFTP_RTO_MAX_MS` | `tftp.h` | 1000, 16000 | Bounds of the TFTP client's adaptive retransmission timeout (RFC 1123 §4.2.3.2); the maximum also caps its backoff. |
 
 Other protocol constants are plain `#define`s — fixed by their RFCs or by the
 implementation, and not meant to be overridden: for example
-`TFTP_TIMEOUT_MS` and `TFTP_MAX_RETRIES` (`tftp.h`), the mDNS probe and
+`TFTP_TIMEOUT_MS` (the first timeout) and `TFTP_MAX_RETRIES` (`tftp.h`), the mDNS probe and
 announce timings and `MDNS_MAX_RECORDS` (the width of its record bitmasks,
 `mdns.h`), the DHCPv4 retransmission back-off (`dhcpv4_client.c`), and
 `TCP_MAX_RETRANSMITS` (`tcp.c`).

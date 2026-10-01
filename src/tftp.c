@@ -1,7 +1,7 @@
 /**
  * @file tftp.c
- * @brief TFTP client (RFC 1350) with the blksize option (RFC 2348).
- *        REQ-TFTP-001..038.
+ * @brief TFTP client (RFC 1350) with the blksize option (RFC 2348) and an
+ *        adaptive timeout (RFC 1123 §4.2.3.2).  REQ-TFTP-001..039.
  */
 
 #include "tftp.h"
@@ -14,6 +14,14 @@
 #define TFTP_MIN_BLKSIZE 8u         /* RFC 2348 §2 */
 #define TFTP_MAX_BLKSIZE 65464u     /* RFC 2348 §2 */
 #define TFTP_ETHERNET_BLKSIZE 1468u /* the largest DATA in one frame */
+/* RFC 6298's G, the clock granularity: the least margin over the
+ * smoothed round trip, so a steady one never meets its timeout */
+#define RTT_G_MS 100u
+
+#if TFTP_RTO_MIN_MS < 1 || TFTP_RTO_MAX_MS < TFTP_RTO_MIN_MS ||                \
+    TFTP_RTO_MAX_MS > 600000
+#error "TFTP_RTO_MIN_MS and TFTP_RTO_MAX_MS: 1 <= min <= max <= 600000"
+#endif
 
 /* The largest block the RX buffer holds (REQ-TFTP-037, 038) */
 static uint16_t largest_blksize(const net_t *net) {
@@ -108,10 +116,35 @@ static void reject_stray(net_t *net, const tftp_client_t *c, uint32_t ip,
     udp_send_inplace(net, ip, mac, c->local_port, port, len, NET_DEFAULT_TTL);
 }
 
-/* REQ-TFTP-020: the server moved the transfer on — the OACK taken, or the
- * block expected — so the timer starts again; nothing else restarts it */
+/* REQ-TFTP-039: RFC 6298 §2 in milliseconds — SRTT kept × 8 and RTTVAR
+ * × 4, so the gains of 1/8 and 1/4 are shifts, not divisions (BSD's
+ * scaling) — and RTO = SRTT + max(G, 4 × RTTVAR), within bounds */
+static void rtt_sample(tftp_client_t *c, uint32_t r) {
+  uint32_t rto;
+  if (c->srtt8 == 0u) {
+    c->srtt8 = r << 3;
+    c->rttvar4 = r << 1;
+  } else {
+    uint32_t srtt = c->srtt8 >> 3;
+    uint32_t err = r > srtt ? r - srtt : srtt - r;
+    c->rttvar4 = c->rttvar4 - (c->rttvar4 >> 2) + err;
+    c->srtt8 = c->srtt8 - srtt + r;
+  }
+  rto = (c->srtt8 >> 3) + (c->rttvar4 > RTT_G_MS ? c->rttvar4 : RTT_G_MS);
+  if (rto < TFTP_RTO_MIN_MS)
+    rto = TFTP_RTO_MIN_MS;
+  c->rto_ms = rto > TFTP_RTO_MAX_MS ? TFTP_RTO_MAX_MS : rto;
+}
+
+/* REQ-TFTP-020, 039: the server moved the transfer on — the OACK taken, or
+ * the block expected — so the timer starts again; nothing else restarts
+ * it.  The round trip counts only if what it answers went once (Karn's
+ * rule: an answer to a packet sent twice could be to either). */
 static void made_progress(tftp_client_t *c) {
-  c->timer_ms = TFTP_TIMEOUT_MS;
+  if (!c->resent)
+    rtt_sample(c, c->rto_ms - c->timer_ms);
+  c->resent = 0;
+  c->timer_ms = c->rto_ms;
   c->retries = 0;
 }
 
@@ -210,6 +243,7 @@ static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
     }
     c->next_block++; /* wraps from 65535 to 0 */
   } else if (block == (uint16_t)(c->next_block - 1u)) {
+    c->resent = 1;
     send_ack(net, c, block); /* the server missed our ACK */
   }
 }
@@ -245,7 +279,9 @@ net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
   c->blksize = blksize_opt ? largest_blksize(net) : TFTP_DEFAULT_BLKSIZE;
   c->state = TFTP_STATE_REQUESTING;
   c->retries = 0;
-  c->timer_ms = TFTP_TIMEOUT_MS;
+  c->resent = 0;
+  c->srtt8 = c->rttvar4 = 0;
+  c->rto_ms = c->timer_ms = TFTP_TIMEOUT_MS;
   return send_rrq(net, c);
 }
 
@@ -285,8 +321,10 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
   case TFTP_OP_OACK:
     if (c->state == TFTP_STATE_REQUESTING)
       oack_input(net, c, data, len);
-    else if (c->next_block == 1)
+    else if (c->next_block == 1) {
+      c->resent = 1;
       send_ack(net, c, 0); /* the server missed our ACK 0 */
+    }
     break;
   case TFTP_OP_DATA:
     data_input(net, c, data, len);
@@ -296,7 +334,8 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
   }
 }
 
-/* REQ-TFTP-020..024 */
+/* REQ-TFTP-020..024, 039: each retransmission waits twice as long as the
+ * one before (RFC 1123 §4.2.3.2: "At least an exponential backoff") */
 void tftp_client_tick(net_t *net, tftp_client_t *c, uint32_t ms) {
   if ((c->state != TFTP_STATE_REQUESTING && c->state != TFTP_STATE_RECEIVING) ||
       !net_countdown(&c->timer_ms, ms))
@@ -306,7 +345,10 @@ void tftp_client_tick(net_t *net, tftp_client_t *c, uint32_t ms) {
     return;
   }
   c->retries++;
-  c->timer_ms = TFTP_TIMEOUT_MS;
+  c->resent = 1;
+  c->rto_ms =
+      c->rto_ms > TFTP_RTO_MAX_MS / 2u ? TFTP_RTO_MAX_MS : 2u * c->rto_ms;
+  c->timer_ms = c->rto_ms;
   if (c->state == TFTP_STATE_REQUESTING)
     send_rrq(net, c);
   else

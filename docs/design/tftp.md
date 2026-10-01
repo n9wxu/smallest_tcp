@@ -1,10 +1,10 @@
 # TFTP Client Design
 
-**Protocol:** RFC 1350 (TFTP revision 2), RFC 2347 (option extension), RFC 2348 (blksize option)  
+**Protocol:** RFC 1350 (TFTP revision 2), RFC 2347 (option extension), RFC 2348 (blksize option), RFC 1123 §4.2 (host requirements)  
 **Files:** `include/tftp.h`, `src/tftp.c`; `net_text.h` / `net_text.c` for the ASCII helpers  
 **Requirements:** [tftp.md](../requirements/tftp.md)  
 **Status:** Implemented (read requests over IPv4)  
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-01
 
 ---
 
@@ -20,7 +20,7 @@ straight to flash, so the stack never holds more than one block.
 | blksize option (RFC 2348), sized to the RX buffer | ✅ |
 | Server transfer ID (port) tracking, ERROR 5 to a stray datagram's source | ✅ |
 | Duplicate blocks re-acknowledged, block-number wrap | ✅ |
-| Retransmission of RRQ and last ACK, give-up after 5 | ✅ |
+| Retransmission of RRQ and last ACK with an adaptive timeout (RFC 1123), give-up after 5 | ✅ |
 | Write request (WRQ), `netascii` mode | — |
 | tsize and timeout options (RFC 2349), windowsize (RFC 7440) | — |
 | IPv6 | — |
@@ -57,7 +57,7 @@ tftp_client_get(&net, &tftp, server_ip, server_mac, "firmware.bin", 1);
 /* main loop: net_poll(), net_tick(), tftp_client_tick(&net, &tftp, elapsed_ms) */
 ```
 
-`tftp_client_t` is 172 bytes on a 32-bit target, 128 of them the copy of
+`tftp_client_t` is 184 bytes on a 32-bit target, 128 of them the copy of
 the file name (`TFTP_MAX_FILENAME`, longer names are truncated).  There
 is no other state and no allocation.
 
@@ -215,11 +215,11 @@ transfer as if it were the last.
 **Repeated OACK.**  If ACK 0 is lost, the server sends its OACK again.
 In RECEIVING, an OACK that arrives while `next_block` is still 1 — no
 DATA yet — is answered with ACK 0 again; its options are not parsed a
-second time.  Answering matters even though the retransmission timer
-would resend ACK 0 on its own: every datagram from the server restarts
-that timer (§8), so a server that repeats its OACK more often than
-every 3 s would otherwise never hear ACK 0, and the transfer would stall
-until the server gave up.  Once DATA 1 has arrived, an OACK is ignored.
+second time.  The retransmission timer would resend ACK 0 too, but only
+when it runs out (§8); answering the repeat gets the transfer going a
+timeout sooner.  The repeated ACK 0 makes the next round trip ambiguous,
+so it is not measured (§8, Karn's rule).  Once DATA 1 has arrived, an
+OACK is ignored.
 
 **Fallback.**  DATA in REQUESTING means the server ignored the option:
 the block size returns to 512 and the block is processed as usual.
@@ -304,20 +304,57 @@ fit (`put_error()` returns 0) is not sent.  `tftp_client_get()` returns
 the result of the first RRQ, but the transfer is REQUESTING either way,
 so a failed first send is retried by the timer.
 
-**Retransmission** (`tftp_client_tick()`).  One timer of `TFTP_TIMEOUT_MS`
-(3 s) runs in REQUESTING and RECEIVING.  Progress restarts it and clears
-the retry count (`made_progress()`): an OACK the client takes, or the DATA
-block it expects next.  Nothing else from the server does — a duplicate
-block (answered with its ACK again), a repeated OACK, an opcode the client
+**Retransmission** (`tftp_client_tick()`).  One timer runs in
+REQUESTING and RECEIVING.  Progress restarts it and clears the retry
+count (`made_progress()`): an OACK the client takes, or the DATA block it
+expects next.  Nothing else from the server does — a duplicate block
+(answered with its ACK again), a repeated OACK, an opcode the client
 ignores — so a server that keeps resending what it has sent, never
 getting our ACK, is given up on like a silent one.  Every datagram from
 the server's transfer ID used to restart it.
 When it runs out, REQUESTING resends the RRQ and RECEIVING resends the
 last ACK (`next_block − 1`, which is ACK 0 after an OACK); after
 `TFTP_MAX_RETRIES` (5) retransmissions without an answer the transfer
-ends with `on_done(0, 0, "Timeout")` — 18 s of silence in all.
+ends with `on_done(0, 0, "Timeout")`.
 The server's own retransmissions drive a lock-step transfer forward just
 as well: the client answers each duplicate block.
+
+**The timeout adapts** (RFC 1123 §4.2.3.2: "A TFTP implementation MUST
+use an adaptive timeout ... At least an exponential backoff of
+retransmission timeout is necessary").  `rto_ms` follows the round
+trips measured, as RFC 6298 §2 does for TCP:
+
+- **A round trip** is the time from sending the RRQ or an ACK to the
+  progress it brings — the OACK or DATA 1, the next DATA block —
+  `rto_ms − timer_ms` when it arrives, since the timer counts down from
+  `rto_ms`.  Karn's rule: it counts only if what it answers went once
+  (`resent` clear); an answer to a packet sent twice — by the timer, or
+  an ACK repeated for a duplicate block or OACK — could be to either.
+- **The estimate** (`rtt_sample()`): SRTT and RTTVAR with RFC 6298's
+  gains of 1/8 and 1/4, kept scaled — `srtt8` = 8 × SRTT, `rttvar4` = 4 ×
+  RTTVAR, in milliseconds, as BSD keeps them — so each update is a shift
+  and a subtraction, with no division (Cortex-M0 has none,
+  [coding-rules.md §4](coding-rules.md#4-no-run-time-division)).  The
+  first sample sets SRTT to it and RTTVAR to half of it.  RTO = SRTT +
+  max(G, 4 × RTTVAR) — `srtt8 >> 3` plus `rttvar4`, at least G = 100 ms
+  over SRTT, RFC 6298's clock granularity, so a perfectly steady round
+  trip does not meet its own timeout — then held within
+  `TFTP_RTO_MIN_MS` (1 s, RFC 6298's minimum) and `TFTP_RTO_MAX_MS`
+  (16 s).
+- **Backoff**: each retransmission doubles `rto_ms`, up to
+  `TFTP_RTO_MAX_MS` (RFC 6298 §5.5); the next valid round trip sets it
+  from the estimate again.
+- **Start**: each transfer starts from `TFTP_TIMEOUT_MS` (3 s) and no
+  estimate (RFC 6298 §2.1); a server's round trips are not carried over.
+
+On a LAN the timeout falls to 1 s after the first round trip, so a lost
+block costs a second, not three.  A server slower than 3 s draws one
+retransmitted RRQ, then a timeout above its round trip: 4 s round trips
+give 12 s, then less as RTTVAR settles.  A silent server is given up on
+after 3 + 6 + 12 + 16 + 16 + 16 = 69 s (5 retransmissions), where a
+fixed 3 s gave up after 18 s; TFTP_RTO_MAX_MS lowers that.  The timeout
+used to be fixed at 3 s: slower than needed on a LAN, and on a path
+whose round trip exceeds 3 s every block was sent twice.
 
 ---
 
@@ -326,12 +363,17 @@ as well: the client answers each duplicate block.
 | Item | Notes |
 |---|---|
 | Fixed local port for every transfer | RFC 1350 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
-| No tsize, timeout or windowsize options; no WRQ; no netascii | Scope (§1) |
+| No tsize, timeout or windowsize options; no WRQ | Scope (§1).  Without WRQ the client never sends DATA, so RFC 1123 §4.2.3.1's Sorcerer's Apprentice fix (REQ-TFTP-040: never resend DATA on a duplicate ACK) has nothing to apply to |
+| No `netascii` mode — a MUST of RFC 1123 §4.2.4 (REQ-TFTP-004) | Not met.  Converting CR LF and CR NUL to local newlines needs either an output buffer for the converted block (the receive buffer is read-only to parsers) or `on_data` called several times per block with pieces of it, a CR left over from one block for the next, and a mode argument in `tftp_client_get()`.  The client's use — firmware images — is `octet` |
 | IPv4 only | `tftp_client_input()` and the send path take IPv4 addresses |
 
 ---
 
 ## 10. Tests
+
+`tests/integration/itest_tftp.c` (black box, through the API and the
+wire): the timeout doubling on each retransmission, falling to 1 s for a
+fast server, growing past a slow server's round trip (REQ-TFTP-039).
 
 `tests/unit/test_tftp.c` (28 tests): RRQ format and default block size,
 DATA 1 → ACK 1 to the server's port, full block not last, short block

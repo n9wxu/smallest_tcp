@@ -131,9 +131,9 @@ TEST(itest_tftp_039_timeout_grows_for_a_slow_server) {
 
 int main(void) {
   fprintf(stderr, "=== itest_tftp ===\n");
-  RUN_XFAIL(itest_tftp_039_retransmission_backs_off);
-  RUN_XFAIL(itest_tftp_039_timeout_shrinks_for_a_fast_server);
-  RUN_XFAIL(itest_tftp_039_timeout_grows_for_a_slow_server);
+  RUN_TEST(itest_tftp_039_retransmission_backs_off);
+  RUN_TEST(itest_tftp_039_timeout_shrinks_for_a_fast_server);
+  RUN_TEST(itest_tftp_039_timeout_grows_for_a_slow_server);
   ITEST_REPORT();
   return test_failures;
 }

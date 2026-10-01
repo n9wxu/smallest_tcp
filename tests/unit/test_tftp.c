@@ -873,10 +873,10 @@ TEST(test_tftp_max_retries_timeout) {
   tftp_client_get(&net, &client, SERVER_IP, SERVER_MAC, "x", 0);
   ASSERT_EQ(client.state, TFTP_STATE_REQUESTING);
 
-  /* Drive TFTP_MAX_RETRIES + 1 timeouts */
+  /* Drive TFTP_MAX_RETRIES + 1 timeouts, each at most TFTP_RTO_MAX_MS */
   uint8_t i;
   for (i = 0; i <= TFTP_MAX_RETRIES; i++) {
-    tftp_client_tick(&net, &client, TFTP_TIMEOUT_MS + 1u);
+    tftp_client_tick(&net, &client, TFTP_RTO_MAX_MS);
   }
 
   ASSERT_EQ(done_called, 1);
@@ -921,21 +921,22 @@ TEST(test_tftp_timer_not_reset_without_progress) {
   memset(full, 0x22, sizeof(full));
   plen = make_data(pkt, 1, full, 512);
   tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
-                    plen); /* progress: block 1, ACK 1 */
-  tftp_client_tick(&net, &client, TFTP_TIMEOUT_MS - 1000u);
+                    plen); /* progress: block 1, ACK 1 — answered at once,
+                              so the timeout falls to TFTP_RTO_MIN_MS */
+  tftp_client_tick(&net, &client, TFTP_RTO_MIN_MS - 100u);
   tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
                     plen); /* block 1 again: ACK 1 again */
   tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, odd,
                     sizeof(odd));
   send_count = 0;
-  tftp_client_tick(&net, &client, 1000u);
+  tftp_client_tick(&net, &client, 100u);
   ASSERT_EQ(send_count, 1); /* the timer ran out on schedule */
   ASSERT_EQ(client.retries, (uint8_t)1);
 
   for (i = 1; i <= TFTP_MAX_RETRIES; i++) {
     tftp_client_input(&net, &client, SERVER_IP, SERVER_MAC, SERVER_TID, pkt,
                       plen);
-    tftp_client_tick(&net, &client, TFTP_TIMEOUT_MS);
+    tftp_client_tick(&net, &client, TFTP_RTO_MAX_MS);
   }
   ASSERT_EQ(done_called, 1);
   ASSERT_EQ(done_ok, 0);
