@@ -1454,12 +1454,12 @@ int main(void) {
   RUN_TEST(itest_mdns_047_header_bits_ignored_on_reception);
   RUN_TEST(itest_mdns_048_compressed_names_decoded);
   RUN_TEST(itest_mdns_049_no_compression_in_other_rdata);
-  RUN_XFAIL(itest_mdns_050_names_utf8_without_bom);
+  RUN_TEST(itest_mdns_050_names_utf8_without_bom);
   RUN_TEST(itest_mdns_051_names_of_255_bytes);
-  RUN_XFAIL(itest_dnssd_033_instance_name_control_characters_refused);
+  RUN_TEST(itest_dnssd_033_instance_name_control_characters_refused);
   RUN_TEST(itest_dnssd_034_dots_separate_labels);
-  RUN_XFAIL(itest_dnssd_035_txt_keys_checked);
-  RUN_XFAIL(itest_dnssd_038_srv_target_never_root);
+  RUN_TEST(itest_dnssd_035_txt_keys_checked);
+  RUN_TEST(itest_dnssd_038_srv_target_never_root);
   RUN_XFAIL(itest_mdns_043_legacy_srv_target_uncompressed);
   RUN_XFAIL(itest_mdns_044_nonzero_opcode_ignored);
   RUN_XFAIL(itest_mdns_045_nonzero_rcode_ignored);

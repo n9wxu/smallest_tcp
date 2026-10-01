@@ -55,8 +55,10 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 /* Records */
 
 /**
- * One resource record.  Names are dotted strings in the .local. domain;
- * labels may contain spaces but not dots.
+ * One resource record.  Names are dotted strings in the .local. domain, in
+ * precomposed UTF-8 (RFC 6762 §16: well-formed UTF-8 is checked, the
+ * precomposed form is not); labels may contain spaces but not dots — a dot
+ * always separates labels (RFC 6763 §4.3).
  */
 typedef struct {
   uint16_t type;    /**< DNS_TYPE_A (IPv4 builds), _AAAA (IPv6 builds), _PTR,
@@ -126,8 +128,15 @@ struct mdns_s {
 /**
  * Initialise a responder (state STOPPED).  Sends nothing.
  * @return NET_ERR_INVALID_PARAM if @p count is 0 or > MDNS_MAX_RECORDS, or
- *         a record is malformed; NET_ERR_BUF_TOO_SMALL if a record would
- *         not fit one message in net's TX frame buffer (REQ-DNSSD-029).
+ *         a record is malformed — a type other than those above, a name
+ *         that is not valid (labels of 1-63 bytes, 255 bytes before the
+ *         terminating zero), not well-formed UTF-8, with an ASCII control
+ *         character or a byte order mark (U+FEFF) starting a label; an
+ *         SRV target that is the root; a TXT string longer than 255 bytes,
+ *         without a key of printable US-ASCII before its '=', or empty
+ *         among others (RFC 6762 §16, RFC 6763 §4.1.1, §6.4, §8);
+ *         NET_ERR_BUF_TOO_SMALL if a record would not fit one message in
+ *         net's TX frame buffer (REQ-DNSSD-029).
  */
 net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx);

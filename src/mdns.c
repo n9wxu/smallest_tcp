@@ -805,43 +805,100 @@ static int fits_alone(const net_t *net, const mdns_record_t *records,
   return net->tx.capacity >= off && need <= (uint32_t)(net->tx.capacity - off);
 }
 
+/*
+ * REQ-MDNS-050, REQ-DNSSD-033, 031 (RFC 6762 §16, RFC 6763 §4.1.1): a valid
+ * name in well-formed UTF-8 (RFC 3629), without ASCII control characters
+ * or a byte order mark (U+FEFF) at the start of a label
+ */
+static int name_ok(const char *name) {
+  const uint8_t *s = (const uint8_t *)name;
+  int label_start = 1;
+  if (!name || dns_name_wire_len(name) < 0)
+    return 0;
+  while (*s) {
+    uint8_t c = *s, n, k;
+    uint32_t cp;
+    if (c < 0x80) {
+      if (c < 0x20 || c == 0x7F)
+        return 0;
+      label_start = (c == '.');
+      s++;
+      continue;
+    }
+    if (c < 0xC2 || c > 0xF4) /* a continuation, overlong, beyond U+10FFFF */
+      return 0;
+    n = (uint8_t)(c < 0xE0 ? 1 : c < 0xF0 ? 2 : 3); /* continuation bytes */
+    cp = c & (0x3Fu >> n);
+    for (k = 1; k <= n; k++) {
+      if ((s[k] & 0xC0) != 0x80)
+        return 0;
+      cp = (cp << 6) | (s[k] & 0x3Fu);
+    }
+    if ((n == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+        (n == 3 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+        (cp == 0xFEFF && label_start))
+      return 0;
+    label_start = 0;
+    s += n + 1;
+  }
+  return 1;
+}
+
+/* REQ-DNSSD-032, 035 (RFC 6763 §6.4): strings of at most 255 bytes, each
+ * with a key of printable US-ASCII before any '='; an empty string only
+ * alone — the empty TXT record */
+static int txt_ok(const char *const *txt) {
+  const char *const *t;
+  for (t = txt; t && *t; t++) {
+    const uint8_t *key = (const uint8_t *)*t, *p = key;
+    if (strlen(*t) > 255)
+      return 0;
+    if (!*key) {
+      if (t != txt || t[1])
+        return 0;
+      continue;
+    }
+    for (; *p && *p != '='; p++) {
+      if (*p < 0x20 || *p > 0x7E)
+        return 0;
+    }
+    if (p == key)
+      return 0;
+  }
+  return 1;
+}
+
+static int record_ok(const mdns_record_t *r) {
+  if (!name_ok(r->name))
+    return 0;
+  switch (r->type) {
+#if NET_USE_IPV4
+  case DNS_TYPE_A:
+#endif
+#if NET_USE_IPV6
+  case DNS_TYPE_AAAA:
+#endif
+    return 1;
+  case DNS_TYPE_PTR:
+    return name_ok(r->rdata.ptr);
+  case DNS_TYPE_SRV: /* REQ-DNSSD-038: never the root label */
+    return name_ok(r->rdata.srv.target) &&
+           dns_name_wire_len(r->rdata.srv.target) > 1;
+  case DNS_TYPE_TXT:
+    return txt_ok(r->rdata.txt);
+  default:
+    return 0;
+  }
+}
+
 net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx) {
   uint8_t i;
   if (!m || !net || !records || count == 0 || count > MDNS_MAX_RECORDS)
     return NET_ERR_INVALID_PARAM;
   for (i = 0; i < count; i++) {
-    const mdns_record_t *r = &records[i];
-    if (!r->name || dns_name_wire_len(r->name) < 0)
+    if (!record_ok(&records[i]))
       return NET_ERR_INVALID_PARAM;
-    switch (r->type) {
-#if NET_USE_IPV4
-    case DNS_TYPE_A:
-#endif
-#if NET_USE_IPV6
-    case DNS_TYPE_AAAA:
-#endif
-      break;
-    case DNS_TYPE_PTR:
-      if (!r->rdata.ptr || dns_name_wire_len(r->rdata.ptr) < 0)
-        return NET_ERR_INVALID_PARAM;
-      break;
-    case DNS_TYPE_SRV:
-      if (!r->rdata.srv.target || dns_name_wire_len(r->rdata.srv.target) < 0)
-        return NET_ERR_INVALID_PARAM;
-      break;
-    case DNS_TYPE_TXT:
-      if (r->rdata.txt) {
-        const char *const *t;
-        for (t = r->rdata.txt; *t; t++) {
-          if (strlen(*t) > 255) /* REQ-DNSSD-032 */
-            return NET_ERR_INVALID_PARAM;
-        }
-      }
-      break;
-    default:
-      return NET_ERR_INVALID_PARAM;
-    }
   }
   for (i = 0; i < count; i++) {
     if (!fits_alone(net, records, count, i))
