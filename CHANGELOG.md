@@ -10,6 +10,8 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
 ### Changed
 
 - Every push to `main` that passes CI is released: CI commits the next
@@ -102,5 +104,6 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/n9wxu/smallest_tcp/releases/tag/v0.1.0
