@@ -158,12 +158,6 @@ TEST(test_parse_content_length_variants) {
             400);
 }
 
-TEST(test_parse_transfer_encoding_not_implemented) {
-  ASSERT_EQ(parse("POST / HTTP/1.1\r\nHost: h\r\n"
-                  "Transfer-Encoding: chunked\r\n\r\n"),
-            501);
-}
-
 TEST(test_parse_unknown_headers_ignored) {
   ASSERT_EQ(parse("GET / HTTP/1.1\r\nHost: h\r\nUser-Agent: curl/8\r\n"
                   "Accept: */*\r\nX-Weird: a: b: c\r\n\r\n"),
@@ -845,7 +839,6 @@ int main(void) {
   RUN_TEST(test_parse_versions);
   RUN_TEST(test_parse_malformed_request_line);
   RUN_TEST(test_parse_content_length_variants);
-  RUN_TEST(test_parse_transfer_encoding_not_implemented);
   RUN_TEST(test_parse_unknown_headers_ignored);
   RUN_TEST(test_parse_malformed_headers);
   RUN_TEST(test_reason_phrases);

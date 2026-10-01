@@ -151,7 +151,8 @@ bytes arrive (transport read → request buffer)
 | A control octet (a bare CR, a NUL, …) in the target, or a bare CR or a NUL in a field value (RFC 9112 §2.2, RFC 9110 §5.5) — rejected rather than handed to the application | 400 |
 | HTTP/1.1 request without `Host`, or any request with more than one `Host` line, or with a `Host` value that is not `uri-host [":" port]` — an empty one is valid (RFC 9112 §3.2) | 400 |
 | Method other than GET, HEAD, POST (RFC 9110 §15.6.2) | 501 |
-| `Transfer-Encoding` in the request (chunked not supported) | 501 |
+| `Transfer-Encoding` whose last coding is not chunked — the length cannot be determined (RFC 9112 §6.3) — or any `Transfer-Encoding` in an HTTP/1.0 request, whose framing is then faulty (§6.1) | 400 |
+| `Transfer-Encoding` ending in chunked, in an HTTP/1.1 request (chunked request bodies are not implemented, RFC 9112 §6.1) | 501 |
 | Version other than HTTP/1.0 or HTTP/1.1 | 505 |
 | Path not in the route table | 404 |
 | Path known, method not allowed for it (with `Allow:`, empty for a route that allows nothing — RFC 9110 §15.5.6) | 405 |

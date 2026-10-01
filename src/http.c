@@ -165,13 +165,25 @@ static int parse_content_length(const char *v, uint16_t len, uint32_t *out) {
   return 0;
 }
 
+/* Transfer-Encoding's last coding (RFC 9112 §6.1): 1 if it is chunked */
+static int ends_in_chunked(const char *v, uint16_t len) {
+  uint16_t start;
+  while (len > 0 && (is_ows(v[len - 1]) || v[len - 1] == ','))
+    len--; /* empty list elements */
+  for (start = len; start > 0 && v[start - 1] != ','; start--)
+    ;
+  while (start < len && is_ows(v[start]))
+    start++;
+  return eq_ci(v + start, (uint16_t)(len - start), "chunked");
+}
+
 uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
                             uint32_t *content_length) {
   uint16_t pos = 0, len, i;
   uint16_t sp1 = 0, sp2 = 0, status;
   uint8_t version = 0, method = 0;
   uint32_t cl = 0;
-  int cl_seen = 0, host_seen = 0;
+  int cl_seen = 0, host_seen = 0, te = 0; /* te: 1 chunked last, 2 not */
   char *line;
 
   while (pos < hdr_len && (buf[pos] == '\r' || buf[pos] == '\n'))
@@ -260,7 +272,7 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
       cl = n;
       cl_seen = 1;
     } else if (eq_ci(line, name_len, "transfer-encoding")) {
-      return 501; /* no chunked request bodies in V1 */
+      te = ends_in_chunked(v, vlen) ? 1 : 2; /* the last line's last */
     } else if (eq_ci(line, name_len, "host")) {
       uint16_t host_len;
       if (host_seen || !authority_valid(v, vlen, &host_len))
@@ -271,6 +283,11 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
 
   if (version == 11 && !host_seen)
     return 400; /* RFC 9112 §3.2 */
+  /* REQ-HTTP-046: a length that cannot be determined (RFC 9112 §6.3), or
+   * framing faulty in HTTP/1.0 (§6.1), is a 400; chunked, not
+   * implemented, a 501 (REQ-HTTP-043) */
+  if (te)
+    return (te == 2 || version == 10) ? 400 : 501;
 
   req->method = method;
   req->version = version;
