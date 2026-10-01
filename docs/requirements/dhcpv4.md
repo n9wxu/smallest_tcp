@@ -2,9 +2,9 @@
 
 **Protocol:** Dynamic Host Configuration Protocol (v4)  
 **Primary RFC:** RFC 2131 — Dynamic Host Configuration Protocol  
-**Supporting:** RFC 2132 — DHCP Options and BOOTP Vendor Extensions  
+**Supporting:** RFC 2132 — DHCP Options and BOOTP Vendor Extensions, RFC 3396 — Encoding Long Options, RFC 5227 — IPv4 Address Conflict Detection  
 **Scope:** V1 (IPv4)  
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-01
 
 ## Overview
 
@@ -78,6 +78,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-015 | MUST | Send to destination IP 255.255.255.255, source IP 0.0.0.0 | RFC 2131 §4.4.1 | TEST-DHCPv4-015 |
 | REQ-DHCPv4-016 | MUST | Send to destination MAC FF:FF:FF:FF:FF:FF | RFC 2131 §4.1 | TEST-DHCPv4-016 |
 | REQ-DHCPv4-017 | MUST | Source port = 68, destination port = 67 | RFC 2131 §4.1 | TEST-DHCPv4-017 |
+| REQ-DHCPv4-094 | MUST NOT | Include the Server Identifier option (54) in DHCPDISCOVER — nor once a server is known (after a NAK) | RFC 2131 Table 5 | TEST-DHCPv4-094 |
 
 ### DHCPOFFER Processing (RFC 2131 §4.4.1)
 
@@ -85,7 +86,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 |---|---|---|---|---|
 | REQ-DHCPv4-018 | MUST | Validate op=2 (BOOTREPLY) and xid matches our transaction | RFC 2131 §4.4.1 | TEST-DHCPv4-018 |
 | REQ-DHCPv4-019 | MUST | Extract offered IP from yiaddr | RFC 2131 §4.4.1 | TEST-DHCPv4-019 |
-| REQ-DHCPv4-020 | MUST | Extract Server Identifier option (54) | RFC 2132 §9.7 | TEST-DHCPv4-020 |
+| REQ-DHCPv4-020 | MUST | Extract Server Identifier option (54); an OFFER without one is dropped — the REQUEST must name the server it selects | RFC 2132 §9.7, RFC 2131 §3.1 step 3, Table 3 | TEST-DHCPv4-020 |
 | REQ-DHCPv4-021 | SHOULD | Select first offer received (for simplicity) | RFC 2131 §4.4.1 | TEST-DHCPv4-021 |
 
 ### DHCPREQUEST (RFC 2131 §4.4.1, §4.3.2)
@@ -94,10 +95,11 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 |---|---|---|---|---|
 | REQ-DHCPv4-022 | MUST | Include DHCP Message Type option (53) = 3 (REQUEST) | RFC 2132 §9.6 | TEST-DHCPv4-022 |
 | REQ-DHCPv4-023 | MUST | Include Server Identifier option (54) with selected server's IP in the REQUEST that selects an offer — and MUST NOT in RENEWING or REBINDING | RFC 2131 §4.3.2 | TEST-DHCPv4-023 |
-| REQ-DHCPv4-024 | MUST | Include Requested IP Address option (50) with offered IP | RFC 2131 §4.3.2 | TEST-DHCPv4-024 |
+| REQ-DHCPv4-024 | MUST | Include Requested IP Address option (50) with the offered IP in the REQUEST that selects an offer — and MUST NOT in RENEWING or REBINDING (the address is in ciaddr) | RFC 2131 §4.3.2, Table 4 | TEST-DHCPv4-024 |
 | REQ-DHCPv4-025 | MUST | In SELECTING state: broadcast DHCPREQUEST (ciaddr=0) | RFC 2131 §4.3.2 | TEST-DHCPv4-025 |
 | REQ-DHCPv4-026 | MUST | In RENEWING state: unicast DHCPREQUEST to server (ciaddr=current IP) | RFC 2131 §4.3.2 | TEST-DHCPv4-026 |
 | REQ-DHCPv4-027 | MUST | In REBINDING state: broadcast DHCPREQUEST (ciaddr=current IP) | RFC 2131 §4.3.2 | TEST-DHCPv4-027 |
+| REQ-DHCPv4-091 | MUST | The REQUEST that selects an offer has the DISCOVER's 'secs' and goes to the same IP broadcast address | RFC 2131 §3.1 step 3 | TEST-DHCPv4-091 |
 
 ### DHCPACK Processing (RFC 2131 §4.4.1)
 
@@ -113,6 +115,15 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-035 | MUST | If T1 not provided, default T1 = 0.5 × lease time | RFC 2131 §4.4.5 | TEST-DHCPv4-035 |
 | REQ-DHCPv4-036 | MUST | If T2 not provided, default T2 = 0.875 × lease time | RFC 2131 §4.4.5 | TEST-DHCPv4-036 |
 | REQ-DHCPv4-079 | SHOULD | T1 and T2 with some random fuzz: both brought forward by the same random share, less than 1/16 | RFC 2131 §4.4.5 | TEST-DHCPv4-079 |
+| REQ-DHCPv4-088 | MUST | T1 earlier than T2, T2 earlier than the end of the lease: T1 and T2 (the ACK's, or the defaults for those it lacks) not in that order are both replaced by the defaults (0.5 and 0.875 × lease) | RFC 2131 §4.4.5 | TEST-DHCPv4-088 |
+
+### Address Conflict (RFC 2131 §3.1, §4.4.1)
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-081 | SHOULD | Check the address of an ACK before using it: an ARP Probe — sender MAC ours, sender IP 0, target MAC 0, target IP the address — then 1 s without a conflict (RFC 5227's full timing is not used) | RFC 2131 §4.4.1, RFC 5227 §2.1.1 | TEST-DHCPv4-081 |
+| REQ-DHCPv4-080 | MUST | An address found in use while it is probed — an ARP packet from it, or another host's ARP Probe for it — is declined with DHCPDECLINE, never used, and configuration restarts — after 10 s (SHOULD) | RFC 2131 §3.1 step 5, §4.4.1, RFC 5227 §2.1.1 | TEST-DHCPv4-080 |
+| REQ-DHCPv4-082 | MUST | DHCPDECLINE carries the Requested IP Address (50) and the Server Identifier (54) and no other option but the message type; ciaddr, yiaddr, siaddr, giaddr, secs and flags 0; broadcast from 0.0.0.0 | RFC 2131 Table 5, §4.4.4 | TEST-DHCPv4-082 |
 
 ### DHCPNAK Processing
 
@@ -127,6 +138,14 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 |---|---|---|---|---|
 | REQ-DHCPv4-039 | SHOULD | Send DHCPRELEASE when intentionally relinquishing lease | RFC 2131 §4.4.6 | TEST-DHCPv4-039 |
 | REQ-DHCPv4-040 | MUST | DHCPRELEASE: ciaddr = our IP, unicast to server | RFC 2131 §4.4.6 | TEST-DHCPv4-040 |
+| REQ-DHCPv4-095 | MUST | DHCPRELEASE carries the Server Identifier (54) and no other option but the message type — not the Requested IP Address (50) (MUST NOT), the lease time or a Parameter Request List; flags 0 | RFC 2131 Table 5 | TEST-DHCPv4-095 |
+
+### All Client Messages
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-092 | MUST | The reserved bits of 'flags' (all but BROADCAST) are zero | RFC 2131 §2 | TEST-DHCPv4-092 |
+| REQ-DHCPv4-093 | MUST | Unicast requests to the server go to the address of its Server Identifier option | RFC 2131 §4.1 | TEST-DHCPv4-093 |
 
 ### Option Parsing
 
@@ -136,13 +155,15 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-042 | MUST | Option 255 (End) terminates option parsing | RFC 2132 §3.1 | TEST-DHCPv4-042 |
 | REQ-DHCPv4-043 | MUST | Option 0 (Pad) is a single byte (no Length field) | RFC 2132 §3.1 | TEST-DHCPv4-043 |
 | REQ-DHCPv4-044 | MUST | Skip unknown options using Length field | RFC 2132 §2 | TEST-DHCPv4-044 |
+| REQ-DHCPv4-084 | MUST | With the Option Overload option (52) — 1 'file', 2 'sname', 3 both — read options from those fields too: the options field first, then 'file', then 'sname' | RFC 2131 §4.1, RFC 2132 §9.3 | TEST-DHCPv4-084 |
+| REQ-DHCPv4-089 | MUST | An option that appears more than once is one option: its parts joined in order (the options field, 'file', 'sname'), never used part by part | RFC 3396 §5, §7 | TEST-DHCPv4-089 |
 
 ### Timers and Retransmission
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-DHCPv4-045 | MUST | Retransmit DHCPDISCOVER and DHCPREQUEST with exponential backoff (initial 4s, max 64s); after four unanswered DHCPREQUEST retransmissions, restart discovery | RFC 2131 §4.1, §4.4.1 | TEST-DHCPv4-045 |
-| REQ-DHCPv4-046 | SHOULD | Add random jitter (±1 second) to retransmission timer | RFC 2131 §4.1 | TEST-DHCPv4-046 |
+| REQ-DHCPv4-046 | MUST | Randomize the exponential backoff: each retransmission delay by a uniform ±1 second | RFC 2131 §4.1 | TEST-DHCPv4-046 |
 | REQ-DHCPv4-047 | MUST | Track lease timer, T1 timer, T2 timer, for any 32-bit lease time; an infinite lease (0xFFFFFFFF) is never renewed and never expires | RFC 2131 §3.3, §4.4.5 | TEST-DHCPv4-047 |
 
 ### Gateway ARP Resolution
@@ -164,7 +185,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | ID | Level | Requirement | Source | Test ID |
 |---|---|---|---|---|
 | REQ-DHCPv4-052 | MUST | Provide an `dhcpv4_opt_table_t` mechanism: application registers `{option_code, handler_fn, ctx}` entries before calling `dhcpv4_client_start()` | Architecture | TEST-DHCPv4-052 |
-| REQ-DHCPv4-053 | MUST | For each option found during DHCPACK parsing, if a matching entry exists in `opt_table`, invoke its `handler_fn(option, data, len, ctx)` with the raw TLV value bytes | Architecture | TEST-DHCPv4-053 |
+| REQ-DHCPv4-053 | MUST | For each entry of `opt_table` whose option the DHCPACK carries, invoke its `handler_fn(option, data, len, ctx)` once with the option's whole value — the parts of a split option joined (REQ-DHCPv4-089); one longer than 255 bytes, which `len` cannot express, is not delivered | RFC 3396 §7, Architecture | TEST-DHCPv4-053 |
 | REQ-DHCPv4-054 | MUST | If an option is absent from the server's DHCPACK, the corresponding handler MUST NOT be called | Architecture | TEST-DHCPv4-054 |
 | REQ-DHCPv4-055 | MUST | Option handlers MUST be called once per DHCPACK receipt, including renewal ACKs | Architecture | TEST-DHCPv4-055 |
 | REQ-DHCPv4-056 | MUST | The `ctx` pointer from the registration entry MUST be passed unchanged to the handler | Architecture | TEST-DHCPv4-056 |
@@ -178,7 +199,7 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 
 | ID | Level | Requirement | Source | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv4-060 | MUST | The server MUST be stateless: it always offers the same pre-configured IP regardless of the client's MAC address | Architecture | TEST-DHCPv4-060 |
+| REQ-DHCPv4-060 | MUST | The server identifies its client by 'chaddr' and keeps one: the first it offers the address to gets it, and no other is offered it, until that client releases it or selects another server, or the application initialises the server again (a Client Identifier, option 61, is not used) | RFC 2131 §4.2 | TEST-DHCPv4-060 |
 | REQ-DHCPv4-061 | MUST | The server MUST NOT require dynamic memory allocation | Architecture | TEST-DHCPv4-061 |
 | REQ-DHCPv4-062 | MUST | All server configuration (offered IP, subnet, gateway, DNS, lease time) MUST be provided by the application via a `dhcpv4_server_cfg_t` struct at init time | Architecture | TEST-DHCPv4-062 |
 | REQ-DHCPv4-063 | MUST | The server MUST operate as a pure stimulus/response handler: `dhcpv4_server_input()` processes one message and may send one reply; no timers are needed | Architecture | TEST-DHCPv4-063 |
@@ -194,8 +215,22 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 | REQ-DHCPv4-068 | MUST | On DHCPREQUEST with Requested IP = offered_ip: reply with DHCPACK | RFC 2131 §4.3.2 | TEST-DHCPv4-068 |
 | REQ-DHCPv4-069 | MUST | On DHCPREQUEST with Requested IP ≠ offered_ip: reply with DHCPNAK, carrying only the Message Type and Server Identifier options, ciaddr = yiaddr = siaddr = 0 | RFC 2131 §4.3.2, Table 3 | TEST-DHCPv4-069 |
 | REQ-DHCPv4-070 | MUST | On DHCPRELEASE: ignore silently (no lease table) | RFC 2131 §4.3.4 | TEST-DHCPv4-070 |
-| REQ-DHCPv4-071 | SHOULD | On DHCPINFORM: reply with DHCPACK containing the configuration options but no lease time, yiaddr = 0 (no IP allocation), ciaddr = the client's | RFC 2131 §4.3.5, Table 3 | TEST-DHCPv4-071 |
+| REQ-DHCPv4-071 | MUST NOT | The DHCPACK to a DHCPINFORM carries no lease time (51); it has yiaddr = 0 (SHOULD NOT fill it in), ciaddr = the client's, and the configuration options | RFC 2131 §4.3.5, Table 3 | TEST-DHCPv4-071 |
 | REQ-DHCPv4-072 | MUST | Silently ignore all other DHCP message types | RFC 2131 | TEST-DHCPv4-072 |
+| REQ-DHCPv4-085 | MUST | On DHCPDECLINE of the address (Requested IP = `offered_ip`, our Server Identifier): mark it not available — no OFFER or ACK of it until the application initialises the server again | RFC 2131 §4.3.3 | TEST-DHCPv4-085 |
+| REQ-DHCPv4-086 | MUST | A DHCPREQUEST whose Server Identifier is another server's declines our offer: no reply, neither ACK nor NAK | RFC 2131 §3.1 step 4, §4.3.2 | TEST-DHCPv4-086 |
+| REQ-DHCPv4-087 | MUST | A DHCPREQUEST from an INIT-REBOOT client (no Server Identifier, ciaddr 0) the server has no record of: no reply | RFC 2131 §4.3.2 | TEST-DHCPv4-087 |
+
+#### Server Options
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-DHCPv4-096 | MUST | OFFER and ACK carry the Server Identifier (54) and, but for the ACK to a DHCPINFORM, the lease time (51); never the Requested IP Address (50), Parameter Request List (55), Client Identifier (61) or Maximum Message Size (57) | RFC 2131 Table 3 | TEST-DHCPv4-096 |
+| REQ-DHCPv4-097 | MUST | Each requested parameter at most once; one the server cannot provide — not configured, or unknown to it — left out | RFC 2131 §4.3.1 | TEST-DHCPv4-097 |
+| REQ-DHCPv4-090 | MUST | Requested options in the order of the client's Parameter Request List, as far as REQ-DHCPv4-098 allows | RFC 2132 §9.8 | TEST-DHCPv4-090 |
+| REQ-DHCPv4-098 | MUST | In a reply with both, the Subnet Mask (1) before the Router (3) | RFC 2132 §3.3 | TEST-DHCPv4-098 |
+| REQ-DHCPv4-099 | MUST | Ignore the client's Vendor Specific Information (43) and Vendor Class Identifier (60), which the server cannot interpret | RFC 2132 §8.4, §9.13 | TEST-DHCPv4-099 |
+| REQ-DHCPv4-100 | MUST | The Server Identifier is an address the client can reach: the server's own on the link (`server_ip`), its replies' IP source | RFC 2131 §4.1 | TEST-DHCPv4-100 |
 
 #### Server Reply Addressing
 

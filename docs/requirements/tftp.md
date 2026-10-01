@@ -2,9 +2,9 @@
 
 **Protocol:** Trivial File Transfer Protocol  
 **Primary RFC:** RFC 1350 — The TFTP Protocol (Revision 2)  
-**Supporting:** RFC 2348 — TFTP Blocksize Option, RFC 2349 — TFTP Timeout Interval and Transfer Size Options, RFC 7440 — TFTP Windowsize Option  
+**Supporting:** RFC 1123 §4.2 — Requirements for Internet Hosts (TFTP), RFC 2348 — TFTP Blocksize Option, RFC 2349 — TFTP Timeout Interval and Transfer Size Options, RFC 7440 — TFTP Windowsize Option  
 **Scope:** V1 (IPv4), V2 (IPv6)  
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-01
 
 ## Overview
 
@@ -58,7 +58,7 @@ OACK:
 | REQ-TFTP-001 | MUST | Send RRQ (opcode 1) with filename and mode "octet" | RFC 1350 §2 | TEST-TFTP-001 |
 | REQ-TFTP-002 | MUST | RRQ sent to server IP:port 69 | RFC 1350 §2 | TEST-TFTP-002 |
 | REQ-TFTP-003 | MUST | Use "octet" (binary) transfer mode | RFC 1350 §2 | TEST-TFTP-003 |
-| REQ-TFTP-004 | MAY | Support "netascii" transfer mode | RFC 1350 §2 | TEST-TFTP-004 |
+| REQ-TFTP-004 | MUST | Support "netascii" transfer mode | RFC 1350 §2, RFC 1123 §4.2.4 | — (not met: octet mode only, see [design §9](../design/tftp.md#9-deviations-and-known-limitations)) |
 | REQ-TFTP-005 | MUST | After RRQ, expect DATA or OACK from server on a new TID (ephemeral port) | RFC 1350 §2 | TEST-TFTP-005 |
 | REQ-TFTP-006 | MUST | Record server's TID (source port of first response) and use it for all subsequent packets | RFC 1350 §2 | TEST-TFTP-006 |
 
@@ -99,6 +99,7 @@ OACK:
 | REQ-TFTP-022 | SHOULD | Default timeout = 1-5 seconds | RFC 2349 §2 | TEST-TFTP-022 |
 | REQ-TFTP-023 | MUST | Limit retransmissions; abort after maximum retries (typically 5) | Architecture | TEST-TFTP-023 |
 | REQ-TFTP-024 | MUST | Report timeout failure to application | Architecture | TEST-TFTP-024 |
+| REQ-TFTP-039 | MUST | Adaptive retransmission timeout: exponential backoff on each retransmission, and a timeout that follows the measured round-trip time | RFC 1123 §4.2.3.2 | TEST-TFTP-039 |
 
 ### Option Negotiation (RFC 2348, RFC 2349)
 
@@ -119,6 +120,7 @@ OACK:
 |---|---|---|---|---|
 | REQ-TFTP-033 | MAY | Support WRQ (opcode 2) for file upload | RFC 1350 §2 | TEST-TFTP-033 |
 | REQ-TFTP-034 | MAY | If WRQ supported: send DATA blocks after receiving ACK 0 from server | RFC 1350 §2 | TEST-TFTP-034 |
+| REQ-TFTP-040 | MUST | The side sending DATA never resends the current DATA on a duplicate ACK (the Sorcerer's Apprentice fix) — applies only if WRQ is implemented (REQ-TFTP-033, 034) | RFC 1123 §4.2.3.1 | — (not applicable: the client only reads) |
 
 ### Address Resolution
 
