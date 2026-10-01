@@ -33,6 +33,7 @@ option(SMALLEST_TCP_TCP           "TCP in the core, and the applications over it
 option(SMALLEST_TCP_TLS           "TLS 1.3 with the Mbed TLS crypto backend (downloads Mbed TLS 3.6)" ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_DTLS          "DTLS 1.3 (RFC 9147) as well as TLS, sharing its handshake" ON)
 option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds)" OFF)
+option(SMALLEST_TCP_COVERAGE      "Instrument the stack and tests for gcov line and branch coverage" OFF)
 set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
     "Application configuration header, included first by net_config.h")
 set(SMALLEST_TCP_BOARD "" CACHE STRING
@@ -40,6 +41,11 @@ set(SMALLEST_TCP_BOARD "" CACHE STRING
 
 if(NOT SMALLEST_TCP_IPV4 AND NOT SMALLEST_TCP_IPV6)
     message(FATAL_ERROR "SMALLEST_TCP_IPV4 and SMALLEST_TCP_IPV6 are both OFF: no network layer")
+endif()
+
+if(SMALLEST_TCP_COVERAGE)
+    add_compile_options(--coverage -O0)
+    add_link_options(--coverage)
 endif()
 
 # ── Libraries ─────────────────────────────────────────────────────────

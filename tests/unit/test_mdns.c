@@ -349,28 +349,6 @@ TEST(test_init_validates_table) {
   ASSERT_EQ(n_frames, 0);
 }
 
-/* REQ-DNSSD-029, REQ-MDNS-042: a record no message could carry — here a
- * TXT record of 3 x 200 bytes with a 300-byte TX buffer — is refused, not
- * left unannounced */
-TEST(test_init_refuses_a_record_too_big_for_any_packet) {
-  static char e1[201], e2[201], e3[201];
-  static const char *const big_txt[] = {e1, e2, e3, NULL};
-  static const mdns_record_t recs[] = {
-      {.type = DNS_TYPE_A, .ttl = 120, .name = HOST, .rdata.a = 0},
-      {.type = DNS_TYPE_TXT, .ttl = 120, .name = INST, .rdata.txt = big_txt},
-  };
-  static int ctx;
-  memset(e1, 'a', 200);
-  memset(e2, 'b', 200);
-  memset(e3, 'c', 200);
-  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, 300, NULL, &stub_mac, &ctx);
-  ASSERT_EQ(mdns_init(&m, &net, recs, 2, NULL, NULL), NET_ERR_BUF_TOO_SMALL);
-  ASSERT_EQ(mdns_init(&m, &net, recs, 1, NULL, NULL), NET_OK);
-  net_init(&net, rx_buf, sizeof(rx_buf), tx_buf, sizeof(tx_buf), NULL,
-           &stub_mac, &ctx);
-  ASSERT_EQ(mdns_init(&m, &net, recs, 2, NULL, NULL), NET_OK);
-}
-
 TEST(test_stopped_is_silent) {
   setup();
   mdns_tick(&m, 5000);
@@ -931,51 +909,6 @@ TEST(test_known_answer_unique_record) {
   ASSERT_EQ(n_frames, 0);
 }
 
-/* RFC 6762 §7.2: a query with TC set has more known answers coming, so the
- * response waits 400-500 ms — even one of unique records */
-TEST(test_truncated_query_answered_after_400_to_500ms) {
-  setup();
-  to_running();
-  q_begin(0, DNS_FLAG_TC);
-  q_question(HOST, DNS_TYPE_A, 0);
-  feed();
-  mdns_tick(&m, 399);
-  ASSERT_EQ(n_frames, 0);
-  mdns_tick(&m, 101);
-  ASSERT_EQ(count_mdns(), 1);
-}
-
-/* ... and the known answers that follow, in packets without questions,
- * are not answered */
-TEST(test_known_answers_after_truncated_query_suppress) {
-  setup();
-  to_running();
-  q_begin(0, DNS_FLAG_TC);
-  q_question(SVC, DNS_TYPE_PTR, 0);
-  q_question(HOST, DNS_TYPE_A, 0);
-  feed();
-  q_begin(0, 0);
-  q_rr_ptr(0, SVC, INST, MDNS_TTL_OTHER);
-  feed();
-  mdns_tick(&m, 500);
-  ASSERT_EQ(count_mdns(), 1); /* the A record only */
-  uint16_t len;
-  dns_rr_t rr;
-  const uint8_t *msg = dns_msg(mdns_frame(0), &len);
-  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 1);
-  ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_A, &rr));
-
-  q_begin(0, DNS_FLAG_TC); /* all of them known: nothing is sent */
-  q_question(SVC, DNS_TYPE_PTR, 0);
-  feed();
-  q_begin(0, 0);
-  q_rr_ptr(0, SVC, INST, MDNS_TTL_OTHER);
-  feed();
-  n_frames = 0;
-  mdns_tick(&m, 500);
-  ASSERT_EQ(n_frames, 0);
-}
-
 /* REQ-MDNS-028: QU question → unicast reply to the querier */
 TEST(test_qu_question_gets_unicast_reply) {
   const uint8_t *f;
@@ -1176,108 +1109,6 @@ TEST(test_stop_cancels_pending_response) {
   ASSERT_EQ(n_frames, 0);
 }
 
-/* ══ Withdrawing records (REQ-MDNS-032, REQ-DNSSD-018) ════════════════ */
-
-#define SERVICE (BIT_OF(REC_PTR) | BIT_OF(REC_SRV) | BIT_OF(REC_TXT))
-#define BIT_OF(i) ((uint32_t)1u << (i))
-
-/* A service withdrawn: a goodbye for its PTR, SRV and TXT and for its
- * type's meta-query listing — not for the host's A record */
-TEST(test_withdraw_says_goodbye_to_those_records_only) {
-  uint16_t len;
-  dns_rr_t rr;
-  setup();
-  to_running();
-  mdns_withdraw(&m, SERVICE);
-  ASSERT_EQ(count_mdns(), 1);
-  const uint8_t *msg = dns_msg(mdns_frame(0), &len);
-  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 4);
-  ASSERT_EQ(hdr16(msg, DNS_OFF_ARCOUNT), 0);
-  ASSERT_TRUE(find_rr(msg, len, 0, SVC, DNS_TYPE_PTR, &rr));
-  ASSERT_EQ(rr.ttl, 0u);
-  ASSERT_TRUE(find_rr(msg, len, 0, INST, DNS_TYPE_SRV, &rr));
-  ASSERT_EQ(rr.ttl, 0u);
-  ASSERT_TRUE(find_rr(msg, len, 0, INST, DNS_TYPE_TXT, &rr));
-  ASSERT_EQ(rr.ttl, 0u);
-  ASSERT_TRUE(find_rr(msg, len, 0, MDNS_META_QUERY, DNS_TYPE_PTR, &rr));
-  ASSERT_EQ(rr.ttl, 0u);
-  ASSERT_FALSE(find_rr(msg, len, 0, HOST, DNS_TYPE_A, &rr));
-  ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
-
-  n_frames = 0;
-  mdns_withdraw(&m, SERVICE); /* gone already: nothing more */
-  ASSERT_EQ(n_frames, 0);
-}
-
-/* Withdrawn records are neither answered nor owned: no NSEC for them */
-TEST(test_withdrawn_records_are_not_answered) {
-  setup();
-  to_running();
-  mdns_withdraw(&m, SERVICE);
-  n_frames = 0;
-  query(SVC, DNS_TYPE_PTR);
-  query(INST, DNS_TYPE_SRV);
-  query(INST, DNS_TYPE_A); /* would draw an NSEC for an instance of ours */
-  query(MDNS_META_QUERY, DNS_TYPE_PTR);
-  mdns_tick(&m, MDNS_RESP_DELAY_MAX_MS);
-  ASSERT_EQ(n_frames, 0);
-  query(HOST, DNS_TYPE_A);
-  ASSERT_EQ(count_mdns(), 1);
-}
-
-/* mdns_stop() later says goodbye to what is left */
-TEST(test_stop_after_withdraw) {
-  uint16_t len;
-  dns_rr_t rr;
-  setup();
-  to_running();
-  mdns_withdraw(&m, SERVICE);
-  n_frames = 0;
-  mdns_stop(&m);
-  const uint8_t *msg = dns_msg(mdns_frame(0), &len);
-  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 1);
-  ASSERT_TRUE(find_rr(msg, len, 0, HOST, DNS_TYPE_A, &rr));
-}
-
-/* A type another instance still offers stays listed */
-TEST(test_withdraw_one_of_two_instances) {
-  static const mdns_record_t recs[] = {
-      {.type = DNS_TYPE_A, .ttl = 120, .name = HOST, .rdata.a = 0},
-      {.type = DNS_TYPE_PTR, .ttl = 4500, .name = SVC, .rdata.ptr = INST},
-      {.type = DNS_TYPE_PTR,
-       .ttl = 4500,
-       .name = SVC,
-       .rdata.ptr = "Pyro Unit 2._pyro._tcp.local"},
-  };
-  uint16_t len;
-  dns_rr_t rr;
-  setup_with(recs, 3, sizeof(tx_buf));
-  to_running();
-  mdns_withdraw(&m, BIT_OF(1));
-  const uint8_t *msg = dns_msg(mdns_frame(0), &len);
-  ASSERT_EQ(hdr16(msg, DNS_OFF_ANCOUNT), 1);
-  ASSERT_FALSE(find_rr(msg, len, 0, MDNS_META_QUERY, DNS_TYPE_PTR, &rr));
-}
-
-/* Nothing announced yet, nothing to say goodbye to; not probed either */
-TEST(test_withdraw_while_probing) {
-  int k;
-  setup();
-  mdns_start(&m);
-  n_frames = 0;
-  mdns_withdraw(&m, SERVICE);
-  ASSERT_EQ(n_frames, 0);
-  mdns_tick(&m, MDNS_PROBE_WAIT_MS);
-  for (k = 0; mdns_frame(k) >= 0; k++) {
-    uint16_t len;
-    dns_rr_t rr;
-    const uint8_t *msg = dns_msg(mdns_frame(k), &len);
-    ASSERT_EQ(hdr16(msg, DNS_OFF_QDCOUNT), 1); /* the host name alone */
-    ASSERT_FALSE(find_rr(msg, len, 1, INST, DNS_TYPE_SRV, &rr));
-  }
-  ASSERT_EQ(k, 1);
-}
-
 /* ══ Size limits (REQ-MDNS-042, REQ-DNSSD-030) ════════════════════════ */
 
 static const char *const t1[] = {"k=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1340,7 +1171,6 @@ TEST(test_probe_split_across_packets) {
 
 int main(void) {
   RUN_TEST(test_init_validates_table);
-  RUN_TEST(test_init_refuses_a_record_too_big_for_any_packet);
   RUN_TEST(test_stopped_is_silent);
   RUN_TEST(test_start_joins_group);
   RUN_TEST(test_first_probe_within_250ms);
@@ -1374,8 +1204,6 @@ int main(void) {
   RUN_TEST(test_known_answer_suppression);
   RUN_TEST(test_known_answer_other_rdata_not_suppressed);
   RUN_TEST(test_known_answer_unique_record);
-  RUN_TEST(test_truncated_query_answered_after_400_to_500ms);
-  RUN_TEST(test_known_answers_after_truncated_query_suppress);
   RUN_TEST(test_qu_question_gets_unicast_reply);
   RUN_TEST(test_legacy_unicast_query);
   RUN_TEST(test_qu_from_unspecified_source_is_multicast);
@@ -1389,11 +1217,6 @@ int main(void) {
   RUN_TEST(test_stop_sends_goodbye_and_leaves);
   RUN_TEST(test_stop_while_probing_sends_no_goodbye);
   RUN_TEST(test_stop_cancels_pending_response);
-  RUN_TEST(test_withdraw_says_goodbye_to_those_records_only);
-  RUN_TEST(test_withdrawn_records_are_not_answered);
-  RUN_TEST(test_stop_after_withdraw);
-  RUN_TEST(test_withdraw_one_of_two_instances);
-  RUN_TEST(test_withdraw_while_probing);
   RUN_TEST(test_announcement_split_across_packets);
   RUN_TEST(test_probe_split_across_packets);
   TEST_REPORT();

@@ -112,6 +112,32 @@ if(SMALLEST_TCP_TLS)
     endif()
 endif()
 
+# ── Integration tests: the stack driven through its API on a scripted
+#    link, traced to the requirements (tests/integration/wire.h) ──────────
+
+function(add_integration_test name)
+    add_executable(${name} integration/${name}.c integration/wire.c)
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/integration
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit
+    )
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Werror -pedantic)
+    target_compile_features(${name} PRIVATE c_std_99)
+    target_link_libraries(${name} PRIVATE ${ARGN})
+    add_test(NAME ${name} COMMAND ${name})
+    set_tests_properties(${name} PROPERTIES LABELS integration)
+endfunction()
+
+if(SMALLEST_TCP_IPV4 AND SMALLEST_TCP_UDP)
+    add_integration_test(itest_ipv4 smallest_tcp_core)
+    add_integration_test(itest_link smallest_tcp_core)
+    add_integration_test(itest_mdns smallest_tcp_mdns)
+endif()
+if(SMALLEST_TCP_IPV4 AND SMALLEST_TCP_TCP)
+    add_integration_test(itest_tcp smallest_tcp_core)
+    add_integration_test(itest_http smallest_tcp_http)
+endif()
+
 # ── Configurations that must not compile ─────────────────────────────
 #
 # Each test passes when the compiler reports the configuration error.

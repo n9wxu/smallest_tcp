@@ -1,6 +1,6 @@
 # Test Plan — smallest_tcp
 
-*Revision: Milestone 13 (TLS 1.3) — updated 2026-09-27*
+*Revision: integration tests and traceability — updated 2026-10-01*
 
 ---
 
@@ -11,9 +11,66 @@ verified at both the unit and integration levels:
 
 | Layer | Framework | Location | Trigger |
 |---|---|---|---|
+| C Integration Tests (black box through the API) | `TEST`/`ASSERT` macros and a scripted link (`tests/integration/wire.h`), run by CTest (label `integration`) | `tests/integration/` | Every push/PR |
 | C Unit Tests | Custom `TEST`/`ASSERT` macros (`tests/unit/test_main.h`), run by CTest | `tests/unit/` | Every push/PR |
 | Blackbox Conformance | Python / Scapy (pytest) | `tests/blackbox/` | Every push/PR |
 | Fuzz / Robustness | Python / Scapy `fuzz()` (pytest) | `tests/blackbox/` | Nightly / manual |
+
+---
+
+## 0. Policy, and the integration tests
+
+**Tests verify requirements, through the API.**  A test drives the stack
+only as an application or the network can — the public API (`net_init()`,
+`net_poll()`, `net_tick()`, the protocol modules' functions) and frames on
+the wire — and checks only what those show: frames sent, events, return
+values, API-visible state.  Tests coupled to the implementation (calling
+internal functions, inspecting private fields) test how the code works, not
+what it must do, and break when it is refactored.  New tests are written
+this way; an existing unit test is rewritten at the API level, and the old
+one removed, when its area is worked on.
+
+**Every test traces to requirements.**  Each test names the REQ IDs it
+verifies; `scripts/trace.py --strict` (CI job `traceability`) fails if an
+integration test names none or a test names an ID no requirement document
+defines, and reports, per document, the MUST rows a black-box test covers.
+
+**An error found outside the tests becomes a test first.**  A bug found by
+an audit, a review, interop or in the field gets a failing integration (or
+blackbox) test traced to the requirement it breaks — adding the row if the
+requirement had none — and then the fix.  A requirement not met yet gets
+its test now, run with `RUN_XFAIL`: the test must fail, and turns the run
+red if it starts passing, until the fix makes it `RUN_TEST`.
+
+**What the API reaches.**  CI job `coverage` builds with
+`-DSMALLEST_TCP_COVERAGE=ON` and reports line and branch coverage of
+`src/` by the integration tests alone.  Code they never reach is code no
+application can reach either: dead, or a test missing.
+
+### The scripted link (`tests/integration/wire.h`)
+
+`wire_driver` is a MAC driver whose receive queue the test fills
+(`wire_deliver()`, `itest_receive()`) and whose transmissions it records
+(`wire_sent()`).  `itest_up()` initialises a `net_t` on it with frame buffers
+of a chosen size; `itest_advance()` runs `net_tick()`; an `itest_t.service`
+hook runs the application's own polling (`http_server_poll()`) after each
+frame.  The peer side — Ethernet, IPv4 with options and fragments, UDP,
+ICMP, TCP, ARP, DNS — is encoded and decoded by the harness's own code with
+its own checksum, never the stack's, so the stack is checked against the
+RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
+(connect, send, acknowledge and collect, close).
+
+| Suite | REQ areas | Tests |
+|---|---|---|
+| `itest_ipv4` | IPv4 destination and source checks, ICMP errors and echo | 9 |
+| `itest_link` | ARP, UDP sending limits, TTL, the checksum API | 7 |
+| `itest_tcp` | CLOSE/ABORT in every state, a listener outliving a failed handshake, ISNs and the seed | 10 |
+| `itest_http` | GET/HEAD, error responses without bodies, 204, Allow, Host | 6 |
+| `itest_mdns` | Goodbyes, the table's size check, truncated queries, withdrawing records | 7 |
+| **Total** | | **39** |
+
+Each test of the audit's bugs (2026-09-29) was checked to fail on the code
+before its fix (commit `ec4a388`).
 
 ---
 
@@ -21,26 +78,26 @@ verified at both the unit and integration levels:
 
 ### Current Status
 
-**29 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **846 tests on macOS; on Linux 849, or 857 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites and `test_dtls` need `SMALLEST_TCP_TLS` (Mbed TLS; `test_dtls` also `SMALLEST_TCP_DTLS`) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 19 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
+**29 test suites — all passing** (CTest, the default dual-stack build with `SMALLEST_TCP_TLS`): **816 tests on macOS; on Linux 819, or 827 as root**.  The difference is `test_rawsock`: 4 portable tests everywhere, 3 more on Linux, and 8 live tests on a veth pair that run only as root (CI runs them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).  CMake is the only host build.  The four TLS suites and `test_dtls` need `SMALLEST_TCP_TLS` (Mbed TLS; `test_dtls` also `SMALLEST_TCP_DTLS`) and the seven IPv6 suites `SMALLEST_TCP_IPV6`; the IPv4-only CI job (`cmake-ipv4-only`) builds the other 17, and the IPv6-only job (`cmake-ipv6-only`) the 19 that need no IPv4.  CTest adds five compile checks: a configuration that cannot work (mDNS without a multicast group slot for either family, TFTP or the DHCPv4 client without IPv4, neither IPv4 nor IPv6) must fail to build.
 
 | Suite | File | Tests | Protocols Covered |
 |---|---|---|---|
 | `test_endian` | tests/unit/test_endian.c | 10 | Byte-order utilities |
-| `test_checksum` | tests/unit/test_checksum.c | 13 | net_cksum (REQ-CKS-*), incl. pieces of odd length |
+| `test_checksum` | tests/unit/test_checksum.c | 12 | net_cksum (REQ-CKS-*) |
 | `test_eth` | tests/unit/test_eth.c | 11 | Ethernet (REQ-ETH-*) |
-| `test_net` | tests/unit/test_net.c | 16 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()`, seeds that count every byte and add up, the key from the whole MAC |
-| `test_arp` | tests/unit/test_arp.c | 10 | ARP (REQ-ARP-*), incl. 0.0.0.0 neither ours nor the gateway's |
-| `test_ipv4` | tests/unit/test_ipv4.c | 13 | IPv4 (REQ-IPV4-*) |
-| `test_icmp` | tests/unit/test_icmp.c | 7 | ICMPv4 (REQ-ICMP-*), incl. the echo reply's Code 0, no error about a source that is no single host |
-| `test_udp` | tests/unit/test_udp.c | 9 | UDP (REQ-UDP-*), incl. nothing beyond one Ethernet frame whatever the buffer, no TTL 0 |
+| `test_net` | tests/unit/test_net.c | 17 | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()`, seeds that count every byte and add up, the key from the whole MAC |
+| `test_arp` | tests/unit/test_arp.c | 8 | ARP (REQ-ARP-*) |
+| `test_ipv4` | tests/unit/test_ipv4.c | 10 | IPv4 (REQ-IPV4-*) |
+| `test_icmp` | tests/unit/test_icmp.c | 4 | ICMPv4 (REQ-ICMP-*) |
+| `test_udp` | tests/unit/test_udp.c | 7 | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | 22 | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
-| `test_tcp` | tests/unit/test_tcp.c | **72** | TCP (REQ-TCP-*), incl. CLOSE and ABORT before the connection is open, a passive open reset in SYN-RECEIVED listening again, data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
+| `test_tcp` | tests/unit/test_tcp.c | **63** | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
 | `test_tftp` | tests/unit/test_tftp.c | 28 | TFTP client (REQ-TFTP-*), incl. OACKs with options never asked for, truncated DATA and ERROR, port 0, the timer restarted only by progress |
 | `test_dhcpv4` | tests/unit/test_dhcpv4.c | 38 | DHCPv4 client + server (REQ-DHCPv4-*), incl. buffer checks at init, the 1–10 s start delay, renewals unicast to the server's MAC, the lease timed from the REQUEST, T1/T2 fuzz, NAKs only from the server asked, the server's §4.1 reply routing |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | 23 | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | 19 | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
-| `test_mdns` | tests/unit/test_mdns.c | 57 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC, the meta-query's goodbye, a record too big for any packet refused, truncated queries, `mdns_withdraw()` |
-| `test_http` | tests/unit/test_http.c | 51 | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot, no body for HEAD (errors too) or 204, `Allow` on every 405, one Host line (REQ-HTTP-*) |
+| `test_mdns` | tests/unit/test_mdns.c | 49 | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC, the meta-query's goodbye |
+| `test_http` | tests/unit/test_http.c | 48 | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot, one Host line (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | 55 | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013); built with `NET_USE_IPV6=1` |
 | `test_udp6` | tests/unit/test_udp6.c | 15 | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` within one Ethernet frame (REQ-IPv6-044,045, REQ-ICMPv6-016) |
 | `test_tcp6` | tests/unit/test_tcp6.c | 19 | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, advertised MSS from the RX frame buffer and within the Ethernet MTU (1440), send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
@@ -84,8 +141,8 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 002 | Passive open (LISTEN) | test_tcp_passive_open_syn_synack_ack | ✅ |
 | 003 | Active open (SYN_SENT) | test_tcp_active_open_syn_synack_ack | ✅ |
 | 005 | Active close (FIN_WAIT_1) | test_tcp_active_close | ✅ |
-| 015 | `tcp_close()`: FIN queued behind unsent data; LISTEN and SYN-SENT → CLOSED; in SYN-RECEIVED the FIN follows the ACK of our SYN (RFC 9293 §3.10.4) | test_tcp_close_sends_unsent_data_first, test_tcp_close_fin_waits_for_the_last_segment, test_tcp_close_in_listen_closes, test_tcp_close_in_syn_sent_closes, test_tcp_close_in_syn_received_sends_fin_once_open | ✅ |
-| 016 | `tcp_abort()`: RST only where the peer holds the connection open (§3.10.5) | test_tcp_abort_before_open_sends_nothing, test_tcp_abort_in_syn_received_sends_rst | ✅ |
+| 015 | `tcp_close()`: FIN queued behind unsent data; LISTEN and SYN-SENT → CLOSED; in SYN-RECEIVED the FIN follows the ACK of our SYN (RFC 9293 §3.10.4) | test_tcp_close_sends_unsent_data_first, test_tcp_close_fin_waits_for_the_last_segment; itest_tcp_015_close_in_listen, _in_syn_sent, _in_syn_received | ✅ |
+| 016 | `tcp_abort()`: RST only where the peer holds the connection open (§3.10.5) | itest_tcp_016_abort_before_open_sends_nothing, itest_tcp_016_abort_in_syn_received_sends_rst | ✅ |
 | 006 | Passive close (CLOSE_WAIT) | test_tcp_passive_close | ✅ |
 | 008 | TIME_WAIT 2×MSL | test_tcp_timewait_expires | ✅ |
 | 014 | tcp_send() API | test_tcp_data_send | ✅ |
@@ -93,9 +150,9 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 019 | Checksum verify on RX | test_tcp_checksum_basic | ✅ |
 | 031 | ACK in LISTEN → RST | test_tcp_ack_in_listen_generates_rst | ✅ |
 | 041/042 | Out-of-window → ACK only | test_tcp_out_of_window_gets_ack | ✅ |
-| 046/047 | RST in ESTABLISHED → CLOSED; in SYN-RECEIVED → LISTEN (passive open) or CLOSED (active) | test_tcp_rst_in_established_aborts, test_tcp_rst_in_syn_received_listens_again, test_tcp_rst_in_active_syn_received_closes, test_tcp_syn_received_given_up_listens_again | ✅ |
+| 046/047 | RST in ESTABLISHED → CLOSED; in SYN-RECEIVED → LISTEN (passive open) or CLOSED (active) | test_tcp_rst_in_established_aborts; itest_tcp_046_rst_in_syn_received_listens_again, itest_tcp_046_rst_in_active_syn_received_closes, itest_tcp_090_syn_received_given_up_listens_again | ✅ |
 | 048 | RST in LAST_ACK → CLOSED | test_tcp_rst_in_last_ack_closes | ✅ |
-| 051 | SYN in ESTABLISHED → error; in a passive SYN-RECEIVED → LISTEN | test_tcp_syn_in_established_gets_rst, test_tcp_syn_in_syn_received_listens_again | ✅ |
+| 051 | SYN in ESTABLISHED → error; in a passive SYN-RECEIVED → LISTEN | test_tcp_syn_in_established_gets_rst; itest_tcp_051_syn_in_syn_received_listens_again | ✅ |
 | 053 | No ACK bit → discard | test_tcp_no_ack_bit_discarded | ✅ |
 | 054 | ESTABLISHED on ACK to SYN-ACK | test_tcp_passive_open | ✅ |
 | 058 | Window update from an ACK of nothing new | test_tcp_window_update_resumes_sending | ✅ |

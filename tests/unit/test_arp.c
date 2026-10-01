@@ -181,35 +181,6 @@ TEST(test_arp_reply_updates_gateway_mac) {
   ASSERT_MEM_EQ(net.gateway_mac, gw_mac, 6);
 }
 
-/* Without an address we have none to claim: a request for 0.0.0.0 — an
- * unconfigured host's — is not ours to answer */
-TEST(test_arp_unconfigured_answers_nothing) {
-  uint8_t sender_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x05};
-  uint8_t frame[100];
-  eth_frame_t eth;
-  setup();
-  net.ipv4_addr = 0;
-  eth_parse(frame,
-            build_arp_request(frame, NET_IPV4(10, 0, 0, 1), sender_mac, 0),
-            &eth);
-  arp_input(&net, &eth);
-  ASSERT_EQ(send_count, 0);
-}
-
-/* Without a gateway, a reply from 0.0.0.0 is no gateway's */
-TEST(test_arp_no_gateway_learned_from_unspecified_sender) {
-  uint8_t sender_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x06};
-  uint8_t frame[100];
-  eth_frame_t eth;
-  setup();
-  net.gateway_ipv4 = 0;
-  build_arp_request(frame, 0, sender_mac, NET_IPV4(10, 0, 0, 9));
-  net_write16be(frame + 14 + ARP_OFF_OPER, ARP_OPER_REPLY);
-  eth_parse(frame, 14 + ARP_PKT_SIZE, &eth);
-  arp_input(&net, &eth);
-  ASSERT_FALSE(net.gateway_mac_valid);
-}
-
 TEST(test_arp_request_broadcast) {
   setup();
   net_err_t err = arp_request(&net, NET_IPV4(10, 0, 0, 5));
@@ -245,8 +216,6 @@ int main(void) {
   RUN_TEST(test_arp_reject_invalid_htype);
   RUN_TEST(test_arp_reject_short_packet);
   RUN_TEST(test_arp_reply_updates_gateway_mac);
-  RUN_TEST(test_arp_unconfigured_answers_nothing);
-  RUN_TEST(test_arp_no_gateway_learned_from_unspecified_sender);
   RUN_TEST(test_arp_request_broadcast);
   RUN_TEST(test_arp_next_hop_local);
   RUN_TEST(test_arp_next_hop_remote);

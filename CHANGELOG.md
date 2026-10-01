@@ -10,6 +10,17 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+### Added
+
+- Black-box integration tests (`tests/integration/`): the stack driven only
+  through its API and a scripted link, the network side encoded and decoded
+  independently, each test traced to the requirements it verifies.  The bugs
+  the V1 audit found are tested this way, each test checked to fail on the
+  code before its fix.
+- `scripts/trace.py` and the CI job `traceability`: tests to requirements;
+  the CI job `coverage`: what the integration tests reach of `src/`.
+- `SMALLEST_TCP_COVERAGE`: build for gcov.
+
 ## [0.1.1] - 2026-10-01
 
 ### Changed

@@ -25,6 +25,8 @@ CMake is the only host build; the `Makefile` is used only by `arm-size`.
 | `blackbox-validate` | The same suites against the Linux kernel as reference SUT (§1) |
 | `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls`, `blackbox-dtls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks (DTLS against wolfSSL, built by `tests/blackbox/build_wolfssl.sh` and cached) |
 | `fetchcontent` | Builds and runs `examples/fetchcontent` against the checkout |
+| `traceability` | `scripts/trace.py --strict`: every integration test cites the requirements it verifies, every cited ID exists; the summary counts the MUST rows each document has covered by a black-box test |
+| `coverage` | Builds with `-DSMALLEST_TCP_COVERAGE=ON`, runs the integration tests (`ctest -L integration`) and reports, with gcovr, the lines and branches of `src/` they reach — what the API reaches; the HTML report is an artifact |
 | `release-check` | `scripts/release.py check`: the version in `net_version.h` parses, `CHANGELOG.md` has its `## [Unreleased]` section, and a trial stamp of the next version works; CMake and the compiled library report the version ([release-process.md](release-process.md)) |
 
 `fuzz.yml` runs the TCP fuzz suite nightly.  `release.yml` runs when this

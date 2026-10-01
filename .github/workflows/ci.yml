@@ -791,6 +791,49 @@ jobs:
       - name: Run example
         run: ./examples/fetchcontent/build/example_app
 
+  # ── Requirements traced to tests ────────────────────────────────────
+  # Every integration test cites the requirements it verifies, and every
+  # cited ID exists; the summary shows which MUST rows a black-box test
+  # covers (scripts/trace.py, docs/test-plan.md).
+  traceability:
+    name: Traceability — tests to requirements
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trace
+        run: |
+          python3 scripts/trace.py --strict --markdown | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # ── What the API reaches ────────────────────────────────────────────
+  # Line and branch coverage of src/ by the integration tests alone: they
+  # drive the stack only through its API and the wire, so code they never
+  # reach is code no application reaches either — dead, or a missing test.
+  coverage:
+    name: Coverage — the stack through its API (integration tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gcovr
+        run: pip install --quiet gcovr
+      - name: Build with coverage
+        run: |
+          cmake -S . -B build-cov -DSMALLEST_TCP_COVERAGE=ON -DSMALLEST_TCP_TLS=OFF
+          cmake --build build-cov
+      - name: Integration tests
+        run: ctest --test-dir build-cov -L integration --output-on-failure
+      - name: Report
+        run: |
+          gcovr --root . --filter 'src/' --exclude 'src/driver/' build-cov \
+            --txt build-cov/coverage.txt --markdown build-cov/coverage.md \
+            --html-details build-cov/coverage.html
+          cat build-cov/coverage.txt
+          { echo "## Coverage of src/ by the integration tests"; echo;
+            cat build-cov/coverage.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: build-cov/coverage*.html
+
   # ── Release readiness ───────────────────────────────────────────────
   # release.yml releases every push to main that passes this workflow; this
   # job checks it will be able to: the version in include/net_version.h

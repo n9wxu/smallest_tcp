@@ -282,38 +282,6 @@ TEST(test_udp_send_too_large) {
   ASSERT_EQ(err, NET_ERR_BUF_TOO_SMALL);
 }
 
-/* Beyond the Ethernet MTU there is no sending it — DF is always set — even
- * from a larger frame buffer: 1472 bytes is the most over IPv4 */
-TEST(test_udp_send_within_ethernet_mtu) {
-  static uint8_t big_rx[2048], big_tx[2048], data[1473];
-  static const uint8_t dst_mac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
-  int ctx = 0;
-  setup();
-  net_init(&net, big_rx, sizeof(big_rx), big_tx, sizeof(big_tx), NULL,
-           &stub_mac_drv, &ctx);
-  ASSERT_EQ(udp_send(&net, NET_IPV4(10, 0, 0, 1), dst_mac, 5000, 7, data,
-                     sizeof(data)),
-            NET_ERR_BUF_TOO_SMALL);
-  ASSERT_EQ(udp_send_inplace(&net, NET_IPV4(10, 0, 0, 1), dst_mac, 5000, 7,
-                             sizeof(data), 64),
-            NET_ERR_BUF_TOO_SMALL);
-  ASSERT_EQ(send_count, 0);
-  ASSERT_EQ(udp_send(&net, NET_IPV4(10, 0, 0, 1), dst_mac, 5000, 7, data,
-                     sizeof(data) - 1),
-            NET_OK);
-  ASSERT_EQ(sent_len, ETH_HDR_SIZE + ETH_MTU);
-}
-
-/* RFC 1122 §3.2.1.7: never a TTL of zero */
-TEST(test_udp_send_refuses_ttl_zero) {
-  static const uint8_t dst_mac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
-  setup();
-  ASSERT_EQ(
-      udp_send_inplace(&net, NET_IPV4(10, 0, 0, 1), dst_mac, 5000, 7, 4, 0),
-      NET_ERR_INVALID_PARAM);
-  ASSERT_EQ(send_count, 0);
-}
-
 TEST(test_udp_checksum_computation) {
   /* Known-value test for pseudo-header checksum */
   uint8_t udp_pkt[12];
@@ -348,8 +316,6 @@ int main(void) {
   RUN_TEST(test_udp_zero_checksum_accepted);
   RUN_TEST(test_udp_send);
   RUN_TEST(test_udp_send_too_large);
-  RUN_TEST(test_udp_send_within_ethernet_mtu);
-  RUN_TEST(test_udp_send_refuses_ttl_zero);
   RUN_TEST(test_udp_checksum_computation);
   TEST_REPORT();
   return test_failures;

@@ -125,6 +125,7 @@ Minimum header: 20 bytes (IHL=5). Maximum header: 60 bytes (IHL=15).
 | REQ-IPv4-043 | MUST NOT | MUST NOT forward packets (we are a host, not a router) | RFC 1122 §3.3.1 | TEST-IPv4-043 |
 | REQ-IPv4-044 | MUST | Accept received packets regardless of TTL value (do not discard based on TTL) | RFC 1122 §3.2.1.7 | TEST-IPv4-044 |
 | REQ-IPv4-045 | SHOULD | Default outbound TTL SHOULD be 64 | RFC 1122 §3.2.1.7 (recommends ≥ 64) | TEST-IPv4-045 |
+| REQ-IPv4-058 | MUST NOT | Never send a datagram with a TTL of 0 | RFC 1122 §3.2.1.7 | TEST-IPv4-058 |
 
 ### Broadcasting
 

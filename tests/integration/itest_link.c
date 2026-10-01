@@ -1,0 +1,141 @@
+/**
+ * @file itest_link.c
+ * @brief ARP, UDP sending and the checksum API, black box.
+ */
+
+#include "itest.h"
+#include "net_cksum.h"
+#include "udp.h"
+#include <string.h>
+
+static itest_t t;
+
+/* ── ARP ── */
+
+/* REQ-ARP-001, 002, 003: a request for our address is answered, unicast,
+ * with our MAC and address */
+TEST(itest_arp_001_request_for_our_address_answered) {
+  uint8_t f[64];
+  static const uint8_t zero[6] = {0};
+  peer_arp_t a;
+  itest_up(&t, 1514, 1514);
+  itest_receive(&t, f,
+                peer_arp_frame(f, broadcast_mac, 1, peer_mac, PEER_IP, zero,
+                               t.net.ipv4_addr));
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, peer_mac, 6);
+  ASSERT_TRUE(peer_parse_arp(wire_sent(&t, 0), &a));
+  ASSERT_EQ(a.op, 2);
+  ASSERT_MEM_EQ(a.sha, t.net.mac, 6);
+  ASSERT_EQ(a.spa, t.net.ipv4_addr);
+  ASSERT_EQ(a.tpa, PEER_IP);
+}
+
+/* REQ-ARP-001, 004: without an address (DHCP has not bound) a request for
+ * 0.0.0.0 is no request for ours */
+TEST(itest_arp_004_unconfigured_answers_nothing) {
+  uint8_t f[64];
+  static const uint8_t zero[6] = {0};
+  itest_up(&t, 1514, 1514);
+  t.net.ipv4_addr = 0;
+  itest_receive(
+      &t, f, peer_arp_frame(f, broadcast_mac, 1, peer_mac, PEER_IP, zero, 0));
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* REQ-ARP-011, 012, REQ-DHCPv4-049: the gateway's reply is learned; with
+ * no gateway, a reply from 0.0.0.0 is no gateway's */
+TEST(itest_arp_011_gateway_learned_only_from_the_gateway) {
+  uint8_t f[64];
+  static const uint8_t gw[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
+  itest_up(&t, 1514, 1514);
+  t.net.gateway_ipv4 = 0;
+  t.net.gateway_mac_valid = 0;
+  itest_receive(
+      &t, f,
+      peer_arp_frame(f, t.net.mac, 2, gw, 0, t.net.mac, t.net.ipv4_addr));
+  ASSERT_FALSE(t.net.gateway_mac_valid);
+  t.net.gateway_ipv4 = 0x0A0000FEu;
+  itest_receive(&t, f,
+                peer_arp_frame(f, t.net.mac, 2, gw, 0x0A0000FEu, t.net.mac,
+                               t.net.ipv4_addr));
+  ASSERT_TRUE(t.net.gateway_mac_valid);
+  ASSERT_MEM_EQ(t.net.gateway_mac, gw, 6);
+}
+
+/* ── UDP sending ── */
+
+/* REQ-UDP-032, 033: never more than one Ethernet frame, whatever the
+ * frame buffer: 1472 bytes of payload at most; DF is set (REQ-IPv4-023) */
+TEST(itest_udp_032_one_ethernet_frame_at_most) {
+  static uint8_t data[1473];
+  peer_ip_t ip;
+  peer_udp_t udp;
+  itest_up(&t, 2048, 2048);
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, data, 1473),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, data, 1472), NET_OK);
+  ASSERT_EQ(wire_sent(&t, 0)->len, 1514);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_TRUE(ip.df);
+  ASSERT_TRUE(ip.header_cksum_ok);
+  ASSERT_TRUE(peer_parse_udp(&ip, &udp));
+  ASSERT_TRUE(udp.cksum_ok); /* REQ-UDP-009, 014 */
+  ASSERT_EQ(udp.data_len, 1472);
+}
+
+/* REQ-UDP-032: the frame buffer is the other limit */
+TEST(itest_udp_032_frame_buffer_limit) {
+  static uint8_t data[300];
+  itest_up(&t, 300, 300);
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, data, 259),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, data, 258), NET_OK);
+}
+
+/* REQ-IPv4-058 (RFC 1122 §3.2.1.7): no datagram is sent with TTL 0 */
+TEST(itest_ipv4_058_never_ttl_zero) {
+  itest_up(&t, 1514, 1514);
+  memcpy(t.net.tx.buf + UDP_PAYLOAD_OFFSET, "x", 1);
+  ASSERT_EQ(udp_send_inplace(&t.net, PEER_IP, peer_mac, 7, 7, 1, 0),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* ── The checksum API ── */
+
+/* REQ-CKSUM-006: pieces of any length add up to the one-shot checksum */
+TEST(itest_cksum_006_pieces_of_any_length) {
+  uint8_t data[23];
+  uint16_t cut, oneshot;
+  net_cksum_t c;
+  for (cut = 0; cut < sizeof(data); cut++)
+    data[cut] = (uint8_t)(0x31 * cut + 7);
+  oneshot = net_cksum(data, sizeof(data));
+  ASSERT_EQ(oneshot, peer_cksum(data, sizeof(data)));
+  for (cut = 0; cut <= sizeof(data); cut++) {
+    net_cksum_init(&c);
+    net_cksum_add(&c, data, cut);
+    net_cksum_add(&c, data + cut, (uint16_t)(sizeof(data) - cut));
+    ASSERT_EQ(net_cksum_finalize(&c), oneshot);
+  }
+  net_cksum_init(&c); /* a word straddling two pieces */
+  net_cksum_add(&c, data, 3);
+  net_cksum_add_u16(&c, (uint16_t)(data[3] << 8 | data[4]));
+  net_cksum_add(&c, data + 5, 18);
+  ASSERT_EQ(net_cksum_finalize(&c), oneshot);
+}
+
+int main(void) {
+  fprintf(stderr, "=== itest_link ===\n");
+  RUN_TEST(itest_arp_001_request_for_our_address_answered);
+  RUN_TEST(itest_arp_004_unconfigured_answers_nothing);
+  RUN_TEST(itest_arp_011_gateway_learned_only_from_the_gateway);
+  RUN_TEST(itest_udp_032_one_ethernet_frame_at_most);
+  RUN_TEST(itest_udp_032_frame_buffer_limit);
+  RUN_TEST(itest_ipv4_058_never_ttl_zero);
+  RUN_TEST(itest_cksum_006_pieces_of_any_length);
+  ITEST_REPORT();
+  return test_failures;
+}

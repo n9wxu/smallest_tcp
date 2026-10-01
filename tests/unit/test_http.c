@@ -351,14 +351,6 @@ static int page_gen(const http_request_t *rq, http_response_t *rs, void *c) {
   rs->body_len = (uint32_t)strlen((char *)rs->scratch);
   return 0;
 }
-static int page_none(const http_request_t *rq, http_response_t *rs, void *c) {
-  (void)rq;
-  (void)c;
-  rs->status = 204;
-  rs->body = (const uint8_t *)"not sent";
-  rs->body_len = 8;
-  return 0;
-}
 static int page_fail(const http_request_t *rq, http_response_t *rs, void *c) {
   (void)rq;
   (void)rs;
@@ -369,8 +361,7 @@ static int page_fail(const http_request_t *rq, http_response_t *rs, void *c) {
 static const http_route_t routes[] = {
     {"/", HTTP_GET, page_root, NULL},      {"/big", HTTP_GET, page_big, NULL},
     {"/echo", HTTP_POST, page_echo, NULL}, {"/gen", HTTP_GET, page_gen, NULL},
-    {"/fail", HTTP_GET, page_fail, NULL},  {"/none", HTTP_GET, page_none, NULL},
-    {"/off", 0, page_root, NULL},
+    {"/fail", HTTP_GET, page_fail, NULL},
 };
 
 static void server_setup(void) {
@@ -682,50 +673,6 @@ TEST(test_server_431_headers_too_large) {
   ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 431 ", 13) == 0);
 }
 
-/* RFC 9110 §9.3.2: no content in a response to HEAD — an error too, even
- * one about a request that could not be parsed */
-TEST(test_server_head_error_has_no_body) {
-  static const char *const requests[] = {
-      "HEAD / HTTP/2.0\r\n\r\n",         /* 505 */
-      "HEAD / HTTP/1.1\r\n\r\n",         /* 400: no Host */
-      "HEAD /x y HTTP/1.0\r\n\r\n",      /* 400 */
-      "\r\nHEAD /nope HTTP/1.0\r\n\r\n", /* 404 */
-  };
-  char line[REQ_SIZE + 32];
-  unsigned i;
-  for (i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
-    server_setup();
-    exchange(&cl, (uint16_t)(40030 + i), requests[i]);
-    ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 ", 9) == 0);
-    ASSERT_TRUE(strstr((char *)cl.resp, "Content-Length: ") != NULL);
-    ASSERT_EQ(strlen(resp_body(&cl)), 0u);
-  }
-  server_setup(); /* 414: the request line never ends */
-  memset(line, 'a', sizeof(line));
-  memcpy(line, "HEAD /", 6);
-  line[sizeof(line) - 1] = '\0';
-  exchange(&cl, 40039, line);
-  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 414 ", 13) == 0);
-  ASSERT_EQ(strlen(resp_body(&cl)), 0u);
-}
-
-/* RFC 9110 §15.3.5: a 204 has no content, whatever the handler gave */
-TEST(test_server_204_sends_no_body) {
-  server_setup();
-  exchange(&cl, 40040, "GET /none HTTP/1.0\r\n\r\n");
-  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 204 ", 13) == 0);
-  ASSERT_EQ(strlen(resp_body(&cl)), 0u);
-  ASSERT_EQ(cl.fin, 1);
-}
-
-/* RFC 9110 §15.5.6: a 405 names what is allowed, even nothing */
-TEST(test_server_405_for_a_route_allowing_nothing) {
-  server_setup();
-  exchange(&cl, 40041, "GET /off HTTP/1.0\r\n\r\n");
-  ASSERT_TRUE(strncmp((char *)cl.resp, "HTTP/1.0 405 ", 13) == 0);
-  ASSERT_TRUE(strstr((char *)cl.resp, "\r\nAllow: \r\n") != NULL);
-}
-
 /* ── Connection lifecycle (REQ-HTTP-028, 029) ── */
 
 /* Recycled straight to LISTEN — no 240 s TIME_WAIT lock-out */
@@ -922,9 +869,6 @@ int main(void) {
   RUN_TEST(test_server_413_body_too_large);
   RUN_TEST(test_server_414_uri_too_long);
   RUN_TEST(test_server_431_headers_too_large);
-  RUN_TEST(test_server_head_error_has_no_body);
-  RUN_TEST(test_server_204_sends_no_body);
-  RUN_TEST(test_server_405_for_a_route_allowing_nothing);
   RUN_TEST(test_server_slot_recycled_after_close);
   RUN_TEST(test_server_two_concurrent_connections);
   RUN_TEST(test_server_request_with_half_close);

@@ -411,6 +411,25 @@ Left for later, from the same audit: received ICMP errors (and with them
 Path MTU Discovery), TCP's RTT measurement and congestion control, IP
 reassembly, and the DNS stub resolver.
 
+### 🚧 Task 17: Black-box tests traced to requirements, and the RFC MUSTs with no row *(IN PROGRESS)*
+Testing rules (2026-10-01; [test-plan.md §0](docs/test-plan.md#0-policy-and-the-integration-tests)):
+tests drive the stack only through its API and the wire, every test names
+the requirements it verifies, and an error found outside the tests becomes a
+failing test before it is fixed.
+
+- [x] The integration harness (`tests/integration/wire.h`): a scripted link
+      and an independent peer codec; `scripts/trace.py` and the CI jobs
+      `traceability` and `coverage`
+- [x] The audit's bugs as integration tests, each checked to fail on the code
+      before its fix; the unit tests they replace removed
+- [ ] A row for every RFC MUST the requirement documents left out, and the
+      rows that contradict their RFC corrected — an inventory of RFC 1122,
+      791, 792, 826, 1112, 2236, 768, 9293, 6298, 2131, 2132, 3396, 1123,
+      9112, 9110, 6762 and 6763 (2026-10-01) found about 140 MUSTs with no
+      row and 17 contradicting rows
+- [ ] A test for each, `RUN_XFAIL` where the stack does not meet it yet
+- [ ] The fixes
+
 ## Language & Build
 
 - C99 for maximum portability (XC8, GCC, Clang)
