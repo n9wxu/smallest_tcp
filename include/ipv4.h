@@ -116,6 +116,16 @@ net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size);
 /** Time out reassembly (from net_tick()). */
 void ipv4_tick(net_t *net, uint32_t elapsed_ms);
 
+/** Reassembly, as ipv4_set_reassembly() installs it in net->reasm_ops:
+ *  a fragment (its flags and offset field @p frag, its @p id), and the
+ *  time passing.  Only a program that calls ipv4_set_reassembly() links
+ *  it. */
+struct net_reasm_ops_s {
+  void (*input)(net_t *net, const ipv4_hdr_t *ip, uint16_t frag, uint16_t id,
+                const eth_frame_t *eth);
+  void (*tick)(net_t *net, uint32_t elapsed_ms);
+};
+
 /** MMS_R: the largest transport message this host can receive in one
  *  datagram, whole or reassembled. */
 uint16_t ipv4_mms_r(const net_t *net);

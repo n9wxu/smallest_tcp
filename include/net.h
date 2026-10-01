@@ -117,6 +117,9 @@ typedef struct {
   uint16_t igmp_delay_ms[NET_MAX_MCAST_GROUPS]; /**< Report due; 0 = none */
 #endif
   uint8_t *reasm; /**< ipv4_set_reassembly()'s buffer; NULL: none */
+  /** Reassembly's input and timer (ipv4.h), set with the buffer: unset,
+   *  fragments are dropped and its code need not be linked */
+  const struct net_reasm_ops_s *reasm_ops;
   /* An address being checked before use (RFC 5227: the DHCP client's) */
   uint32_t arp_probe_ip;      /**< 0 = none */
   uint16_t reasm_cap;         /**< The data reasm holds: MMS_R if larger */

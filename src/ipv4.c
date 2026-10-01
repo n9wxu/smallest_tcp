@@ -311,26 +311,6 @@ static void deliver(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 #define RA_FIRST 0x04   /* fragment zero came */
 #define RA_TO_MANY 0x08 /* in a broadcast or multicast frame */
 
-net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size) {
-  uint16_t avail, bitmap;
-  if (!buf) {
-    net->reasm = NULL;
-    net->reasm_cap = 0;
-    return NET_OK;
-  }
-  if (size < IPV4_REASM_OVERHEAD + 9u)
-    return NET_ERR_BUF_TOO_SMALL;
-  /* The most data D with D + ceil(D / 64) <= avail, without division */
-  avail = (uint16_t)(size - IPV4_REASM_OVERHEAD);
-  bitmap = (uint16_t)(avail >> 6);
-  if ((avail & 63u) > bitmap)
-    bitmap++;
-  net->reasm = buf;
-  net->reasm_cap = (uint16_t)(avail - bitmap);
-  buf[RA_STATE] = 0;
-  return NET_OK;
-}
-
 static uint8_t *ra_bitmap(const net_t *net) {
   return net->reasm + IPV4_REASM_OVERHEAD;
 }
@@ -369,8 +349,6 @@ static void reassemble(net_t *net, const ipv4_hdr_t *ip, uint16_t frag,
   uint16_t block;
   ipv4_hdr_t whole;
 
-  if (!ra)
-    return;
   if (!(ra[RA_STATE] & RA_BUSY)) { /* a new datagram */
     net_write32be(ra + RA_SRC, ip->src_ip);
     net_write32be(ra + RA_DST, ip->dst_ip);
@@ -432,7 +410,7 @@ static void reassembly_tick(net_t *net, uint32_t elapsed_ms) {
   ipv4_hdr_t quote;
   eth_frame_t eth;
 
-  if (!ra || !(ra[RA_STATE] & RA_BUSY))
+  if (!(ra[RA_STATE] & RA_BUSY))
     return;
   ms = net_read32be(ra + RA_MS);
   if (elapsed_ms < ms) {
@@ -456,8 +434,35 @@ static void reassembly_tick(net_t *net, uint32_t elapsed_ms) {
   ra[RA_STATE] = 0;
 }
 
+/* Reached only through net->reasm_ops, which only ipv4_set_reassembly()
+ * sets: a build that never calls it links none of reassembly's code */
+static const struct net_reasm_ops_s reasm_ops = {reassemble, reassembly_tick};
+
+net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size) {
+  uint16_t avail, bitmap;
+  if (!buf) {
+    net->reasm = NULL;
+    net->reasm_cap = 0;
+    net->reasm_ops = NULL;
+    return NET_OK;
+  }
+  if (size < IPV4_REASM_OVERHEAD + 9u)
+    return NET_ERR_BUF_TOO_SMALL;
+  /* The most data D with D + ceil(D / 64) <= avail, without division */
+  avail = (uint16_t)(size - IPV4_REASM_OVERHEAD);
+  bitmap = (uint16_t)(avail >> 6);
+  if ((avail & 63u) > bitmap)
+    bitmap++;
+  net->reasm = buf;
+  net->reasm_cap = (uint16_t)(avail - bitmap);
+  net->reasm_ops = &reasm_ops;
+  buf[RA_STATE] = 0;
+  return NET_OK;
+}
+
 void ipv4_tick(net_t *net, uint32_t elapsed_ms) {
-  reassembly_tick(net, elapsed_ms);
+  if (net->reasm_ops)
+    net->reasm_ops->tick(net, elapsed_ms);
 #if NET_MAX_MCAST_GROUPS > 0
   if (net->igmp_ops)
     net->igmp_ops->tick(net, elapsed_ms);
@@ -472,8 +477,9 @@ void ipv4_input(net_t *net, const eth_frame_t *eth) {
   if (parse(eth->payload, eth->payload_len, &ip, &frag) != NET_OK ||
       !source_is_valid(net, ip.src_ip) || !destination_is_us(net, ip.dst_ip))
     return;
-  if (frag)
-    reassemble(net, &ip, frag, net_read16be(ip.header + IPV4_OFF_ID), eth);
-  else
+  if (!frag)
     deliver(net, &ip, eth);
+  else if (net->reasm_ops)
+    net->reasm_ops->input(net, &ip, frag, net_read16be(ip.header + IPV4_OFF_ID),
+                          eth);
 }

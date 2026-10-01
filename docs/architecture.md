@@ -177,7 +177,9 @@ the MTU (`net->mtu`, `ipv4_mms_s()`) and goes with DF set.
 Fragments received are reassembled in a buffer the application gives
 (`ipv4_set_reassembly(net, buf, size)`, sized with
 `IPV4_REASSEMBLY_BUFFER(emtu_r)`), one datagram at a time; without one
-they are dropped.  The buffer starts with 96 bytes of bookkeeping — the
+they are dropped.  `ipv4_set_reassembly()` also installs reassembly's code
+(`net->reasm_ops`), so a program that never calls it links none of it —
+about 1 KB on Cortex-M0.  The buffer starts with 96 bytes of bookkeeping — the
 datagram's key, a 60 s timer (`ipv4_tick()`), the sender's MAC and a copy
 of fragment zero's header with 8 bytes of data, which is what Time
 Exceeded (code 1) quotes when the timer runs out — then a bitmap of the
