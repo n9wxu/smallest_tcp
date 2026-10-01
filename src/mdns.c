@@ -2,8 +2,9 @@
  * @file mdns.c
  * @brief Multicast DNS responder (RFC 6762) with DNS-SD advertising (RFC 6763).
  *
- * Implements the V1 responder requirements REQ-MDNS-001..033, 041..043 and
- * REQ-DNSSD-001..018, 030..032.  See mdns.h for the API and scope.
+ * Implements the responder requirements REQ-MDNS-001..033, 041..079 and
+ * REQ-DNSSD-001..018, 029..038.  See mdns.h for the API and
+ * docs/design/mdns.md for the design.
  *
  * Messages are built directly in net->tx.buf at UDP_PAYLOAD_OFFSET and sent
  * with udp_send_inplace() (IP TTL 255).  Record sets are addressed by bitmask
@@ -531,6 +532,7 @@ static void add_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
 static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
                           uint32_t nsec, uint32_t additionals,
                           const resp_opts_t *o) {
+  uint32_t records = answers | additionals;
   pkt_t p;
   uint8_t i, j;
   resp_begin(m, &p, o);
@@ -589,7 +591,7 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
   if (p.an > 0)
     pkt_send(m, &p, o->dest);
   if (!o->goodbye && !o->legacy) /* in caches now: owed a goodbye */
-    m->announced |= answers | additionals;
+    m->announced |= records;
 }
 
 /* RFC 6763 §12: PTR → SRV + TXT of the instance; SRV → A of the target */
@@ -799,8 +801,9 @@ static void send_probes(mdns_t *m) {
 
 /* ── State machine ── */
 
-/* The wait before a probe attempt: random 0-250 ms (REQ-MDNS-017), or
- * after fifteen conflicts in ten seconds five seconds (REQ-MDNS-054) */
+/* The wait before a probe attempt: @p ms, or if 0 a random 0-250 ms
+ * (REQ-MDNS-017) — five seconds after fifteen conflicts in ten seconds
+ * (REQ-MDNS-054) */
 static uint32_t probe_delay(mdns_t *m, uint32_t ms) {
   if (m->conflicts >= MDNS_CONFLICT_LIMIT)
     return MDNS_SLOW_PROBE_MS;

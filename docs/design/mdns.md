@@ -4,7 +4,7 @@
 **Milestone:** 10 (IPv6: Milestone 12)  
 **Status:** Implemented (responder, dual stack)  
 **Files:** `include/mdns.h`, `src/mdns.c`, `include/dns_wire.h`, `src/dns_wire.c`, `include/igmp.h`, `src/igmp.c`  
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-01 (the RFC 6762 / 6763 MUSTs the requirements left out: REQ-MDNS-044..079, REQ-DNSSD-033..038)
 
 ---
 
@@ -163,7 +163,7 @@ mdns_input() / mdns_input6()  →  input()
 | Every answered question has the QU bit and the querier has an address | Unicast to the querier, port 5353, at once |
 | The query has the TC bit set: more known answers follow (§7.2) | Owed: multicast after a random **400–500 ms**, and what is owed already waits with it |
 | Shared records involved (PTR or meta-query answers) | Owed: multicast after a random **20–120 ms**, aggregated (§7.2) |
-| Otherwise — unique records and NSEC only | Multicast **at once** (§6), to the group of the family the query came on |
+| Otherwise — unique records and NSEC only | Multicast **at once** (§6), to the group of the family the query came on — but not a record multicast within the last second (§7.3); a probe's such answer goes 250 ms later |
 
 A QU query from a querier still at 0.0.0.0 falls through to the multicast rows.
 
@@ -338,13 +338,20 @@ Random delays — the 0–250 ms probe start and the 20–120 ms response delay 
 
 ## 13. Tests
 
+### Integration tests (black box through the API)
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `tests/integration/itest_mdns.c` | 50 | The requirements of `docs/requirements/mdns.md` and `dns-sd.md` through `mdns_*()` and the wire (224.0.0.251): message format and the header bits sent and ignored, compressed names decoded, names (UTF-8, byte order mark, control characters, 255 bytes, dots as label separators), TXT keys, the SRV target, what is ignored on reception (OPCODE, RCODE, port, off-link responses, questions in responses), probing (conflicts before the first probe, any type, fifteen conflicts, simultaneous probes lost and won with compressed rdata), a conflict while running probed again, goodbye for a renamed PTR, no periodic announcements, a new address announced, the one-second rate limit and probe defences, positive and negative answers (NSEC form, owned names only, unparseable NSEC), destinations, ANY, several questions, address validity, the TTL repair of §6.6, legacy replies, known answers from the querier only, cache-flush bits, whole RRSets, goodbyes and withdrawals, truncated queries |
+| `tests/integration/itest_mdns6.c` | 4 | Dual stack, with the harness's own IPv6 frames: a lost IPv6 address re-announced, IPv6 responses only from the link, NSEC for AAAA without an address, AAAA only for usable addresses |
+
 ### Unit tests
 
 | Suite | Tests | Covers |
 |---|---|---|
 | `tests/unit/test_dns_wire.c` | 22 | Encoding, compression (suffix, whole name, prefix), limits, rollback, decode, pointer loops, truncation, question/RR parsing |
 | `tests/unit/test_mcast.c` | 19 | Group table, multicast accept/drop (incl. aliased MACs), no ICMP errors / echo for multicast, `udp_send_inplace()` TTL, IGMP report/leave format |
-| `tests/unit/test_mdns.c` | 57 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/running/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression (after a truncated query too), QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye, withdrawing a service (goodbye, no answers or NSEC, the type kept while another instance offers it, before announcing) |
+| `tests/unit/test_mdns.c` | 46 | Table validation (a record too big for any packet), probe timing and format, probe/announcement splitting, announcements, compression, conflicts (probing/callback restart/goodbyes), every answer type + additionals, meta-query, known-answer suppression (after a truncated query too), QU and legacy unicast, 0.0.0.0 queriers, malformed input, goodbye, withdrawing a service (goodbye, no answers or NSEC, the type kept while another instance offers it, before announcing) |
 | `tests/unit/test_mdns6.c` | 19 | ff02::fb join, probes and goodbyes on both families, one AAAA per usable address (none for tentative ones), AAAA over either family, AAAA added to an A answer, SRV additionals, QU and legacy over IPv6, known answers, NSEC listing AAAA, delayed response on IPv6 only, explicit AAAA address, AAAA conflicts, `mdns_readdress6()` while running and while announcing |
 
 ### Blackbox (`tests/blackbox/test_mdns_conform.py`, 21 tests)
