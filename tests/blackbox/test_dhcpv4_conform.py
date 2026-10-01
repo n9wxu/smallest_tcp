@@ -105,8 +105,9 @@ def _complete_handshake(dctx, discover_pkt, timeout=5):
         router=dctx.server_ip,
     )
     send_pkt(dctx, ack)
-    # Give the SUT time to process the ACK and configure its IP
-    time.sleep(0.3)
+    # The SUT probes the address with ARP for 1 s before it configures it
+    # (REQ-DHCPv4-081)
+    time.sleep(1.5)
     dctx.sut_ip = dctx.offered_ip
     return ack
 

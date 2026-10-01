@@ -5,6 +5,7 @@
  */
 
 #include "dhcpv4_client.h"
+#include "arp.h"
 #include "dhcpv4_wire.h"
 #include "ipv4.h"
 
@@ -18,6 +19,8 @@
 #define EXTEND_WAIT_MIN_S 60u
 /* RFC 2131 §4.4.1: the first DISCOVER waits one to ten seconds */
 #define START_DELAY_MIN_MS 1000u
+/* RFC 2131 §3.1 step 5: after a DECLINE, at least ten seconds */
+#define DECLINE_WAIT_MS 10000u
 
 #if DHCPV4_SPLIT_OPTION_MAX < 1 || DHCPV4_SPLIT_OPTION_MAX > 255
 #error "DHCPV4_SPLIT_OPTION_MAX must be 1..255"
@@ -166,7 +169,7 @@ static void set_gateway(net_t *net, uint32_t gateway) {
  * from the state's first REQUEST, not from the ACK (RFC 2131 §4.4.5). */
 static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
                        uint16_t len) {
-  net->ipv4_addr = net_read32be(msg + DHCP_OFF_YIADDR);
+  c->offered_ip = net_read32be(msg + DHCP_OFF_YIADDR);
   net->subnet_mask =
       dhcp_option_u32(msg, len, DHCP_OPT_SUBNET_MASK, net->subnet_mask);
   set_gateway(net,
@@ -181,10 +184,12 @@ static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
   c->next_request_s = c->t1;
 }
 
+/* No address, and none being checked */
 static void clear_address(net_t *net) {
   net->ipv4_addr = 0u;
   net->subnet_mask = 0u;
   set_gateway(net, 0u);
+  net->arp_probe_ip = 0u;
 }
 
 /* The state's DISCOVER or REQUEST, and the wait for an answer */
@@ -292,8 +297,10 @@ net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
 
 /* RFC 2131 §4.4.1: a random wait before the first DISCOVER, to
  * desynchronize devices started together; discovery restarted later (a
- * NAK, a lease lost) does not wait */
+ * NAK, a lease lost) does not wait.  No address until BOUND: the ARP
+ * probe's sender address is ours, and must be 0 (REQ-DHCPv4-081). */
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {
+  clear_address(net);
   if (DHCPV4_START_DELAY_MAX_MS == 0) {
     start_selecting(net, c);
     return;
@@ -302,6 +309,52 @@ void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c) {
   c->timer_ms = START_DELAY_MIN_MS +
                 net_random_below(net, DHCPV4_START_DELAY_MAX_MS -
                                           START_DELAY_MIN_MS + 1u);
+}
+
+/* REQ-DHCPv4-081: an ARP Probe of the address of the ACK — from 0.0.0.0,
+ * as the client has no address yet — and a wait for another host to show
+ * it is in use (RFC 2131 §4.4.1, RFC 5227 §2.1.1) */
+static void start_probe(net_t *net, dhcpv4_client_t *c) {
+  c->state = DHCPV4_CLI_CHECKING;
+  c->timer_ms = DHCPV4_PROBE_WAIT_MS;
+  net->arp_probe_ip = c->offered_ip;
+  net->arp_probe_conflict = 0;
+  arp_request(net, c->offered_ip);
+}
+
+static void bind_address(net_t *net, dhcpv4_client_t *c) {
+  net->arp_probe_ip = 0;
+  net->ipv4_addr = c->offered_ip;
+  c->state = DHCPV4_CLI_BOUND;
+  fire_event(c, DHCPV4_EVT_BOUND);
+}
+
+/* REQ-DHCPv4-080, 082: the address is another host's.  DHCPDECLINE,
+ * broadcast from 0.0.0.0, names it and the server and nothing else (RFC
+ * 2131 Table 5, §4.4.4); discovery restarts after ten seconds (§3.1) */
+static void decline(net_t *net, dhcpv4_client_t *c) {
+  uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
+  uint16_t pos = DHCP_OFF_OPTIONS;
+  if (msg) {
+    pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_DECLINE);
+    pos = dhcp_put_u32(msg, pos, DHCP_OPT_REQUESTED_IP, c->offered_ip);
+    pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
+    udp_send_inplace_from(net, 0u, IPV4_BROADCAST, broadcast_mac,
+                          DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
+                          dhcp_end(msg, pos), NET_DEFAULT_TTL);
+  }
+  clear_address(net);
+  c->state = DHCPV4_CLI_INIT;
+  c->timer_ms = DECLINE_WAIT_MS;
+  fire_event(c, DHCPV4_EVT_DECLINED);
+}
+
+/* REQ-DHCPv4-080, 081: the probe's verdict */
+static void probe_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
+  if (net->arp_probe_conflict)
+    decline(net, c);
+  else if (net_countdown(&c->timer_ms, ms))
+    bind_address(net, c);
 }
 
 /* REQ-DHCPv4-005..007, 045..047 */
@@ -315,6 +368,9 @@ void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms) {
       lease_clock_tick(c, ms);
     if (net_countdown(&c->timer_ms, ms))
       retransmit(net, c);
+  } else if (c->state == DHCPV4_CLI_CHECKING) {
+    lease_clock_tick(c, ms);
+    probe_tick(net, c, ms);
   } else if (holds_lease(c) && !lease_is_endless(c)) {
     lease_tick(net, c, ms);
   }
@@ -369,11 +425,15 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
     break;
   case DHCP_MSG_ACK:
     if (awaiting_ack(c) && grants_a_lease(data, len)) {
-      int renewal = c->state != DHCPV4_CLI_REQUESTING;
       take_lease(net, c, data, len);
       memcpy(c->server_mac, src_mac, 6);
-      c->state = DHCPV4_CLI_BOUND;
-      fire_event(c, renewal ? DHCPV4_EVT_RENEWED : DHCPV4_EVT_BOUND);
+      if (c->state == DHCPV4_CLI_REQUESTING) {
+        start_probe(net, c);
+      } else {
+        net->ipv4_addr = c->offered_ip;
+        c->state = DHCPV4_CLI_BOUND;
+        fire_event(c, DHCPV4_EVT_RENEWED);
+      }
     }
     break;
   case DHCP_MSG_NAK:
@@ -385,20 +445,26 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
   }
 }
 
-/* REQ-DHCPv4-039, 040 */
-void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
-  uint8_t *msg;
+/* REQ-DHCPv4-039, 040, 095 */
+static void send_release(net_t *net, dhcpv4_client_t *c) {
+  uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
   uint16_t pos = DHCP_OFF_OPTIONS;
-  if (!holds_lease(c))
+  if (!msg)
     return;
-  msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
-  if (msg) {
-    net_write32be(msg + DHCP_OFF_CIADDR, net->ipv4_addr);
-    pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_RELEASE);
-    pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
-    udp_send_inplace(net, c->server_ip, c->server_mac, DHCP_CLIENT_PORT,
-                     DHCP_SERVER_PORT, dhcp_end(msg, pos), NET_DEFAULT_TTL);
-  }
+  net_write32be(msg + DHCP_OFF_CIADDR, net->ipv4_addr);
+  pos = dhcp_put_u8(msg, pos, DHCP_OPT_MSG_TYPE, DHCP_MSG_RELEASE);
+  pos = dhcp_put_u32(msg, pos, DHCP_OPT_SERVER_ID, c->server_ip);
+  udp_send_inplace(net, c->server_ip, c->server_mac, DHCP_CLIENT_PORT,
+                   DHCP_SERVER_PORT, dhcp_end(msg, pos), NET_DEFAULT_TTL);
+}
+
+/* A lease still being checked (CHECKING) is given up without a RELEASE:
+ * the client has not used the address, nor has one to send from */
+void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c) {
+  if (holds_lease(c))
+    send_release(net, c);
+  else if (c->state != DHCPV4_CLI_CHECKING)
+    return;
   clear_address(net);
   c->state = DHCPV4_CLI_INIT;
   c->timer_ms = 0; /* not to start again */

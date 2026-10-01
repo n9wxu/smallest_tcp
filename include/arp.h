@@ -31,7 +31,9 @@
 
 /**
  * Answer requests for our address; learn the gateway's MAC from its
- * replies.  Everything else is ignored.
+ * replies; while net->arp_probe_ip is set, set net->arp_probe_conflict on
+ * a packet that shows another host using it (RFC 5227 §2.1.1).
+ * Everything else is ignored.
  */
 void arp_input(net_t *net, const eth_frame_t *eth);
 

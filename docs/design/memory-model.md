@@ -35,6 +35,8 @@ One `net_t` per network interface (`include/net.h`):
 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` | IPv4 configuration, host byte order; 0 = unconfigured | always |
 | `gateway_mac`, `gateway_mac_valid` | The gateway's MAC, learned from ARP replies | always |
 | `mcast_groups[]` | Joined IPv4 groups (0 = free slot; 224.0.0.1, always joined, takes none) | `NET_MAX_MCAST_GROUPS > 0` |
+| `arp_probe_ip`, `arp_probe_conflict` | An address being checked before use, and whether `arp_input()` saw it in use (RFC 5227; the DHCPv4 client's, [dhcpv4.md §3.1](dhcpv4.md#31-state-machine)) | IPv4 |
+| `reasm`, `reasm_cap` | The application's reassembly buffer, and the data it holds (`ipv4_set_reassembly()`) | IPv4 |
 | `ip6` | Address slots with DAD state and lifetimes, hop limit, RA flags, default router, router-solicitation and lifetime timers, MLD timers | `NET_USE_IPV6` |
 | `mcast6_groups[][16]` | Joined IPv6 groups (`::` = free slot) | `NET_USE_IPV6` and `NET_MAX_MCAST6_GROUPS > 0` |
 | `udp_ports`, `udp_port_count` | The UDP port table | `NET_USE_UDP` |
@@ -46,9 +48,9 @@ Size on Cortex-M0 (`arm-none-eabi-gcc -mcpu=cortex-m0`):
 
 | Configuration | `sizeof(net_t)` |
 |---|---|
-| IPv4, UDP only, no multicast (the `make arm-size` build) | 72 bytes |
-| IPv4, UDP + TCP, one multicast group (defaults) | 88 bytes |
-| Dual stack, defaults (`NET_USE_IPV6=1`) | 208 bytes |
+| IPv4, UDP only, no multicast (the `make arm-size` build) | 80 bytes |
+| IPv4, UDP + TCP, one multicast group (defaults) | 96 bytes |
+| Dual stack, defaults (`NET_USE_IPV6=1`) | 216 bytes |
 
 Because the configuration changes this layout, the library and the
 application must be built with the same settings

@@ -46,6 +46,9 @@ static void on_dhcp_event(uint8_t event, void *ctx) {
   case DHCPV4_EVT_TIMEOUT:
     printf("[DHCP] no answer to the REQUEST — restarting\n");
     break;
+  case DHCPV4_EVT_DECLINED:
+    printf("[DHCP] address in use (ARP) — declined, restarting in 10 s\n");
+    break;
   default:
     break;
   }

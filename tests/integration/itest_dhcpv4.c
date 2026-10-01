@@ -374,6 +374,7 @@ TEST(itest_dhcpv4_081_ack_probed_before_use) {
   ASSERT_EQ(probes, 1);
   ASSERT_EQ(t.net.ipv4_addr, 0u);
   ASSERT_FALSE(got_event(DHCPV4_EVT_BOUND));
+  ASSERT_EQ(dhcpv4_client_state(&cli), DHCPV4_CLI_CHECKING);
 
   wire_clear(&t);
   arp_from(1, other_mac, PEER2_IP, OFFERED, broadcast_mac);
@@ -420,6 +421,8 @@ TEST(itest_dhcpv4_080_address_in_use_declined) {
   ASSERT_TRUE(at(codes, n, O_TYPE) >= 0);
   ASSERT_EQ(t.net.ipv4_addr, 0u);
   ASSERT_FALSE(got_event(DHCPV4_EVT_BOUND));
+  ASSERT_TRUE(got_event(DHCPV4_EVT_DECLINED));
+  ASSERT_EQ(dhcpv4_client_state(&cli), DHCPV4_CLI_INIT);
 
   wire_clear(&t);
   dhcpv4_client_tick(&t.net, &cli, 9999);
@@ -451,6 +454,20 @@ TEST(itest_dhcpv4_080_other_probe_or_request_conflicts) {
   dhcpv4_client_tick(&t.net, &cli, 1000);
   ASSERT_TRUE(dfind(M_DECLINE, &d) < 0);
   ASSERT_EQ(t.net.ipv4_addr, OFFERED);
+}
+
+/* REQ-DHCPv4-039, 081: released while its address is still probed, the
+ * lease is given up without a RELEASE — nothing was sent from the address
+ * — and the address never used */
+TEST(itest_dhcpv4_039_release_while_probing) {
+  acked();
+  wire_clear(&t);
+  dhcpv4_client_release(&t.net, &cli);
+  dhcpv4_client_tick(&t.net, &cli, PROBED_MS);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(t.net.ipv4_addr, 0u);
+  ASSERT_FALSE(got_event(DHCPV4_EVT_BOUND));
+  ASSERT_EQ(dhcpv4_client_state(&cli), DHCPV4_CLI_INIT);
 }
 
 /* REQ-DHCPv4-020: an OFFER without a Server Identifier names no server to
@@ -1133,9 +1150,10 @@ TEST(itest_dhcpv4_071_inform_answered_without_a_lease) {
 
 int main(void) {
   fprintf(stderr, "=== itest_dhcpv4 ===\n");
-  RUN_XFAIL(itest_dhcpv4_081_ack_probed_before_use);
-  RUN_XFAIL(itest_dhcpv4_080_address_in_use_declined);
-  RUN_XFAIL(itest_dhcpv4_080_other_probe_or_request_conflicts);
+  RUN_TEST(itest_dhcpv4_081_ack_probed_before_use);
+  RUN_TEST(itest_dhcpv4_080_address_in_use_declined);
+  RUN_TEST(itest_dhcpv4_080_other_probe_or_request_conflicts);
+  RUN_TEST(itest_dhcpv4_039_release_while_probing);
   RUN_TEST(itest_dhcpv4_020_offer_without_server_id_dropped);
   RUN_TEST(itest_dhcpv4_084_options_in_file_and_sname);
   RUN_TEST(itest_dhcpv4_084_sname_unread_unless_overloaded);

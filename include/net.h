@@ -112,8 +112,11 @@ typedef struct {
 #if NET_MAX_MCAST_GROUPS > 0
   uint32_t mcast_groups[NET_MAX_MCAST_GROUPS]; /**< Joined; 0 = free */
 #endif
-  uint8_t *reasm;     /**< ipv4_set_reassembly()'s buffer; NULL: none */
-  uint16_t reasm_cap; /**< The data it holds: MMS_R when reassembling */
+  uint8_t *reasm; /**< ipv4_set_reassembly()'s buffer; NULL: none */
+  /* An address being checked before use (RFC 5227: the DHCP client's) */
+  uint32_t arp_probe_ip;      /**< 0 = none */
+  uint16_t reasm_cap;         /**< The data reasm holds: MMS_R if larger */
+  uint8_t arp_probe_conflict; /**< Set by arp_input(): it is in use */
 #endif
 
 #if NET_USE_IPV6

@@ -43,6 +43,7 @@
 #define DHCP_MSG_DISCOVER 1
 #define DHCP_MSG_OFFER 2
 #define DHCP_MSG_REQUEST 3
+#define DHCP_MSG_DECLINE 4
 #define DHCP_MSG_ACK 5
 #define DHCP_MSG_NAK 6
 #define DHCP_MSG_RELEASE 7

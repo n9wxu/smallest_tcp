@@ -243,6 +243,12 @@ static void start_discovery(void) {
     dhcpv4_client_tick(&net, &cli, 1u);
 }
 
+/* After the ACK of a new lease: its address is probed with ARP for
+   DHCPV4_PROBE_WAIT_MS (REQ-DHCPv4-081), then used */
+static void probe_passes(void) {
+  dhcpv4_client_tick(&net, &cli, DHCPV4_PROBE_WAIT_MS);
+}
+
 /* ══════════════════════════════════════════════════════════════════
  * CLIENT TESTS
  * ══════════════════════════════════════════════════════════════════ */
@@ -369,6 +375,7 @@ TEST(test_dhcp_client_ack_enters_bound) {
                          NET_IPV4(10, 0, 0, 1), 3600, 1800, 3150,
                          NET_IPV4(255, 255, 255, 0), NET_IPV4(10, 0, 0, 1));
   dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
+  probe_passes();
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(net.ipv4_addr, NET_IPV4(10, 0, 0, 50));       /* REQ-DHCPv4-029 */
@@ -399,6 +406,7 @@ TEST(test_dhcp_client_default_t1_t2) {
                          NET_IPV4(10, 0, 0, 1), 3600, 0, 0,
                          NET_IPV4(255, 255, 255, 0), 0);
   dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
+  probe_passes();
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_TRUE(fuzzed(cli.t1, 1800u)); /* 0.5 × 3600 — REQ-DHCPv4-035 */
@@ -493,6 +501,7 @@ TEST(test_dhcp_client_opt_handler_called_v2) {
   uint16_t mlen = (pos < DHCP_MIN_LEN) ? DHCP_MIN_LEN : pos;
 
   dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
+  probe_passes();
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_TRUE(s_dns_called);
@@ -516,6 +525,7 @@ TEST(test_dhcp_client_null_opt_table) {
                          NET_IPV4(10, 0, 0, 1), 3600, 0, 0,
                          NET_IPV4(255, 255, 255, 0), 0);
   dhcpv4_client_input(&net, &cli, NET_IPV4(10, 0, 0, 1), server_mac, msg, mlen);
+  probe_passes();
 
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   ASSERT_EQ(net.ipv4_addr, NET_IPV4(10, 0, 0, 50));
@@ -909,9 +919,10 @@ TEST(test_dhcp_client_lease_timed_from_the_request) {
   mlen = make_server_msg(msg, DHCP_MSG_ACK, cli.xid, NET_IPV4(10, 0, 0, 50),
                          SERVER_IP, 3600, 0, 0, 0, 0);
   dhcpv4_client_input(&net, &cli, SERVER_IP, server_mac, msg, mlen);
+  probe_passes();
   ASSERT_EQ(cli.state, DHCPV4_CLI_BOUND);
   send_count = 0;
-  clock_s = 2; /* since the REQUEST */
+  clock_s = 2 + DHCPV4_PROBE_WAIT_MS / 1000u; /* since the REQUEST */
   ASSERT_TRUE(is_u32(clock_at_next_send(1u, 4000u), cli.t1));
 
   /* A renewal answered after a retransmission: from the first REQUEST */

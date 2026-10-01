@@ -42,11 +42,24 @@ static net_err_t arp_send(net_t *net, uint16_t oper, const uint8_t *frame_dst,
   return net_transmit(net, ETH_HDR_SIZE + ARP_PKT_SIZE);
 }
 
+/* REQ-DHCPv4-080; RFC 5227 §2.1.1: while net->arp_probe_ip is probed, an
+ * ARP packet from it, or another host's ARP Probe for it (sender IP 0 —
+ * our own may come back to us), says another host uses it */
+static int probe_conflict(const net_t *net, const uint8_t *pkt) {
+  uint32_t sender_ip = net_read32be(pkt + ARP_OFF_SPA);
+  return sender_ip == net->arp_probe_ip ||
+         (sender_ip == 0 &&
+          net_read32be(pkt + ARP_OFF_TPA) == net->arp_probe_ip &&
+          !net_mac_equal(pkt + ARP_OFF_SHA, net->mac));
+}
+
 /* REQ-ARP-001..013 */
 void arp_input(net_t *net, const eth_frame_t *eth) {
   const uint8_t *pkt = eth->payload;
   if (!arp_is_ethernet_ipv4(pkt, eth->payload_len))
     return;
+  if (net->arp_probe_ip != 0 && probe_conflict(net, pkt))
+    net->arp_probe_conflict = 1;
 
   uint16_t oper = net_read16be(pkt + ARP_OFF_OPER);
   uint32_t sender_ip = net_read32be(pkt + ARP_OFF_SPA);

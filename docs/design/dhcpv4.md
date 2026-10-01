@@ -115,16 +115,55 @@ server from its configured address.  The old code temporarily overwrote
 
 | State | Entered | Sends | Timer | Next |
 |---|---|---|---|---|
-| INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()`, `dhcpv4_client_start()` | — | after start, the start-up wait | its end → SELECTING |
-| SELECTING | start, NAK, lease expiry, REQUESTING's give-up (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER → REQUESTING |
-| REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → BOUND (`DHCPV4_EVT_BOUND`); NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING (`DHCPV4_EVT_TIMEOUT`) |
-| BOUND | ACK | — | lease clock | T1 → RENEWING |
+| INIT | `dhcpv4_client_init()`, `dhcpv4_client_release()`, `dhcpv4_client_start()`, a DECLINE | — | after start, the start-up wait; after a DECLINE, 10 s | its end → SELECTING |
+| SELECTING | start, NAK, lease expiry, REQUESTING's give-up (`start_selecting()`: new xid) | DISCOVER, broadcast | back-off (below) | first OFFER that names its server → REQUESTING |
+| REQUESTING | OFFER | REQUEST, broadcast | back-off (below) | ACK → CHECKING; NAK → SELECTING (`DHCPV4_EVT_NAK`); four retransmissions unanswered → SELECTING (`DHCPV4_EVT_TIMEOUT`) |
+| CHECKING | ACK in REQUESTING | an ARP Probe of the address | `DHCPV4_PROBE_WAIT_MS` (1 s); lease clock | quiet → BOUND (`DHCPV4_EVT_BOUND`); address in use → DECLINE, INIT (`DHCPV4_EVT_DECLINED`) |
+| BOUND | the probe passed, ACK in RENEWING or REBINDING | — | lease clock | T1 → RENEWING |
 | RENEWING | T1 | REQUEST to the server's IP; again after half the time left until T2, at least 60 s later | lease clock | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; T2 → REBINDING |
 | REBINDING | T2 | REQUEST, broadcast; again after half the time left until the lease ends, at least 60 s later | lease clock | ACK → BOUND (`DHCPV4_EVT_RENEWED`); NAK → SELECTING; lease end → `DHCPV4_EVT_EXPIRED`, SELECTING |
 
 A NAK or an expired lease clears `net->ipv4_addr`, `subnet_mask` and
 `gateway_ipv4` and restarts discovery with a new transaction ID
 (`lose_address()`).
+
+**Checking the address** (RFC 2131 §3.1 step 5, §4.4.1; RFC 5227
+§2.1.1).  The ACK of a new lease is not used at once: another host may
+already have its address — a static one, or a lease the server lost
+track of.  The client applies the mask, router and lease, keeps the
+address in `offered_ip`, and enters CHECKING (`start_probe()`): it sends
+an ARP Probe — an ARP request for the address with our MAC as sender
+and 0.0.0.0 as sender address (RFC 2131 §4.4.1: "to avoid confusing ARP
+caches"), target MAC zero — and sets `net->arp_probe_ip`, which
+`arp_input()` watches ([arp-resolution.md §4](arp-resolution.md#4-what-arp_input-does)):
+an ARP packet from the address, or another host's probe for it, sets
+`net->arp_probe_conflict`.  `probe_tick()` gives the verdict:
+
+- **In use**: the client MUST send a DHCPDECLINE (`decline()`).  It goes
+  broadcast from 0.0.0.0 with the Requested IP Address (50) and the
+  Server Identifier (54) and no other option (RFC 2131 Table 5: the
+  others MUST NOT; flags, `ciaddr` 0; §4.4.4: broadcast).  The address is
+  never configured, the mask and router are cleared, `DHCPV4_EVT_DECLINED`
+  fires, and discovery restarts after 10 s in INIT — §3.1's "SHOULD wait
+  a minimum of ten seconds ... to avoid excessive network traffic in
+  case of looping", against a server that offers the same address again.
+- **Quiet for `DHCPV4_PROBE_WAIT_MS`** (default 1000): the address
+  becomes `net->ipv4_addr` (`bind_address()`), BOUND, `DHCPV4_EVT_BOUND`.
+
+One probe and one second, not RFC 5227 §2.1.1's three probes 1–2 s apart
+and a 2 s wait after the last (about 7 s): a device that boots over DHCP
+should not take that long, and a host that holds the address answers its
+first probe within a round trip.  The full timing is not required: RFC
+2131 says only that the client SHOULD check.  `DHCPV4_PROBE_WAIT_MS`
+lengthens the wait.  The probe goes through `arp_request()`, whose
+sender address is `net->ipv4_addr` — 0 here, since
+`dhcpv4_client_start()` clears the address and the client has no lease
+in REQUESTING.  Neither the announcement after the probe (§4.4.1:
+"SHOULD broadcast an ARP reply") nor defence of the address later is
+done.  A renewal's ACK is not probed: the address is already in use by
+us.  `dhcpv4_client_release()` in CHECKING stops the probe and sends no
+RELEASE — the address was never used, and the client has none to send
+from.  The client used to use the address of every ACK at once.
 
 **The start-up wait.**  `dhcpv4_client_start()` does not send the first
 DISCOVER at once: it waits in INIT a random time of one to ten seconds
@@ -200,7 +239,7 @@ typedef struct {
   uint8_t retries;         /* retransmissions of the DISCOVER or REQUEST */
   uint16_t sec_ms;         /* ms toward the next second of since_s */
   uint32_t xid;            /* transaction ID, from net_random() */
-  uint32_t offered_ip;     /* yiaddr of the OFFER */
+  uint32_t offered_ip;     /* yiaddr of the OFFER, then of the ACK */
   uint32_t server_ip;      /* Server Identifier (54) */
   uint8_t server_mac[6];   /* source MAC of the ACK: the server, or the
                               relay agent on the way to it */
@@ -213,8 +252,9 @@ typedef struct {
                               its ACK grants starts then */
   uint32_t next_request_s; /* since_s of the next REQUEST: T1, then the
                               RENEWING and REBINDING retransmissions */
-  uint32_t timer_ms;       /* SELECTING, REQUESTING: until the next
-                              retransmission */
+  uint32_t timer_ms;       /* INIT: until the first DISCOVER;
+                              SELECTING, REQUESTING: until the next
+                              retransmission; CHECKING: the probe's end */
 
   const dhcpv4_opt_table_t *opt_table;
   dhcpv4_client_event_fn_t on_event;
@@ -231,7 +271,7 @@ The application owns the struct (static, or wherever it fits);
 net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
                              dhcpv4_client_event_fn_t on_event, void *evt_ctx,
                              const dhcpv4_opt_table_t *opts); /* opts may be NULL */
-void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);   /* DISCOVER in 1-10 s */
+void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);   /* clears the address; DISCOVER in 1-10 s */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms);
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
                          const uint8_t *src_mac, const uint8_t *data,
@@ -254,6 +294,7 @@ whichever header came first.
 | REQUEST (RENEWING) | `send_request()` | broadcast | our address | 53, 55 | our address → server | the server's (`server_mac`) |
 | REQUEST (REBINDING) | `send_request()` | broadcast | our address | 53, 55 | our address → 255.255.255.255 | broadcast |
 | RELEASE | `dhcpv4_client_release()` | — | our address | 53, 54 | our address → server | the server's (`server_mac`) |
+| DECLINE | `decline()` | — | 0 | 53, 50, 54 | 0.0.0.0 → 255.255.255.255 | broadcast |
 
 Only a REQUEST that selects an offer names the server (54) and the
 address (50); one that extends a lease MUST NOT carry either (RFC 2131
@@ -292,9 +333,10 @@ address is not checked.  By message type (`dhcp_message_type()`):
   dropped, and the client keeps retransmitting.  Such an ACK used to be
   taken, and a lease time of 0 counted as infinite, so the client stayed
   bound for good.  Then `take_lease()` applies
-  the lease and restarts the lease clock, the frame's source MAC becomes
-  `server_mac`, the client enters BOUND, and the event fires (BOUND after
-  REQUESTING, RENEWED otherwise).
+  the lease and restarts the lease clock, and the frame's source MAC
+  becomes `server_mac`.  After REQUESTING the address is checked first
+  (CHECKING, §3.1); after RENEWING or REBINDING the client enters BOUND
+  and `DHCPV4_EVT_RENEWED` fires.
 - **NAK**, in the same states, from the server asked
   (`nak_from_server_asked()`): its Server Identifier must be the server's
   the client selected (REQUESTING) or holds its lease from (RENEWING); a
@@ -410,7 +452,8 @@ included option 150.
 
 | Event | When | `net_t` at the time of the callback |
 |---|---|---|
-| `DHCPV4_EVT_BOUND` | ACK in REQUESTING | Address, mask and gateway set (mask and gateway keep their previous values if the ACK lacks options 1 and 3); handlers already called |
+| `DHCPV4_EVT_BOUND` | The ARP probe of the ACK's address passed (1 s after the ACK in REQUESTING) | Address, mask and gateway set (mask and gateway keep their previous values if the ACK lacks options 1 and 3); handlers called at the ACK |
+| `DHCPV4_EVT_DECLINED` | The ARP probe found the address in use; DECLINE sent | No address, mask or gateway; a DISCOVER follows in 10 s |
 | `DHCPV4_EVT_RENEWED` | ACK in RENEWING or REBINDING | As BOUND, with the new lease |
 | `DHCPV4_EVT_EXPIRED` | The lease clock reaches `lease_time` | Still the old address — it is cleared right after the callback, and a DISCOVER follows |
 | `DHCPV4_EVT_NAK` | NAK in REQUESTING, RENEWING or REBINDING | As EXPIRED |
@@ -556,8 +599,8 @@ has two clocks, each used in its own states:
 
 | Clock | Fields | States | Counts | Compared with |
 |---|---|---|---|---|
-| Retransmission | `timer_ms` | SELECTING, REQUESTING | Milliseconds down to 0 (`net_countdown()`); at 0 the DISCOVER or REQUEST is sent again | — |
-| Lease | `since_s`, `sec_ms` | REQUESTING, BOUND, RENEWING, REBINDING, unless the lease is infinite | Whole seconds up from the first REQUEST for the lease, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
+| Retransmission | `timer_ms` | INIT, SELECTING, REQUESTING, CHECKING | Milliseconds down to 0 (`net_countdown()`); at 0 the first DISCOVER goes, the DISCOVER or REQUEST is sent again, or the probe ends | — |
+| Lease | `since_s`, `sec_ms` | REQUESTING, CHECKING, BOUND, RENEWING, REBINDING, unless the lease is infinite | Whole seconds up from the first REQUEST for the lease, the remainder carried in `sec_ms` (`net_whole_seconds()`) | `t1`, `t2`, `next_request_s`, `lease_time` |
 
 The lease clock counts seconds because leases are long.  32-bit
 milliseconds wrap after 49.7 days (4,294,967 s), and a lease time may be
@@ -573,7 +616,7 @@ the halving is a shift: no multiplication and no division.
 | Item | Notes |
 |---|---|
 | First OFFER taken; offers not collected or compared | Simplicity |
-| No ARP probe of the offered address, no DECLINE | Size |
+| One ARP probe and a 1 s wait, not RFC 5227's timing; no announcement or defence of the address | §3.1 |
 | `secs` field always 0 | — |
 | Server: no lease table, same address for every MAC | By design (§4.1) |
 

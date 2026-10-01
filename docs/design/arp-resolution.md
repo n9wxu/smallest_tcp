@@ -108,6 +108,13 @@ in RAM.
   set `gateway_mac_valid`.  Without a gateway (0.0.0.0) no reply is one.  Any such reply is accepted, solicited or not, so
   a gratuitous ARP reply from the gateway updates it; so would a spoofed one
   (ARP has no authentication).
+- **An address being probed** (`net->arp_probe_ip`, set by the DHCPv4
+  client while it checks the address of an ACK — [dhcpv4.md
+  §3.5](dhcpv4.md#35-receiving)): any ARP packet whose sender IP is that
+  address, or another host's ARP Probe for it (sender IP 0, target the
+  address, sender MAC not ours — our own probe may be echoed back), sets
+  `net->arp_probe_conflict` (RFC 5227 §2.1.1).  The packet is then
+  handled as any other.
 - **Everything else** — requests for other addresses, replies from other
   hosts, requests *from* the gateway — is ignored.  Only Ethernet/IPv4 ARP
   (hardware type 1, protocol 0x0800, lengths 6 and 4) is considered.
@@ -115,8 +122,9 @@ in RAM.
 The gateway's MAC expires `NET_ARP_GATEWAY_TIMEOUT_MS` after the last
 reply from the gateway (REQ-ARP-038); the next reply replaces it.
 
-Not implemented: Address Conflict Detection (RFC 5227 probes, announcements
-and defence) and automatic gratuitous ARP when an address is configured.  An
+Not implemented: Address Conflict Detection (RFC 5227) beyond the DHCPv4
+client's one probe — no announcements, no defence, no probe of a static
+address — and automatic gratuitous ARP when an address is configured.  An
 application can announce its address itself with
 `arp_request(net, net->ipv4_addr)`, which sends a request whose sender and
 target addresses are both ours.

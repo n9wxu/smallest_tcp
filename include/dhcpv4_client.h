@@ -35,6 +35,13 @@ extern "C" {
 #define DHCPV4_START_DELAY_MAX_MS 10000
 #endif
 
+/** After the ACK of a new lease the client probes the address with ARP
+ *  and waits this long for another host to show it is in use before using
+ *  it (RFC 2131 §4.4.1; RFC 5227 §2.1.1 waits longer, with 3 probes). */
+#ifndef DHCPV4_PROBE_WAIT_MS
+#define DHCPV4_PROBE_WAIT_MS 1000
+#endif
+
 /** A split option (RFC 3396) is joined for its handler in a buffer of this
  *  many bytes, on the stack of dhcpv4_client_input(); a longer one is not
  *  delivered.  An option in one part is passed in place, whatever its
@@ -51,6 +58,8 @@ extern "C" {
 #define DHCPV4_CLI_BOUND 3      /**< ACK received, IP configured */
 #define DHCPV4_CLI_RENEWING 4   /**< T1 expired; unicast REQUEST to server */
 #define DHCPV4_CLI_REBINDING 5  /**< T2 expired; broadcast REQUEST */
+/** ACK received; its address probed with ARP before it is used */
+#define DHCPV4_CLI_CHECKING 6
 
 /* Client event codes */
 #define DHCPV4_EVT_BOUND 1   /**< IP address configured (BOUND entered) */
@@ -59,6 +68,9 @@ extern "C" {
 #define DHCPV4_EVT_NAK 4     /**< Server rejected request; INIT restarted */
 #define DHCPV4_EVT_TIMEOUT 5 /**< No answer to the REQUEST for an offer;
                                   discovery restarts (RFC 2131 §3.1) */
+/** The address of the ACK is in use (ARP): DHCPDECLINE sent, discovery
+ *  restarts in 10 s (RFC 2131 §3.1) */
+#define DHCPV4_EVT_DECLINED 6
 
 /* Option handler callback */
 
@@ -106,7 +118,7 @@ typedef struct {
   uint8_t retries;         /**< Retransmissions of the DISCOVER or REQUEST */
   uint16_t sec_ms;         /**< ms toward the next second of since_s */
   uint32_t xid;            /**< Current transaction ID (random) */
-  uint32_t offered_ip;     /**< IP offered by server (yiaddr) */
+  uint32_t offered_ip;     /**< yiaddr of the OFFER, then of the ACK */
   uint32_t server_ip;      /**< Server Identifier option (54) */
   uint8_t server_mac[6];   /**< Where the ACK came from: the server, or the
                                 relay agent on the way to it */
@@ -119,9 +131,10 @@ typedef struct {
                                 went: a lease its ACK grants starts then */
   uint32_t next_request_s; /**< since_s of the next REQUEST: T1, then the
                                 RENEWING and REBINDING retransmissions */
-  uint32_t timer_ms;       /**< Until the first DISCOVER (INIT), or the next
+  uint32_t timer_ms;       /**< Until the first DISCOVER (INIT), the next
                                 DISCOVER or REQUEST retransmission
-                                (SELECTING, REQUESTING) */
+                                (SELECTING, REQUESTING), or the end of the
+                                ARP probe (CHECKING) */
 
   const dhcpv4_opt_table_t *opt_table; /**< Application option handlers */
   dhcpv4_client_event_fn_t on_event;   /**< State change callback */
@@ -146,7 +159,7 @@ net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
 /**
  * Begin DHCP discovery: the first DHCPDISCOVER goes after a random wait
  * (DHCPV4_START_DELAY_MAX_MS), counted by dhcpv4_client_tick().
- * net->ipv4_addr should be 0 (will be overwritten on BOUND).
+ * net->ipv4_addr, subnet_mask and gateway_ipv4 are cleared until BOUND.
  */
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);
 
