@@ -35,6 +35,14 @@ extern "C" {
 #define DHCPV4_START_DELAY_MAX_MS 10000
 #endif
 
+/** A split option (RFC 3396) is joined for its handler in a buffer of this
+ *  many bytes, on the stack of dhcpv4_client_input(); a longer one is not
+ *  delivered.  An option in one part is passed in place, whatever its
+ *  length.  1..255 (a handler's length is 8 bits). */
+#ifndef DHCPV4_SPLIT_OPTION_MAX
+#define DHCPV4_SPLIT_OPTION_MAX 255
+#endif
+
 /* DHCP client states */
 #define DHCPV4_CLI_INIT 0       /**< No address; after dhcpv4_client_start(),
                                      waiting to send the first DISCOVER */
@@ -55,12 +63,13 @@ extern "C" {
 /* Option handler callback */
 
 /**
- * Application callback invoked for each DHCP option found in DHCPACK.
+ * Application callback invoked once per DHCPACK that carries its option.
  *
  * @param option  DHCP option code (e.g. 3=Router, 6=DNS, 42=NTP).
- * @param data    Pointer to raw TLV value bytes (NOT including type or length).
- *                Points into the DHCP receive buffer — do NOT retain past
- * return.
+ * @param data    The option's value (no code or length byte): the parts of
+ *                an option split in several (RFC 3396) joined, from the
+ *                'file' and 'sname' fields too when they hold options.
+ *                Valid during the call only — do NOT retain past return.
  * @param len     Number of value bytes.
  * @param ctx     Application context from the registration entry.
  */

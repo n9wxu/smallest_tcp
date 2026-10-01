@@ -130,10 +130,13 @@ The TCP receive window is the free space in the connection's own RX buffer,
 not in `net->rx.buf`: TCP copies arriving data out of the frame during
 `net_poll()`.
 
-Stack (automatic) memory is modest; the largest locals are HTTP's response
-header (`HTTP_HDR_MAX`, 224 bytes), mDNS's DNS writer (about 44 bytes with
-`DNS_COMPRESS_MAX` 16) and MLD's list of reported groups
-(16 × (`NET_IPV6_ADDRS` + `NET_MAX_MCAST6_GROUPS`) bytes).
+Stack (automatic) memory is modest; the largest locals are the DHCPv4
+client's buffer for joining a split option for its handler
+(`DHCPV4_SPLIT_OPTION_MAX`, 255 bytes, which an application may lower —
+[dhcpv4.md §3.6](dhcpv4.md#36-option-handlers-and-the-parameter-request-list)),
+HTTP's response header (`HTTP_HDR_MAX`, 224 bytes), mDNS's DNS writer
+(about 44 bytes with `DNS_COMPRESS_MAX` 16) and MLD's list of reported
+groups (16 × (`NET_IPV6_ADDRS` + `NET_MAX_MCAST6_GROUPS`) bytes).
 
 For whole-build flash and RAM figures, see
 [size-comparison.md](size-comparison.md).

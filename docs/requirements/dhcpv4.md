@@ -257,4 +257,4 @@ of up to 576 bytes of IP datagram (RFC 2131 §2).
 - **Gateway MAC resolution:** After DHCP assigns an IP and gateway, the application ARPs for the gateway MAC (`arp_request()`) before any off-subnet communication; the stack only records the reply.
 - **Option 61 (Client Identifier):** Not required but MAY be included for uniqueness beyond MAC address.
 - **Client and server are mutually exclusive on a single interface.** A device either gets an IP from a DHCP server (client) or provides one (server); link only the file you need.
-- **Option handler raw bytes:** The `data` pointer in a handler callback points into the DHCP receive buffer. Handlers MUST NOT retain this pointer past the return of `dhcpv4_client_input()`; copy any data they need into their own storage.
+- **Option handler raw bytes:** The `data` pointer in a handler callback points into the DHCP receive buffer, or, for an option split in parts, into a buffer on the stack where they are joined. Handlers MUST NOT retain this pointer past their return; copy any data they need into their own storage.

@@ -5,7 +5,7 @@
            `include/dhcpv4_server.h`, `src/dhcpv4_server.c`,
            `src/dhcpv4_wire.h` (private, shared)  
 **Requirements:** [dhcpv4.md](../requirements/dhcpv4.md)  
-**Last updated:** 2026-09-27
+**Last updated:** 2026-10-01
 
 ---
 
@@ -41,14 +41,38 @@ option list was walked by five hand-written loops.
 
 | Helper | Returns |
 |---|---|
-| `dhcp_next_option(msg, len, &pos, &data, &olen)` | The next option's code (start with `pos = DHCP_OFF_OPTIONS`), with its value and length; `DHCP_OPT_END` at End, at the end of the message, or on an option whose length runs past it |
-| `dhcp_find_option(msg, len, code, &olen)` | The first option `code`, or NULL |
+| `dhcp_next_option(msg, end, &pos, &data, &olen)` | The next option of one field (start with `pos` at the field, `end` its end), with its value and length; `DHCP_OPT_END` at End, at `end`, or on an option whose length runs past it |
+| `dhcp_walk_begin(&w, msg, len)`, `dhcp_walk_next(&w, &data, &olen)` | Every option of the message, field after field (below) |
+| `dhcp_option(msg, len, code, &value, buf, cap)` | Option `code` whole — its parts joined — and its length; `value` NULL if absent |
 | `dhcp_message_type(msg, len)` | Option 53, or 0 if absent |
-| `dhcp_option_u32(msg, len, code, absent)` | A 4-byte option in host order, or `absent` |
+| `dhcp_option_u32(msg, len, code, absent)` | A 4-byte option in host order (the first 4 bytes of a list), or `absent` |
 
-Pad options are skipped; a truncated option ends the walk instead of
-being read out of bounds.  Option Overload (52) is not supported: options
-carried in the `sname`/`file` fields are not seen.
+Pad options are skipped; a truncated option ends its field instead of
+being read out of bounds.
+
+**Option Overload** (RFC 2131 §4.1, RFC 2132 §9.3).  A server short of
+room in the options field may carry options in the `file` (128 bytes)
+and `sname` (64 bytes) fields, and says so with option 52: 1 `file`, 2
+`sname`, 3 both.  `dhcp_walk_begin()` reads option 52 from the options
+field — where it must be — and `dhcp_walk_next()` walks the options
+field, then `file`, then `sname`, each up to its own End or its end (an
+option never crosses a field).  That is RFC 2131 §4.1's order of
+interpretation and RFC 3396 §5's aggregate option buffer.  Without option
+52 the two fields are a server name and a boot file name, never read as
+options.  They used to be ignored always, so a lease time moved there was
+lost and the ACK dropped as granting no lease.
+
+**Split options** (RFC 3396 §7).  An option may appear more than once:
+its parts, in the aggregate buffer's order, are one value — a server
+splits an option longer than 255 bytes, and may split any other at any
+byte.  `dhcp_option()` joins them: one part is returned in place (no
+copy), several are copied into the caller's buffer, of which the caller
+says the size; the returned length is the whole value's, so a caller sees
+when its buffer held only the start.  The 4-byte helpers use a 4-byte
+buffer: a lease time split 2 + 2 is read whole, a router list split
+anywhere gives its first router.  Each instance used to be taken as a
+whole option: the first part of a split lease time was too short and
+dropped, the second taken alone.
 
 ### 2.2 Building in place
 
@@ -276,13 +300,15 @@ address is not checked.  By message type (`dhcp_message_type()`):
   Any NAK with our `xid` used to be taken, so another server's refusal
   of a request it was not asked cost the client its lease.
 
-**`take_lease()`** walks the ACK's options once: `yiaddr` →
-`net->ipv4_addr`; 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (a
-different gateway also clears `gateway_mac_valid`: its MAC is resolved
-anew, [arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open)) (the
-first router); 51, 58, 59, 54 → the client's lease time, T1, T2 and
-server; each of these only when present with at least 4 bytes.  Every
-option, built-in or not, is then offered to the option handlers
+**`take_lease()`** reads the ACK's options whole (`dhcp_option_u32()`,
+§2.1: from `file` and `sname` too, split ones joined): `yiaddr` →
+`net->ipv4_addr`; 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (the
+first router; a different gateway also clears `gateway_mac_valid`: its
+MAC is resolved anew,
+[arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open));
+51, 58, 59, 54 → the client's lease time, T1, T2 and server; the mask,
+router and server only when present with at least 4 bytes, else they
+keep their values.  Then the option handlers run
 (`run_option_handlers()`).  T1 and T2 default to 0.5 and 0.875 of the
 lease (RFC 2131 §4.4.5).  The first REQUEST is due at T1.
 
@@ -306,11 +332,21 @@ typedef struct { uint8_t option; dhcpv4_opt_handler_t handler; void *ctx; } dhcp
 typedef struct { const dhcpv4_opt_entry_t *entries; uint8_t count; } dhcpv4_opt_table_t;
 ```
 
-- A handler is called for each option of an ACK — every ACK, renewals
-  included — whose code has an entry (the first matching entry only).
-  Offers are not passed to handlers.
-- `data` is the raw value (no code or length byte) and points into
-  `net->rx.buf`: valid during the call only.
+- Each entry's handler is called once for every ACK — renewals included
+  — that carries its option, in the order of the table.  Offers are not
+  passed to handlers.
+- `data` is the option's value (no code or length byte), whole: the
+  parts of a split option joined (RFC 3396 §7), from `file` and `sname`
+  too when option 52 says they hold options.  An option in one part
+  points into `net->rx.buf`; a split one is joined in a buffer of
+  `DHCPV4_SPLIT_OPTION_MAX` bytes (`dhcpv4_client.h`, default 255) on the
+  stack of `dhcpv4_client_input()`.  Valid during the call only.  A split
+  option longer than that buffer — or than 255 bytes, which `len` cannot
+  say — is not delivered at all: given in pieces, each would be taken for
+  the whole (RFC 3396 §7 forbids it).  The receive buffer is read-only
+  to parsers ([coding-rules.md §3](coding-rules.md#3-parsing-received-data)),
+  so the parts are not joined in place.  Handlers used to be called once
+  per instance, each with one part.
 - An option the server leaves out never reaches its handler, so the
   application initialises its variables to a sensible default before
   starting DHCP.
@@ -523,7 +559,6 @@ the halving is a shift: no multiplication and no division.
 |---|---|
 | First OFFER taken; offers not collected or compared | Simplicity |
 | No ARP probe of the offered address, no DECLINE | Size |
-| Option Overload (52), `sname`/`file` options | Not parsed |
 | `secs` field always 0 | — |
 | Server: no lease table, same address for every MAC | By design (§4.1) |
 

@@ -1,6 +1,7 @@
 /**
  * @file dhcpv4_client.c
- * @brief DHCPv4 client (RFC 2131).  REQ-DHCPv4-001..059.
+ * @brief DHCPv4 client (RFC 2131, RFC 2132, RFC 3396).  REQ-DHCPv4-001..059,
+ *        080..095.
  */
 
 #include "dhcpv4_client.h"
@@ -17,6 +18,10 @@
 #define EXTEND_WAIT_MIN_S 60u
 /* RFC 2131 §4.4.1: the first DISCOVER waits one to ten seconds */
 #define START_DELAY_MIN_MS 1000u
+
+#if DHCPV4_SPLIT_OPTION_MAX < 1 || DHCPV4_SPLIT_OPTION_MAX > 255
+#error "DHCPV4_SPLIT_OPTION_MAX must be 1..255"
+#endif
 
 #if DHCPV4_START_DELAY_MAX_MS != 0 &&                                          \
     (DHCPV4_START_DELAY_MAX_MS < 1000 || DHCPV4_START_DELAY_MAX_MS > 65535)
@@ -102,16 +107,20 @@ static void send_request(net_t *net, dhcpv4_client_t *c) {
                         NET_DEFAULT_TTL);
 }
 
-/* REQ-DHCPv4-053..056 */
-static void run_option_handlers(const dhcpv4_client_t *c, uint8_t code,
-                                const uint8_t *data, uint8_t len) {
+/* REQ-DHCPv4-053..056: each handler once, with its option whole.  A split
+ * option is joined in a buffer of its own; one longer than the buffer, or
+ * than a handler's length can say, is not given in pieces (RFC 3396 §7). */
+static void run_option_handlers(const dhcpv4_client_t *c, const uint8_t *msg,
+                                uint16_t len) {
+  uint8_t joined[DHCPV4_SPLIT_OPTION_MAX];
+  const uint8_t *v;
+  uint16_t n;
   uint8_t i;
   for (i = 0; c->opt_table && i < c->opt_table->count; i++) {
     const dhcpv4_opt_entry_t *e = &c->opt_table->entries[i];
-    if (e->option == code) {
-      e->handler(code, data, len, e->ctx);
-      return;
-    }
+    n = dhcp_option(msg, len, e->option, &v, joined, sizeof(joined));
+    if (v && (v != joined || n <= sizeof(joined)))
+      e->handler(e->option, v, (uint8_t)n, e->ctx);
   }
 }
 
@@ -138,44 +147,21 @@ static void set_gateway(net_t *net, uint32_t gateway) {
   net->gateway_ipv4 = gateway;
 }
 
-/* REQ-DHCPv4-028..036: the lease's parameters, applied to net_t.  It runs
+/* REQ-DHCPv4-028..036, 084, 089: the lease's parameters, applied to
+ * net_t — options from 'file' and 'sname' too, split ones joined.  It runs
  * from the state's first REQUEST, not from the ACK (RFC 2131 §4.4.5). */
 static void take_lease(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
                        uint16_t len) {
-  uint16_t pos = DHCP_OFF_OPTIONS;
-  const uint8_t *v;
-  uint8_t code, olen;
-
   net->ipv4_addr = net_read32be(msg + DHCP_OFF_YIADDR);
-  c->t1 = c->t2 = 0;
-  while ((code = dhcp_next_option(msg, len, &pos, &v, &olen)) != DHCP_OPT_END) {
-    uint32_t value = olen >= 4 ? net_read32be(v) : 0;
-    if (olen >= 4) {
-      switch (code) {
-      case DHCP_OPT_SUBNET_MASK:
-        net->subnet_mask = value;
-        break;
-      case DHCP_OPT_ROUTER:
-        set_gateway(net, value);
-        break;
-      case DHCP_OPT_LEASE_TIME:
-        c->lease_time = value;
-        break;
-      case DHCP_OPT_T1:
-        c->t1 = value;
-        break;
-      case DHCP_OPT_T2:
-        c->t2 = value;
-        break;
-      case DHCP_OPT_SERVER_ID:
-        c->server_ip = value;
-        break;
-      default:
-        break;
-      }
-    }
-    run_option_handlers(c, code, v, olen);
-  }
+  net->subnet_mask =
+      dhcp_option_u32(msg, len, DHCP_OPT_SUBNET_MASK, net->subnet_mask);
+  set_gateway(net,
+              dhcp_option_u32(msg, len, DHCP_OPT_ROUTER, net->gateway_ipv4));
+  c->lease_time = dhcp_option_u32(msg, len, DHCP_OPT_LEASE_TIME, 0u);
+  c->server_ip = dhcp_option_u32(msg, len, DHCP_OPT_SERVER_ID, c->server_ip);
+  c->t1 = dhcp_option_u32(msg, len, DHCP_OPT_T1, 0u);
+  c->t2 = dhcp_option_u32(msg, len, DHCP_OPT_T2, 0u);
+  run_option_handlers(c, msg, len);
   if (c->t1 == 0) /* REQ-DHCPv4-035: 0.5 × lease */
     c->t1 = c->lease_time / 2u;
   if (c->t2 == 0) /* REQ-DHCPv4-036: 0.875 × lease */

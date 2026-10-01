@@ -1137,11 +1137,11 @@ int main(void) {
   RUN_XFAIL(itest_dhcpv4_080_address_in_use_declined);
   RUN_XFAIL(itest_dhcpv4_080_other_probe_or_request_conflicts);
   RUN_XFAIL(itest_dhcpv4_020_offer_without_server_id_dropped);
-  RUN_XFAIL(itest_dhcpv4_084_options_in_file_and_sname);
-  RUN_XFAIL(itest_dhcpv4_084_sname_unread_unless_overloaded);
-  RUN_XFAIL(itest_dhcpv4_089_split_options_joined);
-  RUN_XFAIL(itest_dhcpv4_089_split_across_fields_in_order);
-  RUN_XFAIL(itest_dhcpv4_053_split_option_too_long_not_delivered);
+  RUN_TEST(itest_dhcpv4_084_options_in_file_and_sname);
+  RUN_TEST(itest_dhcpv4_084_sname_unread_unless_overloaded);
+  RUN_TEST(itest_dhcpv4_089_split_options_joined);
+  RUN_TEST(itest_dhcpv4_089_split_across_fields_in_order);
+  RUN_TEST(itest_dhcpv4_053_split_option_too_long_not_delivered);
   RUN_XFAIL(itest_dhcpv4_088_t1_after_t2_replaced_by_defaults);
   RUN_XFAIL(itest_dhcpv4_088_t2_past_lease_replaced_by_defaults);
   RUN_TEST(itest_dhcpv4_091_request_has_the_discovers_secs_and_destination);
