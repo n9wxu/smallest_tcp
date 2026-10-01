@@ -165,7 +165,7 @@ layer can be left out, not both: an IPv6-only build (`NET_USE_IPV4` 0, CMake
 UDP and TCP keep only their IPv6 halves, and mDNS answers over IPv6 with
 AAAA records only (`mdns_init()` refuses an A record).  The DHCPv4 client
 and server and TFTP run only over IPv4 and are not built; DHCPv6, mDNS, HTTP
-and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 5,977 bytes, 1.8 KB
+and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,077 bytes, 2.0 KB
 less than the dual stack ([size-comparison.md](size-comparison.md)).  Those calls are
 references, so **linking IPv4 pulls in `udp.o` and `tcp.o`** unless the build
 compiles with `-DNET_USE_UDP=0` or `-DNET_USE_TCP=0`.  A transport that is
