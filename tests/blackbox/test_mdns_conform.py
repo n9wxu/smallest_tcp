@@ -179,12 +179,23 @@ def is_probe(p):
     return DNS in p and p[DNS].qr == 0
 
 
-def ask(s, qname, qtype, timeout=1.5, extra="", **kw):
-    """Send a query; return the SUT's responses seen within @timeout."""
-    sniffer = start_sniffer(s.iface, filter=sut_filter(s, extra),
-                            lfilter=is_response, count=1, timeout=timeout)
-    send_query(s, qname, qtype, **kw)
-    sniffer.join(timeout=timeout + 1)
+def ask(s, qname, qtype, timeout=1.5, extra="", retry=True, **kw):
+    """Send a query; return the SUT's responses seen within @timeout.
+
+    Unanswered, it is asked once more RATE_LIMIT_S later (@retry), as a
+    querier does: the SUT multicasts a record at most once a second
+    (RFC 6762 §6), and it may just have — re-announcing when its IPv6
+    link-local address comes up after it started running, or answering
+    another querier on the link (the Mac's mDNSResponder, say)."""
+    for attempt in range(2 if retry else 1):
+        if attempt:
+            time.sleep(RATE_LIMIT_S)
+        sniffer = start_sniffer(s.iface, filter=sut_filter(s, extra),
+                                lfilter=is_response, count=1, timeout=timeout)
+        send_query(s, qname, qtype, **kw)
+        sniffer.join(timeout=timeout + 1)
+        if sniffer.results:
+            break
     return list(sniffer.results)
 
 
@@ -275,7 +286,7 @@ def test_mdns_007_known_answer_suppression(sut):
     """REQ-MDNS-029: no answer the querier already holds at >= half TTL."""
     sut.start()
     fresh = DNSRR(rrname=SVC, type="PTR", ttl=4500, rdata=INST)
-    assert not ask(sut, SVC, "PTR", known=[fresh]), \
+    assert not ask(sut, SVC, "PTR", known=[fresh], retry=False), \
         "SUT answered despite a fresh known answer"
     stale = DNSRR(rrname=SVC, type="PTR", ttl=100, rdata=INST)
     assert ask(sut, SVC, "PTR", known=[stale]), \
@@ -415,8 +426,8 @@ def test_mdns_015_qu_unicast(sut):
 def test_mdns_016_foreign_names_ignored(sut):
     """REQ-MDNS-030: names we do not own, or outside .local, get no answer."""
     sut.start()
-    assert not ask(sut, "pyro-dead01.example", "A", timeout=1.0)
-    assert not ask(sut, "nobody.local", "A", timeout=1.0)
+    assert not ask(sut, "pyro-dead01.example", "A", timeout=1.0, retry=False)
+    assert not ask(sut, "nobody.local", "A", timeout=1.0, retry=False)
 
 
 def test_mdns_017_txt_record(sut):
