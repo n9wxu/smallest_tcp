@@ -173,7 +173,7 @@ advertised.
 
 ### 4.3 RAM and throughput
 
-A connection costs its `tcp_conn_t` (96 bytes on Cortex-M0, 116 with IPv6),
+A connection costs its `tcp_conn_t` (104 bytes on Cortex-M0, 120 with IPv6),
 two 12-byte contexts, and the TX and RX memory.  The frame buffers in `net_t`
 are separate and shared by every connection.
 

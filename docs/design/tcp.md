@@ -45,12 +45,15 @@ cost is throughput — one segment per round trip
 
 ### 2.1 The connection
 
-`tcp_conn_t` is the whole transmission control block: 96 bytes on Cortex-M0,
-116 with IPv6.
+`tcp_conn_t` is the whole transmission control block: 104 bytes on Cortex-M0,
+120 with IPv6.
 
 | Fields | Contents |
 |---|---|
 | `state`, `local_port`, `remote_port`, `remote_ip` | The connection; the remote port and address are 0 while listening |
+| `local_ip` | Our IPv4 address for the connection's life, taken at the open (section 7): if the host's address changes, the connection is aborted (REQ-TCP-171) |
+| `last_error` | The last soft or hard error, `tcp_last_error()` (section 3.8) |
+| `r2`, `tos` | `tcp_set_max_retransmits()` (0: `TCP_MAX_RETRANSMITS`) and `tcp_set_tos()`; `tcp_conn_init()` clears both |
 | `remote_mac`, `mac_valid` | Where frames go — the peer, or the gateway for an off-link peer |
 | `ip_ver`, `remote_ip6`, `local_slot` | IPv6 builds only (section 7) |
 | `iss`, `snd_una`, `snd_nxt`, `snd_wnd`, `snd_wl1`, `snd_wl2` | Send sequence space (§3.3.1) |
@@ -97,7 +100,9 @@ The buffers are chosen per connection by the ops tables passed to
 `tcp_conn_init()`.  To reuse a connection — after CLOSED, or to recycle it out
 of TIME-WAIT — re-initialise its buffers and call `tcp_conn_init()` again
 before `tcp_listen()` or `tcp_connect()`.  `tcp_listen()` alone resets only the
-state, the ports, the remote IPv4 address and the timer.
+state, the ports, the remote IPv4 address and the timer, and refuses a
+connection in use — neither CLOSED nor LISTEN — with `NET_ERR_BUSY`, so a
+LISTEN never disturbs a live connection (REQ-TCP-168, MUST-41).
 
 `tcp_connect()` needs the MAC address already resolved: the peer's, or the
 gateway's for an off-link peer.  TCP never resolves addresses; a passive
@@ -197,8 +202,10 @@ goes out after the next `TCP_EVT_WRITABLE`.
 | Function | Effect | States |
 |---|---|---|
 | `tcp_conn_init()` | Zero the connection, attach buffers and callback; CLOSED | any |
-| `tcp_listen()` | LISTEN on a port | any (normally CLOSED) |
-| `tcp_connect()`, `tcp6_connect()` | Send the SYN now; SYN-SENT.  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  An error, and still CLOSED, only for a bad argument or (IPv6) when no source address is usable | CLOSED |
+| `tcp_listen()` | LISTEN on a port | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
+| `tcp_connect()`, `tcp6_connect()` | Send the SYN now; SYN-SENT.  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  An error, and still CLOSED, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED |
+| `tcp_set_tos()`, `tcp_set_max_retransmits()` | The TOS of the connection's IPv4 segments (REQ-TCP-174); R2, its retransmission limit (REQ-TCP-165, section 5.1) | any, after `tcp_conn_init()` |
+| `tcp_last_error()` | The last ICMP error (type << 8 \| code) or `TCP_SOFT_RETRANSMITTING`; 0 for none (section 3.8) | any |
 | `tcp_write()` | Queue data; returns bytes accepted — 0 while the stop-and-wait buffer has a segment in flight | ESTABLISHED, CLOSE-WAIT (else < 0) |
 | `tcp_output()` | Send one segment of the data not yet sent, as the window allows | ESTABLISHED, CLOSE-WAIT |
 | `tcp_send()` | `tcp_write()`, then `tcp_output()` if anything was accepted | ESTABLISHED, CLOSE-WAIT |
@@ -320,7 +327,7 @@ may end the processing of the segment.
 |---|---|---|
 | 0 | 0 | SEG.SEQ = RCV.NXT |
 | 0 | > 0 | RCV.NXT ≤ SEG.SEQ < RCV.NXT + RCV.WND |
-| > 0 | 0 | never |
+| > 0 | 0 | a RST at SEG.SEQ = RCV.NXT, data or not (REQ-TCP-160, MUST-66); nothing else |
 | > 0 | > 0 | its first or last sequence number is in the window |
 
 An unacceptable segment is answered with an ACK (`<SEQ=SND.NXT><ACK=RCV.NXT>`)
@@ -439,7 +446,28 @@ RCV.NXT, is acknowledged, and moves the connection:
 | SYN-SENT | RST with acceptable ACK | CLOSED | `syn_sent_input()` |
 | synchronized | RST in window | CLOSED | `rst_input()` |
 | synchronized | SYN in window; retransmissions exhausted | CLOSED, RST sent | `reset_connection()` |
+| SYN-SENT, synchronized | A hard ICMP error; the host's address changed | CLOSED (a passive open: LISTEN) | `abort_on_error()` |
 | any | `tcp_abort()` | CLOSED; RST sent where the peer holds the connection open | `tcp_abort()` |
+
+### 3.8 ICMP errors: `tcp_icmp_error()`
+
+`icmp_input()` hands Destination Unreachable, Time Exceeded and Parameter
+Problem quoting a TCP segment of ours to `tcp_icmp_error()` with the quote
+(the quoted IP header and at least 8 bytes of TCP).  The quoted addresses
+and ports name the connection (`quoted_conn()`: not CLOSED or LISTEN); the
+quoted sequence number must lie in SND.UNA ≤ SEQ < SND.NXT, so an error
+about a segment we never sent — or one acknowledged since — is ignored
+(RFC 5927 §4.1).  Then (RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2):
+
+| Error | Effect |
+|---|---|
+| Fragmentation Needed with a next-hop MTU ≥ 68 | `snd_mss` drops to MTU − 40 if that is smaller (RFC 1191); the retransmission timer resends the segment in flight in pieces of the new size (section 5.1) |
+| Protocol Unreachable, Port Unreachable, Fragmentation Needed without a usable MTU | Hard: `abort_on_error()` — CLOSED with `TCP_EVT_ERROR`, or LISTEN again for a passive open in SYN-RECEIVED (REQ-TCP-135, 137) |
+| Any other: Network/Host Unreachable, Time Exceeded, Parameter Problem… | Soft: `TCP_EVT_SOFT_ERROR`, the connection goes on (REQ-TCP-136, 173) |
+
+`tcp_last_error()` keeps the error as type << 8 | code until the next one
+or a new open.  Destination Unreachable is a hint, never proof: nothing but
+the hard codes ends a connection (REQ-ICMPv4-044).
 
 ---
 
@@ -467,7 +495,11 @@ segment treated differently.  Every segment fits `net->tx`, since
 share: SEG.ACK = RCV.NXT (its callers set the ACK flag on every segment but
 the SYN of an active open); SEG.WND = `rcv_wnd`, or 0 on a RST; and a SYN
 always carries the MSS option, the only option ever sent (REQ-TCP-076, 082,
-116).  PSH is never set.
+116).  The data segment that leaves nothing unsent — the buffer's `queued()`
+equal to its `in_flight()` once it is taken — carries PSH (`data_flags()`,
+REQ-TCP-180); so does a retransmission on the same terms.  The IPv4 header
+carries the connection's TOS (`tcp_set_tos()`, REQ-TCP-174), and no segment
+goes from an address the host no longer has (`address_kept()`).
 
 | Function | Sends |
 |---|---|
@@ -499,8 +531,12 @@ the buffer's `queued()` equals its `in_flight()` — sends the FIN
    already running (`retransmit_timer_run()`, RFC 6298 §5.1).
 
 `flush()` runs from `tcp_send()` and `tcp_output()`, from `send_side_ack()`
-for every acceptable ACK, on reaching ESTABLISHED by active open, and from
-`tcp_close()`.  A retransmission timeout does not go through `flush()`: it
+for every acceptable ACK, on reaching ESTABLISHED by active open, from
+`tcp_close()`, and from every `tcp_tick()` while data written with
+`tcp_write()` is still unsent — no data is buffered indefinitely
+(REQ-TCP-180, MUST-60).  If the host's address is no longer the
+connection's, `flush()` aborts it with `TCP_EVT_ERROR` instead
+(REQ-TCP-171).  A retransmission timeout does not go through `flush()`: it
 resends the bytes in flight itself (section 5.1).
 
 **A frame the driver did not take is a lost segment.**  `net_transmit()`
@@ -633,7 +669,10 @@ step 5), since one segment is in flight at a time.
 ## 5. Timers
 
 `tcp_tick(net, elapsed_ms)` advances `net->tcp_clock` (section 4.6) and runs
-`conn_tick()` on every bound connection; `conn_tick()` skips a CLOSED one.
+`conn_tick()` on every bound connection.  `conn_tick()` skips a CLOSED or
+LISTEN one; it aborts one whose local address the host no longer has
+(REQ-TCP-171), sends data written but not yet sent (`flush()`,
+REQ-TCP-180), then runs the timer.
 
 A connection runs one timer at a time.  `timer` says which —
 `TCP_TIMER_RETRANSMIT`, `TCP_TIMER_PERSIST` or `TCP_TIMER_TIME_WAIT` — and
@@ -681,11 +720,15 @@ On expiry `retransmission_timeout()`:
 1. stops the timer if nothing is outstanding — no data in flight
    (`in_flight()`), no unacknowledged FIN (`fin_sent` and SND.UNA < SND.NXT),
    not in SYN-SENT or SYN-RECEIVED;
-2. gives up after `TCP_MAX_RETRANSMITS` (8) retransmissions: the next expiry
-   resets the connection and raises `TCP_EVT_ERROR` — or, for a passive open
-   in SYN-RECEIVED, listens again (section 3.4);
+2. gives up after R2 retransmissions — `tcp_set_max_retransmits()`, else
+   `TCP_MAX_RETRANSMITS` (8); a SYN never before 8, which the default RTOs
+   stretch past three minutes (REQ-TCP-162..165): the next expiry resets the
+   connection and raises `TCP_EVT_ERROR` — or, for a passive open in
+   SYN-RECEIVED, listens again (section 3.4);
 3. doubles `rto_ms`, up to `NET_DEFAULT_TCP_RTO_MAX_MS`, and restarts the timer
-   with it (REQ-TCP-096);
+   with it (REQ-TCP-096); at the third retransmission (R1, `TCP_R1`) it
+   reports `TCP_EVT_SOFT_ERROR` with `tcp_last_error()` =
+   `TCP_SOFT_RETRANSMITTING` (RFC 1122 §4.2.3.5);
 4. resends the earliest unacknowledged segment (REQ-TCP-095):
    - the SYN or SYN,ACK (`send_syn()`);
    - data: `resend_in_flight()` has `mark_retransmit()` offer the in-flight
@@ -694,7 +737,10 @@ On expiry `retransmission_timeout()`:
      them once; if it has shrunk since — typically a partial ACK that also
      advertises zero — the retransmission serves as the probe (Linux does
      the same).  SND.NXT does not move, so a FIN already sent after the data
-     keeps its sequence number.  The FIN is not resent with the data: when
+     keeps its sequence number — unless `snd_mss` has shrunk below what is
+     in flight (Fragmentation Needed, section 3.8): then only `snd_mss`
+     bytes go, SND.NXT comes back to their end and a FIN sent after them is
+     unsent again, so the rest follows as new data in the next segment.  The FIN is not resent with the data: when
      the data is acknowledged the timer is still running for the FIN, and
      the next expiry resends it;
    - otherwise the FIN alone, at SND.NXT − 1.
@@ -724,7 +770,8 @@ minutes after the original transmission, within §3.8.3's R2 (at least 100 s,
 three minutes for a SYN).  There is no RTT measurement (REQ-TCP-091, 099, 100),
 so `rto_ms` starts at `NET_DEFAULT_TCP_RTO_INIT_MS` for every connection and
 never decreases: after a loss the backed-off value stays for the rest of the
-connection.
+connection.  One exception: if the SYN or SYN,ACK timed out, data starts
+with an RTO of 3 s (`handshake_done()`, RFC 6298 5.7, REQ-TCP-181).
 
 ### 5.2 Zero-window probing (REQ-TCP-085..087)
 
@@ -794,6 +841,10 @@ currently carries one event.
 | | `tcp_abort()` | Always, whatever the state |
 | `TCP_EVT_ERROR` | `synchronized_input()` | SYN in the window; RST sent |
 | | `retransmission_timeout()` | Retransmissions exhausted; RST sent |
+| | `tcp_icmp_error()` | A hard ICMP error (section 3.8) |
+| | `flush()`, `conn_tick()` | The host's address is no longer the connection's |
+| `TCP_EVT_SOFT_ERROR` | `tcp_icmp_error()` | A soft ICMP error (section 3.8) |
+| | `retransmission_timeout()` | R1: the third retransmission |
 
 `TCP_EVT_CLOSED` has two meanings; `tcp_status()` tells them apart.  Not every
 change is reported.  A RST in CLOSING, LAST-ACK or TIME-WAIT closes the
@@ -820,7 +871,9 @@ other end of a segment (IPv4 `ip4`, or IPv6 `ip6`, and `mac`) and our address
 it uses (`local_ip4` or `local6`).  `ip6` non-NULL means IPv6.
 `tcp_input()` and `tcp6_input()` fill it from the received packet;
 `conn_endpoint()` fills it from a connection, with our IPv4 address
-(`net->ipv4_addr`) or our IPv6 address in slot `local_slot`.  It drives the
+(`local_ip`, taken from `net->ipv4_addr` by `tcp_connect()` or from the
+SYN's destination by `listen_input()`) or our IPv6 address in slot
+`local_slot`.  It drives the
 checksum's pseudo-header, the EtherType and IP header in `frame_start()` and
 `frame_send()`, the header size in `segment_room()` and so in both MSS values,
 the default MSS (536 / 1220), and the connection id hashed into the ISS
@@ -835,7 +888,8 @@ link-local peer, else a preferred global address, else a deprecated one
 index, so the connection sends from whatever address that slot holds.
 TCP is unicast only: `tcp_input()` drops a segment not sent to our IPv4
 address (a broadcast or a joined group), and `tcp6_input()` one sent to a
-multicast address (RFC 1122 §4.2.3.10).
+multicast address (RFC 1122 §4.2.3.10, REQ-TCP-176); both drop one from the
+unspecified address (REQ-TCP-177).
 
 With `NET_USE_IPV6` 0 the IPv6 members and branches compile out; with
 `NET_USE_IPV4` 0 the IPv4 ones do (`remote_ip`, `tcp_input()`,
@@ -861,7 +915,6 @@ single-stack build reduces to its own family's.
 | Security/compartment check | REQ-TCP-050 (MAY) | Skipped |
 | Keep-alive | REQ-TCP-132 (MAY) | None (so off by default, REQ-TCP-133) |
 | Challenge ACKs, RST rate limiting (RFC 5961) | REQ-TCP-052, 154, 155 | RST and SYN accepted anywhere in the window (section 3.6) |
-| ICMP errors for TCP | REQ-TCP-135..138 | Not delivered to TCP |
 | Checksum offload | REQ-TCP-141 | Always software |
 | Data or FIN on a SYN | — | Not taken; the peer resends |
 
@@ -871,9 +924,9 @@ single-stack build reduces to its own family's.
 - A retransmitted FIN in TIME-WAIT is acknowledged but does not restart the
   2×MSL timer (section 3.6, step 5).
 - A SYN cannot reopen a connection in TIME-WAIT; an in-window SYN resets it.
-- `TCP_MAX_RETRANSMITS` is fixed at compile time and the application is not
-  told of repeated retransmissions before the connection is given up (§3.8.3's
-  R1).
+- At R1 the application is told (`TCP_EVT_SOFT_ERROR`), but no negative
+  advice goes to the IP layer: there is no gateway choice to advise
+  (REQ-TCP-162).
 
 ---
 

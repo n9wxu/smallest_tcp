@@ -12,6 +12,9 @@
 #if NET_USE_UDP
 #include "udp.h"
 #endif
+#if NET_USE_TCP
+#include "tcp.h"
+#endif
 
 #define ICMP_OFFSET (ETH_HDR_SIZE + IPV4_HDR_SIZE)
 
@@ -71,6 +74,12 @@ static void error_input(net_t *net, const ipv4_hdr_t *ip) {
 #if NET_USE_UDP
   case IPV4_PROTO_UDP:
     udp_icmp_error(net, icmp[ICMP_OFF_TYPE], icmp[ICMP_OFF_CODE], mtu, quote,
+                   quote_len);
+    break;
+#endif
+#if NET_USE_TCP
+  case IPV4_PROTO_TCP:
+    tcp_icmp_error(net, icmp[ICMP_OFF_TYPE], icmp[ICMP_OFF_CODE], mtu, quote,
                    quote_len);
     break;
 #endif

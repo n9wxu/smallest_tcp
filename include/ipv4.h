@@ -87,6 +87,9 @@ static inline void ipv4_build(uint8_t *buf, uint16_t payload_len,
 
 /* ── Reassembly and message sizes (RFC 1122 §3.3.2, §3.3.3) ── */
 
+/** The smallest MTU a link may have (RFC 791 §3.2) */
+#define IPV4_MIN_MTU 68
+
 /** Bookkeeping at the start of a reassembly buffer: the datagram's key,
  *  state, timer, sender's MAC, and fragment zero's header with 8 bytes of
  *  its data (what Time Exceeded quotes) */

@@ -1,6 +1,6 @@
 /**
  * @file tcp.c
- * @brief TCP (RFC 9293).  REQ-TCP-001..155; design in docs/design/tcp.md.
+ * @brief TCP (RFC 9293).  REQ-TCP-001..182; design in docs/design/tcp.md.
  *
  * Section numbers refer to RFC 9293.
  */
@@ -13,6 +13,7 @@
 #include <string.h>
 
 #if NET_USE_IPV4
+#include "icmp.h"
 #include "ipv4.h"
 #endif
 #if NET_USE_IPV6
@@ -28,7 +29,9 @@
 #define TCP_MSS_OPTION_LEN 4
 #define TCP_DEFAULT_MSS_IPV4 536u  /* §3.7.1 */
 #define TCP_DEFAULT_MSS_IPV6 1220u /* 1280 - 40 - 20 */
-#define TCP_MAX_RETRANSMITS 8u
+#define TCP_MAX_RETRANSMITS 8u     /* R2 by default */
+#define TCP_R1 3u /* retransmissions reported (RFC 1122 4.2.3.5) */
+#define TCP_RTO_AFTER_SYN_TIMEOUT_MS 3000u /* RFC 6298 5.7 */
 #define TCP_TIME_WAIT_MS (2u * NET_DEFAULT_TCP_MSL_MS)
 
 /* ── Endpoints: the other end of a segment, over IPv4 or IPv6 ── */
@@ -38,6 +41,7 @@ typedef struct {
 #if NET_USE_IPV4
   uint32_t ip4;       /* IPv4 peer, host byte order */
   uint32_t local_ip4; /* our IPv4 address it uses */
+  uint8_t tos;
 #endif
 #if NET_USE_IPV6
   const uint8_t *ip6;    /* IPv6 peer; NULL for IPv4 in a dual stack */
@@ -71,11 +75,14 @@ static void conn_endpoint(const net_t *net, const tcp_conn_t *conn,
   ep->mac = conn->remote_mac;
 #if NET_USE_IPV4
   ep->ip4 = conn->remote_ip;
-  ep->local_ip4 = net->ipv4_addr;
+  ep->local_ip4 = conn->local_ip;
+  ep->tos = conn->tos;
 #endif
 #if NET_USE_IPV6
   ep->ip6 = conn_is_ipv6(conn) ? conn->remote_ip6 : NULL;
   ep->local6 = net->ip6.addr[conn->local_slot].addr;
+#else
+  (void)net;
 #endif
 }
 
@@ -141,7 +148,8 @@ static void frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, 0);
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, checksum(ep, 0, tcp_hdr, tcp_len));
   BY_FAMILY(ep,
-            ipv4_build(ip_hdr, tcp_len, IPV4_PROTO_TCP, ep->local_ip4, ep->ip4),
+            ipv4_build_tos(ip_hdr, tcp_len, IPV4_PROTO_TCP, ep->local_ip4,
+                           ep->ip4, NET_DEFAULT_TTL, ep->tos),
             ipv6_build(ip_hdr, tcp_len, IPV6_NH_TCP, ep->local6, ep->ip6,
                        net->ip6.hop_limit));
   net_transmit(net, (uint16_t)(ETH_HDR_SIZE + ip_header_size(ep) + tcp_len));
@@ -160,10 +168,22 @@ static void write_header(uint8_t *hdr, uint16_t src_port, uint16_t dst_port,
   net_write16be(hdr + TCP_OFF_URG, 0);
 }
 
+/* REQ-TCP-171: the host still has the connection's local address */
+static int address_kept(const net_t *net, const tcp_conn_t *conn) {
+#if NET_USE_IPV4
+  return conn_is_ipv6(conn) || conn->local_ip == net->ipv4_addr;
+#else
+  (void)net;
+  (void)conn;
+  return 1;
+#endif
+}
+
 /*
  * A segment on @p conn acknowledging RCV.NXT and advertising our window
  * (none on a RST).  A SYN carries our MSS (REQ-TCP-076).  One the driver
- * does not take is lost, as on the wire (docs/design/tcp.md §4.1).
+ * does not take is lost, as on the wire (docs/design/tcp.md §4.1).  None
+ * goes from an address the host no longer has.
  */
 static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
                          uint32_t seq, const uint8_t *data, uint16_t data_len) {
@@ -173,6 +193,8 @@ static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
   uint8_t *hdr;
   tcp_ep_t ep;
 
+  if (!address_kept(net, conn))
+    return;
   conn_endpoint(net, conn, &ep);
   if (!(hdr = frame_start(net, &ep, tcp_len)))
     return;
@@ -300,13 +322,41 @@ static int passive_opening(const tcp_conn_t *conn) {
   return conn->state == TCP_SYN_RECEIVED && conn->passive;
 }
 
+static void listen_on(tcp_conn_t *conn, uint16_t local_port) {
+  close_with(conn, 0); /* no timer, nothing retransmitted */
+  conn->state = TCP_LISTEN;
+  conn->passive = 1;
+  conn->close_queued = 0;
+  conn->local_port = local_port;
+#if NET_USE_IPV4
+  conn->remote_ip = 0;
+#endif
+  conn->remote_port = 0;
+  conn->mac_valid = 0; /* no RST to the last peer from here */
+}
+
 /* REQ-TCP-046: a passive open that fails listens again, the application
  * none the wiser — unless it has closed it meanwhile */
 static void listen_again(tcp_conn_t *conn) {
   if (conn->close_queued)
     close_with(conn, 0);
   else
-    tcp_listen(conn, conn->local_port);
+    listen_on(conn, conn->local_port);
+}
+
+/* REQ-TCP-137: a hard error ends the connection — a passive open listens
+ * again */
+static void abort_on_error(tcp_conn_t *conn) {
+  if (passive_opening(conn))
+    listen_again(conn);
+  else
+    close_with(conn, TCP_EVT_ERROR);
+}
+
+/* REQ-TCP-173: a soft error, reported (RFC 1122 §4.2.4.1) */
+static void soft_error(tcp_conn_t *conn, uint16_t error) {
+  conn->last_error = error;
+  notify(conn, TCP_EVT_SOFT_ERROR);
 }
 
 /* ── Output ── */
@@ -321,6 +371,11 @@ static int fin_queued(const tcp_conn_t *conn) {
   return !conn->fin_sent &&
          (conn->state == TCP_FIN_WAIT_1 || conn->state == TCP_CLOSING ||
           conn->state == TCP_LAST_ACK);
+}
+
+/* PSH on the segment that leaves nothing unsent (REQ-TCP-180) */
+static uint8_t data_flags(const tcp_conn_t *conn) {
+  return all_data_sent(conn) ? TCP_FLAG_ACK | TCP_FLAG_PSH : TCP_FLAG_ACK;
 }
 
 /* REQ-TCP-084, 085: one segment of unsent data, as the peer's window
@@ -341,7 +396,7 @@ static void send_data(net_t *net, tcp_conn_t *conn) {
   persist_stop(conn);
   len = conn->txbuf_ops->next_segment(conn->txbuf_ctx, &data, room);
   if (len > 0) {
-    send_segment(net, conn, TCP_FLAG_ACK, conn->snd_nxt, data, len);
+    send_segment(net, conn, data_flags(conn), conn->snd_nxt, data, len);
     conn->snd_nxt += len;
   }
   if (SEQ_LT(conn->snd_una, conn->snd_nxt))
@@ -355,11 +410,16 @@ static void send_queued_fin(net_t *net, tcp_conn_t *conn) {
   retransmit_timer_run(conn);
 }
 
-/* Data, then a queued FIN once all the data has been sent */
+/* Data, then a queued FIN once all the data has been sent.  A connection
+ * whose local address the host no longer has is aborted (REQ-TCP-171). */
 static void flush(net_t *net, tcp_conn_t *conn) {
   if (conn->state != TCP_ESTABLISHED && conn->state != TCP_CLOSE_WAIT &&
       !fin_queued(conn))
     return;
+  if (!address_kept(net, conn)) {
+    close_with(conn, TCP_EVT_ERROR);
+    return;
+  }
   send_data(net, conn);
   if (fin_queued(conn) && all_data_sent(conn))
     send_queued_fin(net, conn);
@@ -486,7 +546,8 @@ static void remember_peer(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
   memcpy(conn->remote_mac, from->mac, 6);
   conn->mac_valid = 1;
 #if NET_USE_IPV4
-  conn->remote_ip = from->ip4; /* 0 from an IPv6 peer */
+  conn->remote_ip = from->ip4;      /* 0 from an IPv6 peer */
+  conn->local_ip = from->local_ip4; /* REQ-TCP-171 */
 #endif
 #if NET_USE_IPV6
   conn->ip_ver = BY_FAMILY(from, 4, 6);
@@ -546,6 +607,16 @@ static void start_send_sequence(net_t *net, tcp_conn_t *conn) {
   conn->fin_sent = 0;
   conn->close_queued = 0;
   conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
+  conn->last_error = 0;
+}
+
+/* REQ-TCP-181 (RFC 6298 5.7): the handshake is done; if a SYN timed out
+ * with an RTO under 3 s, data starts with 3 s */
+static void handshake_done(tcp_conn_t *conn) {
+  if (conn->retransmits > 0 &&
+      NET_DEFAULT_TCP_RTO_INIT_MS < TCP_RTO_AFTER_SYN_TIMEOUT_MS)
+    conn->rto_ms = TCP_RTO_AFTER_SYN_TIMEOUT_MS;
+  retransmit_timer_stop(conn);
 }
 
 /* §3.10.7.2, REQ-TCP-030..035: a SYN opens the connection */
@@ -597,7 +668,7 @@ static void syn_sent_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
     conn->snd_wl1 = s->seq;
     conn->snd_wl2 = s->ack;
     conn->state = TCP_ESTABLISHED;
-    retransmit_timer_stop(conn);
+    handshake_done(conn);
     send_ack(net, conn);
     notify(conn, TCP_EVT_CONNECTED);
     flush(net, conn);
@@ -608,12 +679,14 @@ static void syn_sent_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
   }
 }
 
-/* §3.10.7.4 step 1, REQ-TCP-041..045: the segment is in the window */
+/* §3.10.7.4 step 1, REQ-TCP-041..045: the segment is in the window.  With
+ * the window zero, only an empty segment at RCV.NXT is — or a RST there,
+ * data or not (REQ-TCP-160, MUST-66) */
 static int in_window(const tcp_conn_t *conn, const tcp_seg_t *s) {
   uint32_t nxt = conn->rcv_nxt, wnd = conn->rcv_wnd;
   uint32_t last = s->seq + s->len - 1u;
   if (wnd == 0)
-    return s->len == 0 && s->seq == nxt;
+    return s->seq == nxt && (s->len == 0 || has(s, TCP_FLAG_RST));
   if (s->len == 0)
     return SEQ_GE(s->seq, nxt) && SEQ_LT(s->seq, nxt + wnd);
   return (SEQ_GE(s->seq, nxt) && SEQ_LT(s->seq, nxt + wnd)) ||
@@ -683,7 +756,7 @@ static int ack_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
     conn->snd_wnd = s->window;
     conn->snd_wl1 = s->seq;
     conn->snd_wl2 = s->ack;
-    retransmit_timer_stop(conn);
+    handshake_done(conn);
     if (conn->close_queued) { /* closed already: our FIN now */
       conn->state = TCP_FIN_WAIT_1;
       flush(net, conn);
@@ -839,10 +912,11 @@ static void segment_input(net_t *net, const tcp_ep_t *from, const uint8_t *seg,
 }
 
 #if NET_USE_IPV4
+/* REQ-TCP-176, 177: unicast only, and from a host — not 0.0.0.0 */
 void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
   tcp_ep_t from;
-  if (ip->dst_ip != net->ipv4_addr)
-    return; /* TCP is unicast only */
+  if (ip->dst_ip != net->ipv4_addr || ip->src_ip == 0)
+    return;
   memset(&from, 0, sizeof(from));
   from.ip4 = ip->src_ip;
   from.local_ip4 = ip->dst_ip;
@@ -851,11 +925,64 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 }
 #endif
 
+#if NET_USE_IPV4
+/* The connection a quoted segment of ours belongs to */
+static tcp_conn_t *quoted_conn(const net_t *net, const uint8_t *quote,
+                               const uint8_t *seg) {
+  uint8_t i;
+  for (i = 0; i < net->tcp_conn_count; i++) {
+    tcp_conn_t *c = net->tcp_conns[i];
+    if (c && c->state != TCP_CLOSED && c->state != TCP_LISTEN &&
+        !conn_is_ipv6(c) &&
+        c->local_port == net_read16be(seg + TCP_OFF_SPORT) &&
+        c->remote_port == net_read16be(seg + TCP_OFF_DPORT) &&
+        c->local_ip == net_read32be(quote + IPV4_OFF_SRC) &&
+        c->remote_ip == net_read32be(quote + IPV4_OFF_DST))
+      return c;
+  }
+  return NULL;
+}
+
+/* REQ-TCP-135..137, 173, REQ-ICMPv4-013, 014, 016, 044: an error about a
+ * segment in flight (SND.UNA <= SEG.SEQ < SND.NXT, RFC 5927 §4.1).
+ * Fragmentation Needed with a next-hop MTU lowers the segment size, and the
+ * retransmission timer resends in smaller pieces (RFC 1191); Protocol and
+ * Port Unreachable, and Fragmentation Needed without a usable MTU, are
+ * hard; the rest is reported */
+void tcp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
+                    const uint8_t *quote, uint16_t quote_len) {
+  uint16_t ihl = (uint16_t)((quote[IPV4_OFF_VER_IHL] & 0x0F) * 4);
+  const uint8_t *seg = quote + ihl;
+  tcp_conn_t *conn;
+  uint32_t seq;
+
+  if (quote_len < ihl + 8u || !(conn = quoted_conn(net, quote, seg)))
+    return;
+  seq = net_read32be(seg + TCP_OFF_SEQ);
+  if (SEQ_LT(seq, conn->snd_una) || SEQ_GE(seq, conn->snd_nxt))
+    return;
+  if (type == ICMP_TYPE_DEST_UNREACH && code == ICMP_CODE_FRAG_NEEDED &&
+      mtu >= IPV4_MIN_MTU) {
+    uint16_t mss = (uint16_t)(mtu - IPV4_HDR_SIZE - TCP_HDR_SIZE);
+    if (mss < conn->snd_mss)
+      conn->snd_mss = mss;
+    return;
+  }
+  conn->last_error = (uint16_t)(type << 8 | code);
+  if (type == ICMP_TYPE_DEST_UNREACH &&
+      (code == ICMP_CODE_PROTO_UNREACH || code == ICMP_CODE_PORT_UNREACH ||
+       code == ICMP_CODE_FRAG_NEEDED))
+    abort_on_error(conn);
+  else
+    notify(conn, TCP_EVT_SOFT_ERROR);
+}
+#endif
+
 #if NET_USE_IPV6
 void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   tcp_ep_t from;
-  if (ipv6_is_multicast(ip->dst))
-    return; /* TCP is unicast only */
+  if (ipv6_is_multicast(ip->dst) || ipv6_is_unspecified(ip->src))
+    return; /* REQ-TCP-176, 177 */
   memset(&from, 0, sizeof(from));
   from.mac = eth->src_mac;
   from.ip6 = ip->src;
@@ -872,28 +999,41 @@ static int fin_unacked(const tcp_conn_t *conn) {
 
 /* The data in flight again, from SND.UNA, whatever the window: the peer's
  * window took it once, and a window shrunk since makes it a probe.  SND.NXT
- * stays, past a FIN already sent. */
+ * stays, past a FIN already sent — unless the segment size has shrunk
+ * (RFC 1191): then what does not fit is unsent again, a FIN sent after it
+ * too. */
 static void resend_in_flight(net_t *net, tcp_conn_t *conn) {
   uint16_t in_flight = conn->txbuf_ops->in_flight(conn->txbuf_ctx);
   const uint8_t *data = NULL;
   uint16_t len;
   conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
-  len = conn->txbuf_ops->next_segment(conn->txbuf_ctx, &data, in_flight);
-  send_segment(net, conn, TCP_FLAG_ACK, conn->snd_una, data, len);
+  len = conn->txbuf_ops->next_segment(
+      conn->txbuf_ctx, &data,
+      in_flight < conn->snd_mss ? in_flight : conn->snd_mss);
+  if (len < in_flight) {
+    conn->snd_nxt = conn->snd_una + len;
+    conn->fin_sent = 0;
+  }
+  send_segment(net, conn, data_flags(conn), conn->snd_una, data, len);
 }
 
-/* REQ-TCP-090..100: the earliest unacknowledged segment again, with the
- * timeout doubled; the connection is given up after TCP_MAX_RETRANSMITS */
+/* REQ-TCP-090..100, 162..165: the earliest unacknowledged segment again,
+ * with the timeout doubled.  The application hears at R1 retransmissions;
+ * the connection is given up after R2 — for a SYN, never before
+ * TCP_MAX_RETRANSMITS, which the default RTOs stretch past 3 minutes */
 static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
   int data_unacked = conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0;
   int fin = fin_unacked(conn);
   int syn = conn->state == TCP_SYN_SENT || conn->state == TCP_SYN_RECEIVED;
+  uint8_t r2 = conn->r2 ? conn->r2 : TCP_MAX_RETRANSMITS;
 
   if (!data_unacked && !fin && !syn) {
     retransmit_timer_stop(conn);
     return;
   }
-  if (++conn->retransmits > TCP_MAX_RETRANSMITS) {
+  if (syn && r2 < TCP_MAX_RETRANSMITS)
+    r2 = TCP_MAX_RETRANSMITS;
+  if (++conn->retransmits > r2) {
     NET_LOG("tcp: retransmissions exhausted, aborting");
     if (passive_opening(conn)) {
       listen_again(conn);
@@ -905,6 +1045,8 @@ static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
   }
   conn->rto_ms = doubled_up_to_rto_max(conn->rto_ms);
   conn->timer_ms = conn->rto_ms;
+  if (conn->retransmits == TCP_R1)
+    soft_error(conn, TCP_SOFT_RETRANSMITTING);
 
   if (syn) {
     send_syn(net, conn);
@@ -933,9 +1075,18 @@ static void probe_zero_window(net_t *net, tcp_conn_t *conn) {
   timer_start(conn, TCP_TIMER_PERSIST, conn->persist_ms);
 }
 
+/* REQ-TCP-171, 180: a connection whose address went is aborted; data
+ * written but not sent goes (never buffered indefinitely); then the timer */
 static void conn_tick(net_t *net, tcp_conn_t *conn, uint32_t elapsed_ms) {
-  if (conn->state == TCP_CLOSED || !conn->timer_ms ||
-      !net_countdown(&conn->timer_ms, elapsed_ms))
+  if (conn->state == TCP_CLOSED || conn->state == TCP_LISTEN)
+    return;
+  if (!address_kept(net, conn)) {
+    abort_on_error(conn);
+    return;
+  }
+  if (!all_data_sent(conn))
+    flush(net, conn);
+  if (!conn->timer_ms || !net_countdown(&conn->timer_ms, elapsed_ms))
     return;
   switch (conn->timer) {
   case TCP_TIMER_RETRANSMIT:
@@ -979,19 +1130,13 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
   return NET_OK;
 }
 
+/* REQ-TCP-168: a connection in use is not turned into a listener */
 net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port) {
   if (!conn || local_port == 0)
     return NET_ERR_INVALID_PARAM;
-  close_with(conn, 0); /* no timer, nothing retransmitted */
-  conn->state = TCP_LISTEN;
-  conn->passive = 1;
-  conn->close_queued = 0;
-  conn->local_port = local_port;
-#if NET_USE_IPV4
-  conn->remote_ip = 0;
-#endif
-  conn->remote_port = 0;
-  conn->mac_valid = 0; /* no RST to the last peer from here */
+  if (conn->state != TCP_CLOSED && conn->state != TCP_LISTEN)
+    return NET_ERR_BUSY;
+  listen_on(conn, local_port);
   return NET_OK;
 }
 
@@ -1017,12 +1162,15 @@ static void open_to(net_t *net, tcp_conn_t *conn, const uint8_t *remote_mac,
 }
 
 #if NET_USE_IPV4
+/* REQ-TCP-171, 172: to a single host, from our address */
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
                       uint16_t local_port) {
-  if (!net || !conn || !remote_mac || remote_port == 0 || local_port == 0)
+  if (!net || !conn || !remote_mac || remote_port == 0 || local_port == 0 ||
+      !ipv4_is_host(net, remote_ip) || net->ipv4_addr == 0)
     return NET_ERR_INVALID_PARAM;
   conn->remote_ip = remote_ip;
+  conn->local_ip = net->ipv4_addr;
 #if NET_USE_IPV6
   conn->ip_ver = 4;
 #endif
@@ -1037,8 +1185,9 @@ net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
                        uint16_t local_port) {
   const uint8_t *src;
   if (!net || !conn || !remote_ip || !remote_mac || remote_port == 0 ||
-      local_port == 0)
-    return NET_ERR_INVALID_PARAM;
+      local_port == 0 || ipv6_is_multicast(remote_ip) ||
+      ipv6_is_unspecified(remote_ip))
+    return NET_ERR_INVALID_PARAM; /* REQ-TCP-172 */
   if (!(src = ipv6_src_for(net, remote_ip)))
     return NET_ERR_INVALID_PARAM;
   conn->ip_ver = 6;
@@ -1114,20 +1263,23 @@ void tcp_window_update(net_t *net, tcp_conn_t *conn) {
 }
 
 uint16_t tcp_last_error(const tcp_conn_t *conn) {
-  (void)conn;
-  return 0; /* not implemented yet */
+  return conn ? conn->last_error : 0;
 }
 
+/* REQ-TCP-174 */
 net_err_t tcp_set_tos(tcp_conn_t *conn, uint8_t tos) {
-  (void)conn;
-  (void)tos;
-  return NET_OK; /* not implemented yet */
+  if (!conn)
+    return NET_ERR_INVALID_PARAM;
+  conn->tos = tos;
+  return NET_OK;
 }
 
+/* REQ-TCP-165 */
 net_err_t tcp_set_max_retransmits(tcp_conn_t *conn, uint8_t r2) {
-  (void)conn;
-  (void)r2;
-  return NET_OK; /* not implemented yet */
+  if (!conn || r2 == 0)
+    return NET_ERR_INVALID_PARAM;
+  conn->r2 = r2;
+  return NET_OK;
 }
 
 /* REQ-TCP-015, RFC 9293 §3.10.4 */

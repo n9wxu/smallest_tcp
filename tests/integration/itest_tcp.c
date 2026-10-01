@@ -425,23 +425,31 @@ static void count_soft(tcp_conn_t *c, uint8_t events) {
 /* REQ-TCP-162, 165, 173: R2 is the application's; R1 (3 retransmissions)
  * is reported as a soft error, R2 closes */
 TEST(itest_tcp_162_r1_and_r2) {
-  int expiries;
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t ms;
+  int resent = 0, soft_at = 0;
   up();
   conn.on_event = count_soft;
   ev_soft = 0;
   established();
+  ASSERT_EQ(tcp_set_max_retransmits(&conn, 0), NET_ERR_INVALID_PARAM);
   ASSERT_EQ(tcp_set_max_retransmits(&conn, 5), NET_OK);
   tcp_send(&t.net, &conn, (const uint8_t *)"lost", 4);
-  for (expiries = 0; expiries < 6 && tcp_status(&conn) == TCP_ESTABLISHED;
-       expiries++) {
-    itest_advance(&t, 61000, 1000);
-    if (expiries == 2)
-      ASSERT_EQ(ev_soft, 1);
+  for (ms = 0; ms < 600000 && tcp_status(&conn) == TCP_ESTABLISHED; ms += 100) {
+    wire_clear(&t);
+    itest_advance(&t, 100, 100);
+    if (nth_segment(0, &ip, &tcp) && tcp.data_len == 4)
+      resent++;
+    if (ev_soft && !soft_at)
+      soft_at = resent;
   }
+  ASSERT_EQ(soft_at, 3); /* R1: reported with the third retransmission */
+  ASSERT_EQ(ev_soft, 1);
   ASSERT_EQ(tcp_last_error(&conn), TCP_SOFT_RETRANSMITTING);
+  ASSERT_EQ(resent, 5); /* R2 */
   ASSERT_EQ(tcp_status(&conn), TCP_CLOSED);
   ASSERT_EQ(ev_error, 1);
-  ASSERT_EQ(expiries, 6);
 }
 
 /* REQ-TCP-163, 164: a SYN is retransmitted for at least 3 minutes, whatever
@@ -701,17 +709,30 @@ TEST(itest_tcp_135_fragmentation_needed_lowers_mss) {
   static uint8_t btx_mem[1460];
   peer_ip_t ip;
   peer_tcp_t tcp;
+  uint32_t iss;
+  uint16_t i;
   up();
+  for (i = 0; i < sizeof(big); i++)
+    big[i] = (uint8_t)i;
   tcp_saw_tx_init(&btx, btx_mem, sizeof(btx_mem));
   conn.txbuf_ctx = &btx;
-  established();
+  iss = established();
   tcp_send(&t.net, &conn, big, sizeof(big));
   icmp_about_sent(0, 0x0A0000FEu, 3, 4, mtu_1000, 0);
   ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
   wire_clear(&t);
   itest_advance(&t, 3000, 100);
   ASSERT_TRUE(nth_segment(0, &ip, &tcp));
-  ASSERT_TRUE(tcp.data_len > 0 && tcp.data_len <= 960);
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 960);
+  ASSERT_TRUE(ip.total_len <= 1000);
+  /* the rest follows where the piece ended */
+  wire_clear(&t);
+  segment(RPORT, 1001, iss + 1 + 960, TCPF_ACK);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1 + 960);
+  ASSERT_EQ(tcp.data_len, 440);
+  ASSERT_MEM_EQ(tcp.data, big + 960, 440);
 }
 
 /* REQ-TCP-136, 173, REQ-ICMPv4-024, 044: soft errors — Host Unreachable,
@@ -762,27 +783,27 @@ int main(void) {
   RUN_TEST(itest_tcp_156_window_unsigned);
   RUN_TEST(itest_tcp_157_options_in_any_segment);
   RUN_TEST(itest_tcp_158_illegal_option_length);
-  RUN_XFAIL(itest_tcp_160_rst_into_zero_window);
+  RUN_TEST(itest_tcp_160_rst_into_zero_window);
   RUN_TEST(itest_tcp_161_closed_or_aborted);
-  RUN_XFAIL(itest_tcp_162_r1_and_r2);
+  RUN_TEST(itest_tcp_162_r1_and_r2);
   RUN_TEST(itest_tcp_164_syn_retransmitted_three_minutes);
   RUN_TEST(itest_tcp_166_window_shrunk);
   RUN_TEST(itest_tcp_167_zero_window_kept_open);
-  RUN_XFAIL(itest_tcp_168_listen_on_a_live_connection);
+  RUN_TEST(itest_tcp_168_listen_on_a_live_connection);
   RUN_TEST(itest_tcp_169_listen_beside_an_open);
   RUN_TEST(itest_tcp_170_local_address);
-  RUN_XFAIL(itest_tcp_171_same_local_address);
-  RUN_XFAIL(itest_tcp_172_open_to_broadcast_refused);
-  RUN_XFAIL(itest_tcp_174_tos);
+  RUN_TEST(itest_tcp_171_same_local_address);
+  RUN_TEST(itest_tcp_172_open_to_broadcast_refused);
+  RUN_TEST(itest_tcp_174_tos);
   RUN_TEST(itest_tcp_176_syn_to_broadcast_dropped);
-  RUN_XFAIL(itest_tcp_177_syn_from_unspecified_ignored);
+  RUN_TEST(itest_tcp_177_syn_from_unspecified_ignored);
   RUN_TEST(itest_tcp_179_retransmit_not_early);
-  RUN_XFAIL(itest_tcp_180_push_and_no_indefinite_buffering);
-  RUN_XFAIL(itest_tcp_181_rto_three_seconds_after_syn_timeout);
-  RUN_XFAIL(itest_tcp_135_unreachable_in_syn_sent);
-  RUN_XFAIL(itest_tcp_135_fragmentation_needed_lowers_mss);
-  RUN_XFAIL(itest_tcp_136_soft_errors_do_not_abort);
-  RUN_XFAIL(itest_tcp_137_hard_errors_abort);
+  RUN_TEST(itest_tcp_180_push_and_no_indefinite_buffering);
+  RUN_TEST(itest_tcp_181_rto_three_seconds_after_syn_timeout);
+  RUN_TEST(itest_tcp_135_unreachable_in_syn_sent);
+  RUN_TEST(itest_tcp_135_fragmentation_needed_lowers_mss);
+  RUN_TEST(itest_tcp_136_soft_errors_do_not_abort);
+  RUN_TEST(itest_tcp_137_hard_errors_abort);
   ITEST_REPORT();
   return test_failures;
 }

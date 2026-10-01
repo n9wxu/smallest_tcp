@@ -107,11 +107,15 @@ typedef struct tcp_conn_s {
   uint16_t remote_port; /**< 0 while listening */
 #if NET_USE_IPV4
   uint32_t remote_ip; /**< IPv4 peer, host byte order; 0 while listening */
+  uint32_t local_ip;  /**< Our IPv4 address, for the connection's life: if
+                           the host's changes, the connection is aborted
+                           (REQ-TCP-171) */
 #endif
   uint8_t remote_mac[6];
   uint8_t mac_valid;
   uint8_t passive; /**< Opened by tcp_listen(): reset in SYN-RECEIVED, it
                         listens again */
+  uint16_t last_error; /**< tcp_last_error() */
 #if NET_USE_IPV6
   uint8_t ip_ver;     /**< 4 or 6; always 6 without IPv4 */
   uint8_t local_slot; /**< IPv6: our address the peer used, in ip6.addr */
@@ -141,6 +145,8 @@ typedef struct tcp_conn_s {
   uint32_t timer_ms;   /**< Until it fires; 0 = stopped */
   uint8_t timer;       /**< TCP_TIMER_* */
   uint8_t retransmits; /**< Consecutive retransmission timeouts */
+  uint8_t r2;          /**< tcp_set_max_retransmits(); 0: the default */
+  uint8_t tos;         /**< tcp_set_tos() */
   uint32_t rto_ms;     /**< Retransmission timeout, doubled per expiry */
   uint32_t persist_ms; /**< Zero-window probe interval, doubled per probe */
 
@@ -175,15 +181,20 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
                         void *tx_ctx, const tcp_rxbuf_ops_t *rx_ops,
                         void *rx_ctx, void (*on_event)(tcp_conn_t *, uint8_t));
 
-/** Accept the first SYN to @p local_port. */
+/** Accept the first SYN to @p local_port.
+ *  @return NET_OK; NET_ERR_BUSY if @p conn is in use — neither CLOSED nor
+ *          LISTEN (RFC 9293 MUST-41): tcp_conn_init() frees it. */
 net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port);
 
 #if NET_USE_IPV4
 /**
- * Active open over IPv4; TCP_EVT_CONNECTED follows.  A SYN the driver does
- * not take is resent by the retransmission timer, like any lost segment.
+ * Active open over IPv4, from net->ipv4_addr; TCP_EVT_CONNECTED follows.  A
+ * SYN the driver does not take is resent by the retransmission timer, like
+ * any lost segment.
  * @param remote_mac  The peer's or the gateway's MAC, already resolved.
- * @return NET_OK, or NET_ERR_INVALID_PARAM.
+ * @return NET_OK, or NET_ERR_INVALID_PARAM — also for a @p remote_ip that
+ *         is no single host (a broadcast, a group, 0.0.0.0, 127/8;
+ *         RFC 9293 MUST-46) and while the host has no address.
  */
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
@@ -214,12 +225,16 @@ tcp_state_t tcp_status(const tcp_conn_t *conn);
  *  0 for none. */
 uint16_t tcp_last_error(const tcp_conn_t *conn);
 
-/** The TOS (DSCP) byte of the connection's segments (RFC 9293 MUST-48). */
+/** The TOS (DSCP) byte of the connection's IPv4 segments (RFC 9293
+ *  MUST-48); 0 by default.  tcp_conn_init() resets it. */
 net_err_t tcp_set_tos(tcp_conn_t *conn, uint8_t tos);
 
 /** R2: how many retransmissions of one segment before the connection is
- *  given up (RFC 9293 MUST-21); a SYN is retransmitted for at least
- *  3 minutes whatever it is (MUST-23). */
+ *  given up (RFC 9293 MUST-21); TCP_MAX_RETRANSMITS (8) by default, and a
+ *  SYN is retransmitted at least that often — over 3 minutes with the
+ *  default RTOs — whatever R2 is (MUST-23).  At TCP_R1 (3) retransmissions
+ *  the application gets TCP_EVT_SOFT_ERROR.  tcp_conn_init() resets it.
+ *  @return NET_ERR_INVALID_PARAM for 0. */
 net_err_t tcp_set_max_retransmits(tcp_conn_t *conn, uint8_t r2);
 
 /**
@@ -252,6 +267,13 @@ void tcp_window_update(net_t *net, tcp_conn_t *conn);
 #if NET_USE_IPV4
 /** A segment from IPv4. */
 void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
+
+/** From icmp_input(): an ICMP error quoting a segment we sent — @p quote
+ *  is the quoted IP header and data.  Hard errors abort the connection,
+ *  soft ones are reported (TCP_EVT_SOFT_ERROR), Fragmentation Needed with
+ *  a next-hop @p mtu lowers its segment size (RFC 1191). */
+void tcp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
+                    const uint8_t *quote, uint16_t quote_len);
 #endif
 
 #if NET_USE_IPV6
@@ -259,8 +281,8 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
 void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
 #endif
 
-/** Run retransmission, zero-window probe and TIME-WAIT timers
- *; called by net_tick(). */
+/** Run retransmission, zero-window probe and TIME-WAIT timers, and send
+ *  data written but not yet sent; called by net_tick(). */
 void tcp_tick(net_t *net, uint32_t elapsed_ms);
 
 #endif /* TCP_H */
