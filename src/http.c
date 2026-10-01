@@ -41,6 +41,52 @@ static int target_valid(const char *t, uint16_t len) {
   return 1;
 }
 
+static int is_digit(char c) { return c >= '0' && c <= '9'; }
+
+static int is_hex(char c) {
+  return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+/* RFC 3986 §2.2, §2.3: unreserved and sub-delims, what a host is made of
+ * besides percent-encoded octets (and ':' in an IP-literal) */
+static int is_host_char(char c) {
+  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || is_digit(c))
+    return 1;
+  return c != '\0' && strchr("-._~!$&'()*+,;=", c) != NULL;
+}
+
+/* RFC 9110 §7.2, RFC 3986 §3.2.2, §3.2.3: a[0..len) is uri-host
+ * [ ":" port ] — an IP-literal in brackets or a reg-name (which an IPv4
+ * address also is), possibly empty.  *host_len: the host's length. */
+static int authority_valid(const char *a, uint16_t len, uint16_t *host_len) {
+  uint16_t i = 0;
+  if (len > 0 && a[0] == '[') {
+    for (i = 1; i < len && a[i] != ']'; i++) {
+      if (!is_host_char(a[i]) && a[i] != ':')
+        return 0;
+    }
+    if (i >= len || i == 1)
+      return 0;
+    i++;
+  } else {
+    for (; i < len && a[i] != ':'; i++) {
+      if (a[i] == '%' && (uint32_t)i + 2 < len && is_hex(a[i + 1]) &&
+          is_hex(a[i + 2]))
+        i = (uint16_t)(i + 2);
+      else if (!is_host_char(a[i]))
+        return 0;
+    }
+  }
+  *host_len = i;
+  if (i < len && a[i++] != ':')
+    return 0;
+  for (; i < len; i++) {
+    if (!is_digit(a[i]))
+      return 0;
+  }
+  return 1;
+}
+
 /* Case-insensitive: a[0..alen) equals the lower-case string b */
 static int eq_ci(const char *a, uint16_t alen, const char *b) {
   uint16_t i;
@@ -108,7 +154,7 @@ static int parse_content_length(const char *v, uint16_t len, uint32_t *out) {
     return -1;
   for (i = 0; i < len; i++) {
     uint32_t d;
-    if (v[i] < '0' || v[i] > '9')
+    if (!is_digit(v[i]))
       return -1;
     d = (uint32_t)(v[i] - '0');
     if (n > 429496729u || (n == 429496729u && d > 5u)) /* > 0xFFFFFFFF */
@@ -216,8 +262,9 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
     } else if (eq_ci(line, name_len, "transfer-encoding")) {
       return 501; /* no chunked request bodies in V1 */
     } else if (eq_ci(line, name_len, "host")) {
-      if (host_seen)
-        return 400; /* RFC 9112 §3.2: one Host line at most */
+      uint16_t host_len;
+      if (host_seen || !authority_valid(v, vlen, &host_len))
+        return 400; /* RFC 9112 §3.2: one Host line at most, valid */
       host_seen = 1;
     }
   }

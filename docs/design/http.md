@@ -149,7 +149,7 @@ bytes arrive (transport read → request buffer)
 |---|---|
 | Request line not `METHOD SP target SP HTTP/x.y`, header line without `:`, obsolete line folding, bad or conflicting Content-Length | 400 |
 | A control octet (a bare CR, a NUL, …) in the target, or a bare CR or a NUL in a field value (RFC 9112 §2.2, RFC 9110 §5.5) — rejected rather than handed to the application | 400 |
-| HTTP/1.1 request without `Host`, or any request with more than one `Host` line (RFC 9112 §3.2) | 400 |
+| HTTP/1.1 request without `Host`, or any request with more than one `Host` line, or with a `Host` value that is not `uri-host [":" port]` — an empty one is valid (RFC 9112 §3.2) | 400 |
 | Method other than GET, HEAD, POST (RFC 9110 §15.6.2) | 501 |
 | `Transfer-Encoding` in the request (chunked not supported) | 501 |
 | Version other than HTTP/1.0 or HTTP/1.1 | 505 |
@@ -166,8 +166,10 @@ large.
 
 Absolute-form targets (`GET http://host/path`) are reduced to their path.
 Paths are compared exactly (no percent-decoding).  Headers other than
-Content-Length, Transfer-Encoding and Host are ignored, and Host's value is
-not checked.
+Content-Length, Transfer-Encoding and Host are ignored.  Host's value must
+be a host (an IP-literal in brackets, or a reg-name — percent-encoded
+octets, letters, digits, `-._~!$&'()*+,;=` — which an IPv4 address also
+is) and an optional port of digits.
 
 ---
 
