@@ -10,6 +10,12 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-01
+
+### Changes
+
+- docs, tests: the RFC MUSTs the link, IP and transport requirements left out
+
 ## [0.1.2] - 2026-10-01
 
 ### Added
@@ -117,7 +123,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/n9wxu/smallest_tcp/releases/tag/v0.1.0
