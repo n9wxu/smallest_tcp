@@ -167,6 +167,21 @@ typedef struct {
   uint8_t n_routes;
   http_conn_t *conns;
   uint8_t n_conns;
+
+  /* Optional; http_server_init() clears them, set them after it. */
+
+  /** The current time, in seconds since 1970-01-01 00:00:00 UTC, for the
+   *  Date field (RFC 9110 §6.6.1); 0 while the time is not known.  NULL:
+   *  the device has no clock, and responses carry no Date. */
+  uint32_t (*clock)(void);
+  /** Over TLS: the hosts the certificate is valid for — its DNS names and
+   *  IP addresses, as a URI writes them (a.example, 192.0.2.1,
+   *  [2001:db8::1]).  A request over TLS for any other host is refused
+   *  with 421 (RFC 9110 §7.4).  NULL: hosts are not checked, which meets
+   *  RFC 9110 §7.4 only if the certificate is valid for every name
+   *  clients can use. */
+  const char *const *https_hosts;
+  uint8_t n_https_hosts;
 } http_server_t;
 
 /**

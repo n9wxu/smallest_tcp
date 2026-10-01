@@ -137,7 +137,14 @@ if(SMALLEST_TCP_IPV4 AND SMALLEST_TCP_UDP)
 endif()
 if(SMALLEST_TCP_IPV4 AND SMALLEST_TCP_TCP)
     add_integration_test(itest_tcp smallest_tcp_core)
-    add_integration_test(itest_http smallest_tcp_http)
+    if(SMALLEST_TCP_TLS)
+        # HTTPS too: slots over TLS, the client the stack's TLS client
+        add_integration_test(itest_http
+            smallest_tcp_https smallest_tcp_tls_mbedtls)
+        target_compile_definitions(itest_http PRIVATE ITEST_HTTPS=1)
+    else()
+        add_integration_test(itest_http smallest_tcp_http)
+    endif()
 endif()
 
 # ── Configurations that must not compile ─────────────────────────────

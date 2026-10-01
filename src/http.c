@@ -438,6 +438,9 @@ net_err_t http_server_init(http_server_t *s, net_t *net, uint16_t port,
   s->n_routes = n_routes;
   s->conns = conns;
   s->n_conns = n_conns;
+  s->clock = NULL;
+  s->https_hosts = NULL;
+  s->n_https_hosts = 0;
   for (i = 0; i < n_conns; i++)
     slot_listen(s, &conns[i]);
   return NET_OK;
