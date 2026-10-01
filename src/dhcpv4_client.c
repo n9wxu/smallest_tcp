@@ -340,6 +340,18 @@ static int awaiting_ack(const dhcpv4_client_t *c) {
          c->state == DHCPV4_CLI_REBINDING;
 }
 
+/* REQ-DHCPv4-019..021: the first offer that names its server (RFC 2131
+ * Table 3) — the REQUEST selecting it must name it (§3.1 step 3) */
+static void take_offer(net_t *net, dhcpv4_client_t *c, const uint8_t *msg,
+                       uint16_t len) {
+  uint32_t server = dhcp_option_u32(msg, len, DHCP_OPT_SERVER_ID, 0u);
+  if (server == 0u)
+    return;
+  c->offered_ip = net_read32be(msg + DHCP_OFF_YIADDR);
+  c->server_ip = server;
+  begin_exchange(net, c, DHCPV4_CLI_REQUESTING);
+}
+
 /* REQ-DHCPv4-018..038, 041..044 */
 void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
                          const uint8_t *src_mac, const uint8_t *data,
@@ -351,12 +363,9 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
     return;
 
   switch (dhcp_message_type(data, len)) {
-  case DHCP_MSG_OFFER: /* the first offer is taken */
-    if (c->state != DHCPV4_CLI_SELECTING)
-      return;
-    c->offered_ip = net_read32be(data + DHCP_OFF_YIADDR);
-    c->server_ip = dhcp_option_u32(data, len, DHCP_OPT_SERVER_ID, c->server_ip);
-    begin_exchange(net, c, DHCPV4_CLI_REQUESTING);
+  case DHCP_MSG_OFFER:
+    if (c->state == DHCPV4_CLI_SELECTING)
+      take_offer(net, c, data, len);
     break;
   case DHCP_MSG_ACK:
     if (awaiting_ack(c) && grants_a_lease(data, len)) {

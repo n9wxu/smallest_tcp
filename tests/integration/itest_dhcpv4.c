@@ -1136,7 +1136,7 @@ int main(void) {
   RUN_XFAIL(itest_dhcpv4_081_ack_probed_before_use);
   RUN_XFAIL(itest_dhcpv4_080_address_in_use_declined);
   RUN_XFAIL(itest_dhcpv4_080_other_probe_or_request_conflicts);
-  RUN_XFAIL(itest_dhcpv4_020_offer_without_server_id_dropped);
+  RUN_TEST(itest_dhcpv4_020_offer_without_server_id_dropped);
   RUN_TEST(itest_dhcpv4_084_options_in_file_and_sname);
   RUN_TEST(itest_dhcpv4_084_sname_unread_unless_overloaded);
   RUN_TEST(itest_dhcpv4_089_split_options_joined);

@@ -279,9 +279,13 @@ relay only rebinding could reach the server.
 `op` = BOOTREPLY, the magic cookie and our current `xid`; the source
 address is not checked.  By message type (`dhcp_message_type()`):
 
-- **OFFER**, in SELECTING only: the first one is taken — `yiaddr` becomes
-  `offered_ip`, option 54 `server_ip` — and the client enters
-  REQUESTING.
+- **OFFER**, in SELECTING only: the first one that names its server is
+  taken (`take_offer()`) — `yiaddr` becomes `offered_ip`, option 54
+  `server_ip` — and the client enters REQUESTING.  An OFFER without a
+  Server Identifier, which RFC 2131 Table 3 requires, is dropped: the
+  REQUEST that selects an offer MUST name its server (§3.1 step 3).  Such
+  an OFFER used to be taken, and its REQUEST named 0.0.0.0 — or the
+  server of an earlier exchange.
 - **ACK**, in REQUESTING, RENEWING or REBINDING, if it grants a lease
   (`grants_a_lease()`): RFC 2131 Table 3 requires the lease time (51) in
   an ACK to a REQUEST, and one without it — or with a lease of 0 s — is
