@@ -815,8 +815,8 @@ int main(void) {
   RUN_TEST(itest_http_051_205_without_content);
   RUN_TEST(itest_http_052_statuses_needing_fields);
   RUN_XFAIL(itest_http_053_expect_100_continue);
-  RUN_XFAIL(itest_http_054_if_match);
-  RUN_XFAIL(itest_http_055_if_none_match);
+  RUN_TEST(itest_http_054_if_match);
+  RUN_TEST(itest_http_055_if_none_match);
   RUN_TEST(itest_http_056_https_target_over_plain_tcp);
   RUN_TEST(itest_http_057_invalid_content_length);
   RUN_TEST(itest_http_058_incomplete_content);

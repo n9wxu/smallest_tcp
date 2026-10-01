@@ -156,12 +156,29 @@ bytes arrive (transport read → request buffer)
   └─ header end found? ("\r\n\r\n", bare "\n\n" also accepted, RFC 9112 §2.2)
        no  → buffer full? → 414 (no line end yet) / 431 (in the headers)
              client can send no more? → end the stream without an answer
-       yes → parse (in place, NUL-terminating path and query)
-              └─ Content-Length body complete?  no → keep reading (or end the
+       yes → parse (in place, NUL-terminating path and query) → 400/421/501/505
+              └─ admit() — what the header section alone decides, at once:
+                 too big for the buffer → 413, misdirected → 421,
+                 route lookup → 404 / 405, preconditions → 412 / 304
+                 └─ Content-Length body complete?  no → keep reading (or end the
                                                      stream if the client is done)
-                                                  too big for the buffer → 413
-                 → route lookup → handler → response
+                    → handler → response
 ```
+
+The header section decides as much as it can before any content is read, so
+a client sending a large body learns of a 404, 405 or 413 at once (and what
+it still sends is discarded, section 8).
+
+**Preconditions** (RFC 9110 §13).  If-Match and If-None-Match are evaluated
+before the handler runs, and only for a request that would otherwise
+succeed — a 400, 404, 405, 413 or 421 takes precedence (§13.2.1) — If-Match
+first (§13.2.2).  The server sends no entity tags, so a list of tags in
+If-Match never matches: 412 (Precondition Failed); one in If-None-Match
+never matches either, so the request proceeds.  `*` names any current
+representation, which a route has: `If-Match: *` proceeds, `If-None-Match:
+*` gets 304 (Not Modified) for GET and HEAD and 412 for POST.
+If-Modified-Since and If-Unmodified-Since are ignored, as RFC 9110
+§13.1.3–4 requires of a resource with no modification date.
 
 | Condition | Status |
 |---|---|
@@ -173,6 +190,8 @@ bytes arrive (transport read → request buffer)
 | `Transfer-Encoding` whose last coding is not chunked — the length cannot be determined (RFC 9112 §6.3) — or any `Transfer-Encoding` in an HTTP/1.0 request, whose framing is then faulty (§6.1) | 400 |
 | `Transfer-Encoding` ending in chunked, in an HTTP/1.1 request (chunked request bodies are not implemented, RFC 9112 §6.1) | 501 |
 | Version other than HTTP/1.0 or HTTP/1.1 | 505 |
+| If-Match with entity tags (none can match), or `If-None-Match: *` on a POST (RFC 9110 §13.1.1, §13.1.2) | 412 |
+| `If-None-Match: *` on a GET or HEAD (RFC 9110 §13.1.2) | 304 |
 | Path not in the route table | 404 |
 | Path known, method not allowed for it (with `Allow:`, empty for a route that allows nothing — RFC 9110 §15.5.6) | 405 |
 | Body larger than the request buffer | 413 |

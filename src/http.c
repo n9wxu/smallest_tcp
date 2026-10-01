@@ -312,6 +312,12 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
         return 400;
       cl = n;
       cl_seen = 1;
+    } else if (eq_ci(line, name_len, "if-match")) {
+      if (!eq_ci(v, vlen, "*")) /* entity tags: none can match ours */
+        req->flags |= HTTP_RQ_IF_MATCH;
+    } else if (eq_ci(line, name_len, "if-none-match")) {
+      if (eq_ci(v, vlen, "*"))
+        req->flags |= HTTP_RQ_IF_NONE_ANY;
     } else if (eq_ci(line, name_len, "transfer-encoding")) {
       te = ends_in_chunked(v, vlen) ? 1 : 2; /* the last line's last */
     } else if (eq_ci(line, name_len, "host")) {
@@ -376,6 +382,8 @@ const char *http_reason(uint16_t status) {
     return "Not Found";
   case 405:
     return "Method Not Allowed";
+  case 412:
+    return "Precondition Failed";
   case 408:
     return "Request Timeout";
   case 413:
@@ -737,29 +745,28 @@ static int response_valid(const http_response_t *rs) {
   return 1;
 }
 
+static const http_route_t *find_route(const http_server_t *s,
+                                      const char *path) {
+  uint8_t i;
+  for (i = 0; i < s->n_routes; i++) {
+    if (strcmp(s->routes[i].path, path) == 0)
+      return &s->routes[i];
+  }
+  return NULL;
+}
+
+/* HEAD comes with GET */
+static uint8_t route_methods(const http_route_t *r) {
+  return (uint8_t)(r->methods | ((r->methods & HTTP_GET) ? HTTP_HEAD : 0));
+}
+
+/* Run the handler of the request admit() let through */
 static void dispatch(http_server_t *s, http_conn_t *c) {
   http_request_t *rq = &c->request;
   uint32_t need = (uint32_t)c->hdr_len + c->content_length;
-  const http_route_t *route = NULL;
+  const http_route_t *route = find_route(s, rq->path);
+  uint8_t allowed = route_methods(route);
   http_response_t rs;
-  uint8_t i;
-
-  for (i = 0; i < s->n_routes; i++) {
-    if (strcmp(s->routes[i].path, rq->path) == 0) {
-      route = &s->routes[i];
-      break;
-    }
-  }
-  if (!route) {
-    respond_error(s, c, 404, 0); /* REQ-HTTP-025 */
-    return;
-  }
-  uint8_t allowed =
-      (uint8_t)(route->methods | ((route->methods & HTTP_GET) ? HTTP_HEAD : 0));
-  if (!(allowed & rq->method)) {
-    respond_error(s, c, 405, allowed); /* REQ-HTTP-024 */
-    return;
-  }
 
   rq->body = c->content_length ? (const uint8_t *)c->req + c->hdr_len : NULL;
   rq->body_len = (uint16_t)c->content_length;
@@ -810,13 +817,30 @@ static int misdirected(const http_server_t *s, const http_conn_t *c) {
 }
 
 /* What the header section alone decides, before any content is read: the
- * status to answer with, or HTTP_PARSE_OK to read the content and run the
- * handler */
-static uint16_t admit(const http_server_t *s, const http_conn_t *c) {
+ * status to answer with (*allow: for a 405), or HTTP_PARSE_OK to read the
+ * content and run the handler.  REQ-HTTP-054, 055: the preconditions come
+ * last, once the request would otherwise succeed (RFC 9110 §13.2.1), in
+ * §13.2.2's order.  The server sends no entity tags, so If-Match with tags
+ * fails and If-None-Match with tags holds; "*" names the route's
+ * representation, which exists. */
+static uint16_t admit(const http_server_t *s, const http_conn_t *c,
+                      uint8_t *allow) {
+  const http_request_t *rq = &c->request;
+  const http_route_t *route = find_route(s, rq->path);
   if ((uint32_t)c->hdr_len + c->content_length > c->req_size)
     return 413; /* REQ-HTTP-033, 034 */
   if (misdirected(s, c))
     return 421;
+  if (!route)
+    return 404; /* REQ-HTTP-025 */
+  if (!(route_methods(route) & rq->method)) {
+    *allow = route_methods(route);
+    return 405; /* REQ-HTTP-024 */
+  }
+  if (rq->flags & HTTP_RQ_IF_MATCH)
+    return 412;
+  if (rq->flags & HTTP_RQ_IF_NONE_ANY)
+    return (rq->method & (HTTP_GET | HTTP_HEAD)) ? 304 : 412;
   return HTTP_PARSE_OK;
 }
 
@@ -839,11 +863,12 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
     }
     uint16_t status =
         http_parse_request(c->req, end, &c->request, &c->content_length);
+    uint8_t allow = 0;
     c->hdr_len = end;
     if (status == HTTP_PARSE_OK)
-      status = admit(s, c);
+      status = admit(s, c, &allow);
     if (status != HTTP_PARSE_OK) {
-      respond_error(s, c, status, 0);
+      respond_error(s, c, status, allow);
       return;
     }
   }
