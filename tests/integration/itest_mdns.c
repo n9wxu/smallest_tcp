@@ -1471,11 +1471,11 @@ int main(void) {
   RUN_XFAIL(itest_mdns_054_fifteen_conflicts_slow_probing_down);
   RUN_XFAIL(itest_mdns_055_simultaneous_probe_lost_waits_a_second);
   RUN_TEST(itest_mdns_055_simultaneous_probe_won_or_tied);
-  RUN_XFAIL(itest_mdns_057_conflict_while_running_probes_again);
-  RUN_XFAIL(itest_mdns_057_conflict_while_running_undefended_keeps_name);
+  RUN_TEST(itest_mdns_057_conflict_while_running_probes_again);
+  RUN_TEST(itest_mdns_057_conflict_while_running_undefended_keeps_name);
   RUN_TEST(itest_mdns_058_no_periodic_announcements);
   RUN_TEST(itest_mdns_059_new_ipv4_address_announced);
-  RUN_XFAIL(itest_mdns_060_goodbye_for_old_ptr_rdata_before_renaming);
+  RUN_TEST(itest_mdns_060_goodbye_for_old_ptr_rdata_before_renaming);
   RUN_XFAIL(itest_mdns_063_record_multicast_at_most_once_a_second);
   RUN_TEST(itest_mdns_064_only_positive_or_owned_negative_answers);
   RUN_TEST(itest_mdns_065_nsec_for_missing_type);

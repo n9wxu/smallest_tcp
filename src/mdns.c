@@ -116,6 +116,24 @@ static uint32_t all_mask(const mdns_t *m) {
 /* Record i is in use: not withdrawn by mdns_withdraw() */
 static int live(const mdns_t *m, uint8_t i) { return (m->live & BIT(i)) != 0; }
 
+/* Records we answer for: in use, and not a name being probed for — after
+ * a conflict on it, or at start (RFC 6762 §8.1, §9) */
+static uint32_t answerable(const mdns_t *m) {
+  return m->live & ~(m->state == MDNS_STATE_PROBING ? m->claim : 0u);
+}
+
+/* The unique records in use of record @p i's name */
+static uint32_t name_records(const mdns_t *m, uint8_t i) {
+  uint32_t set = 0;
+  uint8_t j;
+  for (j = 0; j < m->count; j++) {
+    if (live(m, j) && !is_shared(&m->records[j]) &&
+        dns_dotted_equal(m->records[j].name, m->records[i].name))
+      set |= BIT(j);
+  }
+  return set;
+}
+
 static uint32_t shared_mask(const mdns_t *m) {
   uint32_t mask = 0;
   uint8_t i;
@@ -565,6 +583,8 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
 
   if (p.an > 0)
     pkt_send(m, &p, o->dest);
+  if (!o->goodbye && !o->legacy) /* in caches now: owed a goodbye */
+    m->announced |= answers | additionals;
 }
 
 /* RFC 6763 §12: PTR → SRV + TXT of the instance; SRV → A of the target */
@@ -614,7 +634,7 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
     }
   }
 #endif
-  return add & ~answers & m->live;
+  return add & ~answers & answerable(m);
 }
 
 /* Send a multicast response to the groups of @p families */
@@ -634,11 +654,20 @@ static void send_to_groups(mdns_t *m, uint8_t families, uint32_t answers,
   }
 }
 
-/* Every record; a goodbye withdraws the service types' listing under the
- * meta-query too, which queriers may have cached (REQ-DNSSD-018) */
-static void announce(mdns_t *m, int goodbye) {
-  send_to_groups(m, m->announce_families, m->live,
-                 goodbye ? service_type_mask(m) : 0, 0, (uint8_t)goodbye);
+/* The records probed for — every record after mdns_start(), or a name
+ * probed for again after a conflict (REQ-MDNS-057) */
+static void announce(mdns_t *m) {
+  send_to_groups(m, m->announce_families, m->claim, 0, 0, 0);
+}
+
+/* REQ-MDNS-032, 033, REQ-DNSSD-018: TTL 0 for those of @p records that were
+ * sent, and for the meta-query listing of @p types, to every family
+ * (mdns_readdress6() may have narrowed the announcements' set) */
+static void goodbye(mdns_t *m, uint32_t records, uint32_t types) {
+  uint32_t gone = records & m->announced;
+  if (gone)
+    send_to_groups(m, ALL_FAMILIES, gone, types & gone, 0, 1);
+  m->announced &= ~records;
 }
 
 /* ── Probing (RFC 6762 §8.1) ── */
@@ -675,7 +704,8 @@ static void send_probes_to(mdns_t *m, const dest_t *d) {
   uint8_t i;
   pkt_t p;
   for (i = 0; i < m->count; i++) {
-    if (live(m, i) && !is_shared(&m->records[i]) && name_rep(m, i) == i)
+    if ((m->claim & BIT(i)) && live(m, i) && !is_shared(&m->records[i]) &&
+        name_rep(m, i) == i)
       pending |= BIT(i);
   }
   /* Greedily pack names into as few probes as the TX buffer allows */
@@ -710,6 +740,21 @@ static void send_probes(mdns_t *m) {
 
 /* ── State machine ── */
 
+static uint32_t probe_delay(mdns_t *m) {
+  return net_random_below(m->net, MDNS_PROBE_WAIT_MS + 1); /* REQ-MDNS-017 */
+}
+
+/* REQ-MDNS-057 (RFC 6762 §9): a conflict on a name we hold: probe for it
+ * again, the other records still answered; the name is given up only if
+ * that probing fails */
+static void probe_again(mdns_t *m, uint8_t i) {
+  m->claim |= name_records(m, i);
+  m->state = MDNS_STATE_PROBING;
+  m->step = 0;
+  m->timer_ms = probe_delay(m);
+  m->announce_families = ALL_FAMILIES;
+}
+
 static void enter_conflict(mdns_t *m, uint8_t index) {
   m->state = MDNS_STATE_CONFLICT;
   m->timer_ms = 0;
@@ -734,19 +779,22 @@ static void timer_fired(mdns_t *m) {
 #endif
   }
   if (m->state == MDNS_STATE_ANNOUNCING) {
-    announce(m, 0); /* REQ-MDNS-022, 023 */
-    if (++m->step >= MDNS_ANNOUNCE_COUNT)
-      m->state = MDNS_STATE_RUNNING;
-    else
+    announce(m); /* REQ-MDNS-022, 023 */
+    if (++m->step < MDNS_ANNOUNCE_COUNT) {
       m->timer_ms = MDNS_ANNOUNCE_WAIT_MS;
+      return;
+    }
+    m->state = MDNS_STATE_RUNNING;
+    m->claim = 0;
   }
 }
 
 static void send_pending(mdns_t *m) {
   mdns_pending_t owed = m->pending;
+  uint32_t ours = answerable(m);
   memset(&m->pending, 0, sizeof(m->pending));
-  send_to_groups(m, owed.families, owed.answers, owed.service_types, owed.nsec,
-                 0);
+  send_to_groups(m, owed.families, owed.answers & ours,
+                 owed.service_types & ours, owed.nsec & ours, 0);
 }
 
 /* Who sent a message: the IPv4 address, or a hash of the IPv6 one */
@@ -830,17 +878,18 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
     }
     if (exact || name_idx < 0)
       continue;
-    /* Probing: any record under a name we want is a conflict — once the
+    /* A name being probed for: any record of it is a conflict — once the
      * first probe is out (REQ-MDNS-052, RFC 6762 §8.1: one before it may
-     * be a stale echo).  Running: only a same-type record with different
-     * data (§9). */
-    if (m->state == MDNS_STATE_PROBING) {
-      if (m->step > 0)
-        enter_conflict(m, (uint8_t)name_idx);
+     * be a stale echo).  A name we hold: only a same-type record with
+     * different data, and it is probed for again (§9). */
+    if (m->state == MDNS_STATE_PROBING && (m->claim & BIT(name_idx))) {
+      if (m->step == 0)
+        continue;
+      enter_conflict(m, (uint8_t)name_idx);
       return;
     }
     if (type_idx >= 0) {
-      enter_conflict(m, (uint8_t)type_idx);
+      probe_again(m, (uint8_t)type_idx);
       return;
     }
   }
@@ -1033,9 +1082,10 @@ void mdns_start(mdns_t *m) {
 #endif
   m->announce_families = ALL_FAMILIES;
   memset(&m->pending, 0, sizeof(m->pending));
+  m->claim = m->live;
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
-  m->timer_ms = net_random_below(m->net, MDNS_PROBE_WAIT_MS + 1); /* -017 */
+  m->timer_ms = probe_delay(m);
 }
 
 static int silent(const mdns_t *m) {
@@ -1074,23 +1124,23 @@ static int is_in_class(uint16_t class_) {
 /* One question: our records it asks for, into @p w */
 static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
                            const dns_question_t *q, wanted_t *w) {
-  uint32_t hit = 0, types = 0, nsec = 0;
+  uint32_t hit = 0, types = 0, nsec = 0, ours = answerable(m);
   uint8_t i;
   for (i = 0; i < m->count; i++) {
     const mdns_record_t *r = &m->records[i];
-    if (live(m, i) && (q->type == DNS_TYPE_ANY || q->type == r->type) &&
+    if ((ours & BIT(i)) && (q->type == DNS_TYPE_ANY || q->type == r->type) &&
         rr_count(m, r) && dns_name_equals(msg, len, q->name_off, r->name))
       hit |= BIT(i);
   }
   if ((q->type == DNS_TYPE_PTR || q->type == DNS_TYPE_ANY) &&
       dns_name_equals(msg, len, q->name_off, MDNS_META_QUERY)) {
-    types = service_type_mask(m);
+    types = service_type_mask(m) & ours;
   }
   if (!(hit | types) && q->type != DNS_TYPE_ANY) {
     /* One of our unique names, a type it doesn't have (RFC 6762 §6.1) */
     for (i = 0; i < m->count && !nsec; i++) {
       const mdns_record_t *r = &m->records[i];
-      if (live(m, i) && !is_shared(r) &&
+      if ((ours & BIT(i)) && !is_shared(r) &&
           dns_name_equals(msg, len, q->name_off, r->name))
         nsec = BIT(name_rep(m, i));
     }
@@ -1272,8 +1322,7 @@ static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
   if (flags & (DNS_OPCODE_MASK | DNS_RCODE_MASK))
     return;
   if (!(flags & DNS_FLAG_QR)) {
-    if (m->state != MDNS_STATE_PROBING)
-      query_input(m, from, msg, len);
+    query_input(m, from, msg, len);
   } else if (response_acceptable(m, from, msg)) {
     check_conflicts(m, msg, len);
   }
@@ -1303,13 +1352,17 @@ void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
 }
 
 void mdns_readdress6(mdns_t *m) {
-  if (m->state == MDNS_STATE_ANNOUNCING) {
-    /* Announce again from the start, IPv6 included, without cutting the
-     * sequence other families are in */
+  if (m->state == MDNS_STATE_PROBING || m->state == MDNS_STATE_ANNOUNCING) {
+    /* Announce every record — the AAAA records too, were only a name
+     * after a conflict being probed for — from the start, IPv6 included,
+     * without cutting the sequence other families are in */
+    m->claim = m->live;
     m->announce_families |= MDNS_FAMILY_V6;
-    m->step = 0;
+    if (m->state == MDNS_STATE_ANNOUNCING)
+      m->step = 0;
   } else if (m->state == MDNS_STATE_RUNNING) {
     m->state = MDNS_STATE_ANNOUNCING;
+    m->claim = m->live;
     m->step = 0;
     m->timer_ms = 0;
     m->announce_families = MDNS_FAMILY_V6;
@@ -1338,13 +1391,17 @@ static uint32_t types_gone(const mdns_t *m, uint32_t gone) {
 
 void mdns_withdraw(mdns_t *m, uint32_t records) {
   uint32_t gone = records & m->live;
+  if (m->state == MDNS_STATE_CONFLICT) {
+    /* REQ-MDNS-060 (RFC 6762 §8.4): from the conflict callback, before the
+     * renaming changes it: a goodbye to the shared records' old rdata */
+    goodbye(m, gone & shared_mask(m), 0);
+    return;
+  }
   if (!gone)
     return;
-  /* REQ-MDNS-032, REQ-DNSSD-018: a goodbye if they were announced, to
-   * every family (mdns_readdress6() may have narrowed the set) */
-  if (m->state == MDNS_STATE_ANNOUNCING || m->state == MDNS_STATE_RUNNING)
-    send_to_groups(m, ALL_FAMILIES, gone, types_gone(m, gone), 0, 1);
+  goodbye(m, gone, types_gone(m, gone));
   m->live &= ~gone;
+  m->claim &= ~gone;
   m->pending.answers &= ~gone;
   m->pending.service_types &= ~gone;
   m->pending.nsec &= ~gone;
@@ -1353,10 +1410,11 @@ void mdns_withdraw(mdns_t *m, uint32_t records) {
 void mdns_stop(mdns_t *m) {
   if (m->state == MDNS_STATE_STOPPED)
     return;
-  /* REQ-MDNS-032, 033, REQ-DNSSD-018: withdraw what was announced */
+  /* REQ-MDNS-032, 033, REQ-DNSSD-018: withdraw what was announced, and
+   * the service types' listing under the meta-query, which queriers may
+   * have cached */
   m->announce_families = ALL_FAMILIES;
-  if (m->state == MDNS_STATE_ANNOUNCING || m->state == MDNS_STATE_RUNNING)
-    announce(m, 1);
+  goodbye(m, m->live, service_type_mask(m));
 #if NET_USE_IPV4
   igmp_leave(m->net, MDNS_GROUP);
 #endif

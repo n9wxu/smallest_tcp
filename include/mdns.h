@@ -91,9 +91,14 @@ typedef struct {
 typedef struct mdns_s mdns_t;
 
 /**
- * Called when another host claims one of our unique names.  The responder
- * is then in MDNS_STATE_CONFLICT and silent; to recover, change the name in
- * the record table (e.g. "pyro-dead01-2.local") and call mdns_start().
+ * Called when probing for one of our unique names fails: another host
+ * holds it (RFC 6762 §8.1, §9 — a conflict on a name already ours first
+ * sends it back to probing, and only if that fails is this called).  The
+ * responder is then in MDNS_STATE_CONFLICT and silent; to recover, change
+ * the name in the record table (e.g. "pyro-dead01-2.local") and call
+ * mdns_start().  Renaming a service instance changes the rdata of its PTR
+ * record: call mdns_withdraw() for that PTR first, from the callback, to
+ * send the goodbye for its old rdata (RFC 6762 §8.4).
  * @param record_index  Index of the conflicting record in the table.
  */
 typedef void (*mdns_conflict_fn_t)(mdns_t *m, uint8_t record_index, void *ctx);
@@ -126,7 +131,9 @@ struct mdns_s {
   void *ctx;
   uint32_t timer_ms; /**< Until the next probe / announcement */
   mdns_pending_t pending;
-  uint32_t live; /**< Records in use: not withdrawn */
+  uint32_t live;      /**< Records in use: not withdrawn */
+  uint32_t claim;     /**< Records being probed for, or announced */
+  uint32_t announced; /**< Records sent and not said goodbye to since */
   uint8_t count;
   uint8_t state;             /**< MDNS_STATE_* */
   uint8_t step;              /**< Probes / announcements sent so far */
@@ -194,6 +201,12 @@ void mdns_readdress6(mdns_t *m);
  * meta-query listing of a service type no other record offers, and from
  * then on they are neither answered, announced nor probed.  They stay
  * withdrawn through mdns_start(); mdns_init() brings them back.
+ *
+ * In the CONFLICT state — from the conflict callback, before the
+ * application renames what a shared record points to — it sends the
+ * goodbye for the announced shared (PTR) records among @p records, with
+ * their current rdata, and they stay in use: mdns_start() announces them
+ * with the new (RFC 6762 §8.4).
  * @param records  Bit i = records[i].
  */
 void mdns_withdraw(mdns_t *m, uint32_t records);

@@ -96,16 +96,19 @@ mdns_start(&mdns);                                       /* once the IPv4 addres
 
 ```
 STOPPED ─mdns_start()─► PROBING ─3 probes, no conflict─► ANNOUNCING ─2nd announcement─► RUNNING
-                           │                               │  ▲                            │
-                           │                               │  └──── mdns_readdress6() ─────┤
-                           │                               │                               │
-                           └──── conflicting response ─────┴─────────► CONFLICT ◄──────────┘
+                         │  ▲                              │  ▲                            │
+                         │  │                              │  └──── mdns_readdress6() ─────┤
+                         │  └── conflict on a name we hold: probe for it again ────────────┤
+                         │                                                                 │
+                         └── conflicting response to a probe ──► CONFLICT                  │
 
 CONFLICT ─on_conflict(): the app renames and calls mdns_start()─► PROBING
-any state ─mdns_stop()─► goodbye (if ANNOUNCING/RUNNING) + IGMP/MLD leave ─► STOPPED
+any state ─mdns_stop()─► goodbye (for what was sent) + IGMP/MLD leave ─► STOPPED
 ```
 
-The responder answers only in ANNOUNCING and RUNNING; it is silent while PROBING (it must not answer for names it has not yet claimed) and in STOPPED and CONFLICT, where `mdns_tick()` does nothing either.  Calling `mdns_start()` again re-probes and re-announces — use it after a link-up or an IPv4 address change (REQ-MDNS-024).
+`mdns_t.claim` holds the records being probed for and then announced: every record in use after `mdns_start()`, or only the records of a name probed for again after a conflict while running (REQ-MDNS-057, RFC 6762 §9).  While PROBING the responder does not answer for the claimed records (`answerable()`: it must not answer for names it has not yet claimed) but answers for the others as usual, and the announcements that follow carry the claimed records only.  In STOPPED and CONFLICT it is silent, and `mdns_tick()` does nothing either.  Calling `mdns_start()` again re-probes and re-announces everything — use it after a link-up or an IPv4 address change (REQ-MDNS-024, 059).
+
+`mdns_t.announced` holds the records that have been sent (announced, or answered other than to a legacy query) and not said goodbye to since: a goodbye goes only to those, whatever the state (`goodbye()`).
 
 ---
 
@@ -119,7 +122,7 @@ no conflict by t0 + 750 ms → ANNOUNCING, first announcement at once
 
 A probe is a query (QR=0, ID=0) with one `ANY` question per distinct unique name, the unicast-response (QU) bit set, and the unique records in the Authority section (no cache-flush bit).  `send_probes()` sends one set per address family (§11).  If the TX buffer cannot hold every name, `send_probes_to()` packs names greedily into several probe packets, retrying `build_probe()` with one name more each time; a name that does not fit even alone is not probed.
 
-**Conflict while probing** (`check_conflicts()`): any record in a response — Answer, Authority or Additional section — under one of our unique names, of any type, that is not identical to one of our records.  Goodbye records (TTL 0) and classes other than IN are ignored, and so is a response that arrives before the first probe is sent (§8.1: it may be a stale packet, the host's own even).  The conflict callback receives the index of the name's first unique record.
+**Conflict while probing** (`check_conflicts()`): any record in a response — Answer, Authority or Additional section — under one of our unique names, of any type, that is not identical to one of our records.  Goodbye records (TTL 0) and classes other than IN are ignored, and so is a response that arrives before the first probe is sent (§8.1: it may be a stale packet, the host's own even).  It is the probing that fails: the responder enters CONFLICT and calls the conflict callback with the index of the name's first unique record (§8.1: the probing host MUST defer to the existing one).
 
 ---
 
@@ -193,7 +196,7 @@ typedef struct {
 
 **Negative answers** (`write_nsec()`, RFC 6762 §6.1): a question for one of our unique names asking for a type the name does not have (e.g. AAAA for the host in an IPv4-only build, or while the interface has no usable IPv6 address) is answered with an NSEC record in the restricted form: Next Domain Name = the name itself, one bitmap block (0) of 1-32 bytes listing the types it does have (an address type only while it has a valid address), never the NSEC bit.  Without it, dual-stack resolvers (curl, browsers) waited 5 s for an AAAA answer before using the A record; with it the first lookup took 0.4 s and later ones about 8 ms.  No NSEC is sent for foreign or shared (PTR) names, for ANY, or while probing.
 
-**Conflict while running** (RFC 6762 §9): a response with a record of the same name *and type* as one of our unique records but different data.  Other types under our name are not conflicts once we own it.  The callback receives the index of the first of our records with that name and type.
+**Conflict while running** (RFC 6762 §9): a response with a record of the same name *and type* as one of our unique records but different data.  Other types under our name are not conflicts once we own it.  §9 says the host MUST reset the conflicted record to probing and go through probing and announcing again; only if the probing fails MUST it cease using the name.  So `probe_again()` adds the name's unique records to `claim` and goes back to PROBING (random 0-250 ms, then three probes), the other records answered meanwhile; the callback is called only if a probe meets a conflicting response — with the index of the name's first unique record.  Unanswered, the records are announced again and the name kept.  Before, the callback was called at the first conflicting response, and a single stale or spoofed packet cost the name.
 
 **Robustness:** every read is bounds-checked; malformed messages, pointer loops and absurd section counts end processing without a reply.  Responses (QR=1) are never answered.  Messages with a non-zero OPCODE or RCODE are ignored, queries and responses alike (RFC 6762 §18.3, §18.11).
 
@@ -241,7 +244,9 @@ pyro-dead01.local.                 120 IN A    10.0.0.2
 
 A PTR query returns the PTR in Answer and SRV + TXT + A (and AAAA) in Additional — one round trip gives a browser the full picture (RFC 6763 §12.1).  A TXT record with no metadata is sent as a single zero byte (RFC 6763 §6.1).
 
-**Withdrawing a service** while the host stays: `mdns_withdraw(&mdns, mask)` with the bits of its PTR, SRV and TXT (REQ-DNSSD-018).  If they were announced, one goodbye carries them with TTL 0 — and the meta-query PTR of the service type if no other record in use still offers it — to both families, without additionals.  `mdns_t.live` then lacks their bits, and every walk over the table skips them: answers, NSEC (a withdrawn name is no longer ours), additionals, announcements, probes, conflict checks and the pending response.  They stay out through `mdns_start()`; a new `mdns_init()` brings the table back whole, and `mdns_stop()` says goodbye to what is still in use.
+**Withdrawing a service** while the host stays: `mdns_withdraw(&mdns, mask)` with the bits of its PTR, SRV and TXT (REQ-DNSSD-018).  If they were sent (`announced`), one goodbye carries them with TTL 0 — and the meta-query PTR of the service type if no other record in use still offers it — to both families, without additionals.  `mdns_t.live` then lacks their bits, and every walk over the table skips them: answers, NSEC (a withdrawn name is no longer ours), additionals, announcements, probes, conflict checks and the pending response.  They stay out through `mdns_start()`; a new `mdns_init()` brings the table back whole, and `mdns_stop()` says goodbye to what is still in use.
+
+**Renaming an instance after a conflict** changes its PTR record's rdata (`_pyro._tcp.local PTR Pyro Unit 1 (2)._pyro._tcp.local`), and for a shared record RFC 6762 §8.4 requires a goodbye for the old rdata before the new is announced (REQ-MDNS-060): caches would otherwise list the old instance, which another host now owns, for 75 minutes.  The responder cannot know what the application will rename, so the application says it: in the CONFLICT state — from the conflict callback, before renaming — `mdns_withdraw()` sends the goodbye for the shared records among its bits that were sent, with their current rdata, and leaves them in use, so that `mdns_start()` announces them with the new rdata.  (A withdrawal in the CONFLICT state is only that goodbye: withdrawing for good there would leave the application only `mdns_init()` to bring the PTR back, which resets the whole responder.)
 
 ---
 
@@ -297,7 +302,7 @@ mdns_withdraw(&mdns, 0x0Eu);    /* one service gone: records 1..3 */
 mdns_stop(&mdns);               /* goodbye + IGMP/MLD leave */
 ```
 
-`mdns_tick()` takes elapsed milliseconds, like `net_tick()` and `dhcpv4_client_tick()`.  The conflict callback may rename (change the strings the record table points at) and call `mdns_start()` directly: the responder enters CONFLICT before calling back and does nothing more with the message afterwards.  `demo/mdns_demo/main.c` is a complete, dual-stack example.
+`mdns_tick()` takes elapsed milliseconds, like `net_tick()` and `dhcpv4_client_tick()`.  The conflict callback may rename (change the strings the record table points at) and call `mdns_start()` directly: the responder enters CONFLICT before calling back and does nothing more with the message afterwards.  Before renaming an instance, it calls `mdns_withdraw()` for the instance's PTR record, which says goodbye to the old rdata (§9).  `demo/mdns_demo/main.c` is a complete, dual-stack example.
 
 Random delays — the 0–250 ms probe start and the 20–120 ms response delay — come from `net_random_below()`, which scales rather than reduces with `%` so Cortex-M0 builds do not link a software divide.  The generator is the stack's one keyed hash (`net_random()`: HalfSipHash-2-4 of an output count, [architecture.md §9](../architecture.md#9-randomness)), keyed from the MAC by `net_init()`; an application with a real entropy source adds it with `net_random_seed()`.  mDNS used to keep its own generator, seeded from the MAC and the IPv4 address.
 
@@ -351,6 +356,6 @@ Runs in CI after the Scapy suite, with `avahi-daemon` on tap0: `avahi-resolve` f
 ## 14. Decisions (were open questions)
 
 1. **IGMP retransmit:** the report is sent on join and repeated once when announcing starts (~0.75 s later).  Queries are not answered (§10).
-2. **Probe tiebreak (RFC 6762 §8.2):** deferred.  Two hosts probing the same name at the same moment may both proceed; the first response each sees afterwards is detected as a conflict while running.
+2. **Probe tiebreak (RFC 6762 §8.2):** deferred.  Two hosts probing the same name at the same moment may both proceed; the first response each sees afterwards is a conflict while running, and each probes for the name again — a loser then meets the winner's answer.
 3. **Multiple interfaces:** single-interface — one `mdns_t` per `net_t`.
 4. **Address change:** the A record can follow `net->ipv4_addr` (`.rdata.a = 0`); call `mdns_start()` after a DHCP renumbering to re-probe and re-announce.  AAAA records follow the interface's IPv6 addresses (`.rdata.aaaa = NULL`); call `mdns_readdress6()` when one becomes usable.

@@ -67,14 +67,24 @@ static const mdns_record_t records[] = {
 static mdns_t mdns;
 static volatile int want_restart;
 
+/* The bit of the instance's PTR record in the table */
+static uint32_t ptr_bit(void) {
+  uint8_t i = 0;
+  while (records[i].type != DNS_TYPE_PTR)
+    i++;
+  return 1u << i;
+}
+
 /* RFC 6762 §9 / RFC 6763 §8: pick a new name and probe again */
 static void on_conflict(mdns_t *m, uint8_t index, void *ctx) {
-  (void)m;
   (void)ctx;
   if (records[index].name == host) {
     snprintf(host, sizeof(host), "pyro-dead01-%d.local", ++host_n);
     printf("[mdns] conflict on host name, renamed to %s\n", host);
   } else {
+    /* RFC 6762 §8.4: renaming changes the PTR's rdata — a goodbye for the
+     * old first */
+    mdns_withdraw(m, ptr_bit());
     snprintf(inst, sizeof(inst), "Pyro Unit 1 (%d)._pyro._tcp.local", ++inst_n);
     printf("[mdns] conflict on service name, renamed to %s\n", inst);
   }

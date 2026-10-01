@@ -998,19 +998,6 @@ TEST(test_malformed_messages_ignored) {
 
 /* ══ Conflicts while running (RFC 6762 §9) ════════════════════════════ */
 
-TEST(test_conflict_while_running) {
-  setup();
-  to_running();
-  q_begin(0, DNS_FLAG_QR | DNS_FLAG_AA);
-  q_rr_srv(0, INST, 8080, HOST, 120);
-  feed();
-  ASSERT_EQ(conflict_calls, 1);
-  ASSERT_EQ(conflict_index, REC_SRV);
-  ASSERT_EQ(mdns_state(&m), MDNS_STATE_CONFLICT);
-  query(HOST, DNS_TYPE_A);
-  ASSERT_EQ(n_frames, 0);
-}
-
 TEST(test_running_other_type_not_conflict) {
   static const uint8_t aaaa[16] = {0xFE, 0x80};
   setup();
@@ -1189,7 +1176,6 @@ int main(void) {
   RUN_TEST(test_qu_from_unspecified_source_is_multicast);
   RUN_TEST(test_legacy_from_unspecified_source_ignored);
   RUN_TEST(test_malformed_messages_ignored);
-  RUN_TEST(test_conflict_while_running);
   RUN_TEST(test_running_other_type_not_conflict);
   RUN_TEST(test_shared_ptr_never_conflicts);
   RUN_TEST(test_stop_sends_goodbye_and_leaves);
