@@ -153,7 +153,7 @@ mdns_input() / mdns_input6()  →  input()
 
 | Case | Response |
 |---|---|
-| Source port ≠ 5353 (legacy unicast, §6.7) | Unicast to the querier's address, MAC and port, at once, with its ID and the first answered question; TTLs capped at 10 s, no cache-flush bit.  A querier at 0.0.0.0 or `::` is ignored |
+| Source port ≠ 5353 (legacy unicast, §6.7) | Unicast to the querier's address, MAC and port, at once, with its ID and the first answered question; TTLs capped at 10 s, no cache-flush bit, the SRV target not compressed (§18.14).  A querier at 0.0.0.0 or `::` is ignored |
 | Every answered question has the QU bit and the querier has an address | Unicast to the querier, port 5353, at once |
 | The query has the TC bit set: more known answers follow (§7.2) | Owed: multicast after a random **400–500 ms**, and what is owed already waits with it |
 | Shared records involved (PTR or meta-query answers) | Owed: multicast after a random **20–120 ms**, aggregated (§7.2) |
@@ -218,7 +218,7 @@ dns_name_decode(msg, len, off, out, out_len);
 dns_name_skip / dns_read_question / dns_read_rr / dns_name_wire_len
 ```
 
-**Compression (RFC 1035 §4.1.4):** the writer remembers the offset of every label it writes (up to `DNS_COMPRESS_MAX`, default 16) and replaces the longest suffix that already appears in the message with a 2-byte pointer.  This covers owner names and the names inside PTR and SRV data, which RFC 6762 §18.14 requires mDNS implementations to decode.  In the demo's announcement the instance name is spelled out only once (unit-tested).
+**Compression (RFC 1035 §4.1.4):** the writer remembers the offset of every label it writes (up to `DNS_COMPRESS_MAX`, default 16) and replaces the longest suffix that already appears in the message with a 2-byte pointer.  This covers owner names and the names inside PTR and SRV data, which RFC 6762 §18.14 requires mDNS implementations to decode — except the SRV target in a legacy unicast reply, which §18.14 forbids compressing: `dns_write_name_flat()` writes it in full (later names may still point into it).  In the demo's announcement the instance name is spelled out only once (unit-tested).
 
 **Reading:** compressed names are compared and decoded without copying them into a buffer, following at most 32 pointer hops.
 

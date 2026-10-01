@@ -173,7 +173,7 @@ static int find_compress_target(const dns_writer_t *w, const char *s) {
   return -1;
 }
 
-int dns_write_name(dns_writer_t *w, const char *name) {
+static int write_name(dns_writer_t *w, const char *name, int compress) {
   if (dns_name_wire_len(name) < 0)
     return -2;
 
@@ -184,7 +184,7 @@ int dns_write_name(dns_writer_t *w, const char *name) {
 
   for (;;) {
     /* REQ-MDNS-043: replace the longest already-written suffix */
-    if (*p != '\0') {
+    if (compress && *p != '\0') {
       int target = find_compress_target(w, p);
       if (target >= 0) {
         if (dns_write_u16(w, (uint16_t)(0xC000 | target)) < 0)
@@ -214,6 +214,14 @@ overflow:
   dns_writer_rollback(w, start);
   w->overflow = 1;
   return -1;
+}
+
+int dns_write_name(dns_writer_t *w, const char *name) {
+  return write_name(w, name, 1);
+}
+
+int dns_write_name_flat(dns_writer_t *w, const char *name) {
+  return write_name(w, name, 0);
 }
 
 int dns_write_header(dns_writer_t *w, uint16_t id, uint16_t flags,

@@ -1460,7 +1460,7 @@ int main(void) {
   RUN_TEST(itest_dnssd_034_dots_separate_labels);
   RUN_TEST(itest_dnssd_035_txt_keys_checked);
   RUN_TEST(itest_dnssd_038_srv_target_never_root);
-  RUN_XFAIL(itest_mdns_043_legacy_srv_target_uncompressed);
+  RUN_TEST(itest_mdns_043_legacy_srv_target_uncompressed);
   RUN_TEST(itest_mdns_044_nonzero_opcode_ignored);
   RUN_TEST(itest_mdns_045_nonzero_rcode_ignored);
   RUN_TEST(itest_mdns_061_responses_from_other_ports_ignored);

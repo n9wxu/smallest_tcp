@@ -94,6 +94,11 @@ int dns_write_u32(dns_writer_t *w, uint32_t v);
  */
 int dns_write_name(dns_writer_t *w, const char *name);
 
+/** As dns_write_name(), but in full, without a compression pointer — for
+ *  the SRV target of a legacy unicast response (RFC 6762 §18.14).  Later
+ *  names may still point into it. */
+int dns_write_name_flat(dns_writer_t *w, const char *name);
+
 /** Two dotted names are the same name (case-insensitive, trailing dot
  *  optional). */
 int dns_dotted_equal(const char *a, const char *b);

@@ -271,16 +271,21 @@ static int write_txt(dns_writer_t *w, const char *const *txt) {
   return 0;
 }
 
-/* Write one resource record (for AAAA, the address @p a6); on overflow
- * nothing is left behind. */
+static uint32_t rr_ttl(const resp_opts_t *o, uint32_t ttl);
+static uint16_t rr_class(const resp_opts_t *o, const mdns_record_t *r);
+
+/* Write one resource record (for AAAA, the address @p a6) as response
+ * @p o has it, or as a probe proposes it (@p o NULL); on overflow nothing
+ * is left behind. */
 static int write_one(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
-                     uint32_t ttl, uint16_t class_, const uint8_t *a6) {
+                     const resp_opts_t *o, const uint8_t *a6) {
   dns_writer_mark_t mark = dns_writer_mark(w);
   int err;
   (void)m; /* used by A records only */
   (void)a6;
   if (dns_write_name(w, r->name) < 0 || dns_write_u16(w, r->type) < 0 ||
-      dns_write_u16(w, class_) < 0 || dns_write_u32(w, ttl) < 0)
+      dns_write_u16(w, rr_class(o, r)) < 0 ||
+      dns_write_u32(w, rr_ttl(o, r->ttl)) < 0)
     goto fail;
   uint16_t rdlen_pos = w->len;
   if (dns_write_u16(w, 0) < 0)
@@ -295,11 +300,15 @@ static int write_one(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
     err = dns_write_name(w, r->rdata.ptr);
     break;
   case DNS_TYPE_SRV:
-    err = (dns_write_u16(w, r->rdata.srv.priority) < 0 ||
-           dns_write_u16(w, r->rdata.srv.weight) < 0 ||
-           dns_write_u16(w, r->rdata.srv.port) < 0)
-              ? -1
-              : dns_write_name(w, r->rdata.srv.target);
+    /* REQ-MDNS-043: a legacy reply's SRV target is not compressed */
+    if (dns_write_u16(w, r->rdata.srv.priority) < 0 ||
+        dns_write_u16(w, r->rdata.srv.weight) < 0 ||
+        dns_write_u16(w, r->rdata.srv.port) < 0)
+      err = -1;
+    else if (o && o->legacy)
+      err = dns_write_name_flat(w, r->rdata.srv.target);
+    else
+      err = dns_write_name(w, r->rdata.srv.target);
     break;
   case DNS_TYPE_TXT:
     err = write_txt(w, r->rdata.txt);
@@ -326,14 +335,14 @@ fail:
  * @return RRs written (0 if an AAAA record has no usable address), or -1
  *         on overflow (then nothing is left behind). */
 static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
-                    uint32_t ttl, uint16_t class_) {
+                    const resp_opts_t *o) {
 #if NET_USE_IPV6
   if (r->type == DNS_TYPE_AAAA) {
     const uint8_t *addrs[NET_IPV6_ADDRS];
     dns_writer_mark_t mark = dns_writer_mark(w);
     uint8_t n = aaaa_addrs(m, r, addrs), k;
     for (k = 0; k < n; k++) {
-      if (write_one(m, w, r, ttl, class_, addrs[k]) < 0) {
+      if (write_one(m, w, r, o, addrs[k]) < 0) {
         dns_writer_rollback(w, mark);
         return -1;
       }
@@ -341,7 +350,7 @@ static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
     return n;
   }
 #endif
-  return write_one(m, w, r, ttl, class_, NULL) < 0 ? -1 : 1;
+  return write_one(m, w, r, o, NULL) < 0 ? -1 : 1;
 }
 
 /* NSEC for the unique name of record @p r, restricted form (RFC 6762
@@ -382,6 +391,8 @@ fail:
 /* ── Responses (announcements, answers, goodbyes) ── */
 
 static uint32_t rr_ttl(const resp_opts_t *o, uint32_t ttl) {
+  if (!o)
+    return ttl;
   if (o->goodbye)
     return 0;
   if (o->legacy && ttl > MDNS_LEGACY_TTL_MAX)
@@ -390,9 +401,10 @@ static uint32_t rr_ttl(const resp_opts_t *o, uint32_t ttl) {
 }
 
 static uint16_t rr_class(const resp_opts_t *o, const mdns_record_t *r) {
-  /* RFC 6762 §10.2: cache-flush bit on unique records, never in legacy */
-  return (uint16_t)(DNS_CLASS_IN |
-                    ((!o->legacy && !is_shared(r)) ? DNS_CLASS_TOPBIT : 0));
+  /* RFC 6762 §10.2: cache-flush bit on unique records, never in legacy
+   * replies or probes */
+  int flush = o && !o->legacy && !is_shared(r);
+  return (uint16_t)(DNS_CLASS_IN | (flush ? DNS_CLASS_TOPBIT : 0));
 }
 
 static void resp_begin(mdns_t *m, pkt_t *p, const resp_opts_t *o) {
@@ -412,7 +424,7 @@ static void resp_begin(mdns_t *m, pkt_t *p, const resp_opts_t *o) {
 static int write_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
                         const mdns_record_t *r, int nsec) {
   return nsec ? write_nsec(m, &p->w, r, rr_ttl(o, r->ttl), rr_class(o, r))
-              : write_rr(m, &p->w, r, rr_ttl(o, r->ttl), rr_class(o, r));
+              : write_rr(m, &p->w, r, o);
 }
 
 static void add_answer(mdns_t *m, pkt_t *p, const resp_opts_t *o,
@@ -473,8 +485,7 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
   for (i = 0; i < m->count; i++) {
     const mdns_record_t *r = &m->records[i];
     int n;
-    if ((additionals & BIT(i)) &&
-        (n = write_rr(m, &p.w, r, rr_ttl(o, r->ttl), rr_class(o, r))) > 0)
+    if ((additionals & BIT(i)) && (n = write_rr(m, &p.w, r, o)) > 0)
       p.ar = (uint16_t)(p.ar + n);
   }
 
@@ -577,7 +588,7 @@ static int build_probe(mdns_t *m, pkt_t *p, const dest_t *d, uint32_t names) {
     const mdns_record_t *r = &m->records[i];
     if (!live(m, i) || is_shared(r) || !(names & BIT(name_rep(m, i))))
       continue;
-    int n = write_rr(m, &p->w, r, r->ttl, DNS_CLASS_IN);
+    int n = write_rr(m, &p->w, r, NULL);
     if (n < 0)
       return -1;
     p->ns = (uint16_t)(p->ns + n);
