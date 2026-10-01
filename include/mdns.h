@@ -153,7 +153,11 @@ void mdns_tick(mdns_t *m, uint32_t elapsed_ms);
 
 #if NET_USE_IPV4
 /**
- * Process one mDNS message received on UDP port 5353.
+ * Process one mDNS message received on UDP port 5353.  @p msg is the
+ * payload pointer the UDP handler received, into net->rx.buf: the
+ * responder reads the packet's destination address from the frame, as a
+ * response sent by unicast counts only from an on-link source (RFC 6762
+ * §11).  A message from anywhere else is taken as unicast.
  * @param src_port  Querier's source port; not 5353 = legacy unicast query.
  */
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,

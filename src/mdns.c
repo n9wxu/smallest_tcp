@@ -1118,16 +1118,50 @@ static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
                (net_read16be(msg + DNS_OFF_FLAGS) & DNS_FLAG_TC));
 }
 
+/* The packet @p msg came in was sent to the mDNS group.  The UDP handlers
+ * pass a pointer into the frame in net->rx.buf, whose IP header holds the
+ * destination; a message from elsewhere counts as unicast. */
+static int sent_to_group(const mdns_t *m, const dest_t *from,
+                         const uint8_t *msg) {
+  const uint8_t *ip = m->net->rx.buf + ETH_HDR_SIZE;
+  uintptr_t at = (uintptr_t)msg, rx = (uintptr_t)m->net->rx.buf;
+  if (at < rx || at - rx >= m->net->rx.capacity)
+    return 0;
+  return BY_FAMILY(from, net_read32be(ip + IPV4_OFF_DST) == MDNS_GROUP,
+                   memcmp(ip + IPV6_OFF_DST, mdns_group6, 16) == 0);
+}
+
+/* A source on our IPv4 subnet, or link-local or on an on-link IPv6 prefix */
+static int on_link(const mdns_t *m, const dest_t *from) {
+  return BY_FAMILY(from,
+                   m->net->ipv4_addr != 0 && ipv4_is_local(m->net, from->ip),
+                   ipv6_on_link(m->net, from->ip6));
+}
+
+/* REQ-MDNS-061, 062 (RFC 6762 §6, §11): a response counts only from port
+ * 5353 and from the local link — sent to the group, or from on-link */
+static int response_acceptable(const mdns_t *m, const dest_t *from,
+                               const uint8_t *msg) {
+  return from->port == MDNS_PORT &&
+         (sent_to_group(m, from, msg) || on_link(m, from));
+}
+
+/* REQ-MDNS-044, 045 (RFC 6762 §18.3, §18.11): messages with a non-zero
+ * OPCODE or RCODE are ignored, queries and responses alike */
 static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
                   uint16_t len) {
   uint16_t flags;
   if (silent(m) || len < DNS_HDR_SIZE)
     return;
   flags = net_read16be(msg + DNS_OFF_FLAGS);
-  if (flags & DNS_FLAG_QR)
+  if (flags & (DNS_OPCODE_MASK | DNS_RCODE_MASK))
+    return;
+  if (!(flags & DNS_FLAG_QR)) {
+    if (m->state != MDNS_STATE_PROBING)
+      query_input(m, from, msg, len);
+  } else if (response_acceptable(m, from, msg)) {
     check_conflicts(m, msg, len);
-  else if ((flags & DNS_OPCODE_MASK) == 0 && m->state != MDNS_STATE_PROBING)
-    query_input(m, from, msg, len);
+  }
 }
 
 #if NET_USE_IPV4

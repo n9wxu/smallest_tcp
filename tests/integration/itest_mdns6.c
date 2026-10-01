@@ -314,7 +314,7 @@ TEST(itest_mdns6_074_aaaa_only_for_usable_addresses) {
 int main(void) {
   fprintf(stderr, "=== itest_mdns6 ===\n");
   RUN_TEST(itest_mdns6_059_lost_address_reannounced);
-  RUN_XFAIL(itest_mdns6_062_ipv6_responses_only_from_the_link);
+  RUN_TEST(itest_mdns6_062_ipv6_responses_only_from_the_link);
   RUN_XFAIL(itest_mdns6_065_nsec_for_aaaa_without_an_address);
   RUN_XFAIL(itest_mdns6_074_aaaa_only_for_usable_addresses);
   ITEST_REPORT();

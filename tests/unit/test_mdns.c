@@ -975,26 +975,6 @@ TEST(test_legacy_from_unspecified_source_ignored) {
   ASSERT_EQ(n_frames, 0);
 }
 
-/* Responses are not queries: never answered */
-TEST(test_responses_not_answered) {
-  setup();
-  to_running();
-  q_begin(0, DNS_FLAG_QR | DNS_FLAG_AA);
-  q_question(HOST, DNS_TYPE_A, 0);
-  feed();
-  mdns_tick(&m, 200);
-  ASSERT_EQ(n_frames, 0);
-}
-
-TEST(test_nonzero_opcode_ignored) {
-  setup();
-  to_running();
-  q_begin(0, 0x2800); /* opcode 5 (UPDATE) */
-  q_question(HOST, DNS_TYPE_A, 0);
-  feed();
-  ASSERT_EQ(n_frames, 0);
-}
-
 /* REQ-MDNS-041: malformed input is dropped without a reply */
 TEST(test_malformed_messages_ignored) {
   static const uint8_t short_msg[5] = {0};
@@ -1208,8 +1188,6 @@ int main(void) {
   RUN_TEST(test_legacy_unicast_query);
   RUN_TEST(test_qu_from_unspecified_source_is_multicast);
   RUN_TEST(test_legacy_from_unspecified_source_ignored);
-  RUN_TEST(test_responses_not_answered);
-  RUN_TEST(test_nonzero_opcode_ignored);
   RUN_TEST(test_malformed_messages_ignored);
   RUN_TEST(test_conflict_while_running);
   RUN_TEST(test_running_other_type_not_conflict);

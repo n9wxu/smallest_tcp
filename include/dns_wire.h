@@ -35,6 +35,7 @@
 #define DNS_FLAG_AA 0x0400     /**< Authoritative answer */
 #define DNS_FLAG_TC 0x0200     /**< Truncated */
 #define DNS_OPCODE_MASK 0x7800 /**< Opcode field (0 = standard query) */
+#define DNS_RCODE_MASK 0x000F  /**< Response code (0 = no error) */
 
 /* Record types and classes */
 #define DNS_TYPE_A 1

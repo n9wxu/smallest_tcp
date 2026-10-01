@@ -38,7 +38,7 @@ Also not implemented, as simplifications of the responder:
 - **Multicast rate limit** (§6): a record may be multicast again as soon as another query asks for it, not only once per second.
 - **Duplicate-answer suppression** (§7.4): a delayed answer is sent even if another responder multicasts the same record meanwhile.
 - **QU answers are always unicast**; the §5.4 rule to multicast instead when the record has not been multicast within a quarter of its TTL is not applied.
-- **Source-address check** (§11): queries are not checked for an on-link source.
+- **QU answers to off-subnet queriers** (§11): a QU query from a source off our subnet is answered by unicast, where §11 recommends multicast.  Responses, which §11 requires to come from the local link, are checked (§7.1).
 - **IGMP queries** are not answered (§10).
 
 ---
@@ -135,8 +135,9 @@ Two gratuitous responses (QR=1, AA=1, ID=0), one on entering ANNOUNCING and one 
 
 ```
 mdns_input() / mdns_input6()  →  input()
-    QR = 1                         → check_conflicts()
-    QR = 0, opcode 0, not PROBING  → query_input()
+    OPCODE or RCODE not 0          → ignored (§18.3, §18.11)
+    QR = 1, from port 5353 and the local link → check_conflicts()
+    QR = 0, not PROBING            → query_input()
         each question of class IN or ANY → match_question()        fills wanted_t
         suppress_known_answers()          (the query's Answer section)
         answer()                          legacy unicast | QU unicast | multicast now | owe_response()
@@ -192,7 +193,9 @@ typedef struct {
 
 **Conflict while running** (RFC 6762 §9): a response with a record of the same name *and type* as one of our unique records but different data.  Other types under our name are not conflicts once we own it.  The callback receives the index of the first of our records with that name and type.
 
-**Robustness:** every read is bounds-checked; malformed messages, pointer loops and absurd section counts end processing without a reply.  Responses (QR=1) are never answered, and queries with a non-zero opcode are ignored.
+**Robustness:** every read is bounds-checked; malformed messages, pointer loops and absurd section counts end processing without a reply.  Responses (QR=1) are never answered.  Messages with a non-zero OPCODE or RCODE are ignored, queries and responses alike (RFC 6762 §18.3, §18.11).
+
+**Which responses count** (`response_acceptable()`): only those from UDP port 5353 (§6) and from the local link (§11) — sent to 224.0.0.251 or ff02::fb, whatever the source, or else from a source on our IPv4 subnet, link-local, or on the /64 of one of our IPv6 addresses (`ipv6_on_link()`).  The UDP handlers do not pass the destination address, so `sent_to_group()` reads it from the frame in `net->rx.buf`, where the payload pointer they pass points (fixed offsets: the Ethernet header is always 14 bytes, and the destination field sits before any IPv4 option or IPv6 extension header).  A message handed to `mdns_input()` from anywhere else counts as unicast.
 
 ---
 

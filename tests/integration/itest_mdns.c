@@ -1461,10 +1461,10 @@ int main(void) {
   RUN_TEST(itest_dnssd_035_txt_keys_checked);
   RUN_TEST(itest_dnssd_038_srv_target_never_root);
   RUN_XFAIL(itest_mdns_043_legacy_srv_target_uncompressed);
-  RUN_XFAIL(itest_mdns_044_nonzero_opcode_ignored);
-  RUN_XFAIL(itest_mdns_045_nonzero_rcode_ignored);
-  RUN_XFAIL(itest_mdns_061_responses_from_other_ports_ignored);
-  RUN_XFAIL(itest_mdns_062_responses_only_from_the_local_link);
+  RUN_TEST(itest_mdns_044_nonzero_opcode_ignored);
+  RUN_TEST(itest_mdns_045_nonzero_rcode_ignored);
+  RUN_TEST(itest_mdns_061_responses_from_other_ports_ignored);
+  RUN_TEST(itest_mdns_062_responses_only_from_the_local_link);
   RUN_TEST(itest_mdns_070_questions_in_responses_ignored);
   RUN_XFAIL(itest_mdns_052_responses_before_the_first_probe_ignored);
   RUN_TEST(itest_mdns_053_any_record_of_the_name_conflicts_while_probing);
