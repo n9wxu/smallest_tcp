@@ -166,4 +166,15 @@ int dns_read_question(const uint8_t *msg, uint16_t len, uint16_t off,
 /** Parse a resource record at @p off.  @return next offset, or -1. */
 int dns_read_rr(const uint8_t *msg, uint16_t len, uint16_t off, dns_rr_t *rr);
 
+/**
+ * Compare the rdata of record @p a (in @p ma) with that of @p b (in @p mb)
+ * as RFC 6762 §8.2 orders them: byte by byte as unsigned values, names
+ * uncompressed (in the rdata of the types §18.14 lets compress: NS, CNAME,
+ * PTR, DNAME, MX, AFSDB, RT, KX, SRV, NSEC), the rdata that ends first
+ * being the earlier.
+ * @return < 0, 0 or > 0 as @p a's rdata is earlier, the same, or later.
+ */
+int dns_rdata_compare(const uint8_t *ma, uint16_t la, const dns_rr_t *a,
+                      const uint8_t *mb, uint16_t lb, const dns_rr_t *b);
+
 #endif /* DNS_WIRE_H */

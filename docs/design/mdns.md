@@ -29,7 +29,7 @@ The module is a **responder**: it probes for its unique names, announces its rec
 | Known-answer suppression, QU and legacy unicast responses | ✅ |
 | NSEC negative answers for types a name lacks (RFC 6762 §6.1) | ✅ |
 | IPv6: ff02::fb, AAAA records, both families (§11) | ✅ (Milestone 12) |
-| Simultaneous-probe tiebreak (RFC 6762 §8.2) | — |
+| Simultaneous-probe tiebreak (RFC 6762 §8.2) | ✅ |
 | Multi-packet known-answer lists (TC bit, §7.2) | ✅ (answering; never sent) |
 | mDNS querier (resolve `.local` names), DNS-SD browser | — |
 
@@ -123,6 +123,8 @@ no conflict by t0 + 750 ms → ANNOUNCING, first announcement at once
 A probe is a query (QR=0, ID=0) with one `ANY` question per distinct unique name, the unicast-response (QU) bit set, and the unique records in the Authority section (no cache-flush bit).  `send_probes()` sends one set per address family (§11).  If the TX buffer cannot hold every name, `send_probes_to()` packs names greedily into several probe packets, retrying `build_probe()` with one name more each time; a name that does not fit even alone is not probed.
 
 **Conflict while probing** (`check_conflicts()`): any record in a response — Answer, Authority or Additional section — under one of our unique names, of any type, that is not identical to one of our records.  Goodbye records (TTL 0) and classes other than IN are ignored, and so is a response that arrives before the first probe is sent (§8.1: it may be a stale packet, the host's own even).  It is the probing that fails: the responder enters CONFLICT and calls the conflict callback with the index of the name's first unique record (§8.1: the probing host MUST defer to the existing one).
+
+**Simultaneous probes** (`probe_tiebreak()`, §8.2): two hosts probing for the same name at once would hear no answer and both take it.  So a query that arrives while PROBING, with a question for a name we are probing for and records of that name in its Authority section, is another host's probe: its proposed records are compared with ours, and the lexicographically later set wins.  Ours are those our probe carries — `build_probe()` writes them into `net->tx.buf`, free while a message is read — so both sides are records in a DNS message, compared alike.  Records are ordered by class (without the cache-flush bit), type, then rdata byte by byte with names uncompressed (`dns_rdata_compare()`: a compression pointer says where a name is, not what it is); each set is sorted and the two compared pairwise until a difference, a set that runs out first losing (§8.2.1).  `compare_sets()` does this without sorting or storage: it walks the values from the smallest up, each step finding the next larger value in both sets and counting each set's copies of it, until the counts differ — then the set with fewer copies wins if a later record follows them, else loses.  If ours are earlier the responder defers: it waits `MDNS_TIEBREAK_WAIT_MS` (1 s) and probes again from the first probe — a real winner will by then answer, a stale echo of our own probe will not.  If ours are later, or the sets are the same (§8.2.1: no conflict), the other probe is ignored.
 
 ---
 
@@ -221,6 +223,7 @@ dns_name_equals(msg, len, off, "pyro-dead01.local");   /* wire vs dotted, case-i
 dns_dotted_equal("Pyro-Dead01.local.", "pyro-dead01.local");  /* dotted vs dotted */
 dns_name_decode(msg, len, off, out, out_len);
 dns_name_skip / dns_read_question / dns_read_rr / dns_name_wire_len
+dns_rdata_compare(ma, la, &a, mb, lb, &b);             /* RFC 6762 §8.2 order, names uncompressed */
 ```
 
 **Compression (RFC 1035 §4.1.4):** the writer remembers the offset of every label it writes (up to `DNS_COMPRESS_MAX`, default 16) and replaces the longest suffix that already appears in the message with a 2-byte pointer.  This covers owner names and the names inside PTR and SRV data, which RFC 6762 §18.14 requires mDNS implementations to decode — except the SRV target in a legacy unicast reply, which §18.14 forbids compressing: `dns_write_name_flat()` writes it in full (later names may still point into it).  In the demo's announcement the instance name is spelled out only once (unit-tested).
@@ -356,6 +359,6 @@ Runs in CI after the Scapy suite, with `avahi-daemon` on tap0: `avahi-resolve` f
 ## 14. Decisions (were open questions)
 
 1. **IGMP retransmit:** the report is sent on join and repeated once when announcing starts (~0.75 s later).  Queries are not answered (§10).
-2. **Probe tiebreak (RFC 6762 §8.2):** deferred.  Two hosts probing the same name at the same moment may both proceed; the first response each sees afterwards is a conflict while running, and each probes for the name again — a loser then meets the winner's answer.
+2. **Probe tiebreak (RFC 6762 §8.2):** implemented (§5): `compare_sets()` walks both record sets in order without sorting them.
 3. **Multiple interfaces:** single-interface — one `mdns_t` per `net_t`.
 4. **Address change:** the A record can follow `net->ipv4_addr` (`.rdata.a = 0`); call `mdns_start()` after a DHCP renumbering to re-probe and re-announce.  AAAA records follow the interface's IPv6 addresses (`.rdata.aaaa = NULL`); call `mdns_readdress6()` when one becomes usable.

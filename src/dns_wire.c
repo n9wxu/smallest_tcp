@@ -1,6 +1,7 @@
 /**
  * @file dns_wire.c
- * @brief DNS wire-format helpers (RFC 1035 §3-4).
+ * @brief DNS wire-format helpers (RFC 1035 §3-4), and the rdata order of
+ *        RFC 6762 §8.2.
  *
  * Implements REQ-MDNS-003 (wire format), REQ-MDNS-043 (name compression)
  * and REQ-MDNS-051, REQ-DNSSD-031 (label / name length limits: 63 and 255
@@ -317,6 +318,94 @@ int dns_read_question(const uint8_t *msg, uint16_t len, uint16_t off,
   q->type = net_read16be(msg + p);
   q->class_ = net_read16be(msg + p + 2);
   return p + 4;
+}
+
+/* Where a type's rdata holds a name that may be compressed (RFC 6762
+ * §18.14), or NO_NAME */
+#define NO_NAME 0xFFFFu
+static uint16_t rdata_name_at(uint16_t type) {
+  switch (type) {
+  case 2:  /* NS */
+  case 5:  /* CNAME */
+  case 39: /* DNAME */
+  case DNS_TYPE_PTR:
+  case DNS_TYPE_NSEC:
+    return 0;
+  case 15: /* MX */
+  case 18: /* AFSDB */
+  case 21: /* RT */
+  case 36: /* KX */
+    return 2;
+  case DNS_TYPE_SRV:
+    return 6;
+  default:
+    return NO_NAME;
+  }
+}
+
+/* The bytes of a record's rdata, its name uncompressed */
+typedef struct {
+  wire_iter_t it; /* in the name */
+  const uint8_t *label;
+  uint16_t pos, end; /* raw bytes left: [pos, end) */
+  uint16_t name;     /* where the name starts, or NO_NAME */
+  uint8_t left;      /* bytes of the label left */
+  uint8_t in_name;
+} rdata_iter_t;
+
+static void rdata_begin(rdata_iter_t *c, const uint8_t *msg, uint16_t len,
+                        const dns_rr_t *rr) {
+  uint16_t at = rdata_name_at(rr->type);
+  wire_begin(&c->it, msg, len, rr->rdata_off);
+  c->pos = rr->rdata_off;
+  c->end = (uint16_t)(rr->rdata_off + rr->rdlen);
+  c->name = (at < rr->rdlen) ? (uint16_t)(rr->rdata_off + at) : NO_NAME;
+  c->left = 0;
+  c->in_name = 0;
+}
+
+/* The next byte, or -1 at the end */
+static int rdata_next(rdata_iter_t *c) {
+  for (;;) {
+    if (c->in_name) {
+      int n, after;
+      if (c->left) {
+        c->left--;
+        return *c->label++;
+      }
+      n = wire_next(&c->it, &c->label);
+      if (n > 0) {
+        c->left = (uint8_t)n;
+        return n;
+      }
+      /* the root label ends the name (a malformed one ends the rdata) */
+      after = dns_name_skip(c->it.msg, c->it.len, c->name);
+      c->pos = (n < 0 || after < 0) ? c->end : (uint16_t)after;
+      c->name = NO_NAME;
+      c->in_name = 0;
+      return 0;
+    }
+    if (c->pos == c->name) {
+      wire_begin(&c->it, c->it.msg, c->it.len, c->pos);
+      c->in_name = 1;
+      continue;
+    }
+    if (c->pos >= c->end)
+      return -1;
+    return c->it.msg[c->pos++];
+  }
+}
+
+int dns_rdata_compare(const uint8_t *ma, uint16_t la, const dns_rr_t *a,
+                      const uint8_t *mb, uint16_t lb, const dns_rr_t *b) {
+  rdata_iter_t x, y;
+  rdata_begin(&x, ma, la, a);
+  rdata_begin(&y, mb, lb, b);
+  for (;;) {
+    int p = rdata_next(&x), q = rdata_next(&y);
+    if (p != q || p < 0)
+      return p - q;
+  }
 }
 
 int dns_read_rr(const uint8_t *msg, uint16_t len, uint16_t off, dns_rr_t *rr) {

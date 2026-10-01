@@ -1469,7 +1469,7 @@ int main(void) {
   RUN_TEST(itest_mdns_052_responses_before_the_first_probe_ignored);
   RUN_TEST(itest_mdns_053_any_record_of_the_name_conflicts_while_probing);
   RUN_XFAIL(itest_mdns_054_fifteen_conflicts_slow_probing_down);
-  RUN_XFAIL(itest_mdns_055_simultaneous_probe_lost_waits_a_second);
+  RUN_TEST(itest_mdns_055_simultaneous_probe_lost_waits_a_second);
   RUN_TEST(itest_mdns_055_simultaneous_probe_won_or_tied);
   RUN_TEST(itest_mdns_057_conflict_while_running_probes_again);
   RUN_TEST(itest_mdns_057_conflict_while_running_undefended_keeps_name);

@@ -1252,7 +1252,153 @@ static void more_known_answers(mdns_t *m, const dest_t *from,
   p->service_types = w.service_types | (p->service_types & p->others);
 }
 
-/* A query: answered unless malformed (REQ-MDNS-041) or while probing */
+/* ── Simultaneous probe tiebreaking (RFC 6762 §8.2) ── */
+
+/* The records named @p name among the @p n records at @p off of a
+ * message, and a place in them */
+typedef struct {
+  const uint8_t *msg;
+  uint16_t len, off, n;
+  const char *name;
+} rrlist_t;
+
+typedef struct {
+  uint16_t off, left;
+} rrpos_t;
+
+static void rrlist_rewind(const rrlist_t *l, rrpos_t *p) {
+  p->off = l->off;
+  p->left = l->n;
+}
+
+static int rrlist_next(const rrlist_t *l, rrpos_t *p, dns_rr_t *rr) {
+  while (p->left) {
+    int next = dns_read_rr(l->msg, l->len, p->off, rr);
+    if (next < 0)
+      break;
+    p->left--;
+    p->off = (uint16_t)next;
+    if (dns_name_equals(l->msg, l->len, rr->name_off, l->name))
+      return 1;
+  }
+  p->left = 0;
+  return 0;
+}
+
+/* §8.2: by class (without the cache-flush bit), type, then rdata with its
+ * names uncompressed */
+static int rr_order(const rrlist_t *la, const dns_rr_t *a, const rrlist_t *lb,
+                    const dns_rr_t *b) {
+  int d = (int)(a->class_ & DNS_CLASS_MASK) - (int)(b->class_ & DNS_CLASS_MASK);
+  if (d == 0)
+    d = (int)a->type - (int)b->type;
+  if (d == 0)
+    d = dns_rdata_compare(la->msg, la->len, a, lb->msg, lb->len, b);
+  return d;
+}
+
+/*
+ * §8.2.1: both lists sorted, compared pairwise until a difference, a list
+ * that runs out first being the earlier.  Done without sorting: value by
+ * value from the smallest, counting each list's copies of it, until the
+ * counts differ.  @return < 0 if ours (lists[0]) are earlier — we lose —,
+ * 0 if the lists are the same, > 0 if ours are later.
+ */
+static int compare_sets(const rrlist_t *const lists[2]) {
+  uint16_t total[2] = {0, 0}, done[2] = {0, 0}, same[2];
+  const rrlist_t *prev_l = NULL, *min_l;
+  dns_rr_t prev, min, rr;
+  rrpos_t p;
+  int k;
+  for (k = 0; k < 2; k++) {
+    for (rrlist_rewind(lists[k], &p); rrlist_next(lists[k], &p, &rr);)
+      total[k]++;
+  }
+  for (;;) {
+    min_l = NULL;
+    for (k = 0; k < 2; k++) {
+      for (rrlist_rewind(lists[k], &p); rrlist_next(lists[k], &p, &rr);) {
+        if ((!prev_l || rr_order(lists[k], &rr, prev_l, &prev) > 0) &&
+            (!min_l || rr_order(lists[k], &rr, min_l, &min) < 0)) {
+          min = rr;
+          min_l = lists[k];
+        }
+      }
+    }
+    if (!min_l)
+      return 0;
+    for (k = 0; k < 2; k++) {
+      same[k] = 0;
+      for (rrlist_rewind(lists[k], &p); rrlist_next(lists[k], &p, &rr);)
+        same[k] =
+            (uint16_t)(same[k] + (rr_order(lists[k], &rr, min_l, &min) == 0));
+    }
+    if (same[0] != same[1]) {
+      /* The list with fewer copies wins if a later record follows them */
+      k = same[0] < same[1] ? 0 : 1;
+      return ((done[k] + same[k] < total[k]) == (k == 0)) ? 1 : -1;
+    }
+    done[0] = (uint16_t)(done[0] + same[0]);
+    done[1] = (uint16_t)(done[1] + same[1]);
+    prev = min;
+    prev_l = min_l;
+  }
+}
+
+/*
+ * REQ-MDNS-055 (RFC 6762 §8.2): another host probing for a name we are
+ * probing for — a question for it, and records of it in Authority.  Our
+ * proposed records, written as our probe has them, against its: if ours
+ * are earlier we wait a second and probe again; if later, or the same,
+ * its probe is ignored.  @return 1 if we deferred.
+ */
+static int probe_tiebreak(mdns_t *m, const uint8_t *msg, uint16_t len) {
+  uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT);
+  uint16_t an = net_read16be(msg + DNS_OFF_ANCOUNT), k;
+  rrlist_t ours, theirs;
+  const rrlist_t *const lists[2] = {&ours, &theirs};
+  dns_question_t q, mine;
+  dns_rr_t rr;
+  int off = DNS_HDR_SIZE;
+  uint8_t i;
+  for (k = 0; k < qd + an && off >= 0; k++) {
+    off = k < qd ? dns_read_question(msg, len, (uint16_t)off, &q)
+                 : dns_read_rr(msg, len, (uint16_t)off, &rr);
+  }
+  if (off < 0)
+    return 0;
+  theirs.msg = msg;
+  theirs.len = len;
+  theirs.off = (uint16_t)off;
+  theirs.n = net_read16be(msg + DNS_OFF_NSCOUNT);
+  for (k = 0, off = DNS_HDR_SIZE; k < qd; k++) {
+    off = dns_read_question(msg, len, (uint16_t)off, &q);
+    for (i = 0; i < m->count; i++) {
+      const mdns_record_t *r = &m->records[i];
+      pkt_t p;
+      if (!(m->claim & BIT(i)) || !live(m, i) || is_shared(r) ||
+          name_rep(m, i) != i ||
+          !dns_name_equals(msg, len, q.name_off, r->name) ||
+          build_probe(m, &p, family_group(MDNS_FAMILY_V4), BIT(i)) < 0)
+        continue;
+      theirs.name = ours.name = r->name;
+      ours.msg = p.w.buf;
+      ours.len = p.w.len;
+      ours.off =
+          (uint16_t)dns_read_question(p.w.buf, p.w.len, DNS_HDR_SIZE, &mine);
+      ours.n = p.ns;
+      if (compare_sets(lists) < 0) {
+        m->step = 0;
+        m->timer_ms = MDNS_TIEBREAK_WAIT_MS;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* A query: answered unless malformed (REQ-MDNS-041), and not for the names
+ * being probed for — whose probes from other hosts are tiebroken */
 static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
                         uint16_t len) {
   uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT), k;
@@ -1260,6 +1406,8 @@ static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
   dns_question_t q;
   wanted_t w;
 
+  if (m->state == MDNS_STATE_PROBING && probe_tiebreak(m, msg, len))
+    return;
   if (qd == 0) {
     if (m->pending.timer_ms)
       more_known_answers(m, from, msg, len);
