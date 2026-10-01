@@ -124,9 +124,9 @@ static int is_our_client(const dhcpv4_server_t *s, const uint8_t *msg) {
   return s->has_client && net_mac_equal(s->client_mac, msg + DHCP_OFF_CHADDR);
 }
 
-/* The address is free, or this client's */
+/* The address is available (REQ-DHCPv4-085), and free or this client's */
 static int may_have_address(const dhcpv4_server_t *s, const uint8_t *msg) {
-  return !s->has_client || is_our_client(s, msg);
+  return !s->declined && (!s->has_client || is_our_client(s, msg));
 }
 
 static void keep_client(dhcpv4_server_t *s, const uint8_t *msg) {
@@ -168,6 +168,20 @@ static void request_input(net_t *net, dhcpv4_server_t *s, const request_t *rq,
   }
 }
 
+/* REQ-DHCPv4-085; RFC 2131 §4.3.3: a client found the address in use —
+ * "The server MUST mark the network address as not available" — and the
+ * application is told, as the administrator SHOULD be */
+static void decline_input(dhcpv4_server_t *s, const uint8_t *msg,
+                          uint16_t len) {
+  if (dhcp_option_u32(msg, len, DHCP_OPT_REQUESTED_IP, 0u) !=
+          s->cfg->offered_ip ||
+      dhcp_option_u32(msg, len, DHCP_OPT_SERVER_ID, 0u) != s->cfg->server_ip)
+    return;
+  s->declined = 1;
+  s->has_client = 0;
+  fire_event(s, DHCPV4_SRV_EVT_DECLINE);
+}
+
 /* REQ-DHCPv4-070; RFC 2131 §4.3.4: our client's address is free again */
 static void release_input(dhcpv4_server_t *s, const uint8_t *msg) {
   if (is_our_client(s, msg) &&
@@ -199,6 +213,9 @@ void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
     break;
   case DHCP_MSG_REQUEST:
     request_input(net, s, &rq, len);
+    break;
+  case DHCP_MSG_DECLINE:
+    decline_input(s, data, len);
     break;
   case DHCP_MSG_RELEASE:
     release_input(s, data);

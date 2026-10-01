@@ -514,6 +514,7 @@ typedef struct {
   void *evt_ctx;
   uint8_t client_mac[6];             /* the client's chaddr ... */
   uint8_t has_client;                /* ... if 1 */
+  uint8_t declined;                  /* 1: the address is in use */
 } dhcpv4_server_t;
 
 net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
@@ -524,9 +525,9 @@ void dhcpv4_server_input(net_t *net, dhcpv4_server_t *s, uint32_t src_ip,
                          uint16_t len);  /* from the port-67 handler */
 ```
 
-`dhcpv4_server_input()` is pure stimulus/response: one message in, at
-most one reply out, then the event (`DHCPV4_SRV_EVT_OFFER`, `_ACK` or
-`_NAK`).
+`dhcpv4_server_input()` is stimulus/response: one message in, at most
+one reply out, then the event (`DHCPV4_SRV_EVT_OFFER`, `_ACK` or
+`_NAK`; `_DECLINE` with no reply).
 
 ### 4.3 Message Handling
 
@@ -542,8 +543,21 @@ and the magic cookie.
 | REQUEST | requested address (option 50, else `ciaddr`) = `offered_ip`, from our client or with none yet | ACK; the sender becomes the client |
 | REQUEST | otherwise | NAK |
 | RELEASE | from our client, `ciaddr` = `offered_ip` | none; the address is free again |
+| DECLINE | Requested IP = `offered_ip`, our Server Identifier | none; the address is not available (below), `DHCPV4_SRV_EVT_DECLINE` |
 | INFORM | always | ACK without a lease |
 | anything else | — | none |
+
+**A declined address** (RFC 2131 §4.3.3).  A DECLINE says the client
+found the address in use by another host (its ARP probe was answered):
+"The server MUST mark the network address as not available and SHOULD
+notify the local system administrator".  The server sets `declined`,
+forgets its client and fires `DHCPV4_SRV_EVT_DECLINE`.  With its one
+address unavailable it has nothing to offer: DISCOVERs get no reply, and
+a REQUEST for the address it answers gets a NAK.  An INFORM is still
+answered.  The application decides what to do — find the host that has
+the address, change `offered_ip` — and calls `dhcpv4_server_init()`
+again to offer it once more; the server has no timer to retry on its
+own.  It used to ignore DECLINEs and offer the address again at once.
 
 **Which REQUESTs it answers** (`ours_to_answer()`, RFC 2131 §4.3.2).  A
 REQUEST with a Server Identifier selects an offer: the server answers it

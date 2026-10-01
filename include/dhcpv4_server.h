@@ -34,6 +34,9 @@ extern "C" {
 #define DHCPV4_SRV_EVT_OFFER 1 /**< DHCPOFFER sent */
 #define DHCPV4_SRV_EVT_ACK 2   /**< DHCPACK sent */
 #define DHCPV4_SRV_EVT_NAK 3   /**< DHCPNAK sent */
+/** DHCPDECLINE: a client found the address in use by another host.  It is
+ *  offered to no one until dhcpv4_server_init() is called again. */
+#define DHCPV4_SRV_EVT_DECLINE 4
 
 /** Called on DHCPV4_SRV_EVT_* with the context given to
  *  dhcpv4_server_init(). */
@@ -64,17 +67,19 @@ typedef struct {
   void *evt_ctx;                     /**< Passed to on_event */
   uint8_t client_mac[6];             /**< The client's chaddr ... */
   uint8_t has_client;                /**< ... if 1 */
+  uint8_t declined; /**< 1: the address is in use (DHCPV4_SRV_EVT_DECLINE) */
 } dhcpv4_server_t;
 
 /**
  * Initialise the server.  cfg must remain valid for the server's lifetime.
- * Initialising it again forgets its client.
+ * Initialising it again forgets its client, and makes a declined address
+ * available again.
  *
  * @param s         Application-owned server state.
  * @param net       The interface, whose frame buffers must hold
  *                  DHCPV4_SERVER_TX_MIN and DHCPV4_SERVER_RX_MIN bytes.
  * @param cfg       Server configuration (const in flash, owned by caller).
- * @param on_event  Called on OFFER/ACK/NAK (may be NULL).
+ * @param on_event  Called on DHCPV4_SRV_EVT_* (may be NULL).
  * @param evt_ctx   Passed to on_event.
  * @return NET_OK; NET_ERR_INVALID_PARAM for a NULL argument or a
  *         cfg->server_ip that is not net->ipv4_addr (replies are sent from

@@ -930,12 +930,18 @@ TEST(itest_dhcpv4_085_declined_address_offered_no_more) {
   dopt32(&m, O_SERVER, cfg.server_ip);
   to_server(&m, mac_a);
   ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(srv_events[n_srv_events - 1], DHCPV4_SRV_EVT_DECLINE);
+  ASSERT_TRUE(srv.declined);
   discover(mac_a);
   ASSERT_EQ(t.wire.tx_count, 0);
   discover(mac_b);
   ASSERT_EQ(t.wire.tx_count, 0);
   request(mac_a, cfg.server_ip, OFFERED);
   ASSERT_NE(answer(&d), M_ACK);
+
+  dhcpv4_server_init(&srv, &t.net, &cfg, on_server_event, NULL);
+  discover(mac_b);
+  ASSERT_EQ(answer(&d), M_OFFER);
 }
 
 /* REQ-DHCPv4-086, 060: a REQUEST that selects another server declines our
@@ -1169,7 +1175,7 @@ int main(void) {
   RUN_TEST(itest_dhcpv4_095_release_names_only_the_server);
   RUN_TEST(itest_dhcpv4_024_only_the_selecting_request_names_the_address);
   RUN_TEST(itest_dhcpv4_046_randomized_exponential_backoff);
-  RUN_XFAIL(itest_dhcpv4_085_declined_address_offered_no_more);
+  RUN_TEST(itest_dhcpv4_085_declined_address_offered_no_more);
   RUN_TEST(itest_dhcpv4_086_request_for_another_server_unanswered);
   RUN_TEST(itest_dhcpv4_087_unknown_init_reboot_client_unanswered);
   RUN_TEST(itest_dhcpv4_060_address_kept_for_its_client);
