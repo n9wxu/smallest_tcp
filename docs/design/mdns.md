@@ -35,7 +35,6 @@ The module is a **responder**: it probes for its unique names, announces its rec
 
 Also not implemented, as simplifications of the responder:
 
-- **Multicast rate limit** (§6): a record may be multicast again as soon as another query asks for it, not only once per second.
 - **Duplicate-answer suppression** (§7.4): a delayed answer is sent even if another responder multicasts the same record meanwhile.
 - **QU answers are always unicast**; the §5.4 rule to multicast instead when the record has not been multicast within a quarter of its TTL is not applied.
 - **QU answers to off-subnet queriers** (§11): a QU query from a source off our subnet is answered by unicast, where §11 recommends multicast.  Responses, which §11 requires to come from the local link, are checked (§7.1).
@@ -63,7 +62,7 @@ All three build into the optional `smallest_tcp_mdns` library (`smallest_tcp::md
 
 ## 4. Memory Model
 
-The application owns the record table and an `mdns_t` (48 bytes on 32-bit targets, IPv4-only or dual stack); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`; queries are read in place from `net->rx.buf`.
+The application owns the record table and an `mdns_t` (96 bytes on 32-bit targets, IPv4-only or dual stack); the responder has no static state and never allocates.  Responses are built directly in `net->tx.buf`; queries are read in place from `net->rx.buf`.
 
 ```c
 static const char *const txt[] = {"txtvers=1", "fw=1.2.3", "serial=DEAD01", NULL};
@@ -182,15 +181,37 @@ typedef struct {
   uint32_t nsec;          /* names owed a negative answer */
   uint32_t querier;       /* whose known answers count (§7.2) */
   uint32_t others;        /* answers other hosts wait for too */
+  uint32_t defend;        /* answers to a probe, owed whatever the rate limit */
+  uint32_t repair;        /* records another host sent with too low a TTL (§6.6) */
   uint8_t families;       /* MDNS_FAMILY_V4 | MDNS_FAMILY_V6: where the queries came from */
 } mdns_pending_t;
 ```
 
 `mdns_t` holds one, `pending`.  `owe_response()` ORs a query's wants and its family into it and starts the timer — 20 ms plus `net_random_below()` of 101 — only if none is running, so later queries join the response instead of postponing it.  When `mdns_tick()` runs the timer out, `send_pending()` takes a copy, clears `pending`, and multicasts the owed records to every family that asked.  `mdns_start()`, a conflict and `mdns_stop()` clear it.  Known answers in a later query do not remove what an earlier query is owed.
 
-### 7.3 Building responses
+### 7.3 The multicast rate limit (RFC 6762 §6)
 
-**Fan-out.**  `send_to_groups(m, families, answers, service_types, nsec, goodbye)` sends one response per family in the set, each to that family's group (`family_group()`: 224.0.0.251:5353 or [ff02::fb]:5353).  Announcements, goodbyes and delayed responses all go through it; it replaced three copies of the IPv4/IPv6 fan-out code.  Unicast replies are sent by `send_response()` directly to the querier.
+A responder MUST NOT multicast a record until at least a second after it last multicast it — except to answer a probe, which must be quick and needs only 250 ms (REQ-MDNS-063).  A timestamp per record would take 64 bytes or more; the responder keeps two bit sets instead.  `recent[0]` holds the records multicast in the current second, `recent[1]` those of the second before; `age_recent()`, from `mdns_tick()`, moves `recent[0]` to `recent[1]` each second (`second_ms`) and drops the old `recent[1]`.  A record is *held* while it is in either: from its multicast until the end of the next second — between one and two seconds, never less than one.  `recent_synth[]` does the same for the records the responder makes up: an NSEC (the bit of its name) and a meta-query PTR (the bit of the service type's PTR) — so that an NSEC for AAAA does not hold the A record.
+
+`send_to_groups()` sends every multicast response, in one of three ways:
+
+| How | Used by | Held records |
+|---|---|---|
+| `SEND_LIMITED` | Answers, at once or owed | Left out — a unique RRSet whole (§10.2) — answers, additionals, NSEC and meta-query PTRs alike.  A querier that missed the earlier multicast asks again |
+| `SEND_FORCED` | Announcements, probe defences | Sent: their timing keeps the rule (below) |
+| `SEND_GOODBYE` | `mdns_withdraw()`, `mdns_stop()` | Sent at once, without marking: the records are going, and `mdns_stop()` cannot wait.  This is the one case where a record can be multicast less than a second after the last time |
+
+What it sends goes into `recent[0]` (goodbyes excepted).
+
+**Announcements** wait until none of their records is held (`timer_fired()` puts the announcement off to the end of the second, as often as needed) — after `mdns_readdress6()`, say, or a conflict while running.  Then `announce()` starts the second over: every mark goes into `recent[1]`, to be dropped exactly a second later — when the next announcement, `MDNS_ANNOUNCE_WAIT_MS` (1 s) later, finds its records free.  Every mark so dropped was made at most then, so none is dropped less than a second after its multicast.
+
+**Probe defences.**  A query whose Authority section holds a record of a name it asks about is a probe (`is_probe()`).  A held answer to it is not left out but owed to `pending.defend` 250 ms from now (`owe_defence()`), and marked held at once so that nothing else multicasts it meanwhile: it goes out at least 250 ms after the record's last multicast, and well within the 750 ms the probing host waits.  Probes asking for unicast (QU, as RFC 6762 recommends) are answered by unicast, and unicast is not limited.
+
+**Correcting a low TTL** (§6.6, REQ-MDNS-075).  When another host multicasts one of our records — same name, type and rdata — with less than half our TTL, a goodbye included, queriers would drop the record too early: the responder MUST multicast it itself.  `check_conflicts()` notes the record's RRSet in `pending.repair` (`owe_repair()`, 20-120 ms); `send_pending()` sends it with the answers if it is not held, else keeps it owed until the end of the second.  Any multicast of the record in between does the job and clears it.
+
+### 7.4 Building responses
+
+**Fan-out.**  `send_to_groups(m, families, answers, service_types, nsec, how)` sends one response per family in the set, each to that family's group (`family_group()`: 224.0.0.251:5353 or [ff02::fb]:5353), after the rate limit of §7.3.  Announcements, goodbyes, answers at once and delayed responses all go through it; it replaced three copies of the IPv4/IPv6 fan-out code.  Unicast replies are sent by `send_response()` directly to the querier.  A response sent to both families counts as one multicast on the interface.
 
 **`send_response()`** writes, in order: the answers (table order), the NSEC records, one PTR per distinct service type (`_services._dns-sd._udp.local.` → the type, TTL 4500), and last the additionals.  The header has QR and AA set and ID 0, except in legacy replies, which echo the ID and carry the question.  `rr_ttl()` makes goodbye TTLs 0 and caps legacy TTLs; `rr_class()` sets the cache-flush bit on unique records except in legacy replies.  A packet with no answer is not sent.
 

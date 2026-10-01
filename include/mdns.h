@@ -50,6 +50,10 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 #define MDNS_RESP_DELAY_MAX_MS 120
 #define MDNS_TC_DELAY_MIN_MS 400 /**< Answer to a truncated query (§7.2) */
 #define MDNS_TC_DELAY_MAX_MS 500
+/** RFC 6762 §6: a record is multicast at most once a second — an answer
+ *  to a probe at most every 250 ms */
+#define MDNS_MULTICAST_INTERVAL_MS 1000
+#define MDNS_DEFENCE_INTERVAL_MS 250
 
 /* States */
 #define MDNS_STATE_STOPPED 0
@@ -127,6 +131,8 @@ typedef struct {
    *  last to send a truncated query, or the first to ask */
   uint32_t querier;
   uint32_t others;  /**< Answers and types other hosts wait for too */
+  uint32_t defend;  /**< Answers to a probe, owed whatever the rate limit */
+  uint32_t repair;  /**< Records another host sent with too low a TTL */
   uint8_t families; /**< MDNS_FAMILY_* the queries came on */
 } mdns_pending_t;
 
@@ -140,6 +146,10 @@ struct mdns_s {
   uint32_t live;      /**< Records in use: not withdrawn */
   uint32_t claim;     /**< Records being probed for, or announced */
   uint32_t announced; /**< Records sent and not said goodbye to since */
+  /** Multicast in this second and the one before (RFC 6762 §6): records,
+   *  and NSEC (bit of the name) and meta-query (bit of the PTR) answers */
+  uint32_t recent[2], recent_synth[2];
+  uint16_t second_ms; /**< Until recent[] moves on a second */
   uint16_t quiet_ms;  /**< Until the conflicts counted are forgotten */
   uint8_t conflicts;  /**< Since MDNS_CONFLICT_WINDOW_MS without one */
   uint8_t count;

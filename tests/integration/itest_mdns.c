@@ -1476,7 +1476,7 @@ int main(void) {
   RUN_TEST(itest_mdns_058_no_periodic_announcements);
   RUN_TEST(itest_mdns_059_new_ipv4_address_announced);
   RUN_TEST(itest_mdns_060_goodbye_for_old_ptr_rdata_before_renaming);
-  RUN_XFAIL(itest_mdns_063_record_multicast_at_most_once_a_second);
+  RUN_TEST(itest_mdns_063_record_multicast_at_most_once_a_second);
   RUN_TEST(itest_mdns_064_only_positive_or_owned_negative_answers);
   RUN_TEST(itest_mdns_065_nsec_for_missing_type);
   RUN_TEST(itest_mdns_066_no_negative_answer_for_shared_records);
@@ -1487,7 +1487,7 @@ int main(void) {
   RUN_TEST(itest_mdns_072_any_type_and_class);
   RUN_TEST(itest_mdns_073_several_questions);
   RUN_TEST(itest_mdns_074_only_valid_ipv4_addresses);
-  RUN_XFAIL(itest_mdns_075_low_ttl_copy_of_our_record_corrected);
+  RUN_TEST(itest_mdns_075_low_ttl_copy_of_our_record_corrected);
   RUN_TEST(itest_mdns_076_no_cache_flush_in_legacy_responses);
   RUN_TEST(itest_mdns_077_known_answers_only_from_the_querier);
   RUN_TEST(itest_mdns_078_cache_flush_on_unique_records_only);

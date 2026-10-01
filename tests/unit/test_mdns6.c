@@ -148,11 +148,14 @@ static void setup_recs(const mdns_record_t *recs, uint8_t n) {
 
 static void setup(void) { setup_recs(records, (uint8_t)N_RECS); }
 
+/* Probed, announced, and the records' one-second multicast limit (RFC
+ * 6762 §6) passed */
 static void to_running(void) {
   mdns_start(&m);
   for (int i = 0; i < 4; i++)
     mdns_tick(&m, MDNS_PROBE_WAIT_MS);
   mdns_tick(&m, MDNS_ANNOUNCE_WAIT_MS);
+  mdns_tick(&m, 2 * MDNS_MULTICAST_INTERVAL_MS);
   n_frames = 0;
 }
 

@@ -118,9 +118,9 @@ in parentheses where it differs):
 | Structure | Size | Plus |
 |---|---|---|
 | `tcp_conn_t` | 104 B (120 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
-| `http_conn_t` (one slot) | about 212 B (236 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
+| `http_conn_t` (one slot) | about 220 B (240 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
 | `http_server_t` | 36 B | The slot array and a `const` route table (and, optional, a clock and the HTTPS host names) |
-| `mdns_t` | 44 B | A `const` record table |
+| `mdns_t` | 96 B | A `const` record table |
 | `dhcpv4_client_t` | 48 B | An optional option-handler table |
 | `dhcpv4_server_t` | 20 B | A `const dhcpv4_server_cfg_t` |
 | `dhcpv6_client_t` | 100 B | An optional option-handler table |

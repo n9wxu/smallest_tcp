@@ -46,6 +46,10 @@ META = "_services._dns-sd._udp.local"
 
 T_A, T_PTR, T_TXT, T_SRV, T_ANY = 1, 12, 16, 33, 255
 
+# RFC 6762 §6: the SUT multicasts a record at most once a second, holding
+# it one to two seconds after it was sent
+RATE_LIMIT_S = 2.1
+
 
 # ── SUT management ─────────────────────────────────────────────────────────────
 
@@ -71,6 +75,9 @@ class MdnsSut:
         os.close(fd)
         if wait_running:
             self.wait_for("[mdns] running", timeout)
+            # RFC 6762 §6: a record just announced is not multicast again
+            # for a second (the responder holds it one to two)
+            time.sleep(RATE_LIMIT_S)
 
     def output(self):
         if not self.log_path:
@@ -234,10 +241,12 @@ def test_mdns_003_srv_query(sut):
 
 
 def test_mdns_004_aa_bit_set(sut):
-    """REQ-MDNS-004, 031: every response has QR=1 and AA=1."""
+    """REQ-MDNS-004, 031: every response has QR=1 and AA=1.  The PTR is
+    asked last: its additionals (SRV, TXT, A) are multicast with it, and
+    then not again for a second (RFC 6762 §6)."""
     sut.start()
-    for name, qtype in ((HOST, "A"), (SVC, "PTR"), (INST, "SRV"),
-                        (INST, "TXT")):
+    for name, qtype in ((HOST, "A"), (INST, "SRV"), (INST, "TXT"),
+                        (SVC, "PTR")):
         resp = ask(sut, name, qtype)
         assert resp, f"no response to {qtype} {name}"
         assert resp[0][DNS].qr == 1
@@ -471,6 +480,7 @@ def test_mdns_020_aaaa_over_ipv6(sut):
     Limit 255) with the link-local address; the A record as additional."""
     sut.start()
     ipv6_up(sut)
+    time.sleep(RATE_LIMIT_S)  # the announcement over IPv6 that follows
     ll = sut_ll(sut.sut_mac)
     sn = start_sniffer(sut.iface,
                        filter=f"ip6 and udp and src port {MDNS_PORT} and "

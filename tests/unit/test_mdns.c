@@ -121,7 +121,8 @@ static void setup_with(const mdns_record_t *recs, uint8_t count,
 
 static void setup(void) { setup_with(records, N_RECS, sizeof(tx_buf)); }
 
-/* Start, run the three probes and both announcements, clear capture. */
+/* Start, run the three probes and both announcements, let the records'
+ * one-second multicast limit (RFC 6762 §6) pass, clear capture. */
 static void to_running(void) {
   mdns_start(&m);
   mdns_tick(&m, MDNS_PROBE_WAIT_MS); /* probe 1 */
@@ -129,6 +130,7 @@ static void to_running(void) {
   mdns_tick(&m, MDNS_PROBE_WAIT_MS); /* probe 3 */
   mdns_tick(&m, MDNS_PROBE_WAIT_MS); /* announcement 1 */
   mdns_tick(&m, MDNS_ANNOUNCE_WAIT_MS); /* announcement 2 */
+  mdns_tick(&m, 2 * MDNS_MULTICAST_INTERVAL_MS);
   n_frames = 0;
 }
 
@@ -612,7 +614,9 @@ TEST(test_answers_during_announcing) {
   mdns_tick(&m, MDNS_PROBE_WAIT_MS);
   ASSERT_EQ(mdns_state(&m), MDNS_STATE_ANNOUNCING);
   n_frames = 0;
-  query(HOST, DNS_TYPE_A);
+  /* An NSEC: the records just announced may not be multicast again
+   * within the second */
+  query(HOST, 13 /* HINFO */);
   ASSERT_EQ(count_mdns(), 1);
 }
 

@@ -290,6 +290,11 @@ static const dest_t mcast_dest = {.ip = MDNS_GROUP, .port = MDNS_PORT};
 static const dest_t mcast6_dest = {.port = MDNS_PORT, .ip6 = mdns_group6};
 #endif
 
+/* The family a message came over */
+static uint8_t from_family(const dest_t *from) {
+  return BY_FAMILY(from, MDNS_FAMILY_V4, MDNS_FAMILY_V6);
+}
+
 static const dest_t *family_group(uint8_t family) {
 #if NET_USE_IPV4 && NET_USE_IPV6
   return family == MDNS_FAMILY_V6 ? &mcast6_dest : &mcast_dest;
@@ -637,27 +642,81 @@ static uint32_t additionals_for(const mdns_t *m, uint32_t answers) {
   return add & ~answers & answerable(m);
 }
 
-/* Send a multicast response to the groups of @p families */
+/* ── The multicast rate limit (REQ-MDNS-063, RFC 6762 §6) ──
+ * recent[0] holds what was multicast in the current second, recent[1]
+ * what was in the second before: a record leaves them one to two seconds
+ * after its multicast, and is multicast again only then. */
+
+static uint32_t held(const mdns_t *m) { return m->recent[0] | m->recent[1]; }
+
+static uint32_t held_synth(const mdns_t *m) {
+  return m->recent_synth[0] | m->recent_synth[1];
+}
+
+/* @p elapsed_ms more of the current second */
+static void age_recent(mdns_t *m, uint32_t elapsed_ms) {
+  if (elapsed_ms < m->second_ms) {
+    m->second_ms = (uint16_t)(m->second_ms - elapsed_ms);
+    return;
+  }
+  elapsed_ms -= m->second_ms;
+  if (elapsed_ms >= MDNS_MULTICAST_INTERVAL_MS) {
+    m->recent[1] = m->recent_synth[1] = 0;
+    elapsed_ms = 0;
+  } else {
+    m->recent[1] = m->recent[0];
+    m->recent_synth[1] = m->recent_synth[0];
+  }
+  m->recent[0] = m->recent_synth[0] = 0;
+  m->second_ms = (uint16_t)(MDNS_MULTICAST_INTERVAL_MS - elapsed_ms);
+}
+
+/* How a multicast response goes out: SEND_LIMITED for answers — what was
+ * multicast within the second left out, a unique RRSet whole; SEND_FORCED
+ * for announcements and probe defences, timed to the rule; SEND_GOODBYE
+ * for TTL 0, at once, the records going */
+enum { SEND_LIMITED, SEND_FORCED, SEND_GOODBYE };
+
+/* A multicast response to the groups of @p families */
 static void send_to_groups(mdns_t *m, uint8_t families, uint32_t answers,
-                           uint32_t service_types, uint32_t nsec,
-                           uint8_t goodbye) {
+                           uint32_t service_types, uint32_t nsec, uint8_t how) {
+  uint32_t add = 0;
   uint8_t family;
   resp_opts_t o;
+  if (how == SEND_LIMITED) {
+    answers &= ~rrsets(m, answers & held(m));
+    service_types &= ~held_synth(m);
+    nsec &= ~held_synth(m);
+  }
+  if (how != SEND_GOODBYE) {
+    add = additionals_for(m, answers);
+    add &= ~rrsets(m, add & held(m));
+  }
   memset(&o, 0, sizeof(o));
-  o.goodbye = goodbye;
+  o.goodbye = (how == SEND_GOODBYE);
   for (family = MDNS_FAMILY_V4; family <= MDNS_FAMILY_V6; family <<= 1) {
     if (!(families & family))
       continue;
     o.dest = family_group(family);
-    send_response(m, answers, service_types, nsec,
-                  goodbye ? 0 : additionals_for(m, answers), &o);
+    send_response(m, answers, service_types, nsec, add, &o);
+  }
+  if (how != SEND_GOODBYE) {
+    m->recent[0] |= answers | add;
+    m->recent_synth[0] |= service_types | nsec;
+    m->pending.repair &= ~(answers | add); /* REQ-MDNS-075: done */
   }
 }
 
 /* The records probed for — every record after mdns_start(), or a name
  * probed for again after a conflict (REQ-MDNS-057) */
 static void announce(mdns_t *m) {
-  send_to_groups(m, m->announce_families, m->claim, 0, 0, 0);
+  send_to_groups(m, m->announce_families, m->claim, 0, 0, SEND_FORCED);
+  /* REQ-MDNS-063: the second starts over, every mark kept until its end —
+   * when the next announcement goes out and finds the records free */
+  m->recent[1] |= m->recent[0];
+  m->recent_synth[1] |= m->recent_synth[0];
+  m->recent[0] = m->recent_synth[0] = 0;
+  m->second_ms = MDNS_MULTICAST_INTERVAL_MS;
 }
 
 /* REQ-MDNS-032, 033, REQ-DNSSD-018: TTL 0 for those of @p records that were
@@ -666,7 +725,7 @@ static void announce(mdns_t *m) {
 static void goodbye(mdns_t *m, uint32_t records, uint32_t types) {
   uint32_t gone = records & m->announced;
   if (gone)
-    send_to_groups(m, ALL_FAMILIES, gone, types & gone, 0, 1);
+    send_to_groups(m, ALL_FAMILIES, gone, types & gone, 0, SEND_GOODBYE);
   m->announced &= ~records;
 }
 
@@ -793,6 +852,10 @@ static void timer_fired(mdns_t *m) {
 #endif
   }
   if (m->state == MDNS_STATE_ANNOUNCING) {
+    if (m->claim & held(m)) { /* REQ-MDNS-063: not yet a second after */
+      m->timer_ms = m->second_ms ? m->second_ms : 1;
+      return;
+    }
     announce(m); /* REQ-MDNS-022, 023 */
     if (++m->step < MDNS_ANNOUNCE_COUNT) {
       m->timer_ms = MDNS_ANNOUNCE_WAIT_MS;
@@ -803,12 +866,50 @@ static void timer_fired(mdns_t *m) {
   }
 }
 
+static uint32_t response_delay(mdns_t *m) {
+  return MDNS_RESP_DELAY_MIN_MS +
+         net_random_below(m->net,
+                          MDNS_RESP_DELAY_MAX_MS - MDNS_RESP_DELAY_MIN_MS + 1);
+}
+
+/* What is owed: a probe's defence whatever the rate limit, then the rest
+ * as it allows — the corrections of §6.6 waiting for it (REQ-MDNS-075) */
 static void send_pending(mdns_t *m) {
   mdns_pending_t owed = m->pending;
-  uint32_t ours = answerable(m);
+  uint32_t ours = answerable(m), repair = owed.repair & ours;
+  uint32_t later = repair & rrsets(m, repair & held(m));
   memset(&m->pending, 0, sizeof(m->pending));
-  send_to_groups(m, owed.families, owed.answers & ours,
-                 owed.service_types & ours, owed.nsec & ours, 0);
+  send_to_groups(m, owed.families, owed.defend & ours, 0, 0, SEND_FORCED);
+  send_to_groups(m, owed.families, (owed.answers & ours) | (repair & ~later),
+                 owed.service_types & ours, owed.nsec & ours, SEND_LIMITED);
+  if (later) {
+    m->pending.repair = later;
+    m->pending.families = owed.families;
+    m->pending.timer_ms = m->second_ms ? m->second_ms : 1u;
+  }
+}
+
+/* REQ-MDNS-063 (RFC 6762 §6): an answer to a probe that was multicast less
+ * than a second ago goes out 250 ms from now — at least that after its
+ * last multicast — and nothing else multicasts it meanwhile */
+static void owe_defence(mdns_t *m, uint8_t family, uint32_t records) {
+  mdns_pending_t *p = &m->pending;
+  p->defend |= records;
+  p->families |= family;
+  if (p->timer_ms < MDNS_DEFENCE_INTERVAL_MS)
+    p->timer_ms = MDNS_DEFENCE_INTERVAL_MS;
+  m->recent[0] |= records;
+}
+
+/* REQ-MDNS-075 (RFC 6762 §6.6): our records another host multicast with
+ * less than half their TTL — a goodbye too — are multicast again, so that
+ * caches keep them as long as they should */
+static void owe_repair(mdns_t *m, uint8_t family, uint32_t records) {
+  mdns_pending_t *p = &m->pending;
+  p->repair |= records;
+  p->families |= family;
+  if (!p->timer_ms)
+    p->timer_ms = response_delay(m);
 }
 
 /* Who sent a message: the IPv4 address, or a hash of the IPv6 one */
@@ -846,20 +947,19 @@ static void owe_response(mdns_t *m, uint32_t from, uint8_t family,
                   net_random_below(m->net, MDNS_TC_DELAY_MAX_MS -
                                                MDNS_TC_DELAY_MIN_MS + 1);
   else if (!p->timer_ms)
-    p->timer_ms = MDNS_RESP_DELAY_MIN_MS +
-                  net_random_below(m->net, MDNS_RESP_DELAY_MAX_MS -
-                                               MDNS_RESP_DELAY_MIN_MS + 1);
+    p->timer_ms = response_delay(m);
 }
 
 /* ── Conflict detection (RFC 6762 §8.1, §9) ── */
 
-static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
+static void check_conflicts(mdns_t *m, const dest_t *from, const uint8_t *msg,
+                            uint16_t len) {
   uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT);
   uint32_t nrr = (uint32_t)net_read16be(msg + DNS_OFF_ANCOUNT) +
                  net_read16be(msg + DNS_OFF_NSCOUNT) +
                  net_read16be(msg + DNS_OFF_ARCOUNT);
   int off = DNS_HDR_SIZE;
-  uint32_t k;
+  uint32_t k, repair = 0, ours = answerable(m);
   dns_question_t q;
   dns_rr_t rr;
 
@@ -873,24 +973,26 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
     uint8_t i;
     off = dns_read_rr(msg, len, (uint16_t)off, &rr);
     if (off < 0)
-      return;
-    if (rr.ttl == 0 || (rr.class_ & DNS_CLASS_MASK) != DNS_CLASS_IN)
-      continue; /* goodbyes and other classes never conflict */
+      break;
+    if ((rr.class_ & DNS_CLASS_MASK) != DNS_CLASS_IN)
+      continue;
     for (i = 0; i < m->count; i++) {
       const mdns_record_t *r = &m->records[i];
-      if (!live(m, i) || is_shared(r) ||
-          !dns_name_equals(msg, len, rr.name_off, r->name))
+      if (!live(m, i) || !dns_name_equals(msg, len, rr.name_off, r->name))
+        continue;
+      if (rr.type == r->type && rr_matches(m, r, msg, len, &rr)) {
+        exact = 1;
+        if ((ours & BIT(i)) && below_half(rr.ttl, r->ttl))
+          repair |= rrset_of(m, i); /* REQ-MDNS-075 */
+      }
+      if (is_shared(r))
         continue;
       if (name_idx < 0)
         name_idx = i;
-      if (rr.type == r->type) {
-        if (type_idx < 0)
-          type_idx = i;
-        if (rr_matches(m, r, msg, len, &rr))
-          exact = 1;
-      }
+      if (rr.type == r->type && type_idx < 0)
+        type_idx = i;
     }
-    if (exact || name_idx < 0)
+    if (exact || name_idx < 0 || rr.ttl == 0) /* goodbyes never conflict */
       continue;
     /* A name being probed for: any record of it is a conflict — once the
      * first probe is out (REQ-MDNS-052, RFC 6762 §8.1: one before it may
@@ -907,6 +1009,8 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
       return;
     }
   }
+  if (repair)
+    owe_repair(m, from_family(from), repair);
 }
 
 /* Record @p r's RRs, names uncompressed: at most what they take in any
@@ -1109,6 +1213,7 @@ static int silent(const mdns_t *m) {
 void mdns_tick(mdns_t *m, uint32_t elapsed_ms) {
   if (m->quiet_ms && net_countdown16(&m->quiet_ms, elapsed_ms))
     m->conflicts = 0;
+  age_recent(m, elapsed_ms);
   if (silent(m))
     return;
   if (m->pending.timer_ms && net_countdown(&m->pending.timer_ms, elapsed_ms))
@@ -1127,10 +1232,6 @@ typedef struct {
   uint16_t qtype;
   uint8_t all_unicast; /* every question had the QU bit */
 } wanted_t;
-
-static uint8_t from_family(const dest_t *from) {
-  return BY_FAMILY(from, MDNS_FAMILY_V4, MDNS_FAMILY_V6);
-}
 
 static int is_in_class(uint16_t class_) {
   uint16_t c = class_ & DNS_CLASS_MASK;
@@ -1225,7 +1326,7 @@ static int has_address(const dest_t *from) {
  * a multicast answer always delayed if more known answers are to come
  * (@p truncated, §7.2) */
 static void answer(mdns_t *m, const dest_t *from, uint16_t id,
-                   const wanted_t *w, int truncated) {
+                   const wanted_t *w, int truncated, int probe) {
   resp_opts_t o;
   memset(&o, 0, sizeof(o));
   o.dest = family_group(from_family(from));
@@ -1242,9 +1343,20 @@ static void answer(mdns_t *m, const dest_t *from, uint16_t id,
     o.qtype = w->qtype;
   } else if (w->all_unicast && has_address(from)) {
     o.dest = from; /* REQ-MDNS-028 */
-  } else if (truncated || w->service_types || (w->answers & shared_mask(m))) {
-    owe_response(m, host_of(m, from), from_family(from), w->answers,
-                 w->service_types, w->nsec, truncated);
+  } else {
+    /* Multicast, a record at most once a second (REQ-MDNS-063) — but the
+     * answer to a probe cannot wait that long */
+    uint32_t answers = w->answers, late = 0;
+    if (probe)
+      late = rrsets(m, answers & held(m)) & answers & ~shared_mask(m);
+    if (late)
+      owe_defence(m, from_family(from), late);
+    answers &= ~late;
+    if (truncated || w->service_types || (answers & shared_mask(m)))
+      owe_response(m, host_of(m, from), from_family(from), answers,
+                   w->service_types, w->nsec, truncated);
+    else
+      send_to_groups(m, from_family(from), answers, 0, w->nsec, SEND_LIMITED);
     return;
   }
   send_response(m, w->answers, w->service_types, w->nsec,
@@ -1413,12 +1525,32 @@ static int probe_tiebreak(mdns_t *m, const uint8_t *msg, uint16_t len) {
   return 0;
 }
 
+/* A probe (RFC 6762 §6, §8.2): a query with, in its Authority section, a
+ * record of the name of one of the unique records @p asked for */
+static int is_probe(const mdns_t *m, const uint8_t *msg, uint16_t len, int off,
+                    uint32_t asked) {
+  uint16_t an = net_read16be(msg + DNS_OFF_ANCOUNT);
+  uint16_t ns = net_read16be(msg + DNS_OFF_NSCOUNT), k;
+  dns_rr_t rr;
+  uint8_t i;
+  for (k = 0; k < an + ns; k++) {
+    if ((off = dns_read_rr(msg, len, (uint16_t)off, &rr)) < 0)
+      return 0;
+    for (i = 0; i < m->count && k >= an; i++) {
+      if ((asked & BIT(i)) && !is_shared(&m->records[i]) &&
+          dns_name_equals(msg, len, rr.name_off, m->records[i].name))
+        return 1;
+    }
+  }
+  return 0;
+}
+
 /* A query: answered unless malformed (REQ-MDNS-041), and not for the names
  * being probed for — whose probes from other hosts are tiebroken */
 static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
                         uint16_t len) {
   uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT), k;
-  int off = DNS_HDR_SIZE;
+  int off = DNS_HDR_SIZE, probe;
   dns_question_t q;
   wanted_t w;
 
@@ -1440,11 +1572,13 @@ static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
   }
   if (!wants_anything(&w))
     return;
+  probe = is_probe(m, msg, len, off, w.answers);
   suppress_known_answers(m, msg, len, off, &w);
   if (wants_anything(&w))
     answer(m, from, net_read16be(msg + DNS_OFF_ID), &w,
            from->port == MDNS_PORT &&
-               (net_read16be(msg + DNS_OFF_FLAGS) & DNS_FLAG_TC));
+               (net_read16be(msg + DNS_OFF_FLAGS) & DNS_FLAG_TC),
+           probe);
 }
 
 /* The packet @p msg came in was sent to the mDNS group.  The UDP handlers
@@ -1488,7 +1622,7 @@ static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
   if (!(flags & DNS_FLAG_QR)) {
     query_input(m, from, msg, len);
   } else if (response_acceptable(m, from, msg)) {
-    check_conflicts(m, msg, len);
+    check_conflicts(m, from, msg, len);
   }
 }
 
