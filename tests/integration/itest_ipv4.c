@@ -385,15 +385,26 @@ TEST(itest_ipv4_026_options_skipped) {
 }
 
 /* REQ-IPv4-067 (deviation): a datagram carrying a Loose or Strict Source
- * Route — even a completed one — is dropped */
+ * Route — even a completed one, wherever it is among the options — is
+ * dropped without an answer */
 TEST(itest_ipv4_067_source_routed_dropped) {
   /* LSRR, length 7, pointer 8 (route completed), one address, then EOL */
   static const uint8_t lsrr[8] = {131, 7, 8, 10, 0, 0, 1, 0};
   static const uint8_t ssrr[8] = {137, 7, 8, 10, 0, 0, 1, 0};
+  static const uint8_t after_nop[8] = {1, 131, 6, 4, 10, 0, 0, 1};
+  static const uint8_t after_other[12] = {0x9E, 4,  0, 0, 137, 7,
+                                          8,    10, 0, 0, 1,   0};
+  static const uint8_t record_route[8] = {7, 7, 4, 0, 0, 0, 0, 0};
   up();
+  wire_clear(&t);
   datagram_with_options(lsrr, 8);
   datagram_with_options(ssrr, 8);
+  datagram_with_options(after_nop, 8);
+  datagram_with_options(after_other, 12);
   ASSERT_EQ(delivered, 0);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  datagram_with_options(record_route, 8); /* not a source route */
+  ASSERT_EQ(delivered, 1);
 }
 
 /* REQ-IPv4-068: unknown options and Stream ID are ignored; a malformed
@@ -635,7 +646,7 @@ int main(void) {
   RUN_XFAIL(itest_ipv4_064_mtu_configurable);
   RUN_TEST(itest_ipv4_028_no_options_sent);
   RUN_TEST(itest_ipv4_026_options_skipped);
-  RUN_XFAIL(itest_ipv4_067_source_routed_dropped);
+  RUN_TEST(itest_ipv4_067_source_routed_dropped);
   RUN_TEST(itest_ipv4_068_unknown_and_malformed_options);
   RUN_TEST(itest_ipv4_035_default_ttl);
   RUN_TEST(itest_ipv4_069_ttl_settable);

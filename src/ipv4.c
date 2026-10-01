@@ -18,8 +18,31 @@
 #endif
 
 #define IPV4_OPT_ROUTER_ALERT 0x94 /* copied flag + option 20 */
+#define IPV4_OPT_EOL 0
+#define IPV4_OPT_NOP 1
+#define IPV4_OPT_LSRR 131
+#define IPV4_OPT_SSRR 137
 
-/* REQ-IPv4-001..007, 024, 027 */
+/* The options carry a Loose or Strict Source Route.  The walk stops at End
+ * of List or at a malformed length: what follows is ignored, as every
+ * other option is (REQ-IPv4-026, 068). */
+static int source_routed(const uint8_t *opt, uint16_t len) {
+  uint16_t i = 0;
+  while (i < len && opt[i] != IPV4_OPT_EOL) {
+    if (opt[i] == IPV4_OPT_NOP) {
+      i++;
+      continue;
+    }
+    if (i + 1 >= len || opt[i + 1] < 2 || opt[i + 1] > len - i)
+      return 0;
+    if (opt[i] == IPV4_OPT_LSRR || opt[i] == IPV4_OPT_SSRR)
+      return 1;
+    i = (uint16_t)(i + opt[i + 1]);
+  }
+  return 0;
+}
+
+/* REQ-IPv4-001..007, 024, 027, 067 */
 net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
   if (data_len < IPV4_HDR_SIZE || (data[IPV4_OFF_VER_IHL] >> 4) != 4)
     return NET_ERR_INVALID_PARAM;
@@ -31,7 +54,8 @@ net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out) {
 
   if (header_len < IPV4_HDR_SIZE || total_len < header_len ||
       total_len > data_len || !net_cksum_verify(data, header_len) ||
-      is_fragment)
+      is_fragment ||
+      source_routed(data + IPV4_HDR_SIZE, header_len - IPV4_HDR_SIZE))
     return NET_ERR_INVALID_PARAM;
 
   out->protocol = data[IPV4_OFF_PROTO];
