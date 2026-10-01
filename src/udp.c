@@ -122,7 +122,8 @@ net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
 
   if (!fits_frame(net, UDP_PAYLOAD_OFFSET, data_len))
     return NET_ERR_BUF_TOO_SMALL;
-  if (ttl == 0 || /* RFC 1122 §3.2.1.7 */
+  if (ttl == 0 ||                                  /* RFC 1122 §3.2.1.7 */
+      (src_ip != 0 && src_ip != net->ipv4_addr) || /* REQ-UDP-041 */
       !addresses_valid(net, src_ip, dst_ip, dst_mac))
     return NET_ERR_INVALID_PARAM;
   write_header(udp, src_port, dst_port, udp_len);

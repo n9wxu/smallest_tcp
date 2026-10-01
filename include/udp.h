@@ -101,8 +101,9 @@ net_err_t udp_send_inplace(net_t *net, uint32_t dst_ip, const uint8_t *dst_mac,
                            uint16_t src_port, uint16_t dst_port,
                            uint16_t data_len, uint8_t ttl);
 
-/** As udp_send_inplace(), from @p src_ip — e.g. 0.0.0.0 while DHCP has no
- *  address yet, or a DHCP server's own address. */
+/** As udp_send_inplace(), from @p src_ip: our address (net->ipv4_addr)
+ *  or 0.0.0.0, while DHCP has no address yet (RFC 1122 §4.1.3.6); any
+ *  other is NET_ERR_INVALID_PARAM. */
 net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,
                                 uint16_t dst_port, uint16_t data_len,

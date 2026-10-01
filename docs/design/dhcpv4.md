@@ -393,7 +393,7 @@ conflict detection.
 
 ```c
 typedef struct {
-  uint32_t server_ip;    /* our IP (= the DHCP server's address)        */
+  uint32_t server_ip;    /* our IP: net->ipv4_addr (the server's)       */
   uint32_t offered_ip;   /* IP to offer and assign to the client        */
   uint32_t subnet_mask;  /* option 1                                    */
   uint32_t gateway;      /* option 3  — 0 = not included                */
@@ -467,7 +467,11 @@ A NAK carries no lease and no configuration: it only refuses.  The ACK
 to an INFORM configures a client that already has its address, so it
 assigns none and carries no lease time (`put_parameters()` adds the
 lease only with an address).  A reply is sent from `server_ip` via
-`udp_send_inplace_from()`, whatever `net->ipv4_addr` is.
+`udp_send_inplace_from()`.  That is the host's own address:
+`dhcpv4_server_init()` refuses a `server_ip` other than `net->ipv4_addr`
+(`NET_ERR_INVALID_PARAM`), as UDP sends only from the host's address
+(RFC 1122 §4.1.3.6, REQ-UDP-041).  Replies used to go out from
+`server_ip` whatever `net->ipv4_addr` was.
 
 ---
 

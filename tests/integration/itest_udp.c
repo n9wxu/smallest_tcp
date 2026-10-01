@@ -138,7 +138,7 @@ TEST(itest_udp_038_errors_of_every_kind_reported) {
 int main(void) {
   fprintf(stderr, "=== itest_udp ===\n");
   RUN_XFAIL(itest_udp_040_destination_address_passed_up);
-  RUN_XFAIL(itest_udp_041_source_must_be_ours);
+  RUN_TEST(itest_udp_041_source_must_be_ours);
   RUN_XFAIL(itest_udp_038_port_unreachable_reported);
   RUN_XFAIL(itest_udp_038_errors_of_every_kind_reported);
   ITEST_REPORT();

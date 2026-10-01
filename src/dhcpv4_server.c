@@ -106,7 +106,7 @@ static void send_reply(net_t *net, const dhcpv4_server_cfg_t *cfg,
 net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
                              const dhcpv4_server_cfg_t *cfg,
                              dhcpv4_server_event_fn_t on_event, void *evt_ctx) {
-  if (!s || !net || !cfg)
+  if (!s || !net || !cfg || cfg->server_ip != net->ipv4_addr)
     return NET_ERR_INVALID_PARAM;
   if (net->tx.capacity < DHCPV4_SERVER_TX_MIN ||
       net->rx.capacity < DHCPV4_SERVER_RX_MIN)

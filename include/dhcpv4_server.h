@@ -43,7 +43,7 @@ typedef void (*dhcpv4_server_event_fn_t)(uint8_t event, void *ctx);
  * @brief All server parameters provided at init time.
  */
 typedef struct {
-  uint32_t server_ip;    /**< Our IP (= DHCP server address) */
+  uint32_t server_ip;    /**< Our IP: net->ipv4_addr (= DHCP server address) */
   uint32_t offered_ip;   /**< IP to offer and assign to the client */
   uint32_t subnet_mask;  /**< Subnet mask option (1) */
   uint32_t gateway;      /**< Default router option (3); 0 = omit */
@@ -71,7 +71,9 @@ typedef struct {
  * @param cfg       Server configuration (const in flash, owned by caller).
  * @param on_event  Called on OFFER/ACK/NAK (may be NULL).
  * @param evt_ctx   Passed to on_event.
- * @return NET_OK, NET_ERR_INVALID_PARAM, or NET_ERR_BUF_TOO_SMALL.
+ * @return NET_OK; NET_ERR_INVALID_PARAM for a NULL argument or a
+ *         cfg->server_ip that is not net->ipv4_addr (replies are sent from
+ *         it, RFC 1122 §4.1.3.6); NET_ERR_BUF_TOO_SMALL.
  */
 net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
                              const dhcpv4_server_cfg_t *cfg,

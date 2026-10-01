@@ -1077,6 +1077,13 @@ static const dhcpv4_server_cfg_t server_cfg = {
     .lease_time_s = 3600,
 };
 
+/* The server's host: its address is the server's (REQ-UDP-041) */
+static void server_setup(void) {
+  setup();
+  net.ipv4_addr = server_cfg.server_ip;
+  net.subnet_mask = server_cfg.subnet_mask;
+}
+
 /* Build a minimal DHCPDISCOVER client message */
 static uint16_t make_client_msg(uint8_t *buf, uint8_t msg_type, uint32_t xid,
                                 const uint8_t *chaddr, uint32_t req_ip,
@@ -1111,7 +1118,7 @@ static uint16_t make_client_msg(uint8_t *buf, uint8_t msg_type, uint32_t xid,
 
 /* REQ-DHCPv4-078: the frame buffers must take a DHCP message both ways */
 TEST(test_dhcp_server_init_checks_buffers) {
-  setup();
+  server_setup();
   ASSERT_EQ(DHCPV4_SERVER_TX_MIN, 342);
   ASSERT_EQ(DHCPV4_SERVER_RX_MIN, 342);
   ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL), NET_OK);
@@ -1126,6 +1133,10 @@ TEST(test_dhcp_server_init_checks_buffers) {
   ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL), NET_OK);
   ASSERT_EQ(dhcpv4_server_init(&srv, &net, NULL, NULL, NULL),
             NET_ERR_INVALID_PARAM);
+  net.ipv4_addr = 0; /* replies come from the server's address: ours */
+  ASSERT_EQ(dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL),
+            NET_ERR_INVALID_PARAM);
+  net.ipv4_addr = server_cfg.server_ip;
   ASSERT_EQ(dhcpv4_server_init(NULL, &net, &server_cfg, NULL, NULL),
             NET_ERR_INVALID_PARAM);
   ASSERT_EQ(dhcpv4_server_init(&srv, NULL, &server_cfg, NULL, NULL),
@@ -1134,7 +1145,7 @@ TEST(test_dhcp_server_init_checks_buffers) {
 
 /* REQ-DHCPv4-064,065: DISCOVER → OFFER */
 TEST(test_dhcp_server_offer_on_discover) {
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01};
@@ -1167,7 +1178,7 @@ TEST(test_dhcp_server_offer_on_discover) {
 
 /* REQ-DHCPv4-068: REQUEST with correct IP → ACK */
 TEST(test_dhcp_server_ack_on_correct_request) {
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02};
@@ -1188,7 +1199,7 @@ TEST(test_dhcp_server_ack_on_correct_request) {
 
 /* REQ-DHCPv4-069: REQUEST with wrong IP → NAK */
 TEST(test_dhcp_server_nak_on_wrong_request) {
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x03};
@@ -1209,7 +1220,7 @@ TEST(test_dhcp_server_nak_on_wrong_request) {
 
 /* REQ-DHCPv4-070: RELEASE → silently ignored */
 TEST(test_dhcp_server_release_ignored) {
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x04};
@@ -1224,7 +1235,7 @@ TEST(test_dhcp_server_release_ignored) {
 
 /* REQ-DHCPv4-073: invalid op → ignored */
 TEST(test_dhcp_server_invalid_op_ignored) {
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x05};
@@ -1239,7 +1250,7 @@ TEST(test_dhcp_server_invalid_op_ignored) {
 
 /* REQ-DHCPv4-073: wrong magic cookie → ignored */
 TEST(test_dhcp_server_bad_magic_ignored) {
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x06};
@@ -1275,7 +1286,7 @@ TEST(test_dhcp_server_nak_is_bare) {
   uint8_t msg[DHCP_MIN_LEN + 32];
   uint16_t mlen;
   const uint8_t *d;
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
   mlen = make_client_msg(msg, DHCP_MSG_REQUEST, 0x5EED0001u, chaddr, 0,
                          server_cfg.server_ip);
@@ -1303,7 +1314,7 @@ TEST(test_dhcp_server_inform_ack_has_no_lease) {
   uint8_t msg[DHCP_MIN_LEN + 32];
   uint16_t mlen, opt_len;
   const uint8_t *d;
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
   mlen = make_client_msg(msg, DHCP_MSG_INFORM, 0x5EED0002u, chaddr, 0, 0);
   net_write16be(msg + DHCP_OFF_FLAGS, 0);
@@ -1332,7 +1343,7 @@ TEST(test_dhcp_server_renewal_ack_echoes_ciaddr) {
   uint8_t msg[DHCP_MIN_LEN + 32];
   uint16_t mlen, opt_len;
   const uint8_t *d;
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, on_event, NULL);
   mlen = make_client_msg(msg, DHCP_MSG_REQUEST, 0x5EED0003u, chaddr, 0, 0);
   net_write32be(msg + DHCP_OFF_CIADDR, server_cfg.offered_ip);
@@ -1381,7 +1392,7 @@ static void server_gets(uint8_t type, uint16_t flags, uint32_t ciaddr,
 
 TEST(test_dhcp_server_reply_routing) {
   static const uint8_t chaddr[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x0A};
-  setup();
+  server_setup();
   dhcpv4_server_init(&srv, &net, &server_cfg, NULL, NULL);
 
   /* no broadcast flag: to the new address at the client's MAC */
