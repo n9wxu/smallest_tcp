@@ -229,6 +229,18 @@ TEST(itest_http_024_405_always_has_allow) {
   ASSERT_TRUE(has("\r\nAllow: \r\n"));
 }
 
+/* REQ-HTTP-024: a 405 the handler answers lists what its route allows
+ * (RFC 9110 §15.5.6: "MUST generate an Allow header field in a 405
+ * response containing a list of the target resource's currently
+ * supported methods") */
+TEST(itest_http_024_handler_405_lists_the_routes_methods) {
+  h_status = 405;
+  h_type = "text/plain";
+  ASSERT_TRUE(exchange("GET /h HTTP/1.0\r\n\r\n"));
+  ASSERT_TRUE(status_is(405));
+  ASSERT_TRUE(has("\r\nAllow: GET, HEAD, POST\r\n"));
+}
+
 /* REQ-HTTP-010: an HTTP/1.1 request needs one Host line, no more */
 TEST(itest_http_010_one_host_line) {
   ASSERT_TRUE(exchange("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
@@ -791,6 +803,7 @@ int main(void) {
   RUN_TEST(itest_http_020_204_without_content);
   RUN_TEST(itest_http_020_head_length_is_gets);
   RUN_TEST(itest_http_024_405_always_has_allow);
+  RUN_XFAIL(itest_http_024_handler_405_lists_the_routes_methods);
   RUN_TEST(itest_http_010_one_host_line);
   RUN_TEST(itest_http_044_bare_cr_and_nul_rejected);
   RUN_TEST(itest_http_045_invalid_host_value);
