@@ -26,7 +26,7 @@
 
 /** Largest response header block (formatted on the stack). */
 #ifndef HTTP_HDR_MAX
-#define HTTP_HDR_MAX 192
+#define HTTP_HDR_MAX 224
 #endif
 /** Time allowed to receive a complete request. */
 #ifndef HTTP_REQUEST_TIMEOUT_MS
@@ -109,11 +109,12 @@ const char *http_reason(uint16_t status);
  * Format a response header block, ending with the blank line.
  * Content-Type and Content-Length are omitted for 204 and 304.
  * @param allow  Methods for an Allow header (405), 0 for none.
+ * @param date   Seconds since 1970-01-01 UTC for a Date field, 0 for none.
  * @return Length written, or 0 if it does not fit in @p cap.
  */
 uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
                             const char *content_type, uint32_t content_length,
-                            uint8_t allow);
+                            uint8_t allow, uint32_t date);
 
 /* Server */
 
@@ -172,6 +173,7 @@ typedef struct http_conn_s {
   uint32_t body_len;
   uint16_t resp_hdr_len; /**< Length of the formatted response header */
   uint32_t sent;         /**< Header + body bytes the transport took */
+  uint32_t date;         /**< The response's Date (s since 1970), 0: none */
 } http_conn_t;
 
 typedef struct {

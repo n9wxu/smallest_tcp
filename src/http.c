@@ -420,9 +420,77 @@ static void put_u32(sbuf_t *b, uint32_t v) {
   put(b, digits);
 }
 
+/* *n / d, leaving the remainder in *n: shift and subtract (no '/', which
+ * Cortex-M0 would have to call a library divide for) */
+static uint32_t take(uint32_t *n, uint32_t d) {
+  uint32_t q = 0, bit = 1;
+  while (d <= (*n >> 1)) {
+    d <<= 1;
+    bit <<= 1;
+  }
+  for (; bit; d >>= 1, bit >>= 1) {
+    if (*n >= d) {
+      *n -= d;
+      q |= bit;
+    }
+  }
+  return q;
+}
+
+/* Two digits of @p v < 100 */
+static void two_digits(char *p, uint32_t v) {
+  p[0] = '0';
+  while (v >= 10) {
+    v -= 10;
+    p[0]++;
+  }
+  p[1] = (char)('0' + v);
+}
+
+/* Seconds in uint32_t end in 2106: 2100 is the only year divisible by 4
+ * that is not a leap year */
+static int leap_year(uint32_t y) { return (y & 3) == 0 && y != 2100; }
+
+/* REQ-HTTP-048: "Date: Sun, 06 Nov 1994 08:49:37 GMT", an IMF-fixdate
+ * (RFC 9110 §5.6.7, §6.6.1), for @p t seconds since 1970-01-01 UTC */
+static void put_date(sbuf_t *b, uint32_t t) {
+  static const char wday[] = "ThuFriSatSunMonTueWed"; /* from 1970-01-01 */
+  static const char mon[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  static const uint8_t mdays[12] = {31, 28, 31, 30, 31, 30,
+                                    31, 31, 30, 31, 30, 31};
+  char d[30];
+  uint32_t days = take(&t, 86400u), w = days, year = 1970, m = 0;
+  take(&w, 7);
+  while (days >= 365u + (uint32_t)leap_year(year)) {
+    days -= 365u + (uint32_t)leap_year(year);
+    year++;
+  }
+  while (days >= mdays[m] + (uint32_t)(m == 1 && leap_year(year))) {
+    days -= mdays[m] + (uint32_t)(m == 1 && leap_year(year));
+    m++;
+  }
+  memcpy(d, wday + w * 3, 3);
+  memcpy(d + 3, ", ", 2);
+  two_digits(d + 5, days + 1);
+  d[7] = ' ';
+  memcpy(d + 8, mon + m * 3, 3);
+  d[11] = ' ';
+  net_u32_to_dec(d + 12, year);
+  d[16] = ' ';
+  two_digits(d + 17, take(&t, 3600));
+  d[19] = ':';
+  two_digits(d + 20, take(&t, 60));
+  d[22] = ':';
+  two_digits(d + 23, t);
+  memcpy(d + 25, " GMT", 5);
+  put(b, "Date: ");
+  put(b, d);
+  put(b, "\r\n");
+}
+
 uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
                             const char *content_type, uint32_t content_length,
-                            uint8_t allow) {
+                            uint8_t allow, uint32_t date) {
   sbuf_t b;
   b.p = out;
   b.n = 0;
@@ -434,6 +502,8 @@ uint16_t http_format_header(char *out, uint16_t cap, uint16_t status,
   put(&b, " ");
   put(&b, http_reason(status));
   put(&b, "\r\n");
+  if (date)
+    put_date(&b, date);
   if (status != 204 && status != 304) { /* RFC 9110 §8.6: no body fields */
     if (content_type) {
       put(&b, "Content-Type: ");
@@ -581,21 +651,25 @@ net_err_t http_server_init(http_server_t *s, net_t *net, uint16_t port,
   return NET_OK;
 }
 
-static void respond(http_conn_t *c, uint16_t status, const char *content_type,
-                    const uint8_t *body, uint32_t body_len, uint8_t allow) {
+/* REQ-HTTP-048: the Date of a response — from the application's clock,
+ * if it has one and knows the time (RFC 9110 §6.6.1) */
+static void respond(const http_server_t *s, http_conn_t *c, uint16_t status,
+                    const char *content_type, const uint8_t *body,
+                    uint32_t body_len, uint8_t allow) {
   char hdr[HTTP_HDR_MAX];
   if (status == 204 || status == 304) /* RFC 9110 §15.3.5, §15.4.5 */
     body_len = 0;
+  c->date = s->clock ? s->clock() : 0;
   c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status, content_type,
-                                       body_len, allow);
+                                       body_len, allow, c->date);
   if (c->resp_hdr_len == 0) { /* e.g. a very long content type */
     status = 500;
     content_type = "text/plain";
     body = (const uint8_t *)http_reason(500);
     body_len = (uint32_t)strlen((const char *)body);
     allow = 0;
-    c->resp_hdr_len =
-        http_format_header(hdr, sizeof(hdr), status, content_type, body_len, 0);
+    c->resp_hdr_len = http_format_header(hdr, sizeof(hdr), status, content_type,
+                                         body_len, 0, c->date);
   }
   c->status = status;
   c->content_type = content_type;
@@ -619,9 +693,10 @@ static int is_head(const char *req, uint16_t len) {
 }
 
 /* Error responses carry the reason phrase as a text/plain body */
-static void respond_error(http_conn_t *c, uint16_t status, uint8_t allow) {
+static void respond_error(const http_server_t *s, http_conn_t *c,
+                          uint16_t status, uint8_t allow) {
   const char *reason = http_reason(status);
-  respond(c, status, "text/plain", (const uint8_t *)reason,
+  respond(s, c, status, "text/plain", (const uint8_t *)reason,
           (uint32_t)strlen(reason), allow);
 }
 
@@ -656,13 +731,13 @@ static void dispatch(http_server_t *s, http_conn_t *c) {
     }
   }
   if (!route) {
-    respond_error(c, 404, 0); /* REQ-HTTP-025 */
+    respond_error(s, c, 404, 0); /* REQ-HTTP-025 */
     return;
   }
   uint8_t allowed =
       (uint8_t)(route->methods | ((route->methods & HTTP_GET) ? HTTP_HEAD : 0));
   if (!(allowed & rq->method)) {
-    respond_error(c, 405, allowed); /* REQ-HTTP-024 */
+    respond_error(s, c, 405, allowed); /* REQ-HTTP-024 */
     return;
   }
 
@@ -681,10 +756,11 @@ static void dispatch(http_server_t *s, http_conn_t *c) {
   rs.scratch = (uint8_t *)c->req + need;
   rs.scratch_size = (uint16_t)(c->req_size - need);
   if (route->handler(rq, &rs, route->ctx) < 0) {
-    respond_error(c, 500, 0); /* REQ-HTTP-027 */
+    respond_error(s, c, 500, 0); /* REQ-HTTP-027 */
     return;
   }
-  respond(c, rs.status, rs.content_type, rs.body, rs.body ? rs.body_len : 0, 0);
+  respond(s, c, rs.status, rs.content_type, rs.body, rs.body ? rs.body_len : 0,
+          0);
 }
 
 /* Discard whatever the client still sends once the request has been
@@ -736,7 +812,7 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
     c->head_only = (uint8_t)is_head(c->req, c->req_len);
     if (end == 0) {
       if (c->req_len >= c->req_size) /* REQ-HTTP-039..041 */
-        respond_error(c, memchr(c->req, '\n', c->req_len) ? 431 : 414, 0);
+        respond_error(s, c, memchr(c->req, '\n', c->req_len) ? 431 : 414, 0);
       else if (c->transport->client_done(c))
         end_stream(s, c); /* the request never ended */
       return;
@@ -747,7 +823,7 @@ static void do_recv(http_server_t *s, http_conn_t *c) {
     if (status == HTTP_PARSE_OK)
       status = admit(s, c);
     if (status != HTTP_PARSE_OK) {
-      respond_error(c, status, 0);
+      respond_error(s, c, status, 0);
       return;
     }
   }
@@ -772,7 +848,7 @@ static void do_send(http_server_t *s, http_conn_t *c) {
   if (c->sent < c->resp_hdr_len) {
     char hdr[HTTP_HDR_MAX];
     http_format_header(hdr, sizeof(hdr), c->status, c->content_type,
-                       c->body_len, c->allow);
+                       c->body_len, c->allow, c->date);
     c->sent += c->transport->write(c, (const uint8_t *)hdr + c->sent,
                                    (uint16_t)(c->resp_hdr_len - c->sent));
   }

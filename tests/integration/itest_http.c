@@ -796,7 +796,7 @@ int main(void) {
   RUN_TEST(itest_http_045_invalid_host_value);
   RUN_TEST(itest_http_046_transfer_encoding);
   RUN_TEST(itest_http_047_absolute_form);
-  RUN_XFAIL(itest_http_048_date_from_the_clock);
+  RUN_TEST(itest_http_048_date_from_the_clock);
   RUN_XFAIL(itest_http_049_status_and_type_follow_the_grammar);
   RUN_XFAIL(itest_http_050_no_1xx);
   RUN_XFAIL(itest_http_051_205_without_content);

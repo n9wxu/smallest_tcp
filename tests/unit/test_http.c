@@ -184,7 +184,8 @@ TEST(test_format_header_200) {
                        "Content-Length: 1234\r\n"
                        "Connection: close\r\n"
                        "\r\n";
-  uint16_t n = http_format_header(out, sizeof(out), 200, "text/html", 1234, 0);
+  uint16_t n =
+      http_format_header(out, sizeof(out), 200, "text/html", 1234, 0, 0);
   ASSERT_EQ(n, strlen(expect));
   ASSERT_MEM_EQ(out, expect, n);
 }
@@ -198,10 +199,10 @@ TEST(test_format_header_405_allow) {
                        "Connection: close\r\n"
                        "\r\n";
   uint16_t n = http_format_header(out, sizeof(out), 405, "text/plain", 0,
-                                  HTTP_GET | HTTP_HEAD);
+                                  HTTP_GET | HTTP_HEAD, 0);
   ASSERT_EQ(n, strlen(expect));
   ASSERT_MEM_EQ(out, expect, n);
-  n = http_format_header(out, sizeof(out), 405, "text/plain", 0, HTTP_POST);
+  n = http_format_header(out, sizeof(out), 405, "text/plain", 0, HTTP_POST, 0);
   ASSERT_TRUE(strstr(out, "Allow: POST\r\n") != NULL);
   (void)n;
 }
@@ -209,9 +210,9 @@ TEST(test_format_header_405_allow) {
 /* RFC 9110 §10.2.1: a 405 always has Allow, empty when nothing is */
 TEST(test_format_header_405_allows_nothing) {
   char out[HTTP_HDR_MAX];
-  http_format_header(out, sizeof(out), 405, "text/plain", 0, 0);
+  http_format_header(out, sizeof(out), 405, "text/plain", 0, 0, 0);
   ASSERT_TRUE(strstr(out, "\r\nAllow: \r\n") != NULL);
-  http_format_header(out, sizeof(out), 404, "text/plain", 0, 0);
+  http_format_header(out, sizeof(out), 404, "text/plain", 0, 0, 0);
   ASSERT_TRUE(strstr(out, "Allow") == NULL);
 }
 
@@ -220,7 +221,7 @@ TEST(test_format_header_204_has_no_body_fields) {
   const char *expect = "HTTP/1.0 204 No Content\r\n"
                        "Connection: close\r\n"
                        "\r\n";
-  uint16_t n = http_format_header(out, sizeof(out), 204, "text/html", 0, 0);
+  uint16_t n = http_format_header(out, sizeof(out), 204, "text/html", 0, 0, 0);
   ASSERT_EQ(n, strlen(expect));
   ASSERT_MEM_EQ(out, expect, n);
 }
@@ -228,10 +229,10 @@ TEST(test_format_header_204_has_no_body_fields) {
 TEST(test_format_header_large_length_and_no_fit) {
   char out[HTTP_HDR_MAX];
   uint16_t n = http_format_header(out, sizeof(out), 200, "application/json",
-                                  4294967295u, 0);
+                                  4294967295u, 0, 0);
   ASSERT_TRUE(n > 0);
   ASSERT_TRUE(strstr(out, "Content-Length: 4294967295\r\n") != NULL);
-  ASSERT_EQ(http_format_header(out, 20, 200, "text/html", 1, 0), 0);
+  ASSERT_EQ(http_format_header(out, 20, 200, "text/html", 1, 0, 0), 0);
 }
 
 /* ══ Server: a simulated client drives the real TCP stack ═════════════ */

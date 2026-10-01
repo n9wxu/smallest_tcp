@@ -67,7 +67,12 @@ for (i = 0; i < SLOTS; i++) {
 }
 tcp_set_connections(&net, conn_table, SLOTS);  /* the table may hold other connections too */
 http_server_init(&http, &net, 80, routes, 3, conns, SLOTS);  /* every slot listens */
+http.clock = rtc_seconds;  /* optional: seconds since 1970 UTC, 0 if not known yet */
 ```
+
+Two optional fields, cleared by `http_server_init()`, are set after it:
+`clock` — the device's clock, for the Date field (section 6) — and, for
+HTTPS, `https_hosts` (section 7.2).
 
 The stack keeps no connection table of its own: `tcp_set_connections()`
 binds the application's array of `tcp_conn_t` pointers to `net`
@@ -186,6 +191,7 @@ is) and an optional port of digits.
 
 ```
 HTTP/1.0 200 OK\r\n
+Date: Thu, 01 Oct 2026 12:34:56 GMT\r\n
 Content-Type: text/html\r\n
 Content-Length: 1234\r\n
 Connection: close\r\n
@@ -193,7 +199,7 @@ Connection: close\r\n
 <body>
 ```
 
-The header is formatted into a buffer on the C stack (`HTTP_HDR_MAX`, 192
+The header is formatted into a buffer on the C stack (`HTTP_HDR_MAX`, 224
 bytes) without `printf` or division; it is formatted again on each send
 call rather than kept, and only its unsent part is written.  Header and body
 go to the transport's `write()` in as large pieces as it takes, then
@@ -204,6 +210,20 @@ The response is streamed straight from the handler's `body` pointer, so it
 can be much larger than any buffer.  Error responses carry the reason phrase
 as a `text/plain` body.  Content-Type and Content-Length are omitted for 204
 and 304.
+
+**Date.**  An origin server with a clock must send Date in its 2xx, 3xx and
+4xx responses, and one without a clock must not (RFC 9110 §6.6.1).  The
+application says which it is: `http_server_t.clock` returns the time in
+seconds since 1970-01-01 UTC (from SNTP or an RTC), or 0 while it does not
+know it; NULL means no clock.  The server reads it once per response and
+sends the time as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 9110
+§5.6.7) in every response, 5xx included (which the RFC allows).  The date
+is computed without a run-time division: days, hours and minutes by
+shift-and-subtract (`take()`), the year and month by subtracting their
+lengths, valid until the 32-bit seconds run out in 2106 (2100 is the one
+year divisible by 4 in that span that is not a leap year).  It is kept in
+the slot (`http_conn_t.date`), since the header is formatted again on each
+send call.
 
 ---
 
