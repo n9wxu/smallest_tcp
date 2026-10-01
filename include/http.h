@@ -37,12 +37,23 @@
 #define HTTP_RESPONSE_TIMEOUT_MS 10000u
 #endif
 
+/* What the header section asked for (http_request_t.flags) */
+#define HTTP_RQ_HTTPS 0x01       /**< An https target in absolute-form */
+#define HTTP_RQ_CONTINUE 0x02    /**< HTTP/1.1 with Expect: 100-continue */
+#define HTTP_RQ_IF_MATCH 0x04    /**< If-Match with entity tags */
+#define HTTP_RQ_IF_NONE_ANY 0x08 /**< If-None-Match: * */
+
 /* Handler API */
 typedef struct {
-  uint8_t method;      /**< HTTP_GET, HTTP_HEAD or HTTP_POST */
-  uint8_t version;     /**< 10 (HTTP/1.0) or 11 (HTTP/1.1) */
-  const char *path;    /**< NUL-terminated, without the query */
-  const char *query;   /**< Text after '?', or "" */
+  uint8_t method;    /**< HTTP_GET, HTTP_HEAD or HTTP_POST */
+  uint8_t version;   /**< 10 (HTTP/1.0) or 11 (HTTP/1.1) */
+  uint8_t flags;     /**< HTTP_RQ_* */
+  const char *path;  /**< NUL-terminated, without the query */
+  const char *query; /**< Text after '?', or "" */
+  /** The target's host, without the port and not NUL-terminated: from
+   *  the absolute-form target, else from Host; NULL if neither */
+  const char *host;
+  uint16_t host_len;
   const uint8_t *body; /**< POST body (NULL if none) */
   uint16_t body_len;
 #if NET_USE_IPV4
@@ -86,7 +97,7 @@ uint16_t http_header_end(const char *buf, uint16_t len);
  * Parse the request line and headers in place: path and query are
  * NUL-terminated inside @p buf.  @p hdr_len is http_header_end()'s result.
  * @param content_length  Out: Content-Length, 0 if absent.
- * @return HTTP_PARSE_OK, or the status to answer with (400, 501, 505).
+ * @return HTTP_PARSE_OK, or the status to answer with (400, 421, 501, 505).
  */
 uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
                             uint32_t *content_length);

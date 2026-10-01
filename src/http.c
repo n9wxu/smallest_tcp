@@ -43,6 +43,10 @@ static int target_valid(const char *t, uint16_t len) {
 
 static int is_digit(char c) { return c >= '0' && c <= '9'; }
 
+static int is_alpha(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
 static int is_hex(char c) {
   return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
@@ -50,7 +54,7 @@ static int is_hex(char c) {
 /* RFC 3986 §2.2, §2.3: unreserved and sub-delims, what a host is made of
  * besides percent-encoded octets (and ':' in an IP-literal) */
 static int is_host_char(char c) {
-  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || is_digit(c))
+  if (is_alpha(c) || is_digit(c))
     return 1;
   return c != '\0' && strchr("-._~!$&'()*+,;=", c) != NULL;
 }
@@ -165,6 +169,42 @@ static int parse_content_length(const char *v, uint16_t len, uint32_t *out) {
   return 0;
 }
 
+/* RFC 3986 §3.1: t[0..len) begins with a scheme and its ':' */
+static int has_scheme(const char *t, uint16_t len) {
+  uint16_t i = 1;
+  if (len == 0 || !is_alpha(t[0]))
+    return 0;
+  while (i < len && (is_alpha(t[i]) || is_digit(t[i]) || t[i] == '+' ||
+                     t[i] == '-' || t[i] == '.'))
+    i++;
+  return i < len && t[i] == ':';
+}
+
+/* REQ-HTTP-047: a target in absolute-form (RFC 9112 §3.2.2).  An http or
+ * https URI's authority names the host — one with an empty host is
+ * invalid (RFC 9110 §4.2.1, §4.2.2) — and *rest is left at its path and
+ * query; any other scheme names an origin this server does not serve. */
+static uint16_t absolute_form(char *t, uint16_t len, char **rest,
+                              http_request_t *req) {
+  uint16_t s, end;
+  if (len >= 7 && eq_ci(t, 7, "http://")) {
+    s = 7;
+  } else if (len >= 8 && eq_ci(t, 8, "https://")) {
+    s = 8;
+    req->flags |= HTTP_RQ_HTTPS;
+  } else {
+    return has_scheme(t, len) ? 421 : 400;
+  }
+  for (end = s; end < len && t[end] != '/' && t[end] != '?'; end++)
+    ;
+  if (!authority_valid(t + s, (uint16_t)(end - s), &req->host_len) ||
+      req->host_len == 0)
+    return 400;
+  req->host = t + s;
+  *rest = t + end;
+  return HTTP_PARSE_OK;
+}
+
 /* Transfer-Encoding's last coding (RFC 9112 §6.1): 1 if it is chunked */
 static int ends_in_chunked(const char *v, uint16_t len) {
   uint16_t start;
@@ -221,17 +261,18 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
     return 501; /* RFC 9110 §15.6.2 */
 
   /* ── Request target: origin-form, or absolute-form reduced to its path ── */
-  char *target = line + sp1 + 1;
-  const char *path = target;
-  if (!target_valid(target, (uint16_t)(sp2 - sp1 - 1)))
+  char *target = line + sp1 + 1, *path = target;
+  uint16_t target_len = (uint16_t)(sp2 - sp1 - 1);
+  if (!target_valid(target, target_len))
     return 400;
   line[sp2] = '\0';
+  req->flags = 0;
+  req->host = NULL;
+  req->host_len = 0;
   if (target[0] != '/') {
-    if (sp2 - sp1 - 1 < 7 || !eq_ci(target, 7, "http://"))
-      return 400;
-    path = strchr(target + 7, '/');
-    if (!path)
-      path = "/";
+    status = absolute_form(target, target_len, &path, req);
+    if (status != HTTP_PARSE_OK)
+      return status;
   }
   char *q = strchr(path, '?');
   if (q) {
@@ -240,7 +281,7 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
   } else {
     req->query = path + strlen(path); /* "" */
   }
-  req->path = path;
+  req->path = *path ? path : "/";
 
   /* ── Header fields ── */
   for (;;) {
@@ -278,6 +319,10 @@ uint16_t http_parse_request(char *buf, uint16_t hdr_len, http_request_t *req,
       if (host_seen || !authority_valid(v, vlen, &host_len))
         return 400; /* RFC 9112 §3.2: one Host line at most, valid */
       host_seen = 1;
+      if (!req->host) { /* an absolute-form target's host wins (§3.2.2) */
+        req->host = v;
+        req->host_len = host_len;
+      }
     }
   }
 

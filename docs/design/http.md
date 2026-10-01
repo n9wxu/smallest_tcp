@@ -94,8 +94,11 @@ requires at least 32 bytes.
 typedef struct {
   uint8_t method;          /* HTTP_GET / HTTP_HEAD / HTTP_POST */
   uint8_t version;         /* 10 or 11 */
+  uint8_t flags;           /* HTTP_RQ_*: what the header section asked for */
   const char *path;        /* "/api/status" — NUL-terminated, no query */
   const char *query;       /* "a=1&b=2" or "" */
+  const char *host;        /* the target's host, no port, not NUL-terminated; NULL if none */
+  uint16_t host_len;
   const uint8_t *body;     /* POST body (in the request buffer), NULL if none */
   uint16_t body_len;
   uint32_t remote_ip;      /* NET_USE_IPV4 only: client IPv4, host order (0 over IPv6) */
@@ -149,6 +152,7 @@ bytes arrive (transport read → request buffer)
 |---|---|
 | Request line not `METHOD SP target SP HTTP/x.y`, header line without `:`, obsolete line folding, bad or conflicting Content-Length | 400 |
 | A control octet (a bare CR, a NUL, …) in the target, or a bare CR or a NUL in a field value (RFC 9112 §2.2, RFC 9110 §5.5) — rejected rather than handed to the application | 400 |
+| An http or https target in absolute-form with an empty host (RFC 9110 §4.2.1, §4.2.2) | 400 |
 | HTTP/1.1 request without `Host`, or any request with more than one `Host` line, or with a `Host` value that is not `uri-host [":" port]` — an empty one is valid (RFC 9112 §3.2) | 400 |
 | Method other than GET, HEAD, POST (RFC 9110 §15.6.2) | 501 |
 | `Transfer-Encoding` whose last coding is not chunked — the length cannot be determined (RFC 9112 §6.3) — or any `Transfer-Encoding` in an HTTP/1.0 request, whose framing is then faulty (§6.1) | 400 |
@@ -159,14 +163,18 @@ bytes arrive (transport read → request buffer)
 | Body larger than the request buffer | 413 |
 | Request line longer than the request buffer | 414 |
 | Headers larger than the request buffer (RFC 6585) | 431 |
+| An absolute-form target whose scheme is not http or https (RFC 9110 §15.5.20) | 421 |
 | Handler returned < 0, or the response header does not fit `HTTP_HDR_MAX` | 500 |
 
 RFC 9110 reserves 405 for a method the *resource* does not allow and uses 501
 for methods the server does not implement; 431 is the status for headers too
 large.
 
-Absolute-form targets (`GET http://host/path`) are reduced to their path.
-Paths are compared exactly (no percent-decoding).  Headers other than
+Absolute-form targets (`GET http://host/path?query`, `https://` too) are
+reduced to their path (`/` if empty) and query, and their authority's host
+— not Host's, which an origin server ignores then (RFC 9112 §3.2.2) — is
+the request's `host`; otherwise `host` is Host's, without the port.  Paths
+are compared exactly (no percent-decoding).  Headers other than
 Content-Length, Transfer-Encoding and Host are ignored.  Host's value must
 be a host (an IP-literal in brackets, or a reg-name — percent-encoded
 octets, letters, digits, `-._~!$&'()*+,;=` — which an IPv4 address also

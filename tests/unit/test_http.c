@@ -92,15 +92,6 @@ TEST(test_parse_query_split) {
   ASSERT_TRUE(strcmp(preq.query, "") == 0);
 }
 
-TEST(test_parse_absolute_form) {
-  ASSERT_EQ(parse("GET http://pyro-dead01.local:80/cfg?a=b HTTP/1.0\r\n\r\n"),
-            HTTP_PARSE_OK);
-  ASSERT_TRUE(strcmp(preq.path, "/cfg") == 0);
-  ASSERT_TRUE(strcmp(preq.query, "a=b") == 0);
-  ASSERT_EQ(parse("GET HTTP://10.0.0.2 HTTP/1.0\r\n\r\n"), HTTP_PARSE_OK);
-  ASSERT_TRUE(strcmp(preq.path, "/") == 0);
-}
-
 TEST(test_parse_bare_lf_lines) {
   ASSERT_EQ(parse("GET /lf HTTP/1.1\nHost: h\n\n"), HTTP_PARSE_OK);
   ASSERT_TRUE(strcmp(preq.path, "/lf") == 0);
@@ -832,7 +823,6 @@ int main(void) {
   RUN_TEST(test_parse_http11_needs_host);
   RUN_TEST(test_parse_duplicate_host_rejected);
   RUN_TEST(test_parse_query_split);
-  RUN_TEST(test_parse_absolute_form);
   RUN_TEST(test_parse_bare_lf_lines);
   RUN_TEST(test_parse_leading_empty_lines);
   RUN_TEST(test_parse_unimplemented_methods);

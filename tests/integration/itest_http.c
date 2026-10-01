@@ -795,7 +795,7 @@ int main(void) {
   RUN_TEST(itest_http_044_bare_cr_and_nul_rejected);
   RUN_TEST(itest_http_045_invalid_host_value);
   RUN_TEST(itest_http_046_transfer_encoding);
-  RUN_XFAIL(itest_http_047_absolute_form);
+  RUN_TEST(itest_http_047_absolute_form);
   RUN_XFAIL(itest_http_048_date_from_the_clock);
   RUN_XFAIL(itest_http_049_status_and_type_follow_the_grammar);
   RUN_XFAIL(itest_http_050_no_1xx);
@@ -818,7 +818,7 @@ int main(void) {
     fprintf(stderr, "TLS backend init failed\n");
     return 1;
   }
-  RUN_XFAIL(itest_http_047_https_absolute_form_over_tls);
+  RUN_TEST(itest_http_047_https_absolute_form_over_tls);
   RUN_XFAIL(itest_http_056_host_not_in_the_certificate);
   tls_mbedtls_free(&backend);
 #endif
