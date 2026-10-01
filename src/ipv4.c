@@ -155,6 +155,17 @@ int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac) {
   return 0;
 }
 
+int ipv4_is_broadcast(const net_t *net, uint32_t ip) {
+  uint32_t host = ~net->subnet_mask;
+  return ip == IPV4_BROADCAST ||
+         (host > 1u && (ip & host) == host && ipv4_is_local(net, ip));
+}
+
+int ipv4_is_host(const net_t *net, uint32_t ip) {
+  return ip != 0 && (ip >> 24) != 127 && (ip >> 28) < 0xE &&
+         !ipv4_is_broadcast(net, ip);
+}
+
 /* REQ-IPv4-013..015: a single host other than us, or 0.0.0.0 — a DHCP
  * client's (REQ-IPv4-016) */
 static int source_is_valid(const net_t *net, uint32_t src_ip) {

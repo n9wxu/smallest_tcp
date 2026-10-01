@@ -99,11 +99,7 @@ static inline int ipv4_is_local(const net_t *net, uint32_t ip) {
 
 /** Limited (255.255.255.255) or our own subnet's directed broadcast.  A
  *  /31 or /32 has none (RFC 3021). */
-static inline int ipv4_is_broadcast(const net_t *net, uint32_t ip) {
-  uint32_t host = ~net->subnet_mask;
-  return ip == IPV4_BROADCAST ||
-         (host > 1u && (ip & host) == host && ipv4_is_local(net, ip));
-}
+int ipv4_is_broadcast(const net_t *net, uint32_t ip);
 
 /* Multicast (RFC 1112) */
 
@@ -114,10 +110,7 @@ static inline int ipv4_is_multicast(uint32_t ip) { return (ip >> 28) == 0xE; }
  * @p ip names a single host (RFC 1122 §3.2.1.3, §3.2.2): not 0.0.0.0,
  * loopback, multicast, class E or a broadcast.
  */
-static inline int ipv4_is_host(const net_t *net, uint32_t ip) {
-  return ip != 0 && (ip >> 24) != 127 && (ip >> 28) < 0xE &&
-         !ipv4_is_broadcast(net, ip);
-}
+int ipv4_is_host(const net_t *net, uint32_t ip);
 
 /**
  * A received datagram's destination is multicast.  Only joined groups get
