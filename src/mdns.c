@@ -137,6 +137,38 @@ static uint32_t service_type_mask(const mdns_t *m) {
   return mask;
 }
 
+/* The unique RRSet of record @p i — the records in use of its name and
+ * type — or the record alone if it is shared */
+static uint32_t rrset_of(const mdns_t *m, uint8_t i) {
+  const mdns_record_t *r = &m->records[i];
+  uint32_t set = BIT(i);
+  uint8_t j;
+  for (j = 0; j < m->count && !is_shared(r); j++) {
+    const mdns_record_t *o = &m->records[j];
+    if (live(m, j) && o->type == r->type && !is_shared(o) &&
+        dns_dotted_equal(o->name, r->name))
+      set |= BIT(j);
+  }
+  return set;
+}
+
+/* REQ-MDNS-079 (RFC 6762 §10.2): the whole RRSets of the records in
+ * @p set, a unique RRSet being sent whole or not at all */
+static uint32_t rrsets(const mdns_t *m, uint32_t set) {
+  uint32_t all = set;
+  uint8_t i;
+  for (i = 0; i < m->count; i++) {
+    if (set & BIT(i))
+      all |= rrset_of(m, i);
+  }
+  return all;
+}
+
+/* @p ttl is less than half of @p ours (RFC 6762 §6.6, §7.1) */
+static int below_half(uint32_t ttl, uint32_t ours) {
+  return ttl < ours / 2 + (ours & 1);
+}
+
 /* Index of the first unique record in use carrying the same name as
  * record i */
 static uint8_t name_rep(const mdns_t *m, uint8_t i) {
@@ -511,12 +543,24 @@ static void send_response(mdns_t *m, uint32_t answers, uint32_t meta,
     add_answer(m, &p, o, &svc, 0);
   }
 
-  /* REQ-DNSSD-007, 008: additionals are best effort in the last packet */
+  /* REQ-DNSSD-007, 008: additionals are best effort in the last packet,
+   * a unique RRSet whole or not at all (REQ-MDNS-079) */
   for (i = 0; i < m->count; i++) {
-    const mdns_record_t *r = &m->records[i];
-    int n;
-    if ((additionals & BIT(i)) && (n = write_rr(m, &p.w, r, o)) > 0)
+    uint32_t set = rrset_of(m, i) & additionals;
+    dns_writer_mark_t mark = dns_writer_mark(&p.w);
+    uint16_t ar = p.ar;
+    if (!(additionals & BIT(i)))
+      continue;
+    additionals &= ~set;
+    for (j = i; j < m->count; j++) {
+      int n = (set & BIT(j)) ? write_rr(m, &p.w, &m->records[j], o) : 0;
+      if (n < 0) {
+        dns_writer_rollback(&p.w, mark);
+        p.ar = ar;
+        break;
+      }
       p.ar = (uint16_t)(p.ar + n);
+    }
   }
 
   if (p.an > 0)
@@ -1048,25 +1092,27 @@ static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
 }
 
 /* REQ-MDNS-029, RFC 6762 §7.1: drop what the querier already knows, from
- * the answer section at @p off */
+ * the answer section at @p off — a unique RRSet only if it knows it all
+ * (REQ-MDNS-079) */
 static void suppress_known_answers(const mdns_t *m, const uint8_t *msg,
                                    uint16_t len, int off, wanted_t *w) {
   uint16_t an = net_read16be(msg + DNS_OFF_ANCOUNT), k;
+  uint32_t asked = w->answers;
   dns_rr_t rr;
   uint8_t i;
   for (k = 0; k < an; k++) {
     if ((off = dns_read_rr(msg, len, (uint16_t)off, &rr)) < 0)
-      return;
+      break;
     if ((rr.class_ & DNS_CLASS_MASK) != DNS_CLASS_IN)
       continue;
     for (i = 0; i < m->count; i++) {
       const mdns_record_t *r = &m->records[i];
-      if ((w->answers & BIT(i)) && rr.ttl >= r->ttl / 2 &&
+      if ((w->answers & BIT(i)) && !below_half(rr.ttl, r->ttl) &&
           rr_matches(m, r, msg, len, &rr))
         w->answers &= ~BIT(i);
     }
     if (w->service_types && rr.type == DNS_TYPE_PTR &&
-        rr.ttl >= MDNS_TTL_OTHER / 2 &&
+        !below_half(rr.ttl, MDNS_TTL_OTHER) &&
         dns_name_equals(msg, len, rr.name_off, MDNS_META_QUERY)) {
       for (i = 0; i < m->count; i++) {
         if ((w->service_types & BIT(i)) &&
@@ -1075,6 +1121,7 @@ static void suppress_known_answers(const mdns_t *m, const uint8_t *msg,
       }
     }
   }
+  w->answers |= rrsets(m, w->answers) & asked;
 }
 
 static int wants_anything(const wanted_t *w) {

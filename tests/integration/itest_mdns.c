@@ -1491,7 +1491,7 @@ int main(void) {
   RUN_TEST(itest_mdns_076_no_cache_flush_in_legacy_responses);
   RUN_XFAIL(itest_mdns_077_known_answers_only_from_the_querier);
   RUN_TEST(itest_mdns_078_cache_flush_on_unique_records_only);
-  RUN_XFAIL(itest_mdns_079_whole_unique_rrset);
+  RUN_TEST(itest_mdns_079_whole_unique_rrset);
   ITEST_REPORT();
   return test_failures;
 }

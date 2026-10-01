@@ -147,7 +147,7 @@ mdns_input() / mdns_input6()  →  input()
 
 **`match_question()`**: records with the question's name (case-insensitive) and type, or any type for `ANY`, are answers.  A PTR or `ANY` question for `_services._dns-sd._udp.local.` selects every service-type PTR (owner name beginning with `_`; RFC 6763 §9).  A question that matches nothing, is not `ANY`, and names one of our unique names is owed an NSEC.  A question that matches nothing at all does not affect `all_unicast`.
 
-**`suppress_known_answers()`** (RFC 6762 §7.1): an answer is dropped if the query's Answer section already holds it (same name, type and data) with a TTL of at least half ours; meta-query answers likewise, against PTR records for `_services._dns-sd._udp.local.`.  NSEC is not suppressed.
+**`suppress_known_answers()`** (RFC 6762 §7.1): an answer is dropped if the query's Answer section already holds it (same name, type and data) with a TTL of at least half ours; meta-query answers likewise, against PTR records for `_services._dns-sd._udp.local.`.  NSEC is not suppressed.  A unique RRSet — several table entries of one name and type, two SRV records say — is dropped only if every member is known (`rrsets()`): sent in part, with the cache-flush bit, it would delete the rest from the querier's cache (§10.2).
 
 **`answer()`** picks one of four ways:
 
@@ -185,7 +185,7 @@ typedef struct {
 
 **`send_response()`** writes, in order: the answers (table order), the NSEC records, one PTR per distinct service type (`_services._dns-sd._udp.local.` → the type, TTL 4500), and last the additionals.  The header has QR and AA set and ID 0, except in legacy replies, which echo the ID and carry the question.  `rr_ttl()` makes goodbye TTLs 0 and caps legacy TTLs; `rr_class()` sets the cache-flush bit on unique records except in legacy replies.  A packet with no answer is not sent.
 
-**Size** (REQ-MDNS-042).  `add_answer()` writes an answer; when it does not fit, the packet so far is sent and a new one begun with the same header (and, for legacy, the same question).  A single record too large for an empty packet cannot occur: `mdns_init()` refused it.  Every record is written with a writer mark and rolled back on overflow (`write_one()`, `write_rr()`, `write_nsec()`), so a record never goes out half-written.  Additionals go in the last packet only, and only those that fit.
+**Size** (REQ-MDNS-042).  `add_answer()` writes an answer; when it does not fit, the packet so far is sent and a new one begun with the same header (and, for legacy, the same question).  A single record too large for an empty packet cannot occur: `mdns_init()` refused it.  Every record is written with a writer mark and rolled back on overflow (`write_one()`, `write_rr()`, `write_nsec()`), so a record never goes out half-written.  Additionals go in the last packet only, and only those that fit — a unique RRSet whole or not at all (§10.2: a response with some members of a unique RRSet carries all of them).
 
 **Additional records** (`additionals_for()`, RFC 6763 §12): a PTR answer adds the instance's SRV and TXT; an SRV (answered or added) adds the A and AAAA records of its target; in IPv6 builds an A answer adds the name's AAAA records and vice versa (RFC 6762 §6.2).  Records already in the answers are not repeated.
 
