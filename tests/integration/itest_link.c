@@ -143,10 +143,6 @@ TEST(itest_arp_011_gateway_learned_only_from_the_gateway) {
   ASSERT_MEM_EQ(t.net.gateway_mac, gw, 6);
 }
 
-#ifndef NET_ARP_GATEWAY_TIMEOUT_MS
-#define NET_ARP_GATEWAY_TIMEOUT_MS 300000u /* until the stack defines it */
-#endif
-
 /* The gateway's ARP reply, received */
 static void gateway_replies(const uint8_t mac[6]) {
   uint8_t f[64];
@@ -270,8 +266,8 @@ int main(void) {
   RUN_TEST(itest_arp_001_request_for_our_address_answered);
   RUN_TEST(itest_arp_004_unconfigured_answers_nothing);
   RUN_TEST(itest_arp_011_gateway_learned_only_from_the_gateway);
-  RUN_XFAIL(itest_arp_038_gateway_mac_expires);
-  RUN_XFAIL(itest_arp_039_no_flooding);
+  RUN_TEST(itest_arp_038_gateway_mac_expires);
+  RUN_TEST(itest_arp_039_no_flooding);
   RUN_TEST(itest_arp_041_broadcast_and_multicast_next_hop);
   RUN_TEST(itest_udp_032_one_ethernet_frame_at_most);
   RUN_TEST(itest_udp_032_frame_buffer_limit);

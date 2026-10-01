@@ -72,8 +72,21 @@ or `DHCPV4_EVT_RENEWED` while `gateway_mac_valid` is 0 — and the
 gateway's reply fills in `gateway_mac` (REQ-DHCPv4-049).  A renewal that
 keeps the gateway keeps its MAC.
 
-The stack keeps no timers for ARP: **retries and time-outs are the
-application's** (the demo retries every 500 ms).  The former
+**Retries and time-outs are the application's** (the demo retries every
+500 ms).  The stack keeps two ARP timers of its own, run by `arp_tick()` from
+`net_tick()`:
+
+- **No flooding** (REQ-ARP-039, RFC 1122 §2.3.2.1): `arp_request()` remembers
+  the targets it asked for in the last second (`NET_ARP_RATE_SLOTS`, default
+  2) and refuses, with `NET_ERR_BUSY` and nothing sent, to ask for one of
+  them again — or for any target while every slot is in use.  A demo
+  retrying every 500 ms therefore sends a request a second.
+- **Out-of-date entries flushed** (REQ-ARP-038): a gateway MAC learned from
+  an ARP reply is valid for `NET_ARP_GATEWAY_TIMEOUT_MS` (5 minutes by
+  default, configurable), and each reply from the gateway starts the time
+  again; then `gateway_mac_valid` drops to 0 and the application resolves it
+  afresh.  A MAC the application sets by hand (`gateway_mac_s` 0) does not
+  expire.  The former
 `NET_DEFAULT_ARP_RETRY_MS` / `NET_DEFAULT_ARP_MAX_RETRIES` settings and the
 `arp_retry_ms` / `arp_max_retries` fields in `net_t` never had any code
 behind them and have been removed.
@@ -99,7 +112,8 @@ in RAM.
   hosts, requests *from* the gateway — is ignored.  Only Ethernet/IPv4 ARP
   (hardware type 1, protocol 0x0800, lengths 6 and 4) is considered.
 
-The gateway's MAC never expires; it is replaced by the next reply.
+The gateway's MAC expires `NET_ARP_GATEWAY_TIMEOUT_MS` after the last
+reply from the gateway (REQ-ARP-038); the next reply replaces it.
 
 Not implemented: Address Conflict Detection (RFC 5227 probes, announcements
 and defence) and automatic gratuitous ARP when an address is configured.  An

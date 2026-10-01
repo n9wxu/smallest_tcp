@@ -33,13 +33,24 @@
 #error "NET_USE_IPV4 and NET_USE_IPV6 are both 0: no network layer"
 #endif
 
-/* Multicast groups joined at once (0 compiles multicast RX out) */
 /** The link MTU net_init() sets (net_t.mtu, RFC 1122 §3.3.3): the most
  *  any datagram sent carries, headers included */
 #ifndef NET_DEFAULT_MTU
 #define NET_DEFAULT_MTU 1500
 #endif
 
+/** How long a MAC learned by ARP (the gateway's) stays valid without a
+ *  new reply (RFC 1122 §2.3.2.1: out-of-date entries are flushed) */
+#ifndef NET_ARP_GATEWAY_TIMEOUT_MS
+#define NET_ARP_GATEWAY_TIMEOUT_MS 300000u
+#endif
+/** Targets ARP requests are remembered for, so none is requested more than
+ *  once a second (RFC 1122 §2.3.2.1); at least 1 */
+#ifndef NET_ARP_RATE_SLOTS
+#define NET_ARP_RATE_SLOTS 2
+#endif
+
+/* Multicast groups joined at once (0 compiles multicast RX out) */
 #ifndef NET_MAX_MCAST_GROUPS
 #define NET_MAX_MCAST_GROUPS 1
 #endif

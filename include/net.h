@@ -100,6 +100,15 @@ typedef struct {
   uint32_t gateway_ipv4;
   uint8_t gateway_mac[6];
   uint8_t gateway_mac_valid;
+  /** Seconds until an ARP-learned gateway MAC is out of date; 0: never (a
+   *  MAC set by hand) */
+  uint16_t gateway_mac_s;
+  uint16_t arp_carry_ms;
+  /** Recent ARP requests: none again within a second */
+  struct {
+    uint32_t ip;
+    uint16_t ms_left;
+  } arp_recent[NET_ARP_RATE_SLOTS];
 #if NET_MAX_MCAST_GROUPS > 0
   uint32_t mcast_groups[NET_MAX_MCAST_GROUPS]; /**< Joined; 0 = free */
 #endif

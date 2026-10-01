@@ -70,6 +70,7 @@ offsets and corrupt each other's memory.
 | `NET_USE_IPV6` | `net_t` (the `ip6` block, `mcast6_groups`, the IPv6 port table), `tcp_conn_t`, `http_request_t`, `http_conn_t`, and which functions exist |
 | `NET_USE_UDP`, `NET_USE_TCP` | `net_t` (port tables, connection table) |
 | `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS` | `net_t` (group arrays) |
+| `NET_ARP_RATE_SLOTS` | `net_t` (`arp_recent[]`) |
 | `NET_IPV6_ADDRS` | `net_t` (`ip6.addr[]`) |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client_t` |
 | `DNS_COMPRESS_MAX` | `dns_writer_t` (shared by `dns_wire.c` and `mdns.c`) |
@@ -98,6 +99,9 @@ to scattered `-D` flags: one file, included by every translation unit.
 | `NET_DEFAULT_IPV4_ADDR` | 10.0.0.2 | Copied into `net->ipv4_addr` by `net_init()`.  Set 0 for a device that waits for DHCP. |
 | `NET_DEFAULT_SUBNET_MASK` | 255.255.255.0 | `net->subnet_mask`. |
 | `NET_DEFAULT_GATEWAY` | 10.0.0.1 | `net->gateway_ipv4`. |
+| `NET_DEFAULT_MTU` | 1500 | `net->mtu`, the link MTU: no datagram sent is longer (RFC 1122 §3.3.3).  The application may lower it at run time. |
+| `NET_ARP_GATEWAY_TIMEOUT_MS` | 300000 | How long a gateway MAC learned by ARP stays valid without a new reply (RFC 1122 §2.3.2.1). |
+| `NET_ARP_RATE_SLOTS` | 2 | ARP targets remembered so that none is requested more than once a second (RFC 1122 §2.3.2.1); `net_t` holds them. |
 | `NET_DEFAULT_MAC` | 02:00:00:de:ad:01 | Used when `net_init()` is given a NULL MAC.  A locally administered address for development; production devices pass their own. |
 | `NET_DEFAULT_TCP_RTO_INIT_MS` | 1000 | Initial retransmission timeout and first zero-window probe interval. |
 | `NET_DEFAULT_TCP_RTO_MAX_MS` | 60000 | Ceiling for the doubling retransmission and probe intervals. |

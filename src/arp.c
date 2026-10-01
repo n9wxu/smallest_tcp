@@ -61,12 +61,48 @@ void arp_input(net_t *net, const eth_frame_t *eth) {
              sender_ip == net->gateway_ipv4) {
     memcpy(net->gateway_mac, sender_mac, 6);
     net->gateway_mac_valid = 1;
+    /* REQ-ARP-038: learned or refreshed now, out of date in a while */
+    net->gateway_mac_s = (uint16_t)(NET_ARP_GATEWAY_TIMEOUT_MS / 1000u);
   }
 }
 
+/* REQ-ARP-039 (RFC 1122 §2.3.2.1): a target requested in the last second
+ * is not requested again; with every slot in use, nothing is */
 net_err_t arp_request(net_t *net, uint32_t target_ip) {
   static const uint8_t unknown_mac[6] = {0};
-  return arp_send(net, ARP_OPER_REQUEST, broadcast_mac, unknown_mac, target_ip);
+  uint8_t i, free_slot = NET_ARP_RATE_SLOTS;
+  net_err_t err;
+  for (i = 0; i < NET_ARP_RATE_SLOTS; i++) {
+    if (!net->arp_recent[i].ms_left)
+      free_slot = i;
+    else if (net->arp_recent[i].ip == target_ip)
+      return NET_ERR_BUSY;
+  }
+  if (free_slot == NET_ARP_RATE_SLOTS)
+    return NET_ERR_BUSY;
+  err = arp_send(net, ARP_OPER_REQUEST, broadcast_mac, unknown_mac, target_ip);
+  if (err == NET_OK) {
+    net->arp_recent[free_slot].ip = target_ip;
+    net->arp_recent[free_slot].ms_left = 1000;
+  }
+  return err;
+}
+
+void arp_tick(net_t *net, uint32_t elapsed_ms) {
+  uint32_t secs = net_whole_seconds(&net->arp_carry_ms, elapsed_ms);
+  uint8_t i;
+  for (i = 0; i < NET_ARP_RATE_SLOTS; i++) {
+    uint16_t *ms = &net->arp_recent[i].ms_left;
+    *ms = *ms > elapsed_ms ? (uint16_t)(*ms - elapsed_ms) : 0;
+  }
+  if (net->gateway_mac_s && secs) {
+    if (secs >= net->gateway_mac_s) {
+      net->gateway_mac_s = 0;
+      net->gateway_mac_valid = 0; /* REQ-ARP-038 */
+    } else {
+      net->gateway_mac_s = (uint16_t)(net->gateway_mac_s - secs);
+    }
+  }
 }
 
 /* REQ-ARP-025, 026, 041: the limited broadcast and multicast groups go

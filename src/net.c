@@ -6,6 +6,9 @@
 
 #include "net.h"
 #include "eth.h"
+#if NET_USE_IPV4
+#include "arp.h"
+#endif
 #include <string.h>
 
 #if NET_USE_TCP
@@ -79,6 +82,9 @@ int net_poll(net_t *net) {
 }
 
 void net_tick(net_t *net, uint32_t elapsed_ms) {
+#if NET_USE_IPV4
+  arp_tick(net, elapsed_ms);
+#endif
 #if NET_USE_TCP
   tcp_tick(net, elapsed_ms);
 #endif
