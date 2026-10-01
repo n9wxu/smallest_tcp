@@ -480,14 +480,14 @@ TEST(test_mdns6_explicit_aaaa_record) {
   static const mdns_record_t recs[1] = {{.type = DNS_TYPE_AAAA,
                                          .ttl = MDNS_TTL_HOST,
                                          .name = HOST,
-                                         .rdata.aaaa = other_addr}};
+                                         .rdata.aaaa = our_global}};
   setup_recs(recs, 1);
   to_running();
   uint16_t len = query(HOST, DNS_TYPE_AAAA, 0, 0, NULL);
   input6(MDNS_PORT, len);
   uint8_t a[4][16];
   ASSERT_EQ(count_rr(first_family(1), 0, DNS_TYPE_AAAA, a, NULL, NULL), 1);
-  ASSERT_MEM_EQ(a[0], other_addr, 16);
+  ASSERT_MEM_EQ(a[0], our_global, 16);
 }
 
 /* ══ Conflicts, re-announcing, goodbye ════════════════════════════ */

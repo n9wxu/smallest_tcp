@@ -66,9 +66,13 @@ typedef struct {
   uint32_t ttl;     /**< Seconds (MDNS_TTL_HOST / MDNS_TTL_OTHER) */
   const char *name; /**< Owner name */
   union {
-    uint32_t a; /**< IPv4, host byte order; 0 = use net->ipv4_addr */
-    /** IPv6 address (16 bytes); NULL = every usable IPv6 address of the
-     *  interface — one AAAA RR each (RFC 6762 §6.2) */
+    /** IPv4, host byte order; 0 = net->ipv4_addr.  Only an address valid
+     *  on the interface is sent (RFC 6762 §6.2): a fixed one only while it
+     *  is net->ipv4_addr; without one the name gets NSEC for A (§6.1). */
+    uint32_t a;
+    /** IPv6 address (16 bytes), sent only while it is one of the
+     *  interface's usable addresses; NULL = every usable IPv6 address of
+     *  the interface — one AAAA RR each (RFC 6762 §6.2) */
     const uint8_t *aaaa;
     const char *ptr; /**< PTR target (service instance name) */
     struct {

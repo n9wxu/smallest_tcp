@@ -60,21 +60,28 @@ static int is_service_type(const mdns_record_t *r) {
   return r->type == DNS_TYPE_PTR && r->name[0] == '_';
 }
 
+/* REQ-MDNS-074 (RFC 6762 §6.2): address records carry the addresses valid
+ * on the interface, and no other */
+
 #if NET_USE_IPV4
+/* The interface's address; 0 while it has none, or if the record gives
+ * another */
 static uint32_t rec_addr(const mdns_t *m, const mdns_record_t *r) {
-  return r->rdata.a ? r->rdata.a : m->net->ipv4_addr;
+  uint32_t own = m->net->ipv4_addr;
+  return (r->rdata.a == 0 || r->rdata.a == own) ? own : 0;
 }
 #endif
 
 #if NET_USE_IPV6
-/* The addresses an AAAA record stands for: its own, or every usable IPv6
- * address of the interface (not tentative ones, RFC 4862 §5.4). */
+/* The addresses an AAAA record stands for: its own if it is one of ours,
+ * or every usable IPv6 address of the interface (not tentative ones,
+ * RFC 4862 §5.4). */
 static uint8_t aaaa_addrs(const mdns_t *m, const mdns_record_t *r,
                           const uint8_t *out[NET_IPV6_ADDRS]) {
   uint8_t i, n = 0;
   if (r->rdata.aaaa) {
     out[0] = r->rdata.aaaa;
-    return 1;
+    return (uint8_t)ipv6_is_ours(m->net, r->rdata.aaaa);
   }
   for (i = 0; i < NET_IPV6_ADDRS; i++) {
     const net_ip6_addr_t *a = &m->net->ip6.addr[i];
@@ -84,6 +91,23 @@ static uint8_t aaaa_addrs(const mdns_t *m, const mdns_record_t *r,
   return n;
 }
 #endif
+
+/* The RRs record @p r stands for now: for an address record, how many
+ * valid addresses it has (REQ-MDNS-065: none means NSEC) */
+static uint8_t rr_count(const mdns_t *m, const mdns_record_t *r) {
+#if NET_USE_IPV6
+  const uint8_t *addrs[NET_IPV6_ADDRS];
+  if (r->type == DNS_TYPE_AAAA)
+    return aaaa_addrs(m, r, addrs);
+#endif
+#if NET_USE_IPV4
+  if (r->type == DNS_TYPE_A)
+    return rec_addr(m, r) != 0;
+#endif
+  (void)m;
+  (void)r;
+  return 1;
+}
 
 static uint32_t all_mask(const mdns_t *m) {
   return (m->count >= 32) ? 0xFFFFFFFFu : (BIT(m->count) - 1u);
@@ -153,7 +177,8 @@ static int rr_matches(const mdns_t *m, const mdns_record_t *r,
   switch (r->type) {
 #if NET_USE_IPV4
   case DNS_TYPE_A:
-    return rr->rdlen == 4 && net_read32be(d) == rec_addr(m, r);
+    return rr->rdlen == 4 && rec_addr(m, r) != 0 &&
+           net_read32be(d) == rec_addr(m, r);
 #endif
   case DNS_TYPE_PTR:
     return dns_name_equals(msg, len, rr->rdata_off, r->rdata.ptr);
@@ -331,8 +356,8 @@ fail:
   return -1;
 }
 
-/* Write a record's RRs — one, or for an AAAA record one per address.
- * @return RRs written (0 if an AAAA record has no usable address), or -1
+/* Write a record's RRs — one, or for an address record one per valid
+ * address.  @return RRs written (0 if an address record has none), or -1
  *         on overflow (then nothing is left behind). */
 static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
                     const resp_opts_t *o) {
@@ -350,12 +375,15 @@ static int write_rr(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
     return n;
   }
 #endif
+  if (!rr_count(m, r))
+    return 0;
   return write_one(m, w, r, o, NULL) < 0 ? -1 : 1;
 }
 
 /* NSEC for the unique name of record @p r, restricted form (RFC 6762
  * §6.1): Next Domain Name = the name itself (a 2-byte pointer once
- * compressed), one bitmap block (0) listing the types the name has. */
+ * compressed), one bitmap block (0) listing the types the name has — not
+ * an address type it has no valid address of — of at least one byte. */
 static int write_nsec(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
                       uint32_t ttl, uint16_t class_) {
   uint8_t bitmap[8]; /* types 0..63 — all we can hold */
@@ -364,13 +392,15 @@ static int write_nsec(mdns_t *m, dns_writer_t *w, const mdns_record_t *r,
   memset(bitmap, 0, sizeof(bitmap));
   for (j = 0; j < m->count; j++) {
     const mdns_record_t *o = &m->records[j];
-    if (!live(m, j) || is_shared(o) || o->type >= 64 ||
+    if (!live(m, j) || is_shared(o) || o->type >= 64 || !rr_count(m, o) ||
         !dns_dotted_equal(o->name, r->name))
       continue;
     bitmap[o->type >> 3] |= (uint8_t)(0x80u >> (o->type & 7));
     if ((uint8_t)((o->type >> 3) + 1) > used)
       used = (uint8_t)((o->type >> 3) + 1);
   }
+  if (used == 0)
+    used = 1;
   if (dns_write_name(w, r->name) < 0 || dns_write_u16(w, DNS_TYPE_NSEC) < 0 ||
       dns_write_u16(w, class_) < 0 || dns_write_u32(w, ttl) < 0)
     goto fail;
@@ -982,7 +1012,7 @@ static void match_question(const mdns_t *m, const uint8_t *msg, uint16_t len,
   for (i = 0; i < m->count; i++) {
     const mdns_record_t *r = &m->records[i];
     if (live(m, i) && (q->type == DNS_TYPE_ANY || q->type == r->type) &&
-        dns_name_equals(msg, len, q->name_off, r->name))
+        rr_count(m, r) && dns_name_equals(msg, len, q->name_off, r->name))
       hit |= BIT(i);
   }
   if ((q->type == DNS_TYPE_PTR || q->type == DNS_TYPE_ANY) &&
