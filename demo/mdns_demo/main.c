@@ -59,7 +59,7 @@ static const mdns_record_t records[] = {
      .name = inst,
      .rdata.srv = {0, 0, SERVICE_PORT, host}},
     {.type = DNS_TYPE_TXT,
-     .ttl = MDNS_TTL_HOST,
+     .ttl = MDNS_TTL_OTHER, /* no host name in it (RFC 6762 §10) */
      .name = inst,
      .rdata.txt = txt},
 };

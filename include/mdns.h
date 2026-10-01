@@ -26,8 +26,11 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 #endif
 #define MDNS_IP_TTL 255 /**< RFC 6762 §11: IP TTL of every mDNS packet */
 
-#define MDNS_TTL_HOST 120      /**< A / SRV / TXT record TTL (RFC 6762 §10) */
-#define MDNS_TTL_OTHER 4500    /**< PTR record TTL (RFC 6762 §10) */
+/** RFC 6762 §10: TTL of the records with a host name as their name or in
+ *  their rdata — A, AAAA, SRV (and a reverse-mapping PTR) */
+#define MDNS_TTL_HOST 120
+/** RFC 6762 §10: TTL of the other records — a service's PTR, TXT */
+#define MDNS_TTL_OTHER 4500
 #define MDNS_LEGACY_TTL_MAX 10 /**< TTL cap in legacy unicast responses */
 
 /** DNS-SD service type enumeration name (RFC 6763 §9). */

@@ -74,7 +74,7 @@ static const mdns_record_t records[] = {
      .rdata.ptr = "Pyro Unit 1._pyro._tcp.local"},
     {.type = DNS_TYPE_SRV, .ttl = MDNS_TTL_HOST,  .name = "Pyro Unit 1._pyro._tcp.local",
      .rdata.srv = {0, 0, 80, "pyro-dead01.local"}},
-    {.type = DNS_TYPE_TXT, .ttl = MDNS_TTL_HOST,  .name = "Pyro Unit 1._pyro._tcp.local",
+    {.type = DNS_TYPE_TXT, .ttl = MDNS_TTL_OTHER, .name = "Pyro Unit 1._pyro._tcp.local",
      .rdata.txt = txt},
 };
 
@@ -264,9 +264,11 @@ For `Pyro Unit 1._pyro._tcp.local.` on port 80:
 ```
 _pyro._tcp.local.                 4500 IN PTR  Pyro Unit 1._pyro._tcp.local.
 Pyro Unit 1._pyro._tcp.local.      120 IN SRV  0 0 80 pyro-dead01.local.
-Pyro Unit 1._pyro._tcp.local.      120 IN TXT  "txtvers=1" "fw=1.2.3" "serial=DEAD01"
+Pyro Unit 1._pyro._tcp.local.     4500 IN TXT  "txtvers=1" "fw=1.2.3" "serial=DEAD01"
 pyro-dead01.local.                 120 IN A    10.0.0.2
 ```
+
+TTLs follow RFC 6762 §10 (REQ-DNSSD-017): 120 s for records with a host name as their name or in their rdata (A, AAAA, SRV), 75 minutes for the others (PTR, TXT) — `MDNS_TTL_HOST` and `MDNS_TTL_OTHER`.  The table gives each record's TTL; the demo used to give TXT 120 s.
 
 A PTR query returns the PTR in Answer and SRV + TXT + A (and AAAA) in Additional — one round trip gives a browser the full picture (RFC 6763 §12.1).  A TXT record with no metadata is sent as a single zero byte (RFC 6763 §6.1).
 
