@@ -41,6 +41,11 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 #define MDNS_ANNOUNCE_COUNT 2  /**< RFC 6762 §8.3 */
 #define MDNS_ANNOUNCE_WAIT_MS 1000
 #define MDNS_TIEBREAK_WAIT_MS 1000 /**< After losing a tiebreak (§8.2) */
+/** RFC 6762 §8.1: after this many conflicts within MDNS_CONFLICT_WINDOW_MS,
+ *  every probe attempt waits MDNS_SLOW_PROBE_MS first */
+#define MDNS_CONFLICT_LIMIT 15
+#define MDNS_CONFLICT_WINDOW_MS 10000
+#define MDNS_SLOW_PROBE_MS 5000
 #define MDNS_RESP_DELAY_MIN_MS 20 /**< Shared-record response delay (§6) */
 #define MDNS_RESP_DELAY_MAX_MS 120
 #define MDNS_TC_DELAY_MIN_MS 400 /**< Answer to a truncated query (§7.2) */
@@ -135,6 +140,8 @@ struct mdns_s {
   uint32_t live;      /**< Records in use: not withdrawn */
   uint32_t claim;     /**< Records being probed for, or announced */
   uint32_t announced; /**< Records sent and not said goodbye to since */
+  uint16_t quiet_ms;  /**< Until the conflicts counted are forgotten */
+  uint8_t conflicts;  /**< Since MDNS_CONFLICT_WINDOW_MS without one */
   uint8_t count;
   uint8_t state;             /**< MDNS_STATE_* */
   uint8_t step;              /**< Probes / announcements sent so far */

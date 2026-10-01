@@ -740,22 +740,36 @@ static void send_probes(mdns_t *m) {
 
 /* ── State machine ── */
 
-static uint32_t probe_delay(mdns_t *m) {
-  return net_random_below(m->net, MDNS_PROBE_WAIT_MS + 1); /* REQ-MDNS-017 */
+/* The wait before a probe attempt: random 0-250 ms (REQ-MDNS-017), or
+ * after fifteen conflicts in ten seconds five seconds (REQ-MDNS-054) */
+static uint32_t probe_delay(mdns_t *m, uint32_t ms) {
+  if (m->conflicts >= MDNS_CONFLICT_LIMIT)
+    return MDNS_SLOW_PROBE_MS;
+  return ms ? ms : net_random_below(m->net, MDNS_PROBE_WAIT_MS + 1);
+}
+
+/* REQ-MDNS-054 (RFC 6762 §8.1): conflicts are counted until ten seconds
+ * pass without one — so fifteen within any ten seconds are counted */
+static void count_conflict(mdns_t *m) {
+  if (m->conflicts < 0xFF)
+    m->conflicts++;
+  m->quiet_ms = MDNS_CONFLICT_WINDOW_MS;
 }
 
 /* REQ-MDNS-057 (RFC 6762 §9): a conflict on a name we hold: probe for it
  * again, the other records still answered; the name is given up only if
  * that probing fails */
 static void probe_again(mdns_t *m, uint8_t i) {
+  count_conflict(m);
   m->claim |= name_records(m, i);
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
-  m->timer_ms = probe_delay(m);
+  m->timer_ms = probe_delay(m, 0);
   m->announce_families = ALL_FAMILIES;
 }
 
 static void enter_conflict(mdns_t *m, uint8_t index) {
+  count_conflict(m);
   m->state = MDNS_STATE_CONFLICT;
   m->timer_ms = 0;
   memset(&m->pending, 0, sizeof(m->pending));
@@ -1085,7 +1099,7 @@ void mdns_start(mdns_t *m) {
   m->claim = m->live;
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
-  m->timer_ms = probe_delay(m);
+  m->timer_ms = probe_delay(m, 0);
 }
 
 static int silent(const mdns_t *m) {
@@ -1093,6 +1107,8 @@ static int silent(const mdns_t *m) {
 }
 
 void mdns_tick(mdns_t *m, uint32_t elapsed_ms) {
+  if (m->quiet_ms && net_countdown16(&m->quiet_ms, elapsed_ms))
+    m->conflicts = 0;
   if (silent(m))
     return;
   if (m->pending.timer_ms && net_countdown(&m->pending.timer_ms, elapsed_ms))
@@ -1389,7 +1405,7 @@ static int probe_tiebreak(mdns_t *m, const uint8_t *msg, uint16_t len) {
       ours.n = p.ns;
       if (compare_sets(lists) < 0) {
         m->step = 0;
-        m->timer_ms = MDNS_TIEBREAK_WAIT_MS;
+        m->timer_ms = probe_delay(m, MDNS_TIEBREAK_WAIT_MS);
         return 1;
       }
     }
