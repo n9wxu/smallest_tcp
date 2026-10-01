@@ -121,8 +121,10 @@ static inline int ipv4_is_local(const net_t *net, uint32_t ip) {
   return (ip & net->subnet_mask) == (net->ipv4_addr & net->subnet_mask);
 }
 
-/** Limited (255.255.255.255) or our own subnet's directed broadcast.  A
- *  /31 or /32 has none (RFC 3021). */
+/** Limited (255.255.255.255), our own subnet's directed broadcast (a /31
+ *  or /32 has none, RFC 3021), or the directed broadcast of the classful
+ *  network our subnet is part of — RFC 1122 §3.3.6's {network, -1} and
+ *  all-subnets {network, -1, -1}. */
 int ipv4_is_broadcast(const net_t *net, uint32_t ip);
 
 /* Multicast (RFC 1112) */

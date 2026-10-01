@@ -55,7 +55,7 @@ Minimum header: 20 bytes (IHL=5). Maximum header: 60 bytes (IHL=15).
 | REQ-IPv4-010 | MUST | Accept packets where Destination Address is our own subnet's directed broadcast (not another subnet's; a /31 or /32 has none) | RFC 1122 §3.2.1.3, RFC 3021 | TEST-IPv4-010 |
 | REQ-IPv4-011 | MUST | Silently discard packets not addressed to us, broadcast, or a subscribed multicast group | RFC 1122 §3.2.1.3 | TEST-IPv4-011 |
 | REQ-IPv4-012 | SHOULD | Accept packets addressed to 0.0.0.0 during DHCP bootstrap (before address configured) | RFC 1122 §3.2.1.3, RFC 2131 | TEST-IPv4-012 |
-| REQ-IPv4-059 | MUST | Recognise every standard broadcast form as a destination: the limited broadcast, our subnet's directed broadcast, and the directed and all-subnets-directed broadcast of our (classful) network | RFC 1122 §3.3.6, §3.2.1.3 | itest_ipv4_059_every_broadcast_form |
+| REQ-IPv4-059 | MUST | Recognise every standard broadcast form as a destination: the limited broadcast, our subnet's directed broadcast, and the directed and all-subnets-directed broadcast of our (classful) network | RFC 1122 §3.3.6, §3.2.1.3 | itest_ipv4_059_every_broadcast_form, itest_ipv4_059_supernet_has_no_classful_broadcast |
 
 ### Source Address Validation
 

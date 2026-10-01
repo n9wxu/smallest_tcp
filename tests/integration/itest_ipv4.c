@@ -210,10 +210,23 @@ static void fragment(uint16_t from, uint16_t n, int more, uint16_t id) {
 }
 
 /* REQ-IPv4-059 (RFC 1122 §3.3.6): our network's directed and all-subnets
- * broadcast (10.255.255.255 for 10.0.0.0/24) are broadcasts too */
+ * broadcast (10.255.255.255 for 10.0.0.0/24) are broadcasts too — as a
+ * destination accepted, as a source (REQ-IPv4-013) not a host */
 TEST(itest_ipv4_059_every_broadcast_form) {
   up();
   datagram(PEER_IP, 0x0AFFFFFFu, OPEN_PORT);
+  ASSERT_EQ(delivered, 1);
+  datagram(0x0AFFFFFFu, t.net.ipv4_addr, OPEN_PORT);
+  ASSERT_EQ(delivered, 1);
+}
+
+/* REQ-IPv4-059: with a mask shorter than the class's (a supernet, here
+ * 192.168.0.0/16), x.y.z.255 is a host, not a classful broadcast */
+TEST(itest_ipv4_059_supernet_has_no_classful_broadcast) {
+  up();
+  t.net.ipv4_addr = 0xC0A80002u;
+  t.net.subnet_mask = 0xFFFF0000u;
+  datagram(0xC0A800FFu, t.net.ipv4_addr, OPEN_PORT);
   ASSERT_EQ(delivered, 1);
 }
 
@@ -611,7 +624,8 @@ int main(void) {
   RUN_TEST(itest_icmpv4_018_port_unreachable_to_a_host);
   RUN_TEST(itest_icmpv4_035_036_no_error_about_broadcasts_or_unspecified);
   RUN_TEST(itest_icmpv4_001_echo_reply_code_zero);
-  RUN_XFAIL(itest_ipv4_059_every_broadcast_form);
+  RUN_TEST(itest_ipv4_059_every_broadcast_form);
+  RUN_TEST(itest_ipv4_059_supernet_has_no_classful_broadcast);
   RUN_TEST(itest_ipv4_021_unknown_protocol_unreachable);
   RUN_XFAIL(itest_ipv4_024_reassembly);
   RUN_XFAIL(itest_ipv4_025_reassembly_timeout);

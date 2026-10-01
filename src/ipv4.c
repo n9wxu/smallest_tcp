@@ -155,10 +155,30 @@ int ipv4_mcast_mac_accepted(const net_t *net, const uint8_t *mac) {
   return 0;
 }
 
+/* The mask of our address's class (A, B or C), 0 for none */
+static uint32_t classful_mask(uint32_t ip) {
+  if ((ip >> 31) == 0)
+    return 0xFF000000u;
+  if ((ip >> 30) == 2)
+    return 0xFFFF0000u;
+  if ((ip >> 29) == 6)
+    return 0xFFFFFF00u;
+  return 0;
+}
+
 int ipv4_is_broadcast(const net_t *net, uint32_t ip) {
   uint32_t host = ~net->subnet_mask;
-  return ip == IPV4_BROADCAST ||
-         (host > 1u && (ip & host) == host && ipv4_is_local(net, ip));
+  uint32_t net_mask = classful_mask(net->ipv4_addr);
+  if (ip == IPV4_BROADCAST)
+    return 1;
+  if (host > 1u && (ip & host) == host && ipv4_is_local(net, ip))
+    return 1;
+  /* {network, -1} and {network, -1, -1} of our classful network, when the
+   * subnet lies inside it (RFC 1122 §3.3.6) */
+  return net->ipv4_addr != 0 && net_mask != 0 &&
+         (net->subnet_mask & net_mask) == net_mask &&
+         (ip & net_mask) == (net->ipv4_addr & net_mask) &&
+         (ip | net_mask) == IPV4_BROADCAST;
 }
 
 int ipv4_is_host(const net_t *net, uint32_t ip) {
