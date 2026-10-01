@@ -830,10 +830,13 @@ static void check_conflicts(mdns_t *m, const uint8_t *msg, uint16_t len) {
     }
     if (exact || name_idx < 0)
       continue;
-    /* Probing: any record under a name we want is a conflict.  Running:
-     * only a same-type record with different data (RFC 6762 §9). */
+    /* Probing: any record under a name we want is a conflict — once the
+     * first probe is out (REQ-MDNS-052, RFC 6762 §8.1: one before it may
+     * be a stale echo).  Running: only a same-type record with different
+     * data (§9). */
     if (m->state == MDNS_STATE_PROBING) {
-      enter_conflict(m, (uint8_t)name_idx);
+      if (m->step > 0)
+        enter_conflict(m, (uint8_t)name_idx);
       return;
     }
     if (type_idx >= 0) {

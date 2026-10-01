@@ -119,7 +119,7 @@ no conflict by t0 + 750 ms → ANNOUNCING, first announcement at once
 
 A probe is a query (QR=0, ID=0) with one `ANY` question per distinct unique name, the unicast-response (QU) bit set, and the unique records in the Authority section (no cache-flush bit).  `send_probes()` sends one set per address family (§11).  If the TX buffer cannot hold every name, `send_probes_to()` packs names greedily into several probe packets, retrying `build_probe()` with one name more each time; a name that does not fit even alone is not probed.
 
-**Conflict while probing** (`check_conflicts()`): any record in a response — Answer, Authority or Additional section — under one of our unique names, of any type, that is not identical to one of our records.  Goodbye records (TTL 0) and classes other than IN are ignored.  The conflict callback receives the index of the name's first unique record.
+**Conflict while probing** (`check_conflicts()`): any record in a response — Answer, Authority or Additional section — under one of our unique names, of any type, that is not identical to one of our records.  Goodbye records (TTL 0) and classes other than IN are ignored, and so is a response that arrives before the first probe is sent (§8.1: it may be a stale packet, the host's own even).  The conflict callback receives the index of the name's first unique record.
 
 ---
 
