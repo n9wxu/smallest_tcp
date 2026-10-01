@@ -58,7 +58,7 @@ OACK:
 | REQ-TFTP-001 | MUST | Send RRQ (opcode 1) with filename and mode "octet" | RFC 1350 §2 | TEST-TFTP-001 |
 | REQ-TFTP-002 | MUST | RRQ sent to server IP:port 69 | RFC 1350 §2 | TEST-TFTP-002 |
 | REQ-TFTP-003 | MUST | Use "octet" (binary) transfer mode | RFC 1350 §2 | TEST-TFTP-003 |
-| REQ-TFTP-004 | MUST | Support "netascii" transfer mode | RFC 1350 §2, RFC 1123 §4.2.4 | — (not met: octet mode only, see [design §9](../design/tftp.md#9-deviations-and-known-limitations)) |
+| REQ-TFTP-004 | MUST | Support "netascii" transfer mode (`tftp_client_set_mode()`): CR LF arrives as the local newline, CR NUL as CR | RFC 1350 §2, RFC 1123 §4.2.4 | itest_tftp_004_netascii, itest_tftp_004_octet_untouched |
 | REQ-TFTP-005 | MUST | After RRQ, expect DATA or OACK from server on a new TID (ephemeral port) | RFC 1350 §2 | TEST-TFTP-005 |
 | REQ-TFTP-006 | MUST | Record server's TID (source port of first response) and use it for all subsequent packets | RFC 1350 §2 | TEST-TFTP-006 |
 

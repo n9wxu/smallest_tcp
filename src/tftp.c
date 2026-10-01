@@ -60,14 +60,15 @@ static int blksize_requested(const tftp_client_t *c) {
   return c->blksize_opt && c->blksize != TFTP_DEFAULT_BLKSIZE;
 }
 
-/* REQ-TFTP-001..003, 025, 026: filename, "octet", and blksize unless it
+/* REQ-TFTP-001..004, 025, 026: filename, the mode, and blksize unless it
  * is the default */
 static net_err_t send_rrq(net_t *net, tftp_client_t *c) {
   uint8_t *msg = net->tx.buf + UDP_PAYLOAD_OFFSET;
   int with_blksize = blksize_requested(c);
+  const char *mode = c->mode == TFTP_MODE_NETASCII ? "netascii" : "octet";
   char blksize[NET_U32_DEC_MAX];
   uint8_t digits = net_u32_to_dec(blksize, c->blksize);
-  uint32_t len = 2 + strlen(c->filename) + 1 + sizeof("octet") +
+  uint32_t len = 2 + strlen(c->filename) + 1 + strlen(mode) + 1 +
                  (with_blksize ? sizeof("blksize") + digits + 1u : 0u);
   uint16_t pos = 2;
 
@@ -75,7 +76,7 @@ static net_err_t send_rrq(net_t *net, tftp_client_t *c) {
     return NET_ERR_BUF_TOO_SMALL;
   net_write16be(msg, TFTP_OP_RRQ);
   pos = put_string(msg, pos, c->filename);
-  pos = put_string(msg, pos, "octet");
+  pos = put_string(msg, pos, mode);
   if (with_blksize) {
     pos = put_string(msg, pos, "blksize");
     pos = put_string(msg, pos, blksize);
@@ -223,6 +224,46 @@ static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
   send_ack(net, c, 0);
 }
 
+static void emit(tftp_client_t *c, uint16_t block, const uint8_t *data,
+                 uint16_t len) {
+  if (len > 0 && c->on_data)
+    c->on_data(block, data, len, c->cb_ctx);
+}
+
+/* REQ-TFTP-004: netascii to local text, piece by piece — runs of plain
+ * bytes as they are; CR LF as '\n', CR NUL as '\r', a bare CR kept.  A CR
+ * that ends a block waits for the next one's first byte, or the end. */
+static void deliver_netascii(tftp_client_t *c, uint16_t block,
+                             const uint8_t *data, uint16_t len, int last) {
+  static const uint8_t lf = '\n', cr = '\r';
+  uint16_t i = 0, run;
+  if (c->cr_pending && len > 0) {
+    c->cr_pending = 0;
+    emit(c, block, data[0] == '\n' ? &lf : &cr, 1);
+    if (data[0] == '\n' || data[0] == '\0')
+      i = 1;
+  }
+  for (run = i; i < len; i++) {
+    if (data[i] != '\r')
+      continue;
+    emit(c, block, data + run, (uint16_t)(i - run));
+    if (i + 1u == len) {
+      c->cr_pending = 1;
+    } else {
+      emit(c, block, data[i + 1] == '\n' ? &lf : &cr, 1);
+      if (data[i + 1] == '\n' || data[i + 1] == '\0')
+        i++;
+    }
+    run = (uint16_t)(i + 1u);
+  }
+  if (run < len)
+    emit(c, block, data + run, (uint16_t)(len - run));
+  if (last && c->cr_pending) {
+    c->cr_pending = 0;
+    emit(c, block, &cr, 1);
+  }
+}
+
 /* REQ-TFTP-009..015, 031 */
 static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
@@ -234,7 +275,10 @@ static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
   }
   if (block == c->next_block) {
     made_progress(c);
-    if (c->on_data)
+    if (c->mode == TFTP_MODE_NETASCII)
+      deliver_netascii(c, block, data + TFTP_DATA_HDR_SIZE, block_len,
+                       block_len < c->blksize);
+    else if (c->on_data)
       c->on_data(block, data + TFTP_DATA_HDR_SIZE, block_len, c->cb_ctx);
     send_ack(net, c, block);
     if (block_len < c->blksize) { /* the last block is short */
@@ -260,6 +304,13 @@ void tftp_client_init(tftp_client_t *c, uint16_t local_port,
   c->cb_ctx = ctx;
 }
 
+net_err_t tftp_client_set_mode(tftp_client_t *c, uint8_t mode) {
+  if (mode != TFTP_MODE_OCTET && mode != TFTP_MODE_NETASCII)
+    return NET_ERR_INVALID_PARAM;
+  c->mode = mode;
+  return NET_OK;
+}
+
 /* REQ-TFTP-001..006, 035 */
 net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
                           const uint8_t *server_mac, const char *filename,
@@ -280,6 +331,7 @@ net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
   c->state = TFTP_STATE_REQUESTING;
   c->retries = 0;
   c->resent = 0;
+  c->cr_pending = 0;
   c->srtt8 = c->rttvar4 = 0;
   c->rto_ms = c->timer_ms = TFTP_TIMEOUT_MS;
   return send_rrq(net, c);

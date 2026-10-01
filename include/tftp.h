@@ -45,6 +45,11 @@ extern "C" {
 #define TFTP_ERR_NO_SUCH_USER 7
 #define TFTP_ERR_OPTION_NEGOTIATION 8
 
+/* Transfer modes (RFC 1350 §2): tftp_client_set_mode() */
+#define TFTP_MODE_OCTET 0    /**< The bytes as they are; the default */
+#define TFTP_MODE_NETASCII 1 /**< Text: CR LF arrives as '\n', CR NUL as '\r'  \
+                              */
+
 /* TFTP constants */
 #define TFTP_SERVER_PORT 69      /**< Well-known TFTP port */
 #define TFTP_DEFAULT_BLKSIZE 512 /**< Default block size */
@@ -65,10 +70,11 @@ extern "C" {
 /* Application callbacks */
 
 /**
- * Called for each received DATA block.
+ * Called for each received DATA block — in netascii mode, for each piece
+ * of it, its newlines converted.
  *
  * @param block_num  1-based block number.
- * @param data       Pointer to raw block payload bytes.
+ * @param data       Pointer to the block's payload bytes.
  * @param len        Number of data bytes (0 ≤ len ≤ blksize).
  * @param ctx        Application context pointer.
  */
@@ -100,6 +106,8 @@ typedef struct {
   uint16_t next_block;              /**< Next expected block number (1-based) */
   uint16_t blksize;                 /**< Negotiated/used block size */
   uint8_t blksize_opt;              /**< 1 = send blksize option in RRQ */
+  uint8_t mode;                     /**< TFTP_MODE_* */
+  uint8_t cr_pending;               /**< netascii: a block ended in CR */
   uint32_t server_ip;               /**< TFTP server IPv4 (host byte order) */
   uint8_t server_mac[6];            /**< Resolved server MAC address */
   uint32_t timer_ms;                /**< Retransmit countdown */
@@ -128,6 +136,14 @@ typedef struct {
 void tftp_client_init(tftp_client_t *c, uint16_t local_port,
                       tftp_data_fn_t on_data, tftp_done_fn_t on_done,
                       void *ctx);
+
+/**
+ * The mode of the next transfer: TFTP_MODE_OCTET (set by
+ * tftp_client_init()) or TFTP_MODE_NETASCII, whose text on_data receives
+ * with local newlines — possibly in several pieces per block.
+ * @return NET_ERR_INVALID_PARAM for another mode.
+ */
+net_err_t tftp_client_set_mode(tftp_client_t *c, uint8_t mode);
 
 /**
  * Start a TFTP GET (RRQ) transfer.

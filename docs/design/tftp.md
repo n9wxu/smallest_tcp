@@ -17,11 +17,12 @@ straight to flash, so the stack never holds more than one block.
 | Feature | Status |
 |---|---|
 | Read request (RRQ), `octet` mode | ✅ |
+| `netascii` mode (`tftp_client_set_mode()`), converted to local newlines | ✅ |
 | blksize option (RFC 2348), sized to the RX buffer | ✅ |
 | Server transfer ID (port) tracking, ERROR 5 to a stray datagram's source | ✅ |
 | Duplicate blocks re-acknowledged, block-number wrap | ✅ |
 | Retransmission of RRQ and last ACK with an adaptive timeout (RFC 1123), give-up after 5 | ✅ |
-| Write request (WRQ), `netascii` mode | — |
+| Write request (WRQ) | — |
 | tsize and timeout options (RFC 2349), windowsize (RFC 7440) | — |
 | IPv6 | — |
 | TFTP server | — |
@@ -276,6 +277,17 @@ unknown until it answers from a new port:
   (REQ-TFTP-013).
 - **Any other block number**: dropped.
 
+**netascii** (REQ-TFTP-004, RFC 1350 §2, RFC 1123 §4.2.4).
+`tftp_client_set_mode(c, TFTP_MODE_NETASCII)`, after `tftp_client_init()`
+and before `tftp_client_get()`, asks for `netascii` instead of `octet`
+and converts the text to local newlines on the way to `on_data`, with no
+buffer: `deliver_netascii()` hands over each run of plain bytes as it
+is, then CR LF as `'\n'`, CR NUL as `'\r'` and a bare CR (which a
+correct server never sends) as itself, so `on_data` may be called
+several times for one block.  A CR that ends a block is held
+(`cr_pending`) until the next block's first byte decides it — or, at the
+end of the file, delivered as it is.
+
 **Wrap.**  `next_block` is a `uint16_t` and wraps from 65535 to 0, the
 common convention; RFC 1350 leaves it undefined, and a server that wraps
 to 1 instead stalls a file of more than 65535 blocks (32 MB at 512
@@ -364,7 +376,6 @@ whose round trip exceeds 3 s every block was sent twice.
 |---|---|
 | Fixed local port for every transfer | RFC 1350 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
 | No tsize, timeout or windowsize options; no WRQ | Scope (§1).  Without WRQ the client never sends DATA, so RFC 1123 §4.2.3.1's Sorcerer's Apprentice fix (REQ-TFTP-040: never resend DATA on a duplicate ACK) has nothing to apply to |
-| No `netascii` mode — a MUST of RFC 1123 §4.2.4 (REQ-TFTP-004) | Not met.  Converting CR LF and CR NUL to local newlines needs either an output buffer for the converted block (the receive buffer is read-only to parsers) or `on_data` called several times per block with pieces of it, a CR left over from one block for the next, and a mode argument in `tftp_client_get()`.  The client's use — firmware images — is `octet` |
 | IPv4 only | `tftp_client_input()` and the send path take IPv4 addresses |
 
 ---
