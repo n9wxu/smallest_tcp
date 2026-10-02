@@ -196,6 +196,5 @@ endfunction()
 
 add_config_accepted_test(byte_order_set_by_hand src/net_cksum.c
     -U__BYTE_ORDER__ -DNET_LITTLE_ENDIAN=1)
-# Not met yet: the header stops at its #error whatever the application
-# defines.  The test must fail until it is.
-set_tests_properties(byte_order_set_by_hand PROPERTIES WILL_FAIL TRUE)
+add_config_rejected_test(byte_order_set_twice src/net_cksum.c
+    "are both defined" -DNET_LITTLE_ENDIAN=1 -DNET_BIG_ENDIAN=1)

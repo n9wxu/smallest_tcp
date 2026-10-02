@@ -2,6 +2,11 @@
  * @file net_endian.h
  * @brief Big-endian (network order) fields read and written byte by byte
  *        — any alignment — and host/network conversions.
+ *
+ * The host's byte order matters only to net_htons() and friends.  It is
+ * what the application defines (NET_BIG_ENDIAN or NET_LITTLE_ENDIAN), else
+ * the compiler's (__BYTE_ORDER__), else big-endian if NET_8BIT_TARGET is
+ * set; a compiler that does not say needs one of the definitions.
  */
 
 #ifndef NET_ENDIAN_H
@@ -9,7 +14,11 @@
 
 #include <stdint.h>
 
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#if defined(NET_BIG_ENDIAN) && defined(NET_LITTLE_ENDIAN)
+#error "NET_BIG_ENDIAN and NET_LITTLE_ENDIAN are both defined."
+#elif defined(NET_BIG_ENDIAN) || defined(NET_LITTLE_ENDIAN)
+/* the application says */
+#elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define NET_BIG_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define NET_LITTLE_ENDIAN 1
