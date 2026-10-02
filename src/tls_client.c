@@ -37,6 +37,15 @@ static uint8_t offered_psk_modes(const tls_config_t *cfg) {
   return cfg->psk_modes ? cfg->psk_modes : TLS_PSK_DHE_KE;
 }
 
+/* (EC)DHE unless the PSK is to be used alone; x25519 first */
+static uint16_t first_group(const tls_config_t *cfg) {
+  int dhe = !cfg->psk || !cfg->psk_modes || (cfg->psk_modes & TLS_PSK_DHE_KE);
+  if (!dhe)
+    return 0;
+  return (tls_groups(cfg) & TLS_GROUPS_X25519) ? TLS_GROUP_X25519
+                                               : TLS_GROUP_SECP256R1;
+}
+
 static uint8_t group_count(const tls_config_t *cfg) {
   uint8_t mask = tls_groups(cfg);
   return (uint8_t)(((mask & TLS_GROUPS_X25519) ? 1 : 0) +
@@ -392,9 +401,9 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   return HS_KEYS;
 }
 
-/* Extensions we offered that the server may answer here: server_name
- * (empty), max_fragment_length (the code we asked for) and
- * supported_groups (its preference, for later) */
+/* The server may answer here only what the ClientHello carried (RFC 8446
+ * §4.2): server_name (empty), max_fragment_length (the code we asked
+ * for) and supported_groups (its preference, for later) */
 static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
                                    size_t mlen) {
   rd_t r = rd_body(m, mlen), exts = rd_vec(&r, 2);
@@ -407,7 +416,7 @@ static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
     rd_t d;
     if ((alert = tls_next_extension(&exts, seen, &type, &d)))
       return tls_fail(t, alert);
-    if (type == TLS_EXT_SERVER_NAME && d.n == 0)
+    if (type == TLS_EXT_SERVER_NAME && d.n == 0 && sends_server_name(t))
       continue;
     if (type == TLS_EXT_MAX_FRAGMENT_LENGTH && t->cfg->max_fragment) {
       if (d.n != 1 || d.p[0] != t->cfg->max_fragment) /* RFC 6066 §4 */
@@ -415,7 +424,7 @@ static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
       t->max_frag = (uint16_t)(256u << d.p[0]);
       continue;
     }
-    if (type != TLS_EXT_SUPPORTED_GROUPS)
+    if (type != TLS_EXT_SUPPORTED_GROUPS || !first_group(t->cfg))
       return tls_fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
   }
   t->cfg->crypto->hash_update(&t->transcript, m, mlen);
@@ -582,15 +591,6 @@ static int on_client_message(tls_conn_t *t, const uint8_t *m, size_t mlen) {
 }
 
 const tls_role_t tls_client_role = {on_client_message, pump_client};
-
-/* (EC)DHE unless the PSK is to be used alone; x25519 first */
-static uint16_t first_group(const tls_config_t *cfg) {
-  int dhe = !cfg->psk || !cfg->psk_modes || (cfg->psk_modes & TLS_PSK_DHE_KE);
-  if (!dhe)
-    return 0;
-  return (tls_groups(cfg) & TLS_GROUPS_X25519) ? TLS_GROUP_X25519
-                                               : TLS_GROUP_SECP256R1;
-}
 
 int tls_connect(tls_conn_t *t, const char *host) {
   const tls_config_t *cfg = t->cfg;
