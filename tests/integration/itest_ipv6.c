@@ -316,6 +316,33 @@ TEST(itest_ipv6_044_upper_layer_checksums) {
   ASSERT_TRUE(udp.cksum_ok);
 }
 
+/* REQ-IPv6-045: a UDP checksum that computes to 0 is sent as 0xFFFF: 0
+ * would say "no checksum", which IPv6 does not allow */
+TEST(itest_ipv6_045_computed_zero_checksum_sent_as_ffff) {
+  uint8_t udp[10], data[2];
+  peer_ip6_t ip;
+  peer_udp_t parsed;
+  uint32_t v;
+  up();
+  peer_put16(udp, 1234);
+  peer_put16(udp + 2, PEER_PORT);
+  peer_put16(udp + 4, 10);
+  peer_put16(udp + 6, 0);
+  for (v = 0; v < 65536; v++) { /* the payload that sums to 0 */
+    peer_put16(udp + 8, (uint16_t)v);
+    if (peer_cksum6(ll, peer6_ll, NH_UDP, udp, 10) == 0)
+      break;
+  }
+  ASSERT_TRUE(v < 65536);
+  peer_put16(data, (uint16_t)v);
+  ASSERT_EQ(udp6_send(&t.net, peer6_ll, peer_mac, 1234, PEER_PORT, data, 2),
+            NET_OK);
+  ASSERT_TRUE(peer_parse_ipv6(wire_sent(&t, 0), &ip));
+  ASSERT_TRUE(peer_parse_udp6(&ip, &parsed));
+  ASSERT_EQ(parsed.cksum, 0xFFFF);
+  ASSERT_TRUE(parsed.cksum_ok);
+}
+
 /* ── Destinations and sources ── */
 
 /* REQ-IPv6-006..009, 037, 038: our link-local and global addresses, all-nodes,
@@ -1295,6 +1322,12 @@ TEST(itest_icmpv6_011_errors_reach_the_udp_application) {
         &t, frame,
         peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, len));
     ASSERT_EQ(udp_errors, 6);
+    quote[8 + 15] ^= 0x01; /* ours, but cut off before the second port */
+    len = peer_icmp6(msg, &ip, T_DEST_UNREACH, 0, NULL, quote, 43);
+    itest_receive(
+        &t, frame,
+        peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, len));
+    ASSERT_EQ(udp_errors, 6);
   }
 }
 
@@ -1307,6 +1340,7 @@ int main(void) {
   RUN_TEST(itest_ipv6_047_built_in_place);
   RUN_TEST(itest_ipv6_046_parsed_in_place);
   RUN_TEST(itest_ipv6_044_upper_layer_checksums);
+  RUN_TEST(itest_ipv6_045_computed_zero_checksum_sent_as_ffff);
   RUN_TEST(itest_ipv6_006_destinations_accepted);
   RUN_TEST(itest_ipv6_010_other_destinations_dropped);
   RUN_TEST(itest_ipv6_011_multicast_source_dropped);

@@ -134,7 +134,7 @@ Fixed header: 40 bytes (always). Extension headers follow if needed.
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-IPv6-044 | MUST | Include the IPv6 pseudo-header in the TCP, UDP and ICMPv6 checksums: src (16) + dst (16) + upper-layer length (4) + zeros (3) + next header (1) = 40 bytes | RFC 8200 §8.1 | itest_ipv6_044_upper_layer_checksums, itest_ipv6_047_built_in_place |
-| REQ-IPv6-045 | MUST | The UDP checksum is mandatory over IPv6: a computed 0 is sent as 0xFFFF, and a received datagram with a zero checksum is discarded | RFC 8200 §8.1 | itest_ipv6_044_upper_layer_checksums, test_ipv6_015_udp_zero_checksum_dropped |
+| REQ-IPv6-045 | MUST | The UDP checksum is mandatory over IPv6: a computed 0 is sent as 0xFFFF, and a received datagram with a zero checksum is discarded | RFC 8200 §8.1 | itest_ipv6_044_upper_layer_checksums, itest_ipv6_045_computed_zero_checksum_sent_as_ffff, test_ipv6_015_udp_zero_checksum_dropped |
 
 ### Zero-Copy
 
