@@ -2,7 +2,7 @@
 
 **Protocol:** Internet Protocol version 6  
 **Primary RFC:** RFC 8200 — Internet Protocol, Version 6 (IPv6) Specification  
-**Supporting:** RFC 4291 — IP Version 6 Addressing Architecture, RFC 6724 — Default Address Selection for IPv6, RFC 4443 — ICMPv6, RFC 2464 — IPv6 over Ethernet, RFC 8504 — IPv6 Node Requirements  
+**Supporting:** RFC 4291 — IP Version 6 Addressing Architecture, RFC 6724 — Default Address Selection for IPv6, RFC 4443 — ICMPv6, RFC 2464 — IPv6 over Ethernet, RFC 3810 — MLDv2 (with RFC 2710, MLDv1), RFC 8504 — IPv6 Node Requirements  
 **Supersession:** RFC 8200 supersedes RFC 2460  
 **Design:** [ipv6.md](../design/ipv6.md)
 
@@ -108,6 +108,18 @@ Fixed header: 40 bytes (always). Extension headers follow if needed.
 | REQ-IPv6-038 | MUST | Support all-nodes multicast (ff02::1) — joined implicitly | RFC 4291 §2.7.1, §2.8 | itest_ipv6_006_destinations_accepted, itest_ipv6_038_link_layer_groups |
 | REQ-IPv6-039 | MUST | Support the solicited-node multicast address (ff02::1:ffXX:XXXX) of each unicast address | RFC 4291 §2.7.1, §2.8 | itest_ipv6_038_link_layer_groups |
 | REQ-IPv6-040 | MUST | Map an IPv6 multicast address to the Ethernet multicast MAC 33:33 + its low 32 bits | RFC 2464 §7 | itest_ipv6_038_link_layer_groups |
+
+### Multicast Listener Discovery (RFC 3810, RFC 2710)
+
+| ID | Level | Requirement | RFC | Test ID |
+|---|---|---|---|---|
+| REQ-IPv6-049 | MUST | Report by MLD the groups the interface listens to — the solicited-node group of each address (once, when two addresses share it) and the groups joined with `ipv6_mcast_join()`: an MLDv2 report with a CHANGE_TO_EXCLUDE record without sources for each, before the first DAD probe of an address and at a join. All-nodes (ff02::1) is never reported — **deviation:** removing an address reports nothing for its solicited-node group; routers and switches age it out | RFC 4861 §7.2.1, RFC 4862 §5.4.2, RFC 3810 §6, §6.1 | itest_mld_049_groups_reported_at_start, itest_mld_049_join_reported_and_received, itest_mld_049_solicited_node_group_of_each_address |
+| REQ-IPv6-050 | MUST | Send MLD messages with Hop Limit 1 and a Router Alert option in a Hop-by-Hop header, from the link-local address — or from :: while it is not valid; MLDv2 reports go to ff02::16 | RFC 3810 §5, §5.2.13, §5.2.14 | itest_mld_049_groups_reported_at_start |
+| REQ-IPv6-051 | MUST | Send a state-change report [Robustness Variable] − 1 more times, at random intervals within the Unsolicited Report Interval (1 s) — the report of a join is sent once more; **deviation:** exactly 1 s later, not at a random time, and a leave is reported once | RFC 3810 §6.1, §9.1, §9.11 | itest_mld_049_groups_reported_at_start, itest_mld_055_leave_reported |
+| REQ-IPv6-052 | MUST | Answer a Query — general, or for a group of ours — with a Current State Report (MODE_IS_EXCLUDE records, no sources) after a random delay within the query's Maximum Response Delay; drop a Query that does not come from a link-local address with Hop Limit 1, or is neither 24 nor at least 28 octets long; ignore other listeners' Reports and Dones — **deviation:** the Router Alert option of a Query is not looked for (REQ-IPv6-019), and a query for one group is answered with a report of every group | RFC 3810 §5.1.14, §6.2, §8.1 | itest_mld_052_general_query_answered, itest_mld_052_queries_validated, itest_mld_052_group_query, itest_mld_052_other_listeners_ignored |
+| REQ-IPv6-053 | MUST | MLDv1 compatibility: an MLDv1 Query (24 octets) starts the Older Version Querier Present Timeout (260 s), during which the interface reports with MLDv1 Reports (one per group, sent to the group) and Dones (to ff02::2) | RFC 3810 §8.2.1, RFC 2710 §3, §5 | itest_mld_053_mldv1_querier |
+| REQ-IPv6-054 | SHOULD | Once the link-local address is valid, report every group again from it: routers discard the reports sent from :: | RFC 3810 §5.2.13 | itest_mld_054_reported_from_the_link_local_address |
+| REQ-IPv6-055 | MUST | `ipv6_mcast_join()` makes the interface receive a group's frames and packets and report it; `ipv6_mcast_leave()` ends both, with a CHANGE_TO_INCLUDE record without sources. A join of an address that is not multicast is refused (`NET_ERR_INVALID_PARAM`), as is one beyond `NET_MAX_MCAST6_GROUPS` (`NET_ERR_BUF_TOO_SMALL`) | Architecture, RFC 3810 §6.1 | itest_mld_049_join_reported_and_received, itest_mld_055_leave_reported |
 
 ### Address Selection (RFC 6724)
 
