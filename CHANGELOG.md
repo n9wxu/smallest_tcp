@@ -10,6 +10,21 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-02
+
+### Changes
+
+- docs: the http/mdns review's changes in the shared documents
+- tests: dns_wire's public functions, malformed names on the wire
+- docs: mdns — the design as the code is
+- docs: mdns, dns-sd — rows as the RFCs have them, tests by name
+- tests: mdns — the responder's requirements on the wire
+- mdns: take unicast responses only while probing
+- tests, docs: mdns — unicast responses count only as answers to our probes
+- docs: http — the design as the code is
+- tests, docs: http — every requirement tested on the wire and named
+- trace: rows no test can verify are counted apart; the Test ID column is checked
+
 ## [0.1.7] - 2026-10-02
 
 ### Changes
@@ -284,7 +299,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.4...v0.1.5
