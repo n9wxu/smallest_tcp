@@ -203,6 +203,11 @@ typedef struct {
   const uint8_t *cookie;
   size_t cookie_len;
   int stray; /* an extension that does not belong: its type + 1 */
+  uint16_t suite;       /* 0: TLS_AES_128_GCM_SHA256 */
+  uint16_t share_group; /* 0: x25519 */
+  int zero_share;       /* the share is 32 zero bytes */
+  int truncated;        /* the message ends before its extensions do */
+  uint8_t compression;  /* legacy_compression_method */
 } tp_sh_t;
 
 /** The ServerHello, added to the transcript; its length */
@@ -211,6 +216,19 @@ size_t tp_server_hello(tp_t *p, const tp_sh_t *o, uint8_t *msg);
  *  bytes of @p data), added to the transcript */
 size_t tp_encrypted_extensions(tp_t *p, int type, const uint8_t *data,
                                size_t len, uint8_t *msg);
+/** CertificateRequest with an empty context and signature_algorithms,
+ *  added to the transcript */
+size_t tp_certificate_request(tp_t *p, uint8_t *msg);
+/** Certificate with the @p n DER certificates (and @p context bytes of
+ *  certificate_request_context), added to the transcript */
+size_t tp_certificate(tp_t *p, const uint8_t *const *der, const uint16_t *len,
+                      int n, int context, uint8_t *msg);
+/** CertificateVerify by a server: @p scheme, and the ECDSA P-256 / SHA-256
+ *  signature by the PEM private key @p key of the content RFC 8446 §4.4.3
+ *  defines over the transcript so far; added to the transcript.  0 if the
+ *  key could not sign. */
+size_t tp_certificate_verify(tp_t *p, uint16_t scheme, const char *key,
+                             size_t key_len, uint8_t *msg);
 /** Finished under traffic secret @p base over the transcript so far,
  *  added to the transcript; its length (36) */
 size_t tp_finished(tp_t *p, const uint8_t base[32], uint8_t *msg);

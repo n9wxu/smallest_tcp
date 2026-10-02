@@ -207,8 +207,9 @@ static uint8_t flight[8192]; /* its handshake messages after the hello */
 static size_t flight_len;
 static uint8_t dhe[32];
 static tp_ch_t ch_psk_ke, ch_psk_dhe;
-static const tp_sh_t sh_psk_ke = {0, 0, 0, NULL, 0, 1, 0, 0, NULL, 0, 0};
-static const tp_sh_t sh_psk_dhe = {0, 0, 0, NULL, 0, 1, 1, 0, NULL, 0, 0};
+/* ServerHellos of the peer: taking the PSK alone, the PSK with its
+ * x25519 share, and the share alone (a certificate handshake) */
+static tp_sh_t sh_psk_ke, sh_psk_dhe, sh_cert;
 
 /* The peer's handshake message @p m as one plaintext record */
 static size_t feed_plain(const uint8_t *m, size_t n) {
@@ -266,17 +267,22 @@ static int failed_with(uint8_t desc) {
 
 /* ── The stack's server against the scripted client ── */
 
-/* The peer's ClientHello to a server started with @p cfg */
-static int client_hello_to(const tls_config_t *cfg, const tp_ch_t *o) {
+/* The peer's ClientHello to the server waiting for one */
+static int send_client_hello(const tp_ch_t *o) {
   static uint8_t m[2048];
   size_t n;
-  CHECK(sut_start(cfg));
-  CHECK(tls_accept(&sut) == 0);
   tp_init(&peer, 0, psk, sizeof(psk), PSK_ID);
   n = tp_client_hello(&peer, o, m);
   CHECK(feed_plain(m, n) == n + 5);
   drain();
   return 1;
+}
+
+/* .. to a server started with @p cfg */
+static int client_hello_to(const tls_config_t *cfg, const tp_ch_t *o) {
+  CHECK(sut_start(cfg));
+  CHECK(tls_accept(&sut) == 0);
+  return send_client_hello(o);
 }
 
 /* The server's ServerHello to the peer's ClientHello @p o, read and
@@ -403,15 +409,16 @@ static int client_hello_from(const tls_config_t *cfg, const char *host) {
   return 1;
 }
 
-/* The peer's ServerHello @p o in answer (the ClientHello's binder checked
- * first), and the handshake keys */
+/* The peer's ServerHello @p o in answer (if it takes the PSK, the
+ * ClientHello's binder checked first), and the handshake keys */
 static int answer_hello(const tp_sh_t *o) {
   static uint8_t m[512];
   const uint8_t *x;
   size_t n, xl;
-  CHECK(tp_binder_ok(&peer, hello_msg, hello_len));
+  if (o->psk)
+    CHECK(tp_binder_ok(&peer, hello_msg, hello_len));
   tp_add(&peer, hello_msg, hello_len);
-  tp_early_secret(&peer, 1);
+  tp_early_secret(&peer, o->psk);
   n = tp_server_hello(&peer, o, m);
   if (o->share) {
     x = tp_ext(&hello, TP_EXT_KEY_SHARE, &xl);
@@ -436,19 +443,31 @@ static int answer_flight(void) {
   return 1;
 }
 
-/* The client's Finished: alone in its record, under its handshake keys,
- * its verify_data over the transcript through the server's Finished */
-static int client_finished_read(void) {
+/* The client's Finished: alone in its record — or, when the server asked
+ * for a certificate, after a Certificate message with an empty list —
+ * under its handshake keys, its verify_data over the transcript so far */
+static int client_flight_read(int empty_certificate) {
+  static const uint8_t no_certificates[8] = {
+      TP_CERTIFICATE, 0, 0, 4, 0, 0, 0, 0};
+  const uint8_t *fin = opened;
   uint8_t want[32], type;
   drain();
+  CHECK(open_next(&type) == (empty_certificate ? 8 + 36 : 36));
+  CHECK(type == TP_HANDSHAKE);
+  if (empty_certificate) {
+    CHECK(memcmp(opened, no_certificates, 8) == 0);
+    tp_add(&peer, opened, 8);
+    fin = opened + 8;
+  }
   tp_verify_data(&peer, peer.c_hs, want);
-  CHECK(open_next(&type) == 36 && type == TP_HANDSHAKE);
-  CHECK(opened[0] == TP_FINISHED && tp_get(opened + 1, 3) == 32);
-  CHECK(memcmp(opened + 4, want, 32) == 0);
+  CHECK(fin[0] == TP_FINISHED && tp_get(fin + 1, 3) == 32);
+  CHECK(memcmp(fin + 4, want, 32) == 0);
   CHECK(out_off == out_len);
   tp_traffic_keys(0, peer.c_ap, &pr);
   return 1;
 }
+
+static int client_finished_read(void) { return client_flight_read(0); }
 
 /* The whole handshake of a client of @p cfg with the scripted server */
 static int connect_from_client(const tls_config_t *cfg, const tp_sh_t *o) {
@@ -465,6 +484,8 @@ static int connect_from_client(const tls_config_t *cfg, const tp_sh_t *o) {
 
 static tls_conn_t ca, sa;
 static uint8_t ca_rx[18000], ca_tx[4096], sa_rx[4096], sa_tx[4096];
+/* The next pair's client receive and server transmit buffer sizes */
+static size_t pair_rx = sizeof(ca_rx), pair_tx = sizeof(sa_tx);
 static uint8_t c2s[16384], s2c[16384]; /* what went each way */
 static size_t c2s_len, s2c_len;
 
@@ -497,8 +518,10 @@ static void join(tls_conn_t *c, tls_conn_t *s, size_t chunk) {
 static void pair(const tls_config_t *ccfg, const char *host,
                  const tls_config_t *scfg) {
   c2s_len = s2c_len = 0;
-  tls_init(&ca, ccfg, ca_rx, sizeof(ca_rx), ca_tx, sizeof(ca_tx));
-  tls_init(&sa, scfg, sa_rx, sizeof(sa_rx), sa_tx, sizeof(sa_tx));
+  tls_init(&ca, ccfg, ca_rx, pair_rx, ca_tx, sizeof(ca_tx));
+  tls_init(&sa, scfg, sa_rx, sizeof(sa_rx), sa_tx, pair_tx);
+  pair_rx = sizeof(ca_rx);
+  pair_tx = sizeof(sa_tx);
   tls_accept(&sa);
   tls_connect(&ca, host);
   join(&ca, &sa, 4096);
@@ -690,6 +713,66 @@ TEST(itest_tls_061_hello_retry_request_sent) {
   }
 }
 
+/* REQ-TLS-046, 045, 061: a HelloRetryRequest to a client in compatibility
+ * mode echoes its session id and is followed by the dummy
+ * change_cipher_spec — once: none follows the ServerHello */
+TEST(itest_tls_046_hello_retry_in_compatibility_mode) {
+  static const uint8_t sid[32] = {9, 8, 7, 6, 5, 4, 3, 2, 1};
+  static uint8_t m[2048];
+  tp_ch_t o = ch_psk_dhe, o2 = ch_psk_dhe;
+  tp_hello_t hrr;
+  const uint8_t *r;
+  size_t n, len;
+  o.share = 0;
+  o.groups_no_share = 1;
+  o.session_id = o2.session_id = sid;
+  o.session_id_len = o2.session_id_len = sizeof(sid);
+  ASSERT_TRUE(client_hello_to(&srv_psk, &o));
+  r = next_record(&len);
+  ASSERT_TRUE(r && tp_parse_hello(r + 5, len - 5, 0, &hrr));
+  ASSERT_MEM_EQ(hrr.random, tp_hrr_random, 32);
+  ASSERT_EQ(hrr.session_id_len, sizeof(sid));
+  ASSERT_MEM_EQ(hrr.session_id, sid, sizeof(sid));
+  tp_message_hash(&peer);
+  tp_add(&peer, r + 5, len - 5);
+  r = next_record(&len);
+  ASSERT_TRUE(r && len == 6 && r[0] == TP_CCS && r[5] == 1);
+  ASSERT_EQ(out_off, out_len);
+  n = tp_client_hello(&peer, &o2, m);
+  ASSERT_EQ(feed_plain(m, n), n + 5);
+  drain();
+  ASSERT_TRUE(read_server_hello(&o2));
+  ASSERT_TRUE(server_flight(0, 0));
+  ASSERT_TRUE(client_finished());
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_CONNECTED);
+}
+
+/* REQ-TLS-022, 037: what the server accepts after its flight is the
+ * client's Finished and nothing else — another ClientHello or a KeyUpdate
+ * is unexpected_message, a Finished of the wrong length decode_error */
+TEST(itest_tls_022_only_finished_after_the_flight) {
+  static const uint8_t key_update[5] = {TP_KEY_UPDATE, 0, 0, 1, 0};
+  uint8_t fin[40];
+  int i;
+  for (i = 0; i < 3; i++) {
+    ASSERT_TRUE(server_hello_from(&srv_psk, &ch_psk_ke));
+    ASSERT_TRUE(server_flight(0, 0));
+    if (i == 0) {
+      (void)feed_sealed(TP_HANDSHAKE, peer.transcript, /* the ClientHello */
+                        4 + tp_get(peer.transcript + 1, 3));
+    } else if (i == 1) {
+      (void)feed_sealed(TP_HANDSHAKE, key_update, 5);
+    } else {
+      tp_finished(&peer, peer.c_hs, fin);
+      fin[3] = 33; /* a 33-byte verify_data */
+      fin[36] = 0;
+      (void)feed_sealed(TP_HANDSHAKE, fin, 37);
+    }
+    ASSERT_TRUE(failed_with(i == 2 ? 50 : 10));
+    ASSERT_TRUE(sealed_alert_sent(2, i == 2 ? 50 : 10));
+  }
+}
+
 /* REQ-TLS-025, 023: the key and its identity are the configuration's — a
  * server with another key refuses the binder (decrypt_error), one with
  * another identity does not know the PSK (unknown_psk_identity, having no
@@ -781,6 +864,10 @@ TEST(itest_tls_031_max_fragment_length_granted) {
   }
   ASSERT_EQ(total, sizeof(data));
 
+  for (o.mfl = 2; o.mfl <= 4; o.mfl++) { /* 1024, 2048, 4096 */
+    ASSERT_TRUE(connect_to_server(&srv_psk, &o));
+    ASSERT_EQ(sut.max_frag, 256u << o.mfl);
+  }
   o.mfl = 5;
   ASSERT_TRUE(client_hello_to(&srv_psk, &o));
   ASSERT_TRUE(failed_with(47));
@@ -927,6 +1014,88 @@ TEST(itest_tls_047_record_too_long_or_unknown) {
   feed(heartbeat, 5);
   ASSERT_TRUE(failed_with(10));
   ASSERT_TRUE(plain_alert_sent(10));
+}
+
+/* REQ-TLS-047, 057, 037: records that do not belong where they come.
+ * Each row: the bytes (or the protected content and its type), and the
+ * alert — 0 for a record that is dropped without ending the connection */
+TEST(itest_tls_057_records_out_of_place) {
+  static const uint8_t plain_handshake[9] = {
+      TP_HANDSHAKE, 3, 3, 0, 4, 1, 0, 0, 0};
+  static const uint8_t plain_alert[7] = {TP_ALERT, 3, 3, 0, 2, 1, 0};
+  static const uint8_t short_sealed[21] = {TP_APPDATA, 3, 3, 0, 16};
+  static const struct {
+    const uint8_t *raw;
+    size_t raw_len;
+    uint8_t type; /* of protected content */
+    const char *content;
+    size_t content_len;
+    uint8_t alert;
+  } cases[] = {
+      /* plaintext once the peer's records are protected */
+      {plain_handshake, sizeof(plain_handshake), 0, NULL, 0, 10},
+      {plain_alert, sizeof(plain_alert), 0, NULL, 0, 10},
+      /* too short to hold a tag: it cannot authenticate */
+      {short_sealed, sizeof(short_sealed), 0, NULL, 0, 20},
+      /* a protected change_cipher_spec; an empty handshake record */
+      {NULL, 0, TP_CCS, "\x01", 1, 10},
+      {NULL, 0, TP_HANDSHAKE, "", 0, 10},
+      /* an alert that is not two bytes */
+      {NULL, 0, TP_ALERT, "\x01", 1, 50},
+      /* a handshake message that has no place after the handshake */
+      {NULL, 0, TP_HANDSHAKE, "\x04\x00\x00\x00", 4, 10},
+      /* a KeyUpdate of two bytes */
+      {NULL, 0, TP_HANDSHAKE, "\x18\x00\x00\x02\x00\x00", 6, 50},
+      /* an empty application data record: dropped */
+      {NULL, 0, TP_APPDATA, "", 0, 0},
+  };
+  uint8_t buf[8];
+  unsigned i;
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+    if (cases[i].raw)
+      feed(cases[i].raw, cases[i].raw_len);
+    else
+      (void)feed_sealed(cases[i].type, cases[i].content, cases[i].content_len);
+    if (cases[i].alert) {
+      ASSERT_TRUE(failed_with(cases[i].alert));
+      ASSERT_TRUE(sealed_alert_sent(2, cases[i].alert));
+    } else {
+      ASSERT_EQ(tls_state(&sut), TLS_STATE_CONNECTED);
+      ASSERT_EQ(tls_read(&sut, buf, sizeof(buf)), 0);
+      ASSERT_TRUE(feed_sealed(TP_APPDATA, "next", 4));
+      ASSERT_EQ(tls_read(&sut, buf, sizeof(buf)), 4);
+    }
+  }
+}
+
+/* REQ-TLS-047, 041: a protected record whose plaintext is longer than
+ * 2^14 bytes and its type is record_overflow (RFC 8446 §5.4), though its
+ * length is within the 2^14 + 256 a ciphertext may have; before any keys,
+ * an empty handshake record is unexpected_message, and a handshake
+ * message longer than the receive buffer record_overflow */
+TEST(itest_tls_047_plaintext_too_long) {
+  static const uint8_t empty[5] = {TP_HANDSHAKE, 3, 3, 0, 0};
+  static const uint8_t huge[9] = {TP_HANDSHAKE, 3, 3, 0, 4, 1, 0, 0x10, 0};
+  static uint8_t data[16385], buf[16384];
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  ASSERT_TRUE(feed_sealed(TP_APPDATA, data, 16384)); /* the most: taken */
+  ASSERT_EQ(tls_read(&sut, buf, sizeof(buf)), 16384);
+  (void)feed_sealed(TP_APPDATA, data, 16385);
+  ASSERT_TRUE(failed_with(22));
+  ASSERT_TRUE(sealed_alert_sent(2, 22));
+
+  ASSERT_TRUE(sut_start(&srv_psk));
+  ASSERT_EQ(tls_accept(&sut), 0);
+  feed(empty, sizeof(empty));
+  ASSERT_TRUE(failed_with(10));
+
+  rx_cap = 1024;
+  ASSERT_TRUE(sut_start(&srv_psk));
+  ASSERT_EQ(tls_accept(&sut), 0);
+  feed(huge, sizeof(huge)); /* a 4096-byte ClientHello begins */
+  ASSERT_TRUE(failed_with(22));
+  ASSERT_TRUE(plain_alert_sent(22));
 }
 
 /* REQ-TLS-059: a record that decrypts to nothing but zeros — no content
@@ -1079,6 +1248,68 @@ TEST(itest_tls_044_key_update_malformed) {
   memcpy(two, ku_not_requested, 5);
   memcpy(two + 5, ku_not_requested, 5);
   (void)feed_sealed(TP_HANDSHAKE, two, 10);
+  ASSERT_TRUE(failed_with(10));
+}
+
+/* REQ-TLS-044: a KeyUpdate owed while the transmit buffer is full waits
+ * for room — and no application data is taken before it has gone, so
+ * none follows it under the keys it retires */
+TEST(itest_tls_044_key_update_waits_for_room) {
+  static uint8_t data[300];
+  uint8_t type;
+  tx_cap = 300;
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  ASSERT_EQ(tls_write(&sut, data, 278), 278); /* tx is full */
+  ASSERT_TRUE(feed_sealed(TP_HANDSHAKE, ku_requested, 5));
+  tp_update_secret(0, peer.c_ap);
+  tp_traffic_keys(0, peer.c_ap, &pw);
+  ASSERT_EQ(tls_write(&sut, data, 10), 0);
+  drain();
+  ASSERT_EQ(open_next(&type), 278);
+  ASSERT_EQ(open_next(&type), 5);
+  ASSERT_EQ(type, TP_HANDSHAKE);
+  ASSERT_MEM_EQ(opened, ku_not_requested, 5);
+  ASSERT_EQ(out_off, out_len);
+  tp_update_secret(0, peer.s_ap);
+  tp_traffic_keys(0, peer.s_ap, &pr);
+  ASSERT_EQ(tls_write(&sut, data, 10), 10);
+  drain();
+  ASSERT_EQ(open_next(&type), 10);
+  ASSERT_EQ(type, TP_APPDATA);
+}
+
+/* REQ-TLS-037: a NewSessionTicket is ignored by a client (it keeps no
+ * tickets) and is unexpected_message to a server */
+TEST(itest_tls_037_new_session_ticket) {
+  static const uint8_t ticket[19] = {TP_NEW_SESSION_TICKET,
+                                     0,
+                                     0,
+                                     15,
+                                     0,
+                                     0,
+                                     0,
+                                     60,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     2,
+                                     'T',
+                                     'K',
+                                     0,
+                                     0};
+  uint8_t buf[8];
+  ASSERT_TRUE(connect_from_client(&cli_psk, &sh_psk_ke));
+  ASSERT_TRUE(feed_sealed(TP_HANDSHAKE, ticket, sizeof(ticket)));
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_CONNECTED);
+  ASSERT_EQ(drain(), 0);
+  ASSERT_TRUE(feed_sealed(TP_APPDATA, "data", 4));
+  ASSERT_EQ(tls_read(&sut, buf, sizeof(buf)), 4);
+
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  (void)feed_sealed(TP_HANDSHAKE, ticket, sizeof(ticket));
   ASSERT_TRUE(failed_with(10));
 }
 
@@ -1310,6 +1541,176 @@ TEST(itest_tls_060_psk_server_hello_consistent) {
   ASSERT_TRUE(failed_with(47));
 }
 
+/* REQ-TLS-018, 037: a ServerHello the client cannot accept — a suite or
+ * compression method it did not offer, a share of another group or one
+ * that is no point, one cut short — and a HelloRetryRequest with a
+ * session id, an unknown extension or no supported_versions */
+TEST(itest_tls_037_server_hello_refusals) {
+  static const uint8_t sid[2] = {1, 2}, cookie[3] = {1, 2, 3};
+  static uint8_t m[512];
+  tp_sh_t o;
+  size_t n;
+  int i;
+  for (i = 0; i < 8; i++) {
+    uint8_t alert = 47;
+    o = sh_psk_dhe;
+    if (i == 0)
+      o.suite = 0x1302;
+    if (i == 1)
+      o.compression = 1;
+    if (i == 2)
+      o.share_group = TP_P256;
+    if (i == 3)
+      o.zero_share = 1;
+    if (i == 4) {
+      o.truncated = 1;
+      alert = 50;
+    }
+    if (i >= 5) {
+      memset(&o, 0, sizeof(o));
+      o.hrr = 1;
+      o.cookie = cookie;
+      o.cookie_len = sizeof(cookie);
+    }
+    if (i == 5) {
+      o.session_id = sid;
+      o.session_id_len = sizeof(sid);
+    }
+    if (i == 6) {
+      o.stray = 0xFFAA + 1;
+      alert = 110;
+    }
+    if (i == 7) {
+      o.no_versions = 1;
+      alert = 70;
+    }
+    ASSERT_TRUE(client_hello_from(&cli_psk, NULL));
+    tp_add(&peer, hello_msg, hello_len);
+    n = tp_server_hello(&peer, &o, m);
+    feed_plain(m, n);
+    ASSERT_TRUE(failed_with(alert));
+    ASSERT_TRUE(plain_alert_sent(alert));
+  }
+}
+
+/* ── The peer as a certificate server ── */
+
+typedef struct {
+  int request;     /* a CertificateRequest first */
+  int certs;       /* certificates in the chain: the leaf, then the CA's */
+  int context;     /* bytes of certificate_request_context */
+  uint16_t scheme; /* of CertificateVerify; 0: ecdsa_secp256r1_sha256 */
+  int bad_signature;
+  int extensions_cut; /* EncryptedExtensions' list runs past the message */
+} cert_opt_t;
+
+/* The peer's ServerHello and its flight with the test certificate, signed
+ * with the certificate's key, to a client that trusts its CA */
+static int certificate_flight_to(const char *host, const cert_opt_t *o) {
+  static uint8_t m[8192];
+  const uint8_t *der[8];
+  uint16_t len[8];
+  size_t n, k;
+  int i;
+  CHECK(client_hello_from(&cli_cert, host));
+  CHECK(answer_hello(&sh_cert));
+  CHECK(tls_state(&sut) == TLS_STATE_HANDSHAKE);
+  n = tp_encrypted_extensions(&peer, -1, NULL, 0, m);
+  if (o->extensions_cut)
+    m[5] = 9;
+  if (o->request)
+    n += tp_certificate_request(&peer, m + n);
+  for (i = 0; i < o->certs; i++) {
+    der[i] = i ? ca_der : server_der;
+    len[i] = (uint16_t)(i ? sizeof(ca_der) : sizeof(server_der));
+  }
+  n += tp_certificate(&peer, der, len, o->certs, o->context, m + n);
+  k = tp_certificate_verify(&peer, o->scheme ? o->scheme : 0x0403,
+                            server_key_pem, sizeof(server_key_pem), m + n);
+  CHECK(k > 0);
+  if (o->bad_signature)
+    m[n + k - 1] ^= 0x01;
+  n += k;
+  n += tp_finished(&peer, peer.s_hs, m + n);
+  (void)feed_sealed(TP_HANDSHAKE, m, n);
+  return 1;
+}
+
+/* REQ-TLS-014, 015, 016, 017: a certificate handshake with the peer as
+ * the server — its chain to the client's trust anchor, the name the
+ * client asked for, a CertificateVerify by the certificate's key over the
+ * transcript — completes, the client's Finished as RFC 8446 §4.4.4
+ * computes it; the same flight for another name is bad_certificate */
+TEST(itest_tls_014_certificate_from_the_peer) {
+  cert_opt_t o;
+  uint8_t buf[8], type;
+  memset(&o, 0, sizeof(o));
+  o.certs = 2;
+  ASSERT_TRUE(certificate_flight_to(HOST, &o));
+  tp_application_secrets(&peer);
+  tp_traffic_keys(0, peer.s_ap, &pw);
+  ASSERT_TRUE(client_flight_read(0));
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_CONNECTED);
+  ASSERT_FALSE(tls_psk_used(&sut));
+  ASSERT_EQ(sut.group, TLS_GROUP_X25519);
+  ASSERT_TRUE(feed_sealed(TP_APPDATA, "ping", 4));
+  ASSERT_EQ(tls_read(&sut, buf, sizeof(buf)), 4);
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"pong", 4), 4);
+  drain();
+  ASSERT_EQ(open_next(&type), 4);
+  ASSERT_MEM_EQ(opened, "pong", 4);
+
+  ASSERT_TRUE(certificate_flight_to("other.example", &o));
+  ASSERT_TRUE(failed_with(42));
+  ASSERT_TRUE(sealed_alert_sent(2, 42));
+}
+
+/* REQ-TLS-067: a client the server asks for a certificate has none, and
+ * says so: a Certificate message with an empty list, then its Finished */
+TEST(itest_tls_067_certificate_request_answered_with_none) {
+  cert_opt_t o;
+  memset(&o, 0, sizeof(o));
+  o.certs = 1;
+  o.request = 1;
+  ASSERT_TRUE(certificate_flight_to(HOST, &o));
+  tp_application_secrets(&peer);
+  tp_traffic_keys(0, peer.s_ap, &pw);
+  ASSERT_TRUE(client_flight_read(1));
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_CONNECTED);
+}
+
+/* REQ-TLS-062, 015, 037: the server's Certificate and CertificateVerify
+ * checked — an empty certificate list is decode_error, a
+ * certificate_request_context illegal_parameter, a chain longer than the
+ * six the client takes bad_certificate; a CertificateVerify with a scheme
+ * the client did not offer is illegal_parameter, and one whose signature
+ * does not verify (a changed byte, or another scheme than the key's)
+ * decrypt_error.  Malformed EncryptedExtensions: decode_error. */
+TEST(itest_tls_062_server_certificate_checked) {
+  static const struct {
+    int certs, context, bad_signature, extensions_cut;
+    uint16_t scheme;
+    uint8_t alert;
+  } cases[] = {
+      {0, 0, 0, 0, 0, 50},      {1, 4, 0, 0, 0, 47}, {7, 0, 0, 0, 0, 42},
+      {1, 0, 0, 0, 0x0401, 47}, {1, 0, 1, 0, 0, 51}, {1, 0, 0, 0, 0x0804, 51},
+      {1, 0, 0, 1, 0, 50},
+  };
+  unsigned i;
+  for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    cert_opt_t o;
+    memset(&o, 0, sizeof(o));
+    o.certs = cases[i].certs;
+    o.context = cases[i].context;
+    o.bad_signature = cases[i].bad_signature;
+    o.extensions_cut = cases[i].extensions_cut;
+    o.scheme = cases[i].scheme;
+    ASSERT_TRUE(certificate_flight_to(HOST, &o));
+    ASSERT_TRUE(failed_with(cases[i].alert));
+    ASSERT_TRUE(sealed_alert_sent(2, cases[i].alert));
+  }
+}
+
 /* REQ-TLS-046: a ServerHello that echoes a session id the client did not
  * send is illegal_parameter */
 TEST(itest_tls_046_session_id_echo_checked) {
@@ -1331,10 +1732,14 @@ TEST(itest_tls_046_session_id_echo_checked) {
 TEST(itest_tls_049_hello_retry_request_answered) {
   static const uint8_t cookie[5] = {'c', 'o', 'o', 'k', 'y'};
   static uint8_t m[512], first_random[32];
-  tp_sh_t hrr = {1, 0, 0, NULL, 0, 0, 0, 0, cookie, sizeof(cookie), 0};
+  tp_sh_t hrr;
   const uint8_t *r, *x;
   size_t n, len, xl;
   int twice;
+  memset(&hrr, 0, sizeof(hrr));
+  hrr.hrr = 1;
+  hrr.cookie = cookie;
+  hrr.cookie_len = sizeof(cookie);
   for (twice = 0; twice < 2; twice++) {
     ASSERT_TRUE(client_hello_from(&cli_psk, NULL));
     ASSERT_TRUE(tp_binder_ok(&peer, hello_msg, hello_len));
@@ -1372,9 +1777,11 @@ TEST(itest_tls_049_hello_retry_request_answered) {
  * one asking for the group the client already sent a share of */
 TEST(itest_tls_049_hello_retry_request_must_change_something) {
   static uint8_t m[512];
-  tp_sh_t hrr = {1, 0, 0, NULL, 0, 0, 0, 0, NULL, 0, 0};
+  tp_sh_t hrr;
   size_t n;
   int same_group;
+  memset(&hrr, 0, sizeof(hrr));
+  hrr.hrr = 1;
   for (same_group = 0; same_group < 2; same_group++) {
     hrr.hrr_group = same_group ? TP_X25519 : 0;
     ASSERT_TRUE(client_hello_from(&cli_psk, NULL));
@@ -1506,6 +1913,50 @@ TEST(itest_tls_015_certificate_verify_checked) {
   ASSERT_EQ(sa.alert, 51);
 }
 
+/* REQ-TLS-020, 037: a transmit buffer smaller than the server's flight
+ * carries it a message at a time, as the transport takes it; one too
+ * small for the Certificate alone ends the handshake with internal_error
+ * instead of waiting for ever */
+TEST(itest_tls_020_flight_through_a_small_transmit_buffer) {
+  pair_tx = 600;
+  pair(&cli_cert, HOST, &srv_cert);
+  ASSERT_TRUE(both_connected());
+  pair_tx = 256;
+  pair(&cli_cert, HOST, &srv_cert);
+  ASSERT_EQ(tls_state(&sa), TLS_STATE_ERROR);
+  ASSERT_EQ(sa.alert, 80);
+  ASSERT_EQ(tls_state(&ca), TLS_STATE_ERROR);
+  ASSERT_EQ(ca.alert, 80);
+}
+
+/* REQ-TLS-031: with max_fragment_length 512 a message longer than a
+ * record — the RSA certificate — leaves in records of at most 512 bytes
+ * of content, and a client with an 800-byte receive buffer completes the
+ * ECDSA handshake */
+TEST(itest_tls_031_long_message_in_small_records) {
+  tls_config_t mfl = cli_cert, rsa = srv_cert;
+  size_t off, len, records = 0;
+  mfl.max_fragment = TLS_MFL_512;
+  rsa.cert = rsa_chain;
+  rsa.cert_len = rsa_chain_len;
+  rsa.key = &rsa_key;
+  rsa.sig_scheme = TLS_SIG_RSA_PSS_RSAE_SHA256;
+  pair(&mfl, NULL, &rsa);
+  ASSERT_TRUE(both_connected());
+  ASSERT_EQ(ca.max_frag, 512);
+  ASSERT_EQ(sa.max_frag, 512);
+  for (off = 0; off < s2c_len; off += len, records++) {
+    len = 5 + tp_get(s2c + off + 3, 2);
+    ASSERT_TRUE(len <= 5 + 512 + 1 + 16);
+  }
+  ASSERT_EQ(off, s2c_len);
+  ASSERT_TRUE(records >= 4); /* ServerHello, and a flight of 1100 bytes */
+
+  pair_rx = 800;
+  pair(&mfl, HOST, &srv_cert);
+  ASSERT_TRUE(both_connected());
+}
+
 /* REQ-TLS-005, 004, 061: key exchange over secp256r1 — a client restricted to
  * it sends a P-256 share; a server restricted to it asks a client that
  * sent x25519 for another share with a HelloRetryRequest, and the
@@ -1551,6 +2002,7 @@ TEST(itest_tls_023_psk_between_our_roles) {
  * bytes and key share it gave */
 static tls_crypto_t counting;
 static int asked[15];
+static int failing = -1; /* the operation (index in asked) that fails */
 static uint8_t last_random[32], last_share[TLS_KX_PUB_MAX];
 static size_t last_share_len;
 
@@ -1601,6 +2053,8 @@ static int c_keygen(void *ctx, uint16_t group, uint8_t *priv, uint8_t *pub,
   asked[8]++;
   memcpy(last_share, pub, *pub_len);
   last_share_len = *pub_len;
+  if (failing == 8)
+    return -1;
   return r;
 }
 static int c_shared(void *ctx, uint16_t group, const uint8_t *priv,
@@ -1613,6 +2067,8 @@ static int c_sign(void *ctx, const void *key, uint16_t scheme,
                   const uint8_t *msg, size_t n, uint8_t *sig, size_t *sig_len,
                   size_t cap) {
   asked[10]++;
+  if (failing == 10)
+    return -1;
   return crypto.sign(ctx, key, scheme, msg, n, sig, sig_len, cap);
 }
 static int c_verify(void *ctx, const uint8_t *cert, size_t cl_, uint16_t scheme,
@@ -1631,6 +2087,8 @@ static int c_random(void *ctx, uint8_t *o, size_t n) {
   asked[13]++;
   if (n == 32)
     memcpy(last_random, o, 32);
+  if (failing == 13)
+    return -1;
   return r;
 }
 
@@ -1662,6 +2120,116 @@ TEST(itest_tls_006_cryptography_from_the_backend) {
   x = tp_ext(&sh, TP_EXT_KEY_SHARE, &xl);
   ASSERT_TRUE(x && xl == 4 + last_share_len);
   ASSERT_MEM_EQ(x + 4, last_share, last_share_len);
+}
+
+/* REQ-TLS-006, 037: when the backend cannot give random bytes, a key
+ * pair or a signature, the handshake ends with internal_error — the
+ * protocol code has nothing of its own to use instead; a client that
+ * cannot build its ClientHello does not start */
+TEST(itest_tls_006_backend_failure_ends_the_handshake) {
+  static const int ops[3] = {13, 8, 10}; /* random, key pair, signature */
+  tls_config_t scfg = srv_cert, ccfg = cli_cert;
+  int i;
+  scfg.crypto = &counting;
+  ccfg.crypto = &counting;
+  for (i = 0; i < 3; i++) {
+    failing = -1;
+    c2s_len = s2c_len = 0;
+    tls_init(&ca, &cli_cert, ca_rx, sizeof(ca_rx), ca_tx, sizeof(ca_tx));
+    tls_init(&sa, &scfg, sa_rx, sizeof(sa_rx), sa_tx, sizeof(sa_tx));
+    tls_accept(&sa);
+    tls_connect(&ca, HOST);
+    failing = ops[i];
+    join(&ca, &sa, 4096);
+    failing = -1;
+    ASSERT_EQ(tls_state(&sa), TLS_STATE_ERROR);
+    ASSERT_EQ(sa.alert, 80);
+    ASSERT_EQ(ca.alert, 80);
+  }
+  for (i = 0; i < 2; i++) {
+    tls_init(&ca, &ccfg, ca_rx, sizeof(ca_rx), ca_tx, sizeof(ca_tx));
+    failing = ops[i];
+    ASSERT_EQ(tls_connect(&ca, HOST), -1);
+    failing = -1;
+    ASSERT_EQ(tls_state(&ca), TLS_STATE_IDLE);
+  }
+}
+
+/* REQ-TLS-065: tls_release() ends a connection however far it got: both
+ * buffers — which held plaintext — are zeroed, the connection is IDLE
+ * with its configuration, buffers and callback, and the next handshake
+ * runs on it */
+TEST(itest_tls_065_release_wipes_and_readies) {
+  size_t i;
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  ASSERT_TRUE(feed_sealed(TP_APPDATA, "unread and private", 18));
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"unsent", 6), 6);
+  tls_release(&sut);
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_IDLE);
+  for (i = 0; i < sizeof(sut_rx); i++)
+    ASSERT_EQ(sut_rx[i] | sut_tx[i], 0);
+  ASSERT_EQ(drain(), 0);
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"x", 1), -1);
+
+  out_len = out_off = 0;
+  n_events = 0;
+  ASSERT_EQ(tls_accept(&sut), 0);
+  ASSERT_TRUE(send_client_hello(&ch_psk_ke));
+  ASSERT_TRUE(read_server_hello(&ch_psk_ke));
+  ASSERT_TRUE(server_flight(0, 0));
+  ASSERT_TRUE(client_finished());
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_CONNECTED);
+  ASSERT_EQ(n_events, 1); /* the callback is still the application's */
+}
+
+/* REQ-TLS-066: calls a connection's state does not allow return an error
+ * and change nothing: reading and writing before the handshake is done,
+ * a second tls_accept() or tls_connect(), a server without a certificate
+ * and key or a complete PSK, a host name over 255 bytes, a ClientHello
+ * that does not fit the transmit buffer.  tls_tx_done() takes no more
+ * than was pending. */
+TEST(itest_tls_066_calls_out_of_place_refused) {
+  static char long_name[300];
+  tls_config_t cfg = srv_cert;
+  const uint8_t *p;
+  uint8_t buf[8];
+  ASSERT_TRUE(sut_start(&srv_psk));
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"x", 1), -1);
+  ASSERT_EQ(tls_key_update(&sut, 0), -1);
+  ASSERT_EQ(tls_close(&sut), -1);
+  ASSERT_EQ(tls_read(&sut, buf, sizeof(buf)), 0);
+  ASSERT_EQ(tls_accept(&sut), 0);
+  ASSERT_EQ(tls_accept(&sut), -1);
+  ASSERT_EQ(tls_connect(&sut, NULL), -1);
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"x", 1), -1);
+  ASSERT_EQ(tls_key_update(&sut, 0), -1);
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_HANDSHAKE);
+  ASSERT_EQ(drain(), 0);
+
+  cfg.key = NULL; /* a chain without its key */
+  ASSERT_TRUE(sut_start(&cfg));
+  ASSERT_EQ(tls_accept(&sut), -1);
+  cfg.cert_count = 0; /* nothing to authenticate with */
+  ASSERT_TRUE(sut_start(&cfg));
+  ASSERT_EQ(tls_accept(&sut), -1);
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_IDLE);
+
+  memset(long_name, 'a', 256);
+  ASSERT_TRUE(sut_start(&cli_cert));
+  ASSERT_EQ(tls_connect(&sut, long_name), -1);
+  long_name[200] = 0; /* 200 bytes of name: more than a 256-byte tx */
+  tx_cap = 256;
+  ASSERT_TRUE(sut_start(&cli_cert));
+  ASSERT_EQ(tls_connect(&sut, long_name), -1);
+  ASSERT_EQ(tls_state(&sut), TLS_STATE_IDLE);
+  ASSERT_EQ(drain(), 0);
+
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"abc", 3), 3);
+  tls_tx_done(&sut, 100000);
+  ASSERT_EQ(tls_tx_pending(&sut, &p), 0);
+  ASSERT_EQ(tls_write(&sut, (const uint8_t *)"abc", 3), 3);
+  ASSERT_EQ(tls_tx_pending(&sut, &p), 3 + 22);
 }
 
 /* REQ-TLS-009: all of a connection's state is in its tls_conn_t and its
@@ -1808,6 +2376,9 @@ int main(void) {
   ch_psk_ke.psk_ke = 1;
   ch_psk_dhe.psk_dhe = 1;
   ch_psk_dhe.share = 1;
+  sh_psk_ke.psk = 1;
+  sh_psk_dhe.psk = sh_psk_dhe.share = 1;
+  sh_cert.share = 1;
   counting = crypto;
   counting.hash_init = c_hash_init;
   counting.hash_update = c_hash_update;
@@ -1833,6 +2404,8 @@ int main(void) {
   RUN_TEST(itest_tls_052_mandatory_extensions);
   RUN_TEST(itest_tls_052_groups_and_key_share_together);
   RUN_TEST(itest_tls_061_hello_retry_request_sent);
+  RUN_TEST(itest_tls_046_hello_retry_in_compatibility_mode);
+  RUN_TEST(itest_tls_022_only_finished_after_the_flight);
   RUN_TEST(itest_tls_025_psk_from_the_configuration);
   RUN_TEST(itest_tls_046_session_id_echoed);
   RUN_TEST(itest_tls_045_change_cipher_spec_only_in_the_handshake);
@@ -1842,12 +2415,16 @@ int main(void) {
   RUN_TEST(itest_tls_043_write_within_the_transmit_buffer);
   RUN_TEST(itest_tls_041_receive_buffer_holds_a_record);
   RUN_TEST(itest_tls_047_record_too_long_or_unknown);
+  RUN_TEST(itest_tls_057_records_out_of_place);
+  RUN_TEST(itest_tls_047_plaintext_too_long);
   RUN_TEST(itest_tls_059_padding_and_no_content_type);
   RUN_TEST(itest_tls_035_close_notify);
   RUN_TEST(itest_tls_036_fatal_alert_received);
   RUN_TEST(itest_tls_044_key_update_requested_by_the_peer);
   RUN_TEST(itest_tls_044_key_update_of_ours);
   RUN_TEST(itest_tls_044_key_update_malformed);
+  RUN_TEST(itest_tls_044_key_update_waits_for_room);
+  RUN_TEST(itest_tls_037_new_session_ticket);
   RUN_TEST(itest_tls_057_no_data_inside_a_handshake_message);
   RUN_TEST(itest_tls_010_client_hello);
   RUN_TEST(itest_tls_023_client_offers_the_psk);
@@ -1859,6 +2436,10 @@ int main(void) {
   RUN_TEST(itest_tls_053_extension_not_offered_refused);
   RUN_TEST(itest_tls_053_encrypted_extension_not_offered_refused);
   RUN_TEST(itest_tls_060_psk_server_hello_consistent);
+  RUN_TEST(itest_tls_037_server_hello_refusals);
+  RUN_TEST(itest_tls_014_certificate_from_the_peer);
+  RUN_TEST(itest_tls_067_certificate_request_answered_with_none);
+  RUN_TEST(itest_tls_062_server_certificate_checked);
   RUN_TEST(itest_tls_046_session_id_echo_checked);
   RUN_TEST(itest_tls_049_hello_retry_request_answered);
   RUN_TEST(itest_tls_049_hello_retry_request_must_change_something);
@@ -1866,9 +2447,14 @@ int main(void) {
   RUN_TEST(itest_tls_039_client_told_of_close_and_alert);
   RUN_TEST(itest_tls_014_certificate_chain_and_name);
   RUN_TEST(itest_tls_015_certificate_verify_checked);
+  RUN_TEST(itest_tls_020_flight_through_a_small_transmit_buffer);
+  RUN_TEST(itest_tls_031_long_message_in_small_records);
   RUN_TEST(itest_tls_005_secp256r1);
   RUN_TEST(itest_tls_023_psk_between_our_roles);
   RUN_TEST(itest_tls_006_cryptography_from_the_backend);
+  RUN_TEST(itest_tls_006_backend_failure_ends_the_handshake);
+  RUN_TEST(itest_tls_065_release_wipes_and_readies);
+  RUN_TEST(itest_tls_066_calls_out_of_place_refused);
   RUN_TEST(itest_tls_009_state_in_the_connection);
   RUN_TEST(itest_tls_018_handshake_over_tcp);
   RUN_TEST(itest_tls_035_close_notify_before_fin);

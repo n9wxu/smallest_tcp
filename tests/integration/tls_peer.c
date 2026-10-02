@@ -12,6 +12,7 @@
 #include <mbedtls/ecp.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/md.h>
+#include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #include <string.h>
 
@@ -587,8 +588,8 @@ size_t tp_server_hello(tp_t *p, const tp_sh_t *o, uint8_t *msg) {
   if (o->session_id_len)
     memcpy(q, o->session_id, o->session_id_len);
   q += o->session_id_len;
-  tp_put(q, 2, TP_SUITE);
-  q[2] = 0;
+  tp_put(q, 2, o->suite ? o->suite : TP_SUITE);
+  q[2] = o->compression;
   exts = q + 3;
   q = exts + 2;
   if (!o->no_versions) {
@@ -619,9 +620,11 @@ size_t tp_server_hello(tp_t *p, const tp_sh_t *o, uint8_t *msg) {
   if (o->share) {
     e = q;
     q = ext_begin(q, TP_EXT_KEY_SHARE);
-    tp_put(q, 2, TP_X25519);
+    tp_put(q, 2, o->share_group ? o->share_group : TP_X25519);
     tp_put(q + 2, 2, 32);
     memcpy(q + 4, p->x_pub, 32);
+    if (o->zero_share)
+      memset(q + 4, 0, 32);
     q = ext_end(e, q + 36);
   }
   if (o->stray) {
@@ -629,6 +632,8 @@ size_t tp_server_hello(tp_t *p, const tp_sh_t *o, uint8_t *msg) {
     q = ext_end(e, ext_begin(q, (uint16_t)(o->stray - 1)));
   }
   tp_put(exts, 2, (uint32_t)(q - exts - 2));
+  if (o->truncated)
+    q -= 3;
   tp_put(msg + 1, 3, (uint32_t)(q - msg - 4));
   if (o->hrr)
     tp_message_hash(p);
@@ -650,6 +655,72 @@ size_t tp_encrypted_extensions(tp_t *p, int type, const uint8_t *data,
   tp_put(msg + 1, 3, (uint32_t)(n - 4));
   tp_add(p, msg, n);
   return n;
+}
+
+size_t tp_certificate_request(tp_t *p, uint8_t *msg) {
+  uint8_t *q = msg + 4, *e;
+  msg[0] = TP_CERTIFICATE_REQUEST;
+  *q++ = 0; /* certificate_request_context */
+  e = q;
+  q += 2;
+  q = ext_begin(q, TP_EXT_SIGNATURE_ALGORITHMS);
+  tp_put(q, 2, 2);
+  tp_put(q + 2, 2, 0x0403);
+  q = ext_end(e + 2, q + 4);
+  tp_put(e, 2, (uint32_t)(q - e - 2));
+  tp_put(msg + 1, 3, (uint32_t)(q - msg - 4));
+  tp_add(p, msg, (size_t)(q - msg));
+  return (size_t)(q - msg);
+}
+
+size_t tp_certificate(tp_t *p, const uint8_t *const *der, const uint16_t *len,
+                      int n, int context, uint8_t *msg) {
+  uint8_t *q = msg + 4, *list;
+  int i;
+  msg[0] = TP_CERTIFICATE;
+  *q++ = (uint8_t)context;
+  memset(q, 0xC7, (size_t)context);
+  q += context;
+  list = q;
+  q += 3;
+  for (i = 0; i < n; i++) {
+    tp_put(q, 3, len[i]);
+    memcpy(q + 3, der[i], len[i]);
+    q += 3 + len[i];
+    tp_put(q, 2, 0); /* no extensions */
+    q += 2;
+  }
+  tp_put(list, 3, (uint32_t)(q - list - 3));
+  tp_put(msg + 1, 3, (uint32_t)(q - msg - 4));
+  tp_add(p, msg, (size_t)(q - msg));
+  return (size_t)(q - msg);
+}
+
+size_t tp_certificate_verify(tp_t *p, uint16_t scheme, const char *key,
+                             size_t key_len, uint8_t *msg) {
+  static const char context[] = "TLS 1.3, server CertificateVerify";
+  uint8_t content[64 + sizeof(context) + 32], hash[32];
+  mbedtls_pk_context pk;
+  size_t sig_len = 0;
+  int r;
+  memset(content, 0x20, 64);
+  memcpy(content + 64, context, sizeof(context)); /* with its 0 */
+  tp_transcript_hash(p, content + 64 + sizeof(context));
+  tp_sha256(content, sizeof(content), hash);
+  mbedtls_pk_init(&pk);
+  r = mbedtls_pk_parse_key(&pk, (const unsigned char *)key, key_len, NULL, 0,
+                           tp_rng, NULL) ||
+      mbedtls_pk_sign(&pk, MBEDTLS_MD_SHA256, hash, 32, msg + 8, 80, &sig_len,
+                      tp_rng, NULL);
+  mbedtls_pk_free(&pk);
+  if (r)
+    return 0;
+  msg[0] = 15; /* certificate_verify */
+  tp_put(msg + 1, 3, (uint32_t)(4 + sig_len));
+  tp_put(msg + 4, 2, scheme);
+  tp_put(msg + 6, 2, (uint32_t)sig_len);
+  tp_add(p, msg, 8 + sig_len);
+  return 8 + sig_len;
 }
 
 size_t tp_finished(tp_t *p, const uint8_t base[32], uint8_t *msg) {

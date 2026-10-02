@@ -209,8 +209,9 @@ def test_tls_c12_tls12_server(client):
 # ── Client certificates ────────────────────────────────────────────────────────
 
 def test_tls_c20_certificate_request_optional(client):
-    """The server asks for a certificate: the client has none and says so
-    with an empty Certificate; an optional request is satisfied."""
+    """REQ-TLS-067: the server asks for a certificate: the client has none
+    and says so with an empty Certificate; an optional request is
+    satisfied."""
     srv = serve(client, verify=ssl.CERT_OPTIONAL)
     rc, out = client()
     finish(srv)
