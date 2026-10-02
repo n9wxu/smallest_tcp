@@ -10,6 +10,24 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-02
+
+### Changes
+
+- docs: the udp/tcp review's changes in the shared documents
+- tests: udp — an icmp error whose quote stops short of the ports
+- tests: tcp tests tightened where mutants of tcp.c survived
+- docs: udp — icmpv6 passes on only the errors that quote tcp
+- tcp: icmpv6 errors reach the connection they are about
+- tests: icmpv6 errors do not reach tcp (expected failures)
+- docs: the tcp design documents as the code is
+- tcp: the receive window's right edge moves only in worthwhile steps
+- tcp: the local address is part of a connection's identity
+- tcp: an active open on a connection in use is refused
+- tests: tcp verified black box, row by row; three rows not met yet
+- docs: the udp design document as the code is
+- tests: udp verified black box, every MUST row traced to a test
+
 ## [0.1.6] - 2026-10-02
 
 A review of every requirement row against its RFC, the code and the tests
@@ -263,7 +281,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.3...v0.1.4
