@@ -64,6 +64,13 @@ static tcp_conn_t *table[1] = {&conn};
 static tcp_saw_tx_ctx_t tx_ctx;
 static tcp_saw_rx_ctx_t rx_ctx;
 static uint8_t tx_mem[1460], rx_mem[512];
+static int ev_soft, ev_error;
+
+static void on_tcp_event(tcp_conn_t *c, uint8_t events) {
+  (void)c;
+  ev_soft += (events & TCP_EVT_SOFT_ERROR) != 0;
+  ev_error += (events & TCP_EVT_ERROR) != 0;
+}
 
 /* Started on frame buffers of @p rx and @p tx bytes: the link-local
  * address past DAD, the router solicitations over */
@@ -73,8 +80,9 @@ static void up_bufs(uint16_t rx, uint16_t tx) {
   tcp_saw_tx_init(&tx_ctx, tx_mem, sizeof(tx_mem));
   tcp_saw_rx_init(&rx_ctx, rx_mem, sizeof(rx_mem));
   tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
-                NULL);
+                on_tcp_event);
   tcp_set_connections(&t.net, table, 1);
+  ev_soft = ev_error = 0;
   peer_link_local(t.net.mac, ll);
   memcpy(global, prefix6, 8);
   memcpy(global + 8, ll + 8, 8);
@@ -310,7 +318,7 @@ TEST(itest_ipv6_044_upper_layer_checksums) {
 
 /* ── Destinations and sources ── */
 
-/* REQ-IPv6-006..009, 038: our link-local and global addresses, all-nodes,
+/* REQ-IPv6-006..009, 037, 038: our link-local and global addresses, all-nodes,
  * the solicited-node group and a group the application joined */
 TEST(itest_ipv6_006_destinations_accepted) {
   static const uint8_t group[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
@@ -381,6 +389,18 @@ TEST(itest_ipv6_013_unspecified_source) {
   ASSERT_EQ(delivered, 1);
   echo(unspec, ll, "b", 1);
   datagram(unspec, ll, CLOSED_PORT, "c", 1);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* REQ-IPv6-013: the application cannot send to :: either */
+TEST(itest_ipv6_013_nothing_sent_to_unspecified) {
+  static const uint8_t unspec[16] = {0};
+  up_global();
+  ASSERT_EQ(udp6_send(&t.net, unspec, peer_mac, 1, 2, (const uint8_t *)"x", 1),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(tcp6_connect(&t.net, &conn, unspec, peer_mac, 80, 40000),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(ndp_send_ns(&t.net, unspec, 0), NET_ERR_INVALID_PARAM);
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
@@ -464,9 +484,9 @@ TEST(itest_ipv6_017_unknown_next_header) {
   ASSERT_EQ(peer_get32(icmp.rest), 40);
 }
 
-/* REQ-IPv6-018, 020: Hop-by-Hop, Destination Options and a Routing header
- * with no segments left are walked in order, by their length, to the
- * upper layer */
+/* REQ-IPv6-018, 020, 048: Hop-by-Hop, Destination Options and a Routing
+ * header with no segments left are walked in order, by their length, to
+ * the upper layer */
 TEST(itest_ipv6_018_extension_headers_walked) {
   static uint8_t pkt[128], msg[64];
   peer_ip6_t ip, rip;
@@ -523,6 +543,34 @@ TEST(itest_ipv6_019_options_skipped) {
   deliver(NULL, &ip, msg, n);
   ASSERT_TRUE(sent(T_ECHO_REPLY, &rip, &icmp));
   ASSERT_EQ(wire_count_icmp6(&t, T_PARAM_PROBLEM), 0);
+}
+
+/* REQ-IPv6-048: a Routing header with segments left would have us
+ * forward: the packet is discarded and Parameter Problem code 0 points at
+ * the Routing Type — but for a packet sent to a group */
+TEST(itest_ipv6_048_routing_header_with_segments_left) {
+  static uint8_t rh[8], msg[64];
+  peer_ip6_t ip, rip;
+  peer_icmp_t icmp;
+  uint16_t n;
+  up();
+  ext_header(rh, NH_ROUTING, NH_ICMPV6, 1);
+  ip = peer_ip6(peer6_ll, all_nodes6, NH_ROUTING);
+  ip.ext = rh;
+  ip.ext_len = 8;
+  n = peer_icmp6(msg, &ip, T_ECHO_REQUEST, 0, id_seq, "route", 5);
+  deliver(NULL, &ip, msg, n);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ip.dst = ll;
+  n = peer_icmp6(msg, &ip, T_ECHO_REQUEST, 0, id_seq, "route", 5);
+  deliver(NULL, &ip, msg, n);
+  ASSERT_EQ(wire_count_icmp6(&t, T_ECHO_REPLY), 0);
+  ASSERT_TRUE(sent(T_PARAM_PROBLEM, &rip, &icmp));
+  ASSERT_EQ(icmp.code, 0);
+  ASSERT_EQ(peer_get32(icmp.rest), 42);
+  ASSERT_MEM_EQ(rip.dst, peer6_ll, 16);
+  ASSERT_EQ(icmp.data_len, 40 + 8 + n);
+  ASSERT_TRUE(icmp.cksum_ok);
 }
 
 /* REQ-IPv6-022, 023, REQ-ICMPv6-024: fragments are dropped — deviation:
@@ -897,6 +945,35 @@ TEST(itest_icmpv6_029_no_error_about_group_packets) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
+/* REQ-ICMPv6-033: errors are rate-limited: a burst of ICMPV6_ERROR_BURST
+ * (10), then one more each ICMPV6_ERROR_INTERVAL_MS (100 ms); echo
+ * replies are no errors and are not limited */
+TEST(itest_icmpv6_033_errors_rate_limited) {
+  int i;
+  up();
+  for (i = 0; i < 15; i++)
+    datagram(peer6_ll, ll, CLOSED_PORT, "x", 1);
+  ASSERT_EQ(wire_count_icmp6(&t, T_DEST_UNREACH), 10);
+  for (i = 0; i < 3; i++)
+    echo(peer6_ll, ll, "x", 1);
+  ASSERT_EQ(wire_count_icmp6(&t, T_ECHO_REPLY), 3);
+  wire_clear(&t);
+  itest_advance(&t, 100, 10);
+  datagram(peer6_ll, ll, CLOSED_PORT, "x", 1);
+  datagram(peer6_ll, ll, CLOSED_PORT, "x", 1);
+  ASSERT_EQ(wire_count_icmp6(&t, T_DEST_UNREACH), 1);
+  wire_clear(&t);
+  itest_advance(&t, 250, 10);
+  for (i = 0; i < 5; i++)
+    datagram(peer6_ll, ll, CLOSED_PORT, "x", 1);
+  ASSERT_EQ(wire_count_icmp6(&t, T_DEST_UNREACH), 2);
+  wire_clear(&t);
+  itest_advance(&t, 60000, 1000); /* the bucket holds no more than 10 */
+  for (i = 0; i < 15; i++)
+    datagram(peer6_ll, ll, CLOSED_PORT, "x", 1);
+  ASSERT_EQ(wire_count_icmp6(&t, T_DEST_UNREACH), 10);
+}
+
 /* REQ-ICMPv6-039: an informational message of unknown type is dropped */
 TEST(itest_icmpv6_039_unknown_informational_dropped) {
   static uint8_t msg[64];
@@ -909,6 +986,124 @@ TEST(itest_icmpv6_039_unknown_informational_dropped) {
   n = peer_icmp6(msg, &ip, T_ECHO_REPLY, 0, id_seq, "!", 1);
   deliver(NULL, &ip, msg, n);
   ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* ── ICMPv6 errors about what we sent: to TCP ── */
+
+/* The first TCP segment sent since wire_clear(), parsed */
+static const wire_frame_t *sent_segment(peer_ip6_t *ip, peer_tcp_t *tcp) {
+  uint16_t i;
+  const wire_frame_t *f;
+  for (i = 0; (f = wire_sent(&t, i)) != NULL; i++) {
+    if (peer_parse_ipv6(f, ip) && peer_parse_tcp6(ip, tcp))
+      return f;
+  }
+  return NULL;
+}
+
+/* A TCP connection over IPv6 from our global address to offlink6 through
+ * the router, established; @return our ISS */
+static uint32_t tcp6_established(void) {
+  static uint8_t seg[64];
+  peer_tcp_seg_t s;
+  peer_ip6_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up_global();
+  tcp6_connect(&t.net, &conn, offlink6, router6_mac, TCP_PORT, 40000);
+  if (!sent_segment(&ip, &tcp))
+    return 0;
+  iss = tcp.seq;
+  memset(&s, 0, sizeof(s));
+  s.sport = TCP_PORT;
+  s.dport = 40000;
+  s.seq = 5000;
+  s.ack = iss + 1;
+  s.flags = TCPF_SYN | TCPF_ACK;
+  s.window = 8192;
+  s.mss = 1440;
+  ip = peer_ip6(offlink6, global, NH_TCP);
+  deliver(NULL, &ip, seg, peer_tcp6(seg, &ip, &s));
+  wire_clear(&t);
+  return iss;
+}
+
+/* An ICMPv6 error from the router about the first TCP segment sent since
+ * wire_clear(), quoting as much of it as an error carries */
+static void error_about_segment(uint8_t type, uint8_t code,
+                                const uint8_t rest[4]) {
+  static uint8_t msg[1400], frame[WIRE_FRAME_MAX];
+  const wire_frame_t *f;
+  peer_ip6_t ip;
+  peer_tcp_t tcp;
+  uint16_t n, q;
+  if (!(f = sent_segment(&ip, &tcp)))
+    return;
+  q = (uint16_t)(f->len - 14);
+  if (q > 1280 - 48)
+    q = 1280 - 48;
+  ip = peer_ip6(router6_ll, global, NH_ICMPV6);
+  n = peer_icmp6(msg, &ip, type, code, rest, f->data + 14, q);
+  itest_receive(&t, frame,
+                peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, n));
+}
+
+/* REQ-ICMPv6-011, 015: Destination Unreachable, Port Unreachable, about
+ * our SYN reaches TCP: the connection is refused */
+TEST(itest_icmpv6_015_port_unreachable_reaches_tcp) {
+  up_global();
+  tcp6_connect(&t.net, &conn, offlink6, router6_mac, TCP_PORT, 40000);
+  error_about_segment(T_DEST_UNREACH, 4, NULL);
+  ASSERT_EQ(tcp_status(&conn), TCP_CLOSED);
+  ASSERT_EQ(ev_error, 1);
+}
+
+/* REQ-ICMPv6-011..014, 022, 025, 040: Destination Unreachable (no route,
+ * prohibited, address unreachable), Time Exceeded, Parameter Problem and
+ * an error of unknown type about a segment of ours reach TCP, which
+ * reports them to the application and carries on */
+TEST(itest_icmpv6_011_errors_reach_tcp) {
+  static const struct {
+    uint8_t type, code;
+  } errs[] = {{T_DEST_UNREACH, 0},  {T_DEST_UNREACH, 1},  {T_DEST_UNREACH, 3},
+              {T_TIME_EXCEEDED, 0}, {T_PARAM_PROBLEM, 0}, {100, 0}};
+  uint8_t k;
+  tcp6_established();
+  tcp_send(&t.net, &conn, (const uint8_t *)"data", 4);
+  for (k = 0; k < sizeof(errs) / sizeof(errs[0]); k++) {
+    error_about_segment(errs[k].type, errs[k].code, NULL);
+    ASSERT_EQ(ev_soft, k + 1);
+    ASSERT_EQ(tcp_last_error(&conn), errs[k].type << 8 | errs[k].code);
+    ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  }
+  ASSERT_EQ(ev_error, 0);
+}
+
+/* REQ-ICMPv6-018, 019, 020, REQ-IPv6-033: Packet Too Big gives TCP the
+ * MTU of the path: the segment goes again in packets no larger */
+TEST(itest_icmpv6_018_packet_too_big_lowers_the_segment_size) {
+  static uint8_t big[1400];
+  static const uint8_t mtu_1280[4] = {0, 0, 0x05, 0x00};
+  peer_ip6_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  uint16_t i;
+  for (i = 0; i < sizeof(big); i++)
+    big[i] = (uint8_t)(i * 3);
+  iss = tcp6_established();
+  tcp_send(&t.net, &conn, big, sizeof(big));
+  ASSERT_TRUE(sent_segment(&ip, &tcp) != NULL);
+  ASSERT_EQ(tcp.data_len, 1400);
+  error_about_segment(T_TOO_BIG, 0, mtu_1280);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  ASSERT_EQ(ev_soft + ev_error, 0);
+  wire_clear(&t);
+  itest_advance(&t, 3000, 100);
+  ASSERT_TRUE(sent_segment(&ip, &tcp) != NULL);
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(40 + ip.plen, 1280);
+  ASSERT_EQ(tcp.data_len, 1220);
+  ASSERT_MEM_EQ(tcp.data, big, 1220);
 }
 
 int main(void) {
@@ -925,10 +1120,12 @@ int main(void) {
   RUN_TEST(itest_ipv6_011_multicast_source_dropped);
   RUN_TEST(itest_ipv6_012_own_source_dropped);
   RUN_TEST(itest_ipv6_013_unspecified_source);
+  RUN_XFAIL(itest_ipv6_013_nothing_sent_to_unspecified);
   RUN_TEST(itest_ipv6_014_upper_layers_dispatched);
   RUN_TEST(itest_ipv6_017_unknown_next_header);
   RUN_TEST(itest_ipv6_018_extension_headers_walked);
   RUN_TEST(itest_ipv6_019_options_skipped);
+  RUN_XFAIL(itest_ipv6_048_routing_header_with_segments_left);
   RUN_TEST(itest_ipv6_022_fragments_dropped);
   RUN_TEST(itest_ipv6_021_no_extension_headers_sent);
   RUN_TEST(itest_ipv6_030_source_selection);
@@ -944,7 +1141,11 @@ int main(void) {
   RUN_TEST(itest_icmpv6_021_no_router_errors);
   RUN_TEST(itest_icmpv6_028_no_error_about_errors);
   RUN_TEST(itest_icmpv6_029_no_error_about_group_packets);
+  RUN_XFAIL(itest_icmpv6_033_errors_rate_limited);
   RUN_TEST(itest_icmpv6_039_unknown_informational_dropped);
+  RUN_TEST(itest_icmpv6_015_port_unreachable_reaches_tcp);
+  RUN_XFAIL(itest_icmpv6_011_errors_reach_tcp);
+  RUN_TEST(itest_icmpv6_018_packet_too_big_lowers_the_segment_size);
   ITEST_REPORT();
   return test_failures;
 }
