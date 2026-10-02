@@ -95,6 +95,7 @@ TEST(test_saw_tx_no_segment_when_empty) {
   ASSERT_EQ(len, 0);
 }
 
+/* REQ-TCP-145: stop and wait — nothing more while a segment is in flight */
 TEST(test_saw_tx_no_segment_when_in_flight) {
   setup_tx();
   uint8_t data[4] = {1, 2, 3, 4};
@@ -175,8 +176,8 @@ TEST(test_saw_tx_in_flight_counts_bytes_sent) {
   ASSERT_MEM_EQ(seg, data + 10, 10);
 }
 
-/* An ACK covering more than was sent (our FIN) releases only what was
- * sent: unsent data is never dropped */
+/* REQ-TCP-143: an ACK covering more than was sent (our FIN) releases only
+ * what was sent: unsent data is never dropped */
 TEST(test_saw_tx_ack_beyond_sent_keeps_unsent) {
   setup_tx();
   uint8_t data[20];
@@ -192,6 +193,7 @@ TEST(test_saw_tx_ack_beyond_sent_keeps_unsent) {
   ASSERT_MEM_EQ(seg, data + 10, 10);
 }
 
+/* REQ-TCP-143: mark_retransmit() offers the bytes in flight again */
 TEST(test_saw_tx_mark_retransmit) {
   setup_tx();
   uint8_t data[4] = {0xAA, 0xBB, 0xCC, 0xDD};
@@ -294,6 +296,7 @@ TEST(test_saw_rx_deliver_read_multiple_cycles) {
   ASSERT_EQ(tcp_saw_rx_ops.available(&rx_ctx), BUF_SIZE);
 }
 
+/* REQ-TCP-144: available() is the space left, what the window advertises */
 TEST(test_saw_rx_window_tracks_available) {
   setup_rx();
   ASSERT_EQ(tcp_saw_rx_ops.available(&rx_ctx), BUF_SIZE);

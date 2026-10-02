@@ -8,7 +8,8 @@
  * All network I/O is intercepted via a stub MAC driver. Tests craft raw
  * TCP-over-IPv4-over-Ethernet frames by hand and inject them via tcp_input.
  *
- * REQ-TCP-001..100.
+ * The requirements a test verifies are named at the test; the black-box
+ * tests of every TCP requirement are in tests/integration/itest_tcp.c.
  */
 
 #include "eth.h"
