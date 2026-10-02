@@ -1,7 +1,7 @@
 /**
  * @file dhcpv4_client.c
  * @brief DHCPv4 client (RFC 2131, RFC 2132, RFC 3396).  REQ-DHCPv4-001..059,
- *        080..095.
+ *        079..095, 101.
  */
 
 #include "dhcpv4_client.h"
@@ -72,7 +72,7 @@ static uint32_t client_address(const net_t *net, const dhcpv4_client_t *c) {
   return holds_lease(c) ? net->ipv4_addr : 0u;
 }
 
-/* REQ-DHCPv4-002, 008..017 */
+/* REQ-DHCPv4-002, 008..017, 094, 101 */
 static void send_discover(net_t *net, dhcpv4_client_t *c) {
   uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, c->xid, net->mac);
   uint16_t pos = DHCP_OFF_OPTIONS;
@@ -132,10 +132,10 @@ static uint32_t share_of(uint32_t v, uint32_t f) {
   return (v >> 16) * f + (((v & 0xFFFFu) * f) >> 16);
 }
 
-/* RFC 2131 §4.4.5: T1 and T2 "with some random fuzz", so clients given
- * their leases together do not renew together.  Both come forward by the
- * same random share of themselves, less than 1/16: never later than the
- * server said, and still in order. */
+/* REQ-DHCPv4-079; RFC 2131 §4.4.5: T1 and T2 "with some random fuzz", so
+ * clients given their leases together do not renew together.  Both come
+ * forward by the same random share of themselves, less than 1/16: never
+ * later than the server said, and still in order. */
 static void fuzz_renewal_times(net_t *net, dhcpv4_client_t *c) {
   uint32_t f = net_random(net) & 0xFFFu;
   c->t1 -= share_of(c->t1, f);

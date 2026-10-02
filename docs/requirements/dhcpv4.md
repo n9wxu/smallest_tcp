@@ -16,9 +16,9 @@ This stack provides two independent compilation units:
 - **`dhcpv4_client.c`** — the client state machine (DISCOVER → OFFER → REQUEST →
   ACK, the ARP check of the address, renewal, rebinding, lease expiry) plus an
   option handler callback API that lets higher-layer protocols (TFTP, NTP, DNS, …)
-  receive option values without the DHCP layer knowing anything about them.  A
-  client that starts from a remembered address (INIT-REBOOT) and DHCPINFORM are
-  not implemented; RFC 2131 makes both optional.
+  receive option values without the DHCP layer knowing anything about them.  The
+  client does not start from a remembered address (INIT-REBOOT) and sends no
+  DHCPINFORM; RFC 2131 makes both optional.
 - **`dhcpv4_server.c`** — minimal single-client server, designed for
   USB/CDC-ECM devices that must assign an IP address to a single connected peer.
 
