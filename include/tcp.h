@@ -235,8 +235,8 @@ net_err_t tcp_abort(net_t *net, tcp_conn_t *conn);
 
 tcp_state_t tcp_status(const tcp_conn_t *conn);
 
-/** The last soft error: ICMP type << 8 | code, TCP_SOFT_RETRANSMITTING, or
- *  0 for none. */
+/** The last error: ICMP type << 8 | code (ICMPv6's, on a connection over
+ *  IPv6), TCP_SOFT_RETRANSMITTING, or 0 for none. */
 uint16_t tcp_last_error(const tcp_conn_t *conn);
 
 /** The TOS (DSCP) byte of the connection's IPv4 segments (RFC 9293
@@ -293,6 +293,14 @@ void tcp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
 #if NET_USE_IPV6
 /** A segment from IPv6; a listener accepts peers of either family. */
 void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
+
+/** From icmpv6_input(): an ICMPv6 error quoting a segment we sent —
+ *  @p quote is the quoted IPv6 header and data, @p param the message's
+ *  4-byte field (a Packet Too Big's MTU).  Packet Too Big lowers the
+ *  connection's segment size (RFC 8201); Port Unreachable aborts it; the
+ *  rest is reported (TCP_EVT_SOFT_ERROR). */
+void tcp6_icmp_error(net_t *net, uint8_t type, uint8_t code, uint32_t param,
+                     const uint8_t *quote, uint16_t quote_len);
 #endif
 
 /** Run retransmission, zero-window probe and TIME-WAIT timers, and send

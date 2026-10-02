@@ -2759,8 +2759,8 @@ int main(void) {
 #if NET_USE_IPV6
   RUN_TEST(itest_tcp_020_ipv6_checksum_and_default_mss);
   RUN_TEST(itest_tcp_023_local_address_ipv6);
-  RUN_XFAIL(itest_tcp_135_packet_too_big_ipv6);
-  RUN_XFAIL(itest_tcp_135_unreachable_ipv6);
+  RUN_TEST(itest_tcp_135_packet_too_big_ipv6);
+  RUN_TEST(itest_tcp_135_unreachable_ipv6);
 #endif
   ITEST_REPORT();
   return test_failures;

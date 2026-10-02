@@ -9,6 +9,10 @@
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_TCP
+#include "tcp.h"
+#endif
+
 net_err_t icmpv6_send(net_t *net, const uint8_t *src, const uint8_t *dst,
                       const uint8_t *dst_mac, uint16_t icmp_len,
                       uint8_t hop_limit) {
@@ -105,6 +109,23 @@ static void echo_reply(net_t *net, const ipv6_hdr_t *ip,
   icmpv6_send(net, src, ip->src, eth->src_mac, len, net->ip6.hop_limit);
 }
 
+#if NET_USE_TCP
+/* REQ-ICMPv6-011, 018..020, 022, 025: an error quoting a TCP segment goes
+ * to TCP, with the packet quoted and the message's 4-byte field (a Packet
+ * Too Big's MTU); TCP finds the connection, or none.  An error about any
+ * other protocol is dropped */
+static void error_input(net_t *net, const ipv6_hdr_t *ip) {
+  const uint8_t *msg = ip->payload;
+  const uint8_t *quote = msg + ICMPV6_HDR_SIZE;
+  if (ip->payload_len < ICMPV6_HDR_SIZE + IPV6_HDR_SIZE ||
+      (quote[IPV6_OFF_VTF] >> 4) != 6 || quote[IPV6_OFF_NH] != IPV6_NH_TCP)
+    return;
+  tcp6_icmp_error(net, msg[ICMPV6_OFF_TYPE], msg[ICMPV6_OFF_CODE],
+                  net_read32be(msg + ICMPV6_OFF_BODY), quote,
+                  (uint16_t)(ip->payload_len - ICMPV6_HDR_SIZE));
+}
+#endif
+
 /* REQ-ICMPv6-002, 011, 018, 022, 025, 034..039 */
 void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   const uint8_t *msg = ip->payload;
@@ -133,7 +154,15 @@ void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   case MLD_V2_REPORT:
     mld_input(net, ip);
     break;
-  default: /* errors and unknown informational messages are dropped */
+#if NET_USE_TCP
+  case ICMPV6_DEST_UNREACH:
+  case ICMPV6_PKT_TOO_BIG:
+  case ICMPV6_TIME_EXCEEDED:
+  case ICMPV6_PARAM_PROBLEM:
+    error_input(net, ip);
+    break;
+#endif
+  default: /* other errors and unknown informational messages are dropped */
     break;
   }
 }

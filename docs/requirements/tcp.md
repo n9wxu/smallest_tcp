@@ -322,9 +322,9 @@ variables, are not implemented.
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-TCP-135 | MUST | Act on an ICMP error message, directing it to the connection that created the error [MUST-54] — Fragmentation Needed lowers the connection's segment size to fit the next-hop MTU (RFC 1191) — **not met over IPv6:** ICMPv6 errors, Packet Too Big among them, do not reach TCP: `icmpv6_input()` drops them (REQ-ICMPv6-011, 018) | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2, RFC 1191 | itest_tcp_135_unreachable_in_syn_sent, itest_tcp_135_fragmentation_needed_lowers_mss |
-| REQ-TCP-136 | MUST NOT | Abort a connection on a soft error — Destination Unreachable codes 0, 1, 5, Time Exceeded, Parameter Problem [MUST-56]; report it to the application instead [SHLD-25] | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2 | itest_tcp_136_soft_errors_do_not_abort |
-| REQ-TCP-137 | SHOULD | Treat Destination Unreachable codes 2–4 (Protocol, Port Unreachable; Fragmentation Needed without a usable MTU) as hard errors and abort the connection [SHLD-26] | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2 | itest_tcp_137_hard_errors_abort |
+| REQ-TCP-135 | MUST | Act on an ICMP error message, directing it to the connection that created the error [MUST-54], over IPv4 and IPv6 (ICMPv6) — Fragmentation Needed (RFC 1191) and Packet Too Big (RFC 8201) lower the connection's segment size to fit the path MTU; an error about a segment that is not in flight is ignored (RFC 5927) | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2, RFC 1191, RFC 8201 | itest_tcp_135_unreachable_in_syn_sent, itest_tcp_135_fragmentation_needed_lowers_mss, itest_tcp_135_packet_too_big_ipv6, itest_tcp_135_unreachable_ipv6 |
+| REQ-TCP-136 | MUST NOT | Abort a connection on a soft error — Destination Unreachable codes 0, 1, 5, Time Exceeded, Parameter Problem; over IPv6 every ICMPv6 error but Port Unreachable and Packet Too Big [MUST-56]; report it to the application instead [SHLD-25] | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2 | itest_tcp_136_soft_errors_do_not_abort, itest_tcp_135_unreachable_ipv6 |
+| REQ-TCP-137 | SHOULD | Treat Destination Unreachable codes 2–4 (Protocol, Port Unreachable; Fragmentation Needed without a usable MTU) as hard errors and abort the connection [SHLD-26]; over IPv6, ICMPv6 Port Unreachable | RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2 | itest_tcp_137_hard_errors_abort, itest_tcp_135_unreachable_ipv6 |
 | REQ-TCP-138 | MAY | Abort a connection attempt after repeated soft errors | RFC 5461 | — (not implemented: a soft error never aborts; retransmissions reaching R2 do, REQ-TCP-162) |
 
 ### Checksum
@@ -408,5 +408,4 @@ variables, are not implemented.
 - **No round-trip time measurement:** the retransmission timeout is not computed from the path (REQ-TCP-091, 099, deviations): it starts at 1 s, doubles at each timeout up to 60 s, and stays backed off for the rest of the connection.
 - **Urgent data not supported:** a deviation from RFC 9293 MUST-30..33 and 62 (REQ-TCP-063): the URG flag and Urgent Pointer are ignored and urgent data delivered in line.  RFC 9293 §3.8.5 asks implementations to keep supporting it but applications not to use it (SHLD-13).
 - **No SACK, window scale or timestamps:** all three are MAYs. With one segment in flight and in-order delivery only, SACK has nothing to report; the 16-bit window field covers every buffer up to 65535 bytes.
-- **ICMP errors reach TCP over IPv4 only** (REQ-TCP-135): over IPv6 a Packet Too Big does not lower the segment size, so a path whose MTU is below the link's stalls a connection that sends full-sized segments.
 - **Active open** serves TCP clients (the TLS client, an HTTP client); a server-only application does not call it.

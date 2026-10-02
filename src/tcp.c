@@ -17,6 +17,7 @@
 #include "ipv4.h"
 #endif
 #if NET_USE_IPV6
+#include "icmpv6.h"
 #include "ipv6.h"
 #endif
 
@@ -951,56 +952,100 @@ void tcp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
 }
 #endif
 
-#if NET_USE_IPV4
-/* The connection a quoted segment of ours belongs to */
-static tcp_conn_t *quoted_conn(const net_t *net, const uint8_t *quote,
+/* ── ICMP errors about segments we sent ── */
+
+/* The connection the segment quoted at @p seg belongs to — it went to
+ * @p to, from our address there — if that segment is in flight
+ * (SND.UNA <= SEG.SEQ < SND.NXT, RFC 5927 §4.1); else NULL */
+static tcp_conn_t *quoted_conn(const net_t *net, const tcp_ep_t *to,
                                const uint8_t *seg) {
+  uint32_t seq = net_read32be(seg + TCP_OFF_SEQ);
   uint8_t i;
   for (i = 0; i < net->tcp_conn_count; i++) {
     tcp_conn_t *c = net->tcp_conns[i];
     if (c && c->state != TCP_CLOSED && c->state != TCP_LISTEN &&
-        !conn_is_ipv6(c) &&
         c->local_port == net_read16be(seg + TCP_OFF_SPORT) &&
         c->remote_port == net_read16be(seg + TCP_OFF_DPORT) &&
-        c->local_ip == net_read32be(quote + IPV4_OFF_SRC) &&
-        c->remote_ip == net_read32be(quote + IPV4_OFF_DST))
-      return c;
+        is_peer(net, c, to))
+      return SEQ_GE(seq, c->snd_una) && SEQ_LT(seq, c->snd_nxt) ? c : NULL;
   }
   return NULL;
 }
 
-/* REQ-TCP-135..137, 173, REQ-ICMPv4-013, 014, 016, 044: an error about a
- * segment in flight (SND.UNA <= SEG.SEQ < SND.NXT, RFC 5927 §4.1).
- * Fragmentation Needed with a next-hop MTU lowers the segment size, and the
- * retransmission timer resends in smaller pieces (RFC 1191); Protocol and
- * Port Unreachable, and Fragmentation Needed without a usable MTU, are
- * hard; the rest is reported */
+/* The path carries segments of @p mss octets at most; the retransmission
+ * timer resends what is in flight in pieces of that size (RFC 1191) */
+static void path_mss(tcp_conn_t *conn, uint32_t mss) {
+  if (mss < conn->snd_mss)
+    conn->snd_mss = (uint16_t)mss;
+}
+
+/* REQ-TCP-136, 137, 173: a hard error ends the connection, a soft one is
+ * reported */
+static void icmp_error(tcp_conn_t *conn, uint8_t type, uint8_t code, int hard) {
+  uint16_t error = (uint16_t)(type << 8 | code);
+  if (hard) {
+    conn->last_error = error;
+    abort_on_error(conn);
+  } else {
+    soft_error(conn, error);
+  }
+}
+
+#if NET_USE_IPV4
+/* REQ-TCP-135..137, 173, REQ-ICMPv4-013, 014, 016, 044: Fragmentation
+ * Needed with a next-hop MTU lowers the segment size; Protocol and Port
+ * Unreachable, and Fragmentation Needed without a usable MTU, are hard;
+ * the rest is soft */
 void tcp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
                     const uint8_t *quote, uint16_t quote_len) {
   uint16_t ihl = (uint16_t)((quote[IPV4_OFF_VER_IHL] & 0x0F) * 4);
-  const uint8_t *seg = quote + ihl;
   tcp_conn_t *conn;
-  uint32_t seq;
+  tcp_ep_t to;
 
-  if (quote_len < ihl + 8u || !(conn = quoted_conn(net, quote, seg)))
+  if (quote_len < ihl + 8u)
     return;
-  seq = net_read32be(seg + TCP_OFF_SEQ);
-  if (SEQ_LT(seq, conn->snd_una) || SEQ_GE(seq, conn->snd_nxt))
+  memset(&to, 0, sizeof(to));
+  to.ip4 = net_read32be(quote + IPV4_OFF_DST);
+  to.local_ip4 = net_read32be(quote + IPV4_OFF_SRC);
+  if (!(conn = quoted_conn(net, &to, quote + ihl)))
     return;
   if (type == ICMP_TYPE_DEST_UNREACH && code == ICMP_CODE_FRAG_NEEDED &&
       mtu >= IPV4_MIN_MTU) {
-    uint16_t mss = (uint16_t)(mtu - IPV4_HDR_SIZE - TCP_HDR_SIZE);
-    if (mss < conn->snd_mss)
-      conn->snd_mss = mss;
+    path_mss(conn, (uint32_t)mtu - IPV4_HDR_SIZE - TCP_HDR_SIZE);
     return;
   }
-  conn->last_error = (uint16_t)(type << 8 | code);
-  if (type == ICMP_TYPE_DEST_UNREACH &&
-      (code == ICMP_CODE_PROTO_UNREACH || code == ICMP_CODE_PORT_UNREACH ||
-       code == ICMP_CODE_FRAG_NEEDED))
-    abort_on_error(conn);
-  else
-    notify(conn, TCP_EVT_SOFT_ERROR);
+  icmp_error(conn, type, code,
+             type == ICMP_TYPE_DEST_UNREACH &&
+                 (code == ICMP_CODE_PROTO_UNREACH ||
+                  code == ICMP_CODE_PORT_UNREACH ||
+                  code == ICMP_CODE_FRAG_NEEDED));
+}
+#endif
+
+#if NET_USE_IPV6
+/* REQ-TCP-135..137, 173, REQ-ICMPv6-011, 015, 018..020: Packet Too Big
+ * lowers the segment size to the path MTU — never below IPv6's minimum
+ * (RFC 8201 §4); Port Unreachable is hard; the rest is soft */
+void tcp6_icmp_error(net_t *net, uint8_t type, uint8_t code, uint32_t param,
+                     const uint8_t *quote, uint16_t quote_len) {
+  tcp_conn_t *conn;
+  tcp_ep_t to;
+
+  if (quote_len < IPV6_HDR_SIZE + 8u)
+    return;
+  memset(&to, 0, sizeof(to));
+  to.ip6 = quote + IPV6_OFF_DST;
+  to.local6 = quote + IPV6_OFF_SRC;
+  if (!(conn = quoted_conn(net, &to, quote + IPV6_HDR_SIZE)))
+    return;
+  if (type == ICMPV6_PKT_TOO_BIG) {
+    if (param < IPV6_MIN_MTU)
+      param = IPV6_MIN_MTU;
+    path_mss(conn, param - IPV6_HDR_SIZE - TCP_HDR_SIZE);
+    return;
+  }
+  icmp_error(conn, type, code,
+             type == ICMPV6_DEST_UNREACH && code == ICMPV6_CODE_PORT_UNREACH);
 }
 #endif
 

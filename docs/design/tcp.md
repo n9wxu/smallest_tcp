@@ -453,25 +453,31 @@ RCV.NXT, is acknowledged, and moves the connection:
 | SYN-SENT, synchronized | A hard ICMP error; the host's address changed | CLOSED (a passive open: LISTEN) | `abort_on_error()` |
 | any | `tcp_abort()` | CLOSED; RST sent where the peer holds the connection open | `tcp_abort()` |
 
-### 3.8 ICMP errors: `tcp_icmp_error()`
+### 3.8 ICMP errors: `tcp_icmp_error()`, `tcp6_icmp_error()`
 
 `icmp_input()` hands Destination Unreachable, Time Exceeded and Parameter
 Problem quoting a TCP segment of ours to `tcp_icmp_error()` with the quote
-(the quoted IP header and at least 8 bytes of TCP).  The quoted addresses
-and ports name the connection (`quoted_conn()`: not CLOSED or LISTEN); the
-quoted sequence number must lie in SND.UNA ≤ SEQ < SND.NXT, so an error
-about a segment we never sent — or one acknowledged since — is ignored
-(RFC 5927 §4.1).  Then (RFC 1122 §4.2.3.9, RFC 9293 §3.9.2.2):
+(the quoted IP header and at least 8 bytes of TCP); `icmpv6_input()` hands
+ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded and Parameter
+Problem quoting one to `tcp6_icmp_error()`, with the message's 4-byte field
+(the MTU of a Packet Too Big).  The quoted addresses and ports name the
+connection (`quoted_conn()`: not CLOSED or LISTEN, both addresses compared
+by `is_peer()`); the quoted sequence number must lie in SND.UNA ≤ SEQ <
+SND.NXT, so an error about a segment we never sent — or one acknowledged
+since — is ignored (RFC 5927 §4.1).  Then (RFC 1122 §4.2.3.9, RFC 9293
+§3.9.2.2):
 
 | Error | Effect |
 |---|---|
-| Fragmentation Needed with a next-hop MTU ≥ 68 | `snd_mss` drops to MTU − 40 if that is smaller (RFC 1191); the retransmission timer resends the segment in flight in pieces of the new size (section 5.1) |
-| Protocol Unreachable, Port Unreachable, Fragmentation Needed without a usable MTU | Hard: `abort_on_error()` — CLOSED with `TCP_EVT_ERROR`, or LISTEN again for a passive open in SYN-RECEIVED (REQ-TCP-135, 137) |
-| Any other: Network/Host Unreachable, Time Exceeded, Parameter Problem… | Soft: `TCP_EVT_SOFT_ERROR`, the connection goes on (REQ-TCP-136, 173) |
+| IPv4: Fragmentation Needed with a next-hop MTU ≥ 68 | `snd_mss` drops to MTU − 40 if that is smaller (`path_mss()`, RFC 1191); the retransmission timer resends the segment in flight in pieces of the new size (section 5.1) |
+| IPv6: Packet Too Big | `snd_mss` drops to MTU − 60 if that is smaller, an MTU below 1280 counting as 1280 (RFC 8201 §4); resent as above |
+| IPv4: Protocol Unreachable, Port Unreachable, Fragmentation Needed without a usable MTU.  IPv6: Port Unreachable | Hard: `abort_on_error()` — CLOSED with `TCP_EVT_ERROR`, or LISTEN again for a passive open in SYN-RECEIVED (REQ-TCP-135, 137) |
+| Any other: Network/Host Unreachable, no route, Time Exceeded, Parameter Problem… | Soft: `TCP_EVT_SOFT_ERROR`, the connection goes on (REQ-TCP-136, 173) |
 
-`tcp_last_error()` keeps the error as type << 8 | code until the next one
-or a new open.  Destination Unreachable is a hint, never proof: nothing but
-the hard codes ends a connection (REQ-ICMPv4-044).
+`tcp_last_error()` keeps the error as type << 8 | code — the ICMPv6 type on
+a connection over IPv6 — until the next one or a new open.  Destination
+Unreachable is a hint, never proof: nothing but the hard codes ends a
+connection (REQ-ICMPv4-044).
 
 ---
 
@@ -856,9 +862,9 @@ carries one event.
 | | `tcp_abort()` | Always, whatever the state |
 | `TCP_EVT_ERROR` | `synchronized_input()` | SYN in the window; RST sent |
 | | `retransmission_timeout()` | Retransmissions exhausted; RST sent |
-| | `tcp_icmp_error()` | A hard ICMP error (section 3.8) |
+| | `tcp_icmp_error()`, `tcp6_icmp_error()` | A hard ICMP error (section 3.8) |
 | | `flush()`, `conn_tick()` | The host's address is no longer the connection's |
-| `TCP_EVT_SOFT_ERROR` | `tcp_icmp_error()` | A soft ICMP error (section 3.8) |
+| `TCP_EVT_SOFT_ERROR` | `tcp_icmp_error()`, `tcp6_icmp_error()` | A soft ICMP error (section 3.8) |
 | | `retransmission_timeout()` | R1: the third retransmission |
 
 `TCP_EVT_CLOSED` has two meanings; `tcp_status()` tells them apart.  Not every
@@ -935,7 +941,6 @@ single-stack build reduces to its own family's.
 | Keep-alive | REQ-TCP-132 (MAY) | None (so off by default, REQ-TCP-133) |
 | Challenge ACKs and their throttling (RFC 5961) | REQ-TCP-052, 154, 155 (SHOULD) | RST and SYN accepted anywhere in the window (section 3.6) |
 | Checksum offload | REQ-TCP-141 | Always software |
-| ICMPv6 errors: Packet Too Big, Destination Unreachable | REQ-TCP-135 | `icmpv6_input()` drops them; only ICMPv4 errors reach `tcp_icmp_error()` (section 3.8).  Over IPv6 the segment size does not follow the path MTU |
 | IP options and source routes | REQ-TCP-182 | Options on a received segment are ignored, a source-routed one is dropped, none are sent |
 | Data or FIN on a SYN | — | Not taken; the peer resends |
 | Data written before the connection is open | REQ-TCP-014 | `tcp_write()` refuses it; §3.10.2 would queue it |
