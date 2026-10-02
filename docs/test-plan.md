@@ -200,13 +200,13 @@ RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
 | Suite | Verifies |
 |---|---|
 | `itest_ipv4` | IPv4 destination and source checks, every broadcast form, options and source routes, reassembly and its timeout, MMS_R/MMS_S and the MTU, TTL/TOS, addresses never sent, the all-hosts group; ICMP echo (truncated), errors, Redirect and Address Mask ignored |
-| `itest_link` | Ethernet (looped-back frames), ARP (next hop, rate limit, gateway MAC expiry), UDP sending limits, the checksum API |
+| `itest_link` | Ethernet (filter, dispatch, header, buffers, looped-back frames), ARP (replies, next hop, rate limit, gateway MAC expiry), UDP sending limits, checksums (the API and on the wire) |
 | `itest_udp` | The destination address passed up, the source ours, ICMP errors to the application |
 | `itest_igmp` | Reports and leaves, queries answered, timers, suppression, IGMPv1 routers, all-hosts never reported |
 | `itest_tcp` | CLOSE/ABORT in every state, a listener outliving a failed handshake, ISNs; RST into a zero window, R1/R2, LISTEN on a live connection, local address (IPv4 and IPv6), broadcast opens, TOS, PSH, RTO after a SYN timeout, ICMP errors, the MTU |
 | `itest_http` | Request parsing and framing, Host, Date, conditional requests, Expect, 4xx/5xx without bodies; with `SMALLEST_TCP_TLS`, HTTPS hosts (421) with the stack's own TLS client as the peer |
-| `itest_dhcpv4` | Client and server: options in file/sname and split options, T1/T2, the address probe and DECLINE, the server's one client, option order |
-| `itest_tftp` | The adaptive retransmission timeout, netascii |
+| `itest_dhcpv4` | Every observable DHCPv4 row, client and server: the state machine and its timers, options (in `file`/`sname`, split, the handler table), T1/T2, the address probe and DECLINE, the server's one client, reply routing and option order |
+| `itest_tftp` | Every implemented TFTP row: the request, blocks and ACKs, transfer IDs, blksize negotiation, errors, the adaptive retransmission timeout, netascii |
 | `itest_mdns` | Probing, conflicts and tiebreaking, rate limiting, known answers, names and TXT strings, legacy unicast, goodbyes, DNS-SD |
 | `itest_mdns6` | mDNS over IPv6 (dual stack) |
 
@@ -243,8 +243,6 @@ DHCPv4 client without IPv4, and a build with neither IPv4 nor IPv6.
 | `test_udp` | tests/unit/test_udp.c | UDP (REQ-UDP-*) |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
 | `test_tcp` | tests/unit/test_tcp.c | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
-| `test_tftp` | tests/unit/test_tftp.c | TFTP client (REQ-TFTP-*), incl. OACKs with options never asked for, truncated DATA and ERROR, port 0, the timer restarted only by progress |
-| `test_dhcpv4` | tests/unit/test_dhcpv4.c | DHCPv4 client + server (REQ-DHCPv4-*), incl. buffer checks at init, the 1–10 s start delay, renewals unicast to the server's MAC, the lease timed from the REQUEST, T1/T2 fuzz, NAKs only from the server asked, the server's §4.1 reply routing |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_mdns` | tests/unit/test_mdns.c | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC, the meta-query's goodbye |

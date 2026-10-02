@@ -20,6 +20,8 @@ that verify it.
   tests that verify each row, and every test cites its rows.
 - The documents describe the stack as it is, in the present tense; this
   file keeps the history.
+- TFTP and DHCPv4 are tested black box (`itest_tftp`, `itest_dhcpv4`);
+  their unit suites, which read private fields, are removed.
 - Test counts are no longer reported: requirements coverage
   (`scripts/trace.py`) and code coverage (the CI job `coverage`, now built
   with TLS) are.
@@ -31,6 +33,9 @@ that verify it.
 - `net_endian.h`: `NET_BIG_ENDIAN` or `NET_LITTLE_ENDIAN` defined by the
   application is honoured, as the error message for an unknown byte order
   says.
+- TFTP: a DATA packet longer than the block size in force is dropped, not
+  delivered with a length above `blksize`; an OACK with an unterminated
+  option string is dropped whole.
 
 ## [0.1.5] - 2026-10-02
 
