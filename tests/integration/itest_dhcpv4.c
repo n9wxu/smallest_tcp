@@ -472,8 +472,8 @@ TEST(itest_dhcpv4_039_release_while_probing) {
 }
 
 /* REQ-DHCPv4-020: an OFFER without a Server Identifier names no server to
- * select (RFC 2131 Table 3): dropped, where it was answered with a REQUEST
- * naming 0.0.0.0 */
+ * select (RFC 2131 Table 3): dropped — no REQUEST naming 0.0.0.0 answers
+ * it — and the next OFFER that names its server is taken */
 TEST(itest_dhcpv4_020_offer_without_server_id_dropped) {
   dmsg_t m;
   dsent_t d;

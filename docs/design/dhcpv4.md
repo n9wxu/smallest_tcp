@@ -4,8 +4,7 @@
 **Files:** `include/dhcpv4_client.h`, `src/dhcpv4_client.c`,
            `include/dhcpv4_server.h`, `src/dhcpv4_server.c`,
            `src/dhcpv4_wire.h` (private, shared)  
-**Requirements:** [dhcpv4.md](../requirements/dhcpv4.md)  
-**Last updated:** 2026-10-01
+**Requirements:** [dhcpv4.md](../requirements/dhcpv4.md)
 
 ---
 
@@ -29,9 +28,9 @@ also needs a `start` call and a `tick` from the main loop.  See
 The two share the message format through `src/dhcpv4_wire.h` (§2).  It is
 private to the library — not in `include/` — and header-only: constants
 and `static inline` functions, so each library compiles in only what it
-uses and neither depends on the other.  Before it existed the client and
-the server each defined the same 28 layout and option constants, and the
-option list was walked by five hand-written loops.
+uses and neither depends on the other, while the layout and option
+constants are defined once and every option list is walked by the same
+code.
 
 ---
 
@@ -59,8 +58,8 @@ field, then `file`, then `sname`, each up to its own End or its end (an
 option never crosses a field).  That is RFC 2131 §4.1's order of
 interpretation and RFC 3396 §5's aggregate option buffer.  Without option
 52 the two fields are a server name and a boot file name, never read as
-options.  They used to be ignored always, so a lease time moved there was
-lost and the ACK dropped as granting no lease.
+options.  A reader that ignored them always would lose a lease time moved
+there, and drop the ACK as granting no lease.
 
 **Split options** (RFC 3396 §7).  An option may appear more than once:
 its parts, in the aggregate buffer's order, are one value — a server
@@ -70,16 +69,15 @@ copy), several are copied into the caller's buffer, of which the caller
 says the size; the returned length is the whole value's, so a caller sees
 when its buffer held only the start.  The 4-byte helpers use a 4-byte
 buffer: a lease time split 2 + 2 is read whole, a router list split
-anywhere gives its first router.  Each instance used to be taken as a
-whole option: the first part of a split lease time was too short and
-dropped, the second taken alone.
+anywhere gives its first router.  Taking each instance as a whole option
+would drop the first part of a split lease time as too short and take
+the second alone.
 
 ### 2.2 Building in place
 
 Messages are built directly in the UDP payload area of `net->tx.buf`
-(`UDP_PAYLOAD_OFFSET`) and sent with `udp_send_inplace_from()` — no copy.
-(They used to be built in 300-plus-byte stack buffers and copied by
-`udp_send()`.)
+(`UDP_PAYLOAD_OFFSET`) and sent with `udp_send_inplace_from()` — no copy,
+and no 300-byte buffer on the stack.
 
 ```c
 uint8_t *msg = dhcp_begin(net, DHCP_OP_REQUEST, xid, net->mac); /* NULL if TX too small */
@@ -104,8 +102,8 @@ client's REQUEST in REQUESTING: 240 + 3 (type) + 6 (server ID) + 6
 
 **Source address.**  The IPv4 source is passed explicitly: the client
 sends from 0.0.0.0 until a lease has been ACKed (`client_address()`), the
-server from its configured address.  The old code temporarily overwrote
-`net->ipv4_addr` around each send.
+server from its configured address.  `net->ipv4_addr` is never changed
+to send a message.
 
 ---
 
@@ -163,7 +161,7 @@ in REQUESTING.  Neither the announcement after the probe (§4.4.1:
 done.  A renewal's ACK is not probed: the address is already in use by
 us.  `dhcpv4_client_release()` in CHECKING stops the probe and sends no
 RELEASE — the address was never used, and the client has none to send
-from.  The client used to use the address of every ACK at once.
+from.
 
 **The start-up wait.**  `dhcpv4_client_start()` does not send the first
 DISCOVER at once: it waits in INIT a random time of one to ten seconds
@@ -171,9 +169,8 @@ DISCOVER at once: it waits in INIT a random time of one to ten seconds
 says the client SHOULD, "to desynchronize the use of DHCP at startup" —
 devices powered up together would otherwise all ask at once.
 `DHCPV4_START_DELAY_MAX_MS` (`dhcpv4_client.h`, default 10000) sets the
-upper end; 0 sends the DISCOVER at once, as the client used to.  Discovery
-restarted later — after a NAK, an unanswered REQUEST or a lost lease —
-does not wait.
+upper end; 0 sends the DISCOVER at once.  Discovery restarted later —
+after a NAK, an unanswered REQUEST or a lost lease — does not wait.
 
 **Retransmission** in SELECTING and REQUESTING (`begin_exchange()`,
 `transmit()`): the first wait is 4 s, then 8, 16, 32 and 64 s, then every
@@ -281,9 +278,14 @@ uint8_t dhcpv4_client_state(const dhcpv4_client_t *c);
 ```
 
 The event callback type is per role — `dhcpv4_client_event_fn_t` here,
-`dhcpv4_server_event_fn_t` in the server — where one shared
-`dhcpv4_event_fn_t` used to need an include-guard trick to be defined by
-whichever header came first.
+`dhcpv4_server_event_fn_t` in the server: one shared `dhcpv4_event_fn_t`
+would have to be defined by whichever header came first.
+
+`dhcpv4_client_release()` gives up a lease the client holds (BOUND,
+RENEWING, REBINDING: a RELEASE to the server) or is still checking
+(CHECKING: no RELEASE), clears the address, mask and gateway and leaves
+the client in INIT until `dhcpv4_client_start()`.  Without a lease —
+INIT, SELECTING, REQUESTING — it does nothing: discovery goes on.
 
 ### 3.4 Messages Sent
 
@@ -293,13 +295,13 @@ whichever header came first.
 | REQUEST (REQUESTING) | `send_request()` | broadcast | 0 | 53, 54, 50, 55 | 0.0.0.0 → 255.255.255.255 | broadcast |
 | REQUEST (RENEWING) | `send_request()` | broadcast | our address | 53, 55 | our address → server | the server's (`server_mac`) |
 | REQUEST (REBINDING) | `send_request()` | broadcast | our address | 53, 55 | our address → 255.255.255.255 | broadcast |
-| RELEASE | `dhcpv4_client_release()` | — | our address | 53, 54 | our address → server | the server's (`server_mac`) |
+| RELEASE | `send_release()` | — | our address | 53, 54 | our address → server | the server's (`server_mac`) |
 | DECLINE | `decline()` | — | 0 | 53, 50, 54 | 0.0.0.0 → 255.255.255.255 | broadcast |
 
 Only a REQUEST that selects an offer names the server (54) and the
 address (50); one that extends a lease MUST NOT carry either (RFC 2131
 §4.3.2, Table 5) — the address is in `ciaddr`, and any server may answer a
-rebinding client.  The Server Identifier used to go in all three.
+rebinding client.
 
 The broadcast flag asks the server to broadcast its replies: before a
 lease the stack accepts only broadcast (and 0.0.0.0) IPv4 destinations,
@@ -309,10 +311,10 @@ A message to the server goes to `server_mac`, the source MAC of its last
 ACK (`dhcpv4_client_input()` takes the frame's source MAC for this).  That
 is the server's own MAC when it is on the link, or the relay agent's when
 the ACK came through one — the router a unicast to the server takes
-anyway.  The client used to send these to the broadcast MAC, since it
-never learned the server's: every host on the link received them, and a
-router does not forward a frame sent to the broadcast MAC, so behind a
-relay only rebinding could reach the server.
+anyway.  Sent to the broadcast MAC instead, these messages would reach
+every host on the link, and a router does not forward a frame sent to
+the broadcast MAC, so behind a relay only rebinding would reach the
+server.
 
 ### 3.5 Receiving
 
@@ -324,15 +326,14 @@ address is not checked.  By message type (`dhcp_message_type()`):
   taken (`take_offer()`) — `yiaddr` becomes `offered_ip`, option 54
   `server_ip` — and the client enters REQUESTING.  An OFFER without a
   Server Identifier, which RFC 2131 Table 3 requires, is dropped: the
-  REQUEST that selects an offer MUST name its server (§3.1 step 3).  Such
-  an OFFER used to be taken, and its REQUEST named 0.0.0.0 — or the
-  server of an earlier exchange.
+  REQUEST that selects an offer MUST name its server (§3.1 step 3), and
+  for such an OFFER it could only name 0.0.0.0 — or the server of an
+  earlier exchange.
 - **ACK**, in REQUESTING, RENEWING or REBINDING, if it grants a lease
   (`grants_a_lease()`): RFC 2131 Table 3 requires the lease time (51) in
   an ACK to a REQUEST, and one without it — or with a lease of 0 s — is
-  dropped, and the client keeps retransmitting.  Such an ACK used to be
-  taken, and a lease time of 0 counted as infinite, so the client stayed
-  bound for good.  Then `take_lease()` applies
+  dropped, and the client keeps retransmitting: taken, it would bind the
+  client with no time at which to renew.  Then `take_lease()` applies
   the lease and restarts the lease clock, and the frame's source MAC
   becomes `server_mac`.  After REQUESTING the address is checked first
   (CHECKING, §3.1); after RENEWING or REBINDING the client enters BOUND
@@ -343,12 +344,15 @@ address is not checked.  By message type (`dhcp_message_type()`):
   rebinding client asked every server, so any may refuse it.  A NAK
   without a Server Identifier — which RFC 2131 Table 3 requires — is
   dropped.  Then `DHCPV4_EVT_NAK`, address cleared, discovery restarts.
-  Any NAK with our `xid` used to be taken, so another server's refusal
-  of a request it was not asked cost the client its lease.
+  A NAK taken from any server would let one refuse a request it was not
+  asked, and cost the client its lease.
+- Any reply in a state that awaits none — BOUND, CHECKING, INIT — and
+  any other message type is ignored.
 
 **`take_lease()`** reads the ACK's options whole (`dhcp_option_u32()`,
 §2.1: from `file` and `sname` too, split ones joined): `yiaddr` →
-`net->ipv4_addr`; 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (the
+`offered_ip`, which becomes `net->ipv4_addr` when the probe has passed
+(a renewal's at once); 1 → `net->subnet_mask`; 3 → `net->gateway_ipv4` (the
 first router; a different gateway also clears `gateway_mac_valid`: its
 MAC is resolved anew,
 [arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open));
@@ -364,10 +368,9 @@ the client's lease will expire").  `set_renewal_times()` takes the ACK's
 T1 and T2, or the default for one it lacks, and if the two are not in
 that order replaces both with the defaults, which always are.  Both, not
 just the one out of place: a server's T2 below half the lease and a T1
-past it would otherwise give a default T1 still later than T2.  The
-times used to be taken as sent: a T1 after T2 skipped renewing and went
-straight to rebinding, and a T2 past the end of the lease never
-rebound.
+past it would otherwise give a default T1 still later than T2.  Taken
+as sent, a T1 after T2 would skip renewing and go straight to
+rebinding, and a T2 past the end of the lease would never rebind.
 
 **The lease starts with the REQUEST** (RFC 2131 §4.4.1, §4.4.5: "the time
 at which the original request was sent").  The lease clock runs from the
@@ -377,8 +380,8 @@ renewing or rebinding — and `take_lease()` sets the clock to the time
 since then.  A REQUEST's retransmissions are the same request, so an ACK
 to one of them is timed from the first: a renewal answered after a lost
 REQUEST comes back sooner, never later than the server's lease allows.
-The lease used to be timed from the ACK, and so ended a round trip after
-the server's did — or a whole retransmission interval after it.
+A lease timed from the ACK would end a round trip after the server's
+does — or a whole retransmission interval after it.
 
 ### 3.6 Option Handlers and the Parameter Request List
 
@@ -402,8 +405,7 @@ typedef struct { const dhcpv4_opt_entry_t *entries; uint8_t count; } dhcpv4_opt_
   say — is not delivered at all: given in pieces, each would be taken for
   the whole (RFC 3396 §7 forbids it).  The receive buffer is read-only
   to parsers ([coding-rules.md §3](coding-rules.md#3-parsing-received-data)),
-  so the parts are not joined in place.  Handlers used to be called once
-  per instance, each with one part.
+  so the parts are not joined in place.
 - An option the server leaves out never reaches its handler, so the
   application initialises its variables to a sensible default before
   starting DHCP.
@@ -465,11 +467,11 @@ address they use is gone.  Release fires no event.
 ### 3.8 Transaction ID
 
 A new `xid` comes from `net_random()` each time discovery starts
-(`start_selecting()`); REQUESTING, the renewals and RELEASE reuse it.  The
-old client used its own LCG with a fixed seed, so every device picked the
-same first `xid`.  `net_random()` is seeded from the MAC by `net_init()`;
-an application with a real entropy source mixes it in with
-`net_random_seed()`.
+(`start_selecting()`); REQUESTING, the renewals, DECLINE and RELEASE
+reuse it.  `net_random()` is seeded from the MAC by `net_init()`, so
+devices do not pick the same first `xid` as a generator with a fixed
+seed would give them; an application with a real entropy source mixes
+it in with `net_random_seed()`.
 
 ---
 
@@ -492,9 +494,8 @@ selects another server (§3.1 step 4: its REQUEST declines our offer), or
 when the application calls `dhcpv4_server_init()` again — for a new peer
 on the link, say.  A lease that runs out is not noticed: there is no
 timer, and the one peer normally renews.  A Client Identifier (option
-61) is not used to identify the client (out of scope): one that sends
-it is still known by its chaddr.  The server used to keep no record and
-offer the address to every client that asked.
+61) is not used to identify the client (REQ-DHCPv4-060, a deviation
+from §4.2): one that sends it is still known by its chaddr.
 
 ### 4.2 Configuration and State
 
@@ -557,7 +558,8 @@ a REQUEST for the address it answers gets a NAK.  An INFORM is still
 answered.  The application decides what to do — find the host that has
 the address, change `offered_ip` — and calls `dhcpv4_server_init()`
 again to offer it once more; the server has no timer to retry on its
-own.  It used to ignore DECLINEs and offer the address again at once.
+own.  A DECLINE for another address, or one that names another server,
+is ignored.
 
 **Which REQUESTs it answers** (`ours_to_answer()`, RFC 2131 §4.3.2).  A
 REQUEST with a Server Identifier selects an offer: the server answers it
@@ -571,9 +573,7 @@ DHCP server has no record of this client, then it MUST remain silent".
 One exception: a renewing or rebinding client whose `ciaddr` is the
 server's address while it has no client — the server was initialised
 again, by a reboot of the device, while the peer kept its lease — is
-taken back, and its lease extended.  The server used to ignore the
-Server Identifier and answer every REQUEST, NAKing any for another
-address.
+taken back, and its lease extended.
 
 **Where a reply goes** (`reply_destination()`, RFC 2131 §4.1), in order:
 
@@ -583,10 +583,7 @@ address.
 | — and the reply is a NAK | 255.255.255.255 at the broadcast MAC |
 | has `ciaddr` set | `ciaddr` at the frame's source MAC |
 | has the broadcast flag | 255.255.255.255 at the broadcast MAC |
-| none of these | the address it is given (`yiaddr`) at `chaddr` |
-
-The server used to broadcast every reply but those to a client with an
-address and no broadcast flag, and to leave out the relay agent.
+| none of these | the address it is given (`yiaddr`) at `chaddr`; with no `yiaddr` (the ACK to an INFORM without `ciaddr`), 255.255.255.255 at the broadcast MAC |
 
 Every reply (`send_reply()`) echoes `xid` and `chaddr`, copies the
 request's `flags` and `giaddr` — a NAK through a relay also sets the
@@ -610,8 +607,7 @@ lease only with an address).  A reply is sent from `server_ip` via
 `udp_send_inplace_from()`.  That is the host's own address:
 `dhcpv4_server_init()` refuses a `server_ip` other than `net->ipv4_addr`
 (`NET_ERR_INVALID_PARAM`), as UDP sends only from the host's address
-(RFC 1122 §4.1.3.6, REQ-UDP-041).  Replies used to go out from
-`server_ip` whatever `net->ipv4_addr` was.
+(RFC 1122 §4.1.3.6, REQ-UDP-041).
 
 **The order of the options** (`put_parameters()`).  RFC 2132 §9.8: the
 server "MUST try to insert the requested options in the order requested
@@ -624,8 +620,7 @@ however often it is asked for, and leaves out one it has no value for
 One exception to the client's order: RFC 2132 §3.3 — "If both the subnet
 mask and the router option are specified in a DHCP reply, the subnet
 mask option MUST be first" — so a router asked for before the mask
-brings the mask with it.  The options used to go in one fixed order,
-whatever was asked.
+brings the mask with it.
 
 ---
 
@@ -645,9 +640,9 @@ whatever was asked.
 
 `dhcpv4_client_init()` and `dhcpv4_server_init()` take the `net_t` and
 return `NET_ERR_BUF_TOO_SMALL` for smaller buffers (REQ-DHCPv4-050, 051,
-078).  They used to return nothing and check nothing: a TX buffer too
-small left every message unsent, silently, and an RX buffer under 590
-bytes dropped the longer replies a server may send.
+078).  Unchecked, a TX buffer too small would leave every message
+unsent, silently, and an RX buffer under 590 bytes would drop the longer
+replies a server may send.
 
 ---
 
@@ -664,10 +659,10 @@ has two clocks, each used in its own states:
 
 The lease clock counts seconds because leases are long.  32-bit
 milliseconds wrap after 49.7 days (4,294,967 s), and a lease time may be
-up to 136 years; when the client armed its T1 as `t1 × 1000` ms, a longer
-T1 wrapped and the renewal came early — an infinite lease's after 49.7
-days.  In seconds every lease time, T1, T2 and wait fits in 32 bits, and
-the halving is a shift: no multiplication and no division.
+up to 136 years: a T1 armed as `t1 × 1000` ms would wrap, and the
+renewal come early.  In seconds every lease time, T1, T2 and wait fits
+in 32 bits, and the halving is a shift: no multiplication and no
+division.
 
 ---
 
@@ -675,10 +670,15 @@ the halving is a shift: no multiplication and no division.
 
 | Item | Notes |
 |---|---|
-| First OFFER taken; offers not collected or compared | Simplicity |
-| One ARP probe and a 1 s wait, not RFC 5227's timing; no announcement or defence of the address | §3.1 |
-| `secs` field always 0 | — |
-| Server: one address for one client, known by chaddr; no lease expiry; a Client Identifier (61) not used | By design (§4.1) |
+| First OFFER taken; offers not collected or compared | Simplicity (REQ-DHCPv4-021) |
+| One ARP probe and a 1 s wait, not RFC 5227's timing; no announcement (REQ-DHCPv4-102) or defence of the address | §3.1 |
+| No Maximum DHCP Message Size option (REQ-DHCPv4-103) | The client is checked to have room for the 576-byte datagram a server keeps to without it (§5) |
+| `secs` field always 0 | RFC 2131 Table 5 allows 0 |
+| No Client Identifier sent; no INIT-REBOOT (a remembered address is not asked for again); no DHCPINFORM | Optional in RFC 2131 |
+| `dhcpv4_client_release()` during discovery does nothing | There is no lease to release, and no call that stops discovery (§3.3) |
+| An ACK that renews is taken with whatever `yiaddr` it has | A server ACKs a renewal for the address in `ciaddr`; another one is used without a probe |
+| Server: one address for one client, known by chaddr; no lease expiry; a Client Identifier (61) not used (REQ-DHCPv4-060) | By design (§4.1) |
+| Server: a NAK carries no Message option (56) | RFC 2131 Table 3 recommends one |
 
 ---
 
@@ -693,8 +693,7 @@ place from `net->rx.buf`.
 
 ## 9. Tests
 
-| Suite | Tests | Covers |
-|---|---|---|
-| `tests/integration/itest_dhcpv4.c` | 30 | Black box, through the API and the wire with the test's own DHCP codec.  Client: the ARP probe of an ACK's address, DECLINE on a conflict (a reply from it, another host's probe, not our own echoed), release while probing, an OFFER without a Server Identifier, options in `file` and `sname`, split options joined (also across fields; one too long for a handler not delivered), T1/T2 out of order, the REQUEST's `secs` and destination, reserved flag bits, unicast to the Server Identifier, Table 5 options of DISCOVER, REQUEST and RELEASE, randomized backoff.  Server: a declined address, a REQUEST for another server, an unknown INIT-REBOOT client, the address kept for its client, options in the requested order and each once, Table 3 options, mask before router, vendor options ignored, the Server Identifier, the ACK to an INFORM |
-| `tests/unit/test_dhcpv4.c` | 38 | Client: init and its buffer checks, the 1-10 s start-up wait, DISCOVER format and destination, OFFER → REQUEST, ACK → BOUND, default T1/T2 and their fuzz, NAK and its source, an ACK without a lease time, option handlers, NULL table, DISCOVER retransmission, back-off and its randomization, REQUESTING giving up (with `DHCPV4_EVT_TIMEOUT`), RENEWING and REBINDING through a whole lease, the Server Identifier only when selecting, renewals and RELEASE to the server's MAC, the lease timed from the REQUEST, a renewal restarting the lease, infinite and 30,000,000 s leases, the gateway's MAC invalidated and resolved by ARP.  Server: init and its buffer checks, OFFER, ACK, NAK, RELEASE, bad `op`, bad magic, the NAK's bare fields and options, the ACK to an INFORM, `ciaddr` in a renewal's ACK, replies routed as RFC 2131 §4.1 says with `flags` and `giaddr` copied |
-| `tests/blackbox/test_dhcpv4_conform.py` | 8 | `dhcp_echo_demo` against a Scapy server: DISCOVER, OFFER → REQUEST, ACK binds, NAK → DISCOVER, wrong-xid OFFER ignored, `ciaddr` 0, retransmission, Server ID in REQUEST |
+| Suite | Covers |
+|---|---|
+| `tests/integration/itest_dhcpv4.c` | Black box, through `dhcpv4_client_*`, `dhcpv4_server_*` and the wire, with the test's own DHCP codec; every row of [dhcpv4.md](../requirements/dhcpv4.md) that a test can observe.  Client: the start-up wait, DISCOVER and REQUEST field by field, the transaction ID, replies that are invalid or not awaited, the first OFFER selected, an OFFER without a Server Identifier, the ACK applied, an ACK without a lease time, the ARP probe and DECLINE (a reply from the address, another host's probe, not our own echoed), release while probing and with a lease, options by type and length, in `file` and `sname`, split (also across fields; one too long for a handler not delivered), an option cut off by the end of the message, T1/T2 from the ACK, the defaults, out of order, their fuzz, the whole renewing and rebinding schedule to expiry, the lease timed from its REQUEST, NAKs by server and state, randomized backoff, REQUESTING's give-up, leases past 2^32 ms and infinite, the gateway's MAC, the buffer checks and the 576-byte datagram, option handlers, the Parameter Request List and its 35 codes, Table 5 options and flags, unicast to the Server Identifier.  Server: OFFER, ACK and NAK field by field, unconfigured parameters, an infinite lease, messages ignored, the address kept for its client (by chaddr, whatever Client Identifier), RELEASE and DECLINE and who may send them, a REQUEST for another server, INIT-REBOOT and renewal after a new `dhcpv4_server_init()`, options in the requested order and each once, Table 3 options, mask before router, vendor options ignored, a request's options in `file`/`sname` and split, the ACK to an INFORM, where replies go, the init checks |
+| `tests/blackbox/test_dhcpv4_conform.py` | `dhcp_echo_demo` against a Scapy server: DISCOVER, OFFER → REQUEST, ACK binds, NAK → DISCOVER, wrong-xid OFFER ignored, `ciaddr` 0, retransmission, Server ID in REQUEST |

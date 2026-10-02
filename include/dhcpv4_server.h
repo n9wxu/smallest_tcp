@@ -96,8 +96,10 @@ net_err_t dhcpv4_server_init(dhcpv4_server_t *s, const net_t *net,
  *
  * @param net      Network context.
  * @param s        Server state.
- * @param src_ip   Client's source IPv4 (host byte order; may be 0 pre-lease).
- * @param src_mac  Client's source MAC (6 bytes); used for broadcast/unicast.
+ * @param src_ip   Source address of the datagram; not used.
+ * @param src_mac  Source MAC of its frame (6 bytes): where a reply to the
+ *                 client's own address (ciaddr) or through a relay agent
+ *                 (giaddr) goes.
  * @param data     UDP payload bytes.
  * @param len      UDP payload length.
  */

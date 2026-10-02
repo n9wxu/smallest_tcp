@@ -64,8 +64,10 @@ extern "C" {
 /* Client event codes */
 #define DHCPV4_EVT_BOUND 1   /**< IP address configured (BOUND entered) */
 #define DHCPV4_EVT_RENEWED 2 /**< Lease extended by a renew or rebind */
-#define DHCPV4_EVT_EXPIRED 3 /**< Lease expired; IP cleared, INIT restarted */
-#define DHCPV4_EVT_NAK 4     /**< Server rejected request; INIT restarted */
+/** Lease expired: the address is cleared after the callback, and discovery
+ *  restarts */
+#define DHCPV4_EVT_EXPIRED 3
+#define DHCPV4_EVT_NAK 4     /**< The server asked refused; as EXPIRED */
 #define DHCPV4_EVT_TIMEOUT 5 /**< No answer to the REQUEST for an offer;
                                   discovery restarts (RFC 2131 §3.1) */
 /** The address of the ACK is in use (ARP): DHCPDECLINE sent, discovery
@@ -111,7 +113,7 @@ typedef void (*dhcpv4_client_event_fn_t)(uint8_t event, void *ctx);
 /* Client state (application owns) */
 
 /**
- * @brief DHCPv4 client state.  Zero-initialise before calling _init().
+ * @brief DHCPv4 client state, zeroed by dhcpv4_client_init().
  */
 typedef struct {
   uint8_t state;           /**< DHCPV4_CLI_* */
@@ -164,13 +166,18 @@ net_err_t dhcpv4_client_init(dhcpv4_client_t *c, const net_t *net,
 void dhcpv4_client_start(net_t *net, dhcpv4_client_t *c);
 
 /**
- * Drive all DHCP timers.  Call with elapsed milliseconds from the main loop.
+ * Drive all DHCP timers.  Call with elapsed milliseconds from the main loop:
+ * the start-up wait, retransmissions, the ARP probe of a new address, and
+ * the lease (renewing at T1, rebinding at T2, expiry).
  */
 void dhcpv4_client_tick(net_t *net, dhcpv4_client_t *c, uint32_t ms);
 
 /**
  * Feed an incoming UDP payload (port 68) to the client.
- * Call from the application's port-68 UDP handler.
+ * Call from the application's port-68 UDP handler.  A message that is not
+ * a BOOTREPLY with the magic cookie and the transaction's xid, or of a
+ * type the state does not await, is ignored.
+ * @param src_ip   Source address of its datagram; not used.
  * @param src_mac  Source MAC of its frame (6 bytes): an ACK's is where
  *                 renewals and the RELEASE are unicast.
  */
@@ -179,7 +186,11 @@ void dhcpv4_client_input(net_t *net, dhcpv4_client_t *c, uint32_t src_ip,
                          uint16_t len);
 
 /**
- * Voluntarily release the lease.  Sends DHCPRELEASE and clears net->ipv4_addr.
+ * Voluntarily release the lease: sends DHCPRELEASE to the server, clears
+ * net->ipv4_addr, subnet_mask and gateway_ipv4, and leaves the client in
+ * INIT until dhcpv4_client_start().  A lease whose address is still being
+ * probed (CHECKING) is given up without a RELEASE.  Without a lease (INIT,
+ * SELECTING, REQUESTING) it does nothing: discovery goes on.  No event.
  */
 void dhcpv4_client_release(net_t *net, dhcpv4_client_t *c);
 
