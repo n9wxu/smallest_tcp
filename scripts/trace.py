@@ -20,7 +20,10 @@ the MUST rows of one document (e.g. tcp) that are left.
 - an integration test (a TEST() in tests/integration/) cites none: every
   integration test must trace to the requirements it verifies;
 - a row's Test ID column names a test that does not exist, or one that
-  does not cite the row (its file, for a blackbox suite).
+  does not cite the row (its file, for a unit or blackbox suite), or holds
+  a placeholder (TEST-XXX-NNN);
+- a MUST row is cited by no test and its Test ID column does not say "not
+  observable" or "not implemented".
 """
 
 import glob
@@ -138,8 +141,16 @@ def main(argv):
             cites.setdefault(name, set()).update(
                 ids if suite == "integration" else file_ids[path])
 
-    # The Test ID column names tests that exist and cite the row
+    # The Test ID column names tests that exist and cite the row; a MUST
+    # row names a test or says why none can verify it
     for i, (lvl, doc, test_id) in sorted(reqs.items()):
+        if re.search(r"\bTEST-[A-Za-z0-9]+-\d", test_id):
+            problems.append("docs/requirements/%s.md: %s has a placeholder "
+                            "for a test (%s)" % (doc, i, test_id))
+        if (lvl in MUST and not NAMED.search(test_id)
+                and not unverifiable(test_id) and not by_req.get(i)):
+            problems.append("docs/requirements/%s.md: %s (%s) is verified by "
+                            "no test and does not say why" % (doc, i, lvl))
         for name in NAMED.findall(test_id):
             if name not in cites:
                 problems.append("docs/requirements/%s.md: %s names %s, which "
