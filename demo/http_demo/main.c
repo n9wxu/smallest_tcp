@@ -21,8 +21,9 @@
  * Routes:
  *   GET  /            HTML status page
  *   GET  /api/status  JSON, generated per request (uptime, request count,
- * query) POST /api/echo    echoes the request body as text/plain GET  /big
- * 8000-byte text body (streams over many segments)
+ *                     query)
+ *   POST /api/echo    echoes the request body as text/plain
+ *   GET  /big         8000-byte text body (streams over many segments)
  */
 
 #include "http.h"

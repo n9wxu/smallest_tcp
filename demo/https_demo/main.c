@@ -15,7 +15,11 @@
  *   curl --cacert tests/tls/ca.pem https://10.0.0.2/
  *
  * Credentials as demo_tls.h: tests/tls (TEST ONLY) unless TLS_CERT and
- * TLS_KEY name others.  The SUT of tests/blackbox/test_https_conform.py.
+ * TLS_KEY name others.  The certificate comes from a file, so the demo
+ * does not know its names and sets no http_server_t.https_hosts: a
+ * request is answered whatever host it names (no 421 for a host the
+ * certificate is not valid for, REQ-HTTP-056).  The SUT of
+ * tests/blackbox/test_https_conform.py.
  */
 
 #include "http.h"

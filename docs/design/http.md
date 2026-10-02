@@ -2,9 +2,8 @@
 
 **Protocol:** HTTP/1.0 server semantics (RFC 9110, RFC 9112)  
 **Files:** `include/http.h`, `src/http.c` (parser, formatter, server, the TCP transport); `include/http_tls.h`, `src/http_tls.c` (the TLS transport)  
-**Requirements:** [docs/requirements/http.md](../requirements/http.md) (REQ-HTTP-001..064 implemented, but for 042, 043 — chunked coding, MAY)  
-**Status:** implemented (Milestone 11; over TLS since Milestone 13)  
-**Last updated:** 2026-10-01
+**Requirements:** [docs/requirements/http.md](../requirements/http.md) (REQ-HTTP-001..065 implemented, but for 030, 042 and 043 — persistent connections and the chunked coding, all MAY)  
+**Status:** implemented, over plain TCP and over TLS 1.3
 
 ---
 
@@ -82,7 +81,7 @@ that finds none is refused with RST.
 
 | | Cortex-M0 |
 |---|---:|
-| `http_conn_t` | 212 B (236 dual stack) |
+| `http_conn_t` | 220 B (240 dual stack) |
 | `http_server_t` | 36 B |
 
 plus each slot's TCP buffers and request buffer (and, for HTTPS, a
@@ -209,7 +208,7 @@ requires.
 | HTTP/1.1 with `Expect: 100-continue`, content announced, none arrived (RFC 9110 §10.1.1) | 417 |
 | Path not in the route table | 404 |
 | Path known, method not allowed for it (with `Allow:`, empty for a route that allows nothing — RFC 9110 §15.5.6) | 405 |
-| Body larger than the request buffer | 413 |
+| Header section and announced content together larger than the request buffer | 413 |
 | Request line longer than the request buffer | 414 |
 | Headers larger than the request buffer (RFC 6585) | 431 |
 | An absolute-form target whose scheme is not http or https (RFC 9110 §15.5.20); an https target on a plain TCP slot; over TLS, a host the certificate is not valid for (section 7.2, RFC 9110 §7.4) | 421 |
@@ -223,8 +222,9 @@ Absolute-form targets (`GET http://host/path?query`, `https://` too) are
 reduced to their path (`/` if empty) and query, and their authority's host
 — not Host's, which an origin server ignores then (RFC 9112 §3.2.2) — is
 the request's `host`; otherwise `host` is Host's, without the port.  Paths
-are compared exactly (no percent-decoding).  Headers other than
-Content-Length, Transfer-Encoding and Host are ignored.  Host's value must
+are compared exactly (no percent-decoding).  Header fields other than
+Content-Length, Transfer-Encoding, Host, Expect, If-Match and If-None-Match
+are ignored.  Host's value must
 be a host (an IP-literal in brackets, or a reg-name — percent-encoded
 octets, letters, digits, `-._~!$&'()*+,;=` — which an IPv4 address also
 is) and an optional port of digits.
@@ -342,8 +342,11 @@ target's, else Host's, without the port, compared ignoring case — is not
 one of them, or that names no host at all, gets 421.  Without the list
 (NULL, the default) hosts are not checked: the requirement is then met
 only if the certificate is valid for every name a client can reach the
-device by.  The HTTPS demo leaves it NULL, since its certificate is loaded
-from a file.
+device by (the deviation recorded at REQ-HTTP-056).  The HTTPS demo
+(`demo/https_demo/main.c`) sets no list — its certificate is loaded from a
+file at run time, so the program does not know its names — and the host
+check is inactive there: it answers a request over TLS whatever host the
+request names.
 
 The TLS handshake happens while the slot is in `S_RECV` (section 8), so it
 counts against the request timeout.  A failed handshake makes `client_done`
@@ -405,17 +408,19 @@ acknowledged, so CLOSING is recycled at once too.
 for an oversized request — the client may still be sending.  In `S_SEND`,
 `S_FINISHING` and `S_CLOSING` the server keeps reading and discarding, and
 the TCP transport's `read()` advertises the freed window, so a client that
-saw a zero window can finish sending and close.  Without it a 414 left the
-slot stuck until the timeout.
+saw a zero window can finish sending and close.  Without it, a client
+stalled on a zero window after a 414 would hold the slot until the timeout.
 
 **Timeouts** (`http_server_tick()`): a half-open TCP handshake
 (SYN-RECEIVED) has `HTTP_REQUEST_TIMEOUT_MS` (10 s) to complete; an accepted
 connection then has `HTTP_REQUEST_TIMEOUT_MS` again to deliver a complete
 request — over TLS, the TLS handshake included — and
 `HTTP_RESPONSE_TIMEOUT_MS` (10 s) for each of sending the response, ending
-the stream and completing the close.  An expired slot is aborted (RST) and
-recycled.  Without them one idle client could hold the only slot forever.
-An idle listener's timer does not run.
+the stream and completing the close — a client that has the response but
+never closes its own side holds the slot, in `S_CLOSING`, for that long.
+An expired slot is aborted (RST) and recycled.  Without them one idle
+client could hold the only slot forever.  An idle listener's timer does
+not run.
 
 ---
 
@@ -447,28 +452,31 @@ complete program.
 
 ## 10. Tests
 
-- **Integration** (`tests/integration/itest_http.c`, 31): a client on the
-  scripted wire (`peer_client_t`) talks to the server over the stack's TCP,
-  traced to the requirements: GET, HEAD (errors too), 204/205 without
-  content, Allow, Host (one, valid), bare CR and NUL, Transfer-Encoding,
-  absolute-form, Date from a clock (leap years, 2100, 2106), the handler's
-  statuses and content types, Expect: 100-continue, If-Match /
-  If-None-Match, invalid and incomplete Content-Length, field whitespace,
-  obs-fold, octet parsing, always HTTP/1.0, never Transfer-Encoding.  With
+- **Integration** (`tests/integration/itest_http.c`, 49; 51 with
+  `SMALLEST_TCP_TLS`): a client on the scripted wire (`peer_client_t`)
+  talks to the server over the stack's TCP, traced to the requirements:
+  the request line, field lines, the end of the header section however the
+  segments cut it, GET, HEAD (errors too), POST, what the handler is given
+  and what it answers, every status and reason phrase, content types,
+  204/205 without content, Allow, Host (one, valid), bare CR and NUL,
+  Transfer-Encoding, absolute-form, Date from a clock (leap years, 2100,
+  2106), Expect: 100-continue, If-Match / If-None-Match, invalid and
+  incomplete Content-Length, 413/414/431 at the request buffer's bounds,
+  field whitespace, obs-fold, octet parsing, always HTTP/1.0, never
+  Transfer-Encoding, responses larger than the TX buffer, one response per
+  connection whatever Connection asks, one slot serving client after
+  client (a request with its FIN, a simultaneous close), two slots at
+  once, reading on after an error, and the slot freed by a reset, an early
+  close and each timeout, with the transport released.  With
   `SMALLEST_TCP_TLS` also over TLS 1.3 (the client's TLS is the stack's own
   TLS client with a PSK, only the transport): https absolute-form, and the
   421 for a host the certificate is not valid for.
-- **Unit, parser and formatter** (`test_http.c`, 20): header end, request
-  line, versions, methods, query split, headers (Content-Length, Host),
-  LF-only lines, leading empty lines, every error status, reason phrases,
-  header formatting (Allow, 204).
-- **Unit, server** (`test_http.c`, 24): a simulated client drives the real
-  TCP stack with injected segments: GET/HEAD/POST, 404/405/501/400/413/414/431/500,
-  responses larger than the TX buffer, requests arriving in pieces, the
-  header and first body bytes in one segment, a half-closed request, slot
-  recycling from TIME-WAIT and CLOSING (simultaneous close), draining after
-  an error, timeouts, RST mid-request, the transport released however the
-  client went, two slots at once, init checks.
+- **Unit, parser and formatter** (`tests/unit/test_http.c`, 22): the
+  public `http_header_end()`, `http_parse_request()`, `http_reason()` and
+  `http_format_header()`: header end, request line, versions, methods,
+  query split, headers (Content-Length, Host), LF-only lines, leading
+  empty lines, reason phrases, header formatting (Allow, 204, a block that
+  does not fit).
 - **Blackbox** (`tests/blackbox/test_http_conform.py`, 22): the host kernel is
   the client (Python `http.client` and raw sockets) against `http_demo` over
   TAP, the raw-socket driver or feth: every status above, large responses,

@@ -210,6 +210,8 @@ typedef struct {
 /**
  * Prepare a slot: its TCP TX/RX buffers and its request buffer (which also
  * bounds the largest request line, header block and POST body).
+ * @return NET_ERR_INVALID_PARAM for a missing buffer or a request buffer
+ *         under 32 bytes.
  */
 net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
                          uint8_t *rx_mem, uint16_t rx_size, char *req_buf,
@@ -218,7 +220,11 @@ net_err_t http_conn_init(http_conn_t *c, uint8_t *tx_mem, uint16_t tx_size,
 /** The slot's TCP connection, for tcp_set_connections(). */
 static inline tcp_conn_t *http_conn_tcp(http_conn_t *c) { return &c->tcp; }
 
-/** Put every slot in LISTEN on @p port. */
+/**
+ * Put every slot in LISTEN on @p port.
+ * @return NET_ERR_INVALID_PARAM without slots, for port 0, or for a NULL
+ *         route table said to have routes.
+ */
 net_err_t http_server_init(http_server_t *s, net_t *net, uint16_t port,
                            const http_route_t *routes, uint8_t n_routes,
                            http_conn_t *conns, uint8_t n_conns);
@@ -226,7 +232,8 @@ net_err_t http_server_init(http_server_t *s, net_t *net, uint16_t port,
 /** Read requests, run handlers, send responses, recycle closed slots. */
 void http_server_poll(http_server_t *s);
 
-/** Advance request/response timeouts. */
+/** Advance request/response timeouts: an expired slot's connection is
+ *  reset and the slot listens again. */
 void http_server_tick(http_server_t *s, uint32_t elapsed_ms);
 
 #endif /* HTTP_H */
