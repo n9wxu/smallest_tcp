@@ -40,8 +40,9 @@ that verify it.
   tests that verify each row, and every test cites its rows.
 - The documents describe the stack as it is, in the present tense; this
   file keeps the history.
-- TFTP and DHCPv4 are tested black box (`itest_tftp`, `itest_dhcpv4`);
-  their unit suites, which read private fields, are removed.
+- TFTP, DHCPv4, mDNS and the HTTP server are tested black box
+  (`itest_tftp`, `itest_dhcpv4`, `itest_mdns`, `itest_http`); the unit
+  tests that read their private fields are removed.
 - Test counts are no longer reported: requirements coverage
   (`scripts/trace.py`) and code coverage (the CI job `coverage`, now built
   with TLS) are.
@@ -60,6 +61,8 @@ that verify it.
   ICMPv6 errors reach the connection they are about (`tcp6_icmp_error()`:
   Packet Too Big lowers the segment size, Port Unreachable aborts, the
   rest are soft errors).
+- mDNS: a unicast response is taken only as an answer to our probes (RFC
+  6762 §6); once running it changes nothing.
 - TFTP: a DATA packet longer than the block size in force is dropped, not
   delivered with a length above `blksize`; an OACK with an unterminated
   option string is dropped whole.

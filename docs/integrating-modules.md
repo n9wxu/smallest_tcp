@@ -80,7 +80,7 @@ Notes per module:
   `NET_MAX_MCAST6_GROUPS` for IPv6).  Start it once the IPv4 address is known;
   call `mdns_start()` again after a conflict (with a new name in the record
   table) or an address change, and `mdns_readdress6()` when an IPv6 address
-  appears.  `mdns_stop()` sends the goodbye.
+  appears or goes (once running, it announces over IPv6 only).  `mdns_stop()` sends the goodbye.
 - **HTTP.**  The slot's TCP connections must be in the table given to
   `tcp_set_connections()`; that table may hold other connections too.
   `net_tick()` runs their TCP timers; `http_server_tick()` runs only the

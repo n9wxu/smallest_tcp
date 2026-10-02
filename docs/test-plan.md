@@ -204,11 +204,11 @@ RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
 | `itest_udp` | Every UDP row: length and checksum checks, dispatch by port, Port Unreachable, broadcasts both ways, datagrams copied and built in place, the source and destination addresses, TTL and TOS, ICMP errors to the application, the checksum over IPv6 |
 | `itest_igmp` | Reports and leaves, queries answered, timers, suppression, IGMPv1 routers, all-hosts never reported |
 | `itest_tcp` | The TCP state machine row by row: opens and closes in every state, segment acceptability, RST/SYN/ACK/FIN processing, RST generation, options and the MSS, windows (silly-window avoidance, probing), the retransmission schedule (R1/R2, the RTO), ISNs, the local address, TOS, PSH, ICMP and ICMPv6 errors, the MTU, the buffer interface, IPv6 |
-| `itest_http` | Request parsing and framing, Host, Date, conditional requests, Expect, 4xx/5xx without bodies; with `SMALLEST_TCP_TLS`, HTTPS hosts (421) with the stack's own TLS client as the peer |
+| `itest_http` | Every HTTP row on the wire: the request line and field lines, framing (Content-Length, Transfer-Encoding), Host, methods and routes, status codes and their headers, Date, conditional requests, Expect, responses without bodies, the handler's response checked, slots freed and recycled, timeouts; with `SMALLEST_TCP_TLS`, HTTPS hosts (421) with the stack's own TLS client as the peer |
 | `itest_dhcpv4` | Every observable DHCPv4 row, client and server: the state machine and its timers, options (in `file`/`sname`, split, the handler table), T1/T2, the address probe and DECLINE, the server's one client, reply routing and option order |
 | `itest_tftp` | Every implemented TFTP row: the request, blocks and ACKs, transfer IDs, blksize negotiation, errors, the adaptive retransmission timeout, netascii |
-| `itest_mdns` | Probing, conflicts and tiebreaking, rate limiting, known answers, names and TXT strings, legacy unicast, goodbyes, DNS-SD |
-| `itest_mdns6` | mDNS over IPv6 (dual stack) |
+| `itest_mdns` | The responder's rows on the wire: probing, conflicts and tiebreaking, announcing, answers and additionals, NSEC, rate limiting, known answers, unicast and legacy unicast, names and TXT strings, goodbyes, withdrawing records, malformed names; DNS-SD browsing and resolving as resolvers ask |
+| `itest_mdns6` | mDNS over IPv6 (dual stack): ff02::fb, AAAA records and NSEC, answers on the query's family, addresses appearing and going |
 
 The integration suites are built over IPv4 (`itest_mdns6` dual stack), so
 an IPv6-only build runs none of them.
@@ -245,8 +245,7 @@ DHCPv4 client without IPv4, and a build with neither IPv4 nor IPv6.
 | `test_tcp` | tests/unit/test_tcp.c | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
-| `test_mdns` | tests/unit/test_mdns.c | mDNS responder + DNS-SD (REQ-MDNS-*, REQ-DNSSD-*), incl. NSEC, the meta-query's goodbye |
-| `test_http` | tests/unit/test_http.c | HTTP parser, formatter, server driven over the real TCP, the transport released with the slot, one Host line (REQ-HTTP-*) |
+| `test_http` | tests/unit/test_http.c | The HTTP request parser and header formatter (REQ-HTTP-*) |
 | `test_ipv6` | tests/unit/test_ipv6.c | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013) |
 | `test_udp6` | tests/unit/test_udp6.c | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` within one Ethernet frame (REQ-IPv6-044,045, REQ-ICMPv6-016) |
 | `test_tcp6` | tests/unit/test_tcp6.c | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, advertised MSS from the RX frame buffer and within the Ethernet MTU (1440), send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
