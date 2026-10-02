@@ -10,6 +10,23 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-02
+
+### Changes
+
+- docs: configuration says a switched-off transport's header does not compile
+- build: comments in net_config.h and the CMake files say what is there
+- docs: net_text.c holds the decimal formatter only
+- docs: the plan is the project's current plan, not a task log
+- docs: README presents the stack as it is, measured by coverage
+- docs: test plan presents the tests as they are, measured by coverage
+- ci: the coverage job builds with TLS
+- docs: ci-debugging describes the jobs and known failures as they are
+- docs: integrating-modules, coding rules and release process, current
+- docs: architecture matches the code, without history
+- docs: memory model and configuration match the code
+- docs: size-comparison re-measured, in the present tense
+
 ## [0.1.4] - 2026-10-01
 
 The RFC MUSTs the requirement documents left out: an inventory of RFC 1122,
@@ -210,7 +227,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.1...v0.1.2
