@@ -825,7 +825,8 @@ jobs:
         run: ctest --test-dir build-cov -L integration --output-on-failure
       - name: Report
         run: |
-          gcovr --root . --filter 'src/' --exclude 'src/driver/' build-cov \
+          gcovr --root . --filter 'src/' --exclude 'src/driver/' \
+            --exclude 'src/tls_crypto_mbedtls.c' build-cov \
             --txt build-cov/coverage.txt --markdown build-cov/coverage.md \
             --html-details build-cov/coverage.html
           cat build-cov/coverage.txt

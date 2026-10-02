@@ -58,6 +58,9 @@ that verify it.
 - TFTP, DHCPv4, mDNS and the HTTP server are tested black box
   (`itest_tftp`, `itest_dhcpv4`, `itest_mdns`, `itest_http`); the unit
   tests that read their private fields are removed.
+- TLS and DTLS have black-box integration suites (`itest_tls`,
+  `itest_dtls`) against a peer written from the RFCs
+  (`tests/integration/tls_peer.c`).
 - Test counts are no longer reported: requirements coverage
   (`scripts/trace.py`) and code coverage (the CI job `coverage`, now built
   with TLS) are.
@@ -78,6 +81,13 @@ that verify it.
   rest are soft errors).
 - mDNS: a unicast response is taken only as an answer to our probes (RFC
   6762 §6); once running it changes nothing.
+- TLS: a ClientHello with `supported_groups` and no `key_share` is
+  refused; the client refuses extensions in EncryptedExtensions it did not
+  offer; the alerts for a PSK ServerHello without its key share, for an
+  extension in the wrong message and for an empty alert record are the
+  ones RFC 8446 names.
+- DTLS: any record of the peer's next flight, not only a whole message,
+  stops the retransmission of ours (RFC 9147 §7.2).
 - TFTP: a DATA packet longer than the block size in force is dropped, not
   delivered with a length above `blksize`; an OACK with an unterminated
   option string is dropped whole.

@@ -31,7 +31,9 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROW = re.compile(r"^\|\s*(REQ-[A-Za-z0-9]+-\d+)\s*\|\s*([A-Z][A-Z /]*?)\s*\|")
 NAMED = re.compile(r"\b(?:itest|test)_[A-Za-z0-9_]+\b")
-CITE = re.compile(r"REQ-([A-Za-z0-9]+)-(\d{3})((?:\s*(?:,|/|\.\.|–|and)\s*\d{3})*)")
+# A list may wrap onto the next line of a comment: "…, 030,\n * 031"
+CITE = re.compile(r"REQ-([A-Za-z0-9]+)-(\d{3})"
+                  r"((?:\s*(?:,|/|\.\.|–|and)[\s*#]*\d{3})*)")
 MUST = ("MUST", "MUST NOT", "SHALL", "SHALL NOT", "REQUIRED")
 
 
@@ -66,7 +68,7 @@ def cited(text):
         prefix, first, rest = m.group(1), int(m.group(2)), m.group(3)
         ids.append("REQ-%s-%03d" % (prefix, first))
         prev = first
-        for sep, num in re.findall(r"(,|/|\.\.|–|and)\s*(\d{3})", rest):
+        for sep, num in re.findall(r"(,|/|\.\.|–|and)[\s*#]*(\d{3})", rest):
             n = int(num)
             if sep in ("..", "–"):
                 ids += ["REQ-%s-%03d" % (prefix, k) for k in range(prev + 1, n + 1)]
@@ -104,7 +106,7 @@ def tests():
     for path in sorted(glob.glob(os.path.join(ROOT, "tests/blackbox/*.py"))):
         text = open(path, encoding="utf-8").read()
         found.append(("blackbox", path, None, cited(text)))
-        for name in re.findall(r"^def (test_\w+)\(", text, re.M):
+        for name in re.findall(r"^\s*def (test_\w+)\(", text, re.M):
             found.append(("blackbox", path, name, []))
     return found
 

@@ -119,7 +119,8 @@ rm -rf build-cov                           # counts add up over runs otherwise
 cmake -S . -B build-cov -DSMALLEST_TCP_COVERAGE=ON
 cmake --build build-cov -j8
 ctest --test-dir build-cov -L integration
-gcovr --root . --filter 'src/' --exclude 'src/driver/' build-cov \
+gcovr --root . --filter 'src/' --exclude 'src/driver/' \
+      --exclude 'src/tls_crypto_mbedtls.c' build-cov \
       --markdown | sed -e 's/🔴 //g' -e 's/🟡 //g' -e 's/🟢 //g'
 #   macOS (Apple clang): add  --gcov-executable "xcrun llvm-cov gcov"
 #   which lines:         add  --html-details build-cov/coverage.html
@@ -209,9 +210,12 @@ RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
 | `itest_tftp` | Every implemented TFTP row: the request, blocks and ACKs, transfer IDs, blksize negotiation, errors, the adaptive retransmission timeout, netascii |
 | `itest_mdns` | The responder's rows on the wire: probing, conflicts and tiebreaking, announcing, answers and additionals, NSEC, rate limiting, known answers, unicast and legacy unicast, names and TXT strings, goodbyes, withdrawing records, malformed names; DNS-SD browsing and resolving as resolvers ask |
 | `itest_mdns6` | mDNS over IPv6 (dual stack): ff02::fb, AAAA records and NSEC, answers on the query's family, addresses appearing and going |
+| `itest_tls` | TLS 1.3 server and client through `tls.h`, against a peer written from RFC 8446 on Mbed TLS primitives (`tls_peer.c`, none of the stack's TLS code): handshakes with PSK and certificates, HelloRetryRequest, extensions (missing, duplicate, unsolicited, misplaced), alerts, record limits, KeyUpdate, close_notify, small buffers, calls out of place; over the stack's TCP with `tls_tcp_carry()` |
+| `itest_dtls` | DTLS 1.3 server and client through `dtls.h`, against the same peer written from RFC 9147: epochs and record numbers, the replay window, flights, fragments and reassembly, retransmission, ACKs, the cookie exchange, KeyUpdate; the stack's two roles over a lossy, duplicating, reordering network.  Linked without the core, as REQ-DTLS-073 requires |
 
-The integration suites are built over IPv4 (`itest_mdns6` dual stack), so
-an IPv6-only build runs none of them.
+The suites on the scripted link are built over IPv4 (`itest_mdns6` dual
+stack); `itest_tls` and `itest_dtls` need `SMALLEST_TCP_TLS`, and
+`itest_dtls` runs in an IPv6-only build too.
 
 ---
 
