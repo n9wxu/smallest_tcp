@@ -31,9 +31,11 @@ ICMPv6, NDP and MLD — is composed **at compile time**:
 - `ipv4.c` and `ipv6.c` dispatch to UDP under `NET_USE_UDP` and to TCP under
   `NET_USE_TCP`.
 
-Those dispatches are references, so linking IPv4 pulls in `udp.o` and
-`tcp.o` unless the build switches the transport off with `-DNET_USE_UDP=0`
-or `-DNET_USE_TCP=0` and leaves its source out (CMake: the options
+Those dispatches are references — and so are the calls with which
+`icmp.c` and `icmpv6.c` hand a received error to the transport it is
+about — so linking IPv4 or IPv6 pulls in `udp.o` and `tcp.o` unless the
+build switches the transport off with `-DNET_USE_UDP=0` or
+`-DNET_USE_TCP=0` and leaves its source out (CMake: the options
 `SMALLEST_TCP_UDP` and `SMALLEST_TCP_TCP`).  For the transport layer,
 "link only what you need" is really "configure what you need".  The same
 switches change `net_t`, so the library and the application must be built
@@ -91,13 +93,13 @@ One `net_t` per interface holds everything the core knows:
 | Link | `mac`, `mtu`, `mac_driver`, `mac_ctx` |
 | Randomness | `secret`, `random_count` (§9) |
 | IPv4 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` (host byte order), `gateway_mac`, `gateway_mac_valid` and its expiry, the ARP request rate limit, `mcast_groups[]` and IGMP's state, the reassembly buffer and operations, the DHCP client's address probe |
-| IPv6 | `ip6` — address slots with DAD state and lifetimes, hop limit, RA flags, default router, solicitation, lifetime and MLD timers; `mcast6_groups[][16]` |
-| Dispatch | `udp_ports` / `udp_port_count`, `udp6_ports` / `udp6_port_count`, `tcp_conns` / `tcp_conn_count` — tables the application binds with `udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()`; UDP's error handler (`udp_set_error_handler()`) |
+| IPv6 | `ip6` — address slots with DAD state and lifetimes, hop limit, RA flags, default router, solicitation, lifetime and MLD timers, the token bucket of the ICMPv6 errors sent; `mcast6_groups[][16]` |
+| Dispatch | `udp_ports` / `udp_port_count`, `udp6_ports` / `udp6_port_count`, `tcp_conns` / `tcp_conn_count` — tables the application binds with `udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()`; UDP's error handlers (`udp_set_error_handler()`, `udp6_set_error_handler()`) |
 | TCP | `tcp_clock` — 4 µs ticks, advanced by `tcp_tick()`, for initial sequence numbers ([tcp.md §4.6](design/tcp.md#46-initial-sequence-numbers)) |
 
 The dispatch tables are the application's, bound into `net_t`, so the stack
 has no global mutable state.  On Cortex-M0, `net_t` is 116 bytes for a
-UDP-only IPv4 build, 144 with the defaults of `net_config.h` and 264 dual
+UDP-only IPv4 build, 144 with the defaults of `net_config.h` and 268 dual
 stack ([memory-model.md](design/memory-model.md)).
 
 ## 5. Receive path
@@ -120,9 +122,11 @@ net_poll(net)
  │   │   ├─ IGMP                        → igmp.c, once a group is joined
  │   │   └─ other protocols             ICMP Protocol Unreachable
  │   └─ ipv6_input()                    ipv6_parse(), extension headers, address checks
- │       ├─ icmpv6_input()              echo; ndp_input(); mld_input()
+ │       ├─ icmpv6_input()              echo; ndp_input(); mld_input(); errors received →
+ │       │                                udp6_icmp_error(), tcp6_icmp_error()
  │       ├─ udp6_input(), tcp6_input()
- │       └─ other next headers          ICMPv6 Parameter Problem
+ │       ├─ Routing header, segments left   ICMPv6 Parameter Problem (code 0)
+ │       └─ other next headers          ICMPv6 Parameter Problem (code 1)
  └─ driver->discard()                   release the frame
 ```
 
@@ -159,17 +163,27 @@ and sent with `net_transmit(net, len)`:
 Source addresses: IPv4 sends from `net->ipv4_addr`, except
 `udp_send_inplace_from()`, which takes the source explicitly (the DHCP client
 sends from 0.0.0.0 before it has a lease; the DHCP server from its configured
-address).  IPv6 picks the source with `ipv6_src_for()` (RFC 6724).
+address).  IPv6 picks the source with `ipv6_src_for()` (RFC 6724), which
+has none for the unspecified address: nothing is sent to `::`.
 
 Error reports check their own rules: `icmp_send_dest_unreach()` and
 `icmp_send_time_exceeded()` quote the invoking header and up to 8 bytes of
 its payload and send nothing about a broadcast or multicast datagram, an
 ICMP error, or a source that is no single host (RFC 1122 §3.2.2);
-`icmpv6_send_error()` applies RFC 4443 §2.4(e).  Callers just report.
-Received ICMP errors about a datagram we sent go to the transport the
-quoted header names: to UDP, which passes them to the application's error
-handler (`udp_set_error_handler()`), or to the TCP connection, which treats
-them as soft or hard errors and lowers its MSS on Fragmentation Needed.
+`icmpv6_send_error()` applies RFC 4443 §2.4(e), and §2.4(f): a token
+bucket limits the rate of the errors sent — `ICMPV6_ERROR_BURST` at once,
+one more every `ICMPV6_ERROR_INTERVAL_MS`, refilled by `icmpv6_tick()` —
+and an error held back returns `NET_ERR_BUSY`.  Callers just report.
+
+Received ICMP and ICMPv6 errors about a packet we sent go to the transport
+the quoted header names (`udp_icmp_error()`, `tcp_icmp_error()`;
+`udp6_icmp_error()`, `tcp6_icmp_error()`).  UDP passes them to the
+application's error handler (`udp_set_error_handler()`,
+`udp6_set_error_handler()`); the TCP connection treats them as soft or hard
+errors and lowers its segment size on Fragmentation Needed or Packet Too
+Big.  An ICMPv6 error of a type the stack does not know goes up as well
+(RFC 4443 §2.4(a)); a Packet Too Big that reports an MTU below 1280 is
+discarded.
 
 `net->tx.buf` holds one frame at a time and is reused by the next send, so
 nothing keeps a built frame: TCP retransmits from the connection's TX buffer,
@@ -279,16 +293,22 @@ not a source for cryptographic keys or nonces.
 
 ## 10. Timers
 
-`net_tick(net, elapsed_ms)` runs the stack's own timers: `arp_tick()` and
-`ipv4_tick()` if IPv4 is compiled in (the gateway MAC's expiry, the ARP
-request rate limit, the reassembly timeout, IGMP's report delays),
-`tcp_tick()` if TCP is (retransmission, zero-window probes, TIME-WAIT, and
-the clock of initial sequence numbers) and `ipv6_tick()` if IPv6 is (DAD,
-router solicitation, MLD, address and router lifetimes).  Application-owned
-modules — the DHCP clients,
-TFTP, mDNS, HTTP — keep their own `*_tick()` functions, because the stack
-cannot reach their state; the application calls them with the same elapsed
-time.  Timers are countdown fields with `net_countdown()`,
+`net_tick(net, elapsed_ms)` runs the stack's own timers, in this order:
+
+- with IPv4 compiled in, `arp_tick()` (the gateway MAC's expiry, the ARP
+  request rate limit) and `ipv4_tick()`, which runs two hooks if they are
+  installed: reassembly's timeout, installed by `ipv4_set_reassembly()`,
+  and IGMP's report delays, installed by `igmp_join()` — a program that
+  calls neither links neither;
+- with TCP, `tcp_tick()` (retransmission, zero-window probes, TIME-WAIT,
+  and the clock of initial sequence numbers);
+- with IPv6, `ipv6_tick()`: address and router lifetimes, then
+  `icmpv6_tick()` (the bucket of the error rate limit), `mld_tick()`
+  (reports and query answers) and `ndp_tick()` (DAD, router solicitation).
+
+Application-owned modules — the DHCP clients, TFTP, mDNS, HTTP, DTLS —
+keep their own `*_tick()` functions, because the stack cannot reach their
+state; the application calls them with the same elapsed time.  Timers are countdown fields with `net_countdown()`,
 `net_countdown16()` and `net_whole_seconds()` as helpers.
 
 There is no `net_next_event_ms()`: tickless operation is not implemented, and
