@@ -137,6 +137,7 @@ def fetch(sut, method, path, host=HOSTNAME, body=None):
 
 
 def test_https_001_index(sut):
+    """REQ-HTTP-002, 019, 020: a page over TLS."""
     status, hdrs, body = fetch(sut, "GET", "/")
     assert status == 200
     assert hdrs["content-type"] == "text/html"
@@ -145,6 +146,8 @@ def test_https_001_index(sut):
 
 
 def test_https_002_status(sut):
+    """REQ-HTTP-015, 037: generated JSON, with the connection's TLS
+    parameters."""
     status, hdrs, body = fetch(sut, "GET", "/api/status")
     assert status == 200 and hdrs["content-type"] == "application/json"
     doc = json.loads(body)
@@ -154,7 +157,7 @@ def test_https_002_status(sut):
 
 
 def test_https_003_big(sut):
-    """20000 bytes: many TLS records, many TCP segments."""
+    """REQ-HTTP-022: 20000 bytes: many TLS records, many TCP segments."""
     status, _, body = fetch(sut, "GET", "/big")
     assert status == 200
     want = bytes((0x0A if (i & 63) == 63 else 0x61 + i % 26)
@@ -163,29 +166,33 @@ def test_https_003_big(sut):
 
 
 def test_https_004_head(sut):
+    """REQ-HTTP-004, 023: HEAD over TLS, GET's length and no body."""
     status, hdrs, body = fetch(sut, "HEAD", "/big")
     assert status == 200 and body == b""
     assert hdrs["content-length"] == "20000"
 
 
 def test_https_005_not_found(sut):
+    """REQ-HTTP-025."""
     status, _, _ = fetch(sut, "GET", "/nope")
     assert status == 404
 
 
 def test_https_006_post_not_allowed(sut):
+    """REQ-HTTP-024: 405 with Allow."""
     status, hdrs, _ = fetch(sut, "POST", "/", body=b"x=1")
     assert status == 405
     assert "GET" in hdrs.get("allow", "")
 
 
 def test_https_007_by_address(sut):
-    """By address: the certificate's iPAddress name, no SNI."""
+    """REQ-HTTP-002: by address: the certificate's iPAddress name, no SNI."""
     status, _, body = fetch(sut, "GET", "/", host=sut.host)
     assert status == 200 and b"Pyro Unit 1" in body
 
 
 def test_https_008_curl(sut):
+    """REQ-HTTP-022, 029: curl fetches the large page and sees the close."""
     if not CURL:
         pytest.skip("no curl")
     p = subprocess.run(
@@ -197,6 +204,7 @@ def test_https_008_curl(sut):
 
 
 def test_https_009_sequential(sut):
+    """REQ-HTTP-028, 029: the one slot serves connection after connection."""
     for _ in range(5):
         status, _, _ = fetch(sut, "GET", "/api/status")
         assert status == 200

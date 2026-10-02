@@ -193,7 +193,8 @@ def test_http_003_http11_client_gets_http10(sut):
 
 
 def test_http_004_absolute_form(sut):
-    """RFC 9112 §3.2.2: absolute-form target reduced to its path."""
+    """REQ-HTTP-047: absolute-form target reduced to its path (RFC 9112
+    §3.2.2)."""
     status, _ = raw(sut, f"GET http://{sut.host}/ HTTP/1.0\r\n\r\n".encode())
     assert status == 200
 
@@ -209,7 +210,8 @@ def test_http_005_post_echo(sut):
 
 
 def test_http_006_post_body_in_pieces(sut):
-    """Headers and body arrive in separate segments with a gap."""
+    """REQ-HTTP-032: headers and body arrive in separate segments with a
+    gap."""
     status, resp = raw(sut, None, pieces=[
         b"POST /api/echo HTTP/1.0\r\nContent-Length: 12\r\n\r\n",
         b"split ", b"body!!"], delay=0.2)
@@ -218,7 +220,8 @@ def test_http_006_post_body_in_pieces(sut):
 
 
 def test_http_007_json_status(sut):
-    """REQ-HTTP-037: generated JSON body; query passed to the handler."""
+    """REQ-HTTP-014, 015, 037: generated JSON body; query passed to the
+    handler."""
     status, hdrs, body, _ = request(sut, "GET", "/api/status?x=1")
     assert status == 200
     assert hdrs["content-type"] == "application/json"
@@ -229,7 +232,8 @@ def test_http_007_json_status(sut):
 
 
 def test_http_008_large_response(sut):
-    """A body 5x the TX buffer streams intact over many segments."""
+    """REQ-HTTP-020, 022: a body 5x the TX buffer streams intact over many
+    segments."""
     status, hdrs, body, _ = request(sut, "GET", "/big")
     assert status == 200
     assert int(hdrs["content-length"]) == 8000
@@ -237,7 +241,8 @@ def test_http_008_large_response(sut):
 
 
 def test_http_009_trickled_request(sut):
-    """A request arriving one byte per segment is still parsed."""
+    """REQ-HTTP-008, 061: a request arriving one byte per segment is still
+    parsed."""
     req = b"GET /api/status HTTP/1.0\r\n\r\n"
     status, _ = raw(sut, None, pieces=[req[i:i + 1] for i in range(len(req))],
                     delay=0.01)
@@ -267,13 +272,15 @@ def test_http_012_not_implemented(sut):
 
 
 def test_http_013_bad_requests(sut):
-    """REQ-HTTP-026, 010: malformed request line; HTTP/1.1 without Host."""
+    """REQ-HTTP-026, 010, 007: malformed request line; HTTP/1.1 without
+    Host; a field line without a colon."""
     assert raw(sut, b"GARBAGE\r\n\r\n")[0] == 400
     assert raw(sut, b"GET / HTTP/1.1\r\n\r\n")[0] == 400
     assert raw(sut, b"GET / HTTP/1.0\r\nNo-Colon-Here\r\n\r\n")[0] == 400
 
 
 def test_http_014_version_not_supported(sut):
+    """REQ-HTTP-006: a version the server does not speak → 505."""
     assert raw(sut, b"GET / HTTP/2.0\r\n\r\n")[0] == 505
 
 
@@ -298,6 +305,7 @@ def test_http_017_body_too_large(sut):
 
 
 def test_http_018_transfer_encoding_not_implemented(sut):
+    """REQ-HTTP-046, 043: chunked request content is not implemented → 501."""
     status, _ = raw(sut, b"POST /api/echo HTTP/1.1\r\nHost: h\r\n"
                     b"Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
     assert status == 501
@@ -317,7 +325,7 @@ def test_http_019_back_to_back_requests(sut):
 
 
 def test_http_020_two_concurrent_connections(sut):
-    """Both slots serve at the same time."""
+    """REQ-HTTP-028: both slots serve at the same time, a connection each."""
     a = socket.create_connection((sut.host, PORT), timeout=5)
     b = socket.create_connection((sut.host, PORT), timeout=5)
     try:
@@ -338,7 +346,8 @@ def test_http_020_two_concurrent_connections(sut):
 
 @pytest.mark.sut_specific  # waits for http_demo's 10 s request timeout
 def test_http_021_idle_connection_times_out(sut):
-    """An idle client must not hold a slot forever: the server resets it."""
+    """REQ-HTTP-065: an idle client must not hold a slot forever: the server
+    resets it."""
     s = socket.create_connection((sut.host, PORT), timeout=REQUEST_TIMEOUT_S + 5)
     try:
         start = time.monotonic()
@@ -357,8 +366,8 @@ def test_http_021_idle_connection_times_out(sut):
 # ── HTTP over IPv6 (dual-stack http_demo) ──────────────────────────────────────
 
 def test_http_022_get_over_ipv6(sut, request):
-    """The same server answers over IPv6: the host's TCP stack fetches the
-    status page from the demo's link-local address (Linux)."""
+    """REQ-HTTP-002: the same server answers over IPv6: the host's TCP stack
+    fetches the status page from the demo's link-local address (Linux)."""
     iface = request.config.getoption("--iface")
     mac = request.config.getoption("--mdns-sut-mac")  # the demos' MAC
     b = bytes.fromhex(mac.replace(":", ""))
