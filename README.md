@@ -32,27 +32,27 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`, `arm-none-eabi-gcc` 13.2), UDP echo se
 
 | Metric | smallest_tcp | lwIP (same features) | Ratio |
 |---|---|---|---|
-| **Flash** | **4,098 B** | 10,089 B | **2.5× smaller** |
+| **Flash** | **4,102 B** | 10,089 B | **2.5× smaller** |
 | **RAM** | **720 B** (600 = app buffers) | 2,619 B | **3.6× smaller** |
-| Stack-only code (objects) | **4,870 B** | 10,087 B | **2.1× smaller** |
+| Stack-only code (objects) | **4,874 B** | 10,087 B | **2.1× smaller** |
 | Stack-internal state | **0 B** | ~2,619 B | — |
 
 The stack itself has **no static state**: everything it keeps lives in `net_t` and in structures your application declares and sizes.  The object total includes IPv4 reassembly (about 800 B), which lwIP's build has switched off and which is linked only when the application gives it a buffer.
 
 | Configuration (`make` target) | Flash (.text) | RAM |
 |---|---:|---:|
-| UDP echo (`arm-size`) | 4,098 B | 720 B |
-| UDP + TCP echo (`arm-size-tcp`) | 8,546 B | 1,116 B |
-| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 14,424 B | 832 B |
-| UDP + HTTP server, with TCP (`arm-size-http`) | 14,974 B | 1,760 B |
-| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 9,113 B | 824 B |
-| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 6,105 B | 752 B |
-| TLS 1.3 protocol, server only (`arm-size-tls`) | 7,460 B | 448 B per connection + record buffers |
-| TLS 1.3 protocol, client and server (`arm-size-tls`) | 10,950 B | 448 B per connection + record buffers |
-| DTLS 1.3 protocol, server only (`arm-size-dtls`) | 11,263 B | 904 B per connection + buffers |
-| DTLS 1.3 protocol, client and server (`arm-size-dtls`) | 14,921 B | 904 B per connection + buffers |
+| UDP echo (`arm-size`) | 4,102 B | 720 B |
+| UDP + TCP echo (`arm-size-tcp`) | 8,622 B | 1,116 B |
+| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 14,444 B | 832 B |
+| UDP + HTTP server, with TCP (`arm-size-http`) | 14,998 B | 1,760 B |
+| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 9,465 B | 828 B |
+| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 6,453 B | 756 B |
+| TLS 1.3 protocol, server only (`arm-size-tls`) | 7,476 B | 448 B per connection + record buffers |
+| TLS 1.3 protocol, client and server (`arm-size-tls`) | 11,088 B | 448 B per connection + record buffers |
+| DTLS 1.3 protocol, server only (`arm-size-dtls`) | 11,271 B | 904 B per connection + buffers |
+| DTLS 1.3 protocol, client and server (`arm-size-dtls`) | 15,071 B | 904 B per connection + buffers |
 
-RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TLS and DTLS take their cryptography from a backend you choose (Mbed TLS is bundled), which is not included in these figures; they share the handshake, so a device with both links 17.4 KB, not two handshakes.
+RAM is `.data` + `.bss` of the whole benchmark, all of it application-owned.  TLS and DTLS take their cryptography from a backend you choose (Mbed TLS is bundled), which is not included in these figures; they share the handshake, so a device with both links 17.6 KB, not two handshakes.
 
 > 📐 See [docs/design/size-comparison.md](docs/design/size-comparison.md) for the full comparison methodology, per-module breakdowns, and analysis.
 
@@ -134,7 +134,7 @@ instead, and [tcpip-stack-plan.md](tcpip-stack-plan.md) has the whole list.
 |---|---|---|---|---|---|
 | PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ UDP: 4.1 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (8.5 KB), mDNS (14.4 KB), HTTP (15.0 KB), dual-stack UDP (9.1 KB) or IPv6-only UDP (6.1 KB) | ⚠️ Tight with app |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (8.6 KB), mDNS (14.4 KB), HTTP (15.0 KB), dual-stack UDP (9.5 KB) or IPv6-only UDP (6.5 KB) | ⚠️ Tight with app |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 
