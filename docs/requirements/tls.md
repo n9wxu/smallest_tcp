@@ -3,7 +3,7 @@
 **Protocol:** Transport Layer Security 1.3  
 **Primary RFC:** RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3  
 **Supporting:** RFC 6066 — TLS Extensions (server_name, max_fragment_length)  
-**Scope:** V1 (the security layer over TCP)  
+**Scope:** the security layer over TCP  
 **Status:** Implemented, client and server.  Deviations are marked in their rows: REQ-TLS-003 (ChaCha20-Poly1305), REQ-TLS-063 (rsa_pkcs1_sha256 not advertised), REQ-TLS-064 (signature_algorithms_cert, the server's server_name).
 
 ## Overview

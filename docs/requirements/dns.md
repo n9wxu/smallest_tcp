@@ -40,7 +40,7 @@ Offset  Size  Field
 | REQ-DNS-003 | MUST | Use an unpredictable ID, from the full 16-bit range, and an unpredictable source port for each query | RFC 5452 §9.2 | — (not implemented) |
 | REQ-DNS-004 | MUST | Encode domain name in label format (length-prefixed segments, terminated by zero-length label) | RFC 1035 §4.1.2 | — (not implemented) |
 | REQ-DNS-005 | MUST | Support QTYPE A (1) for IPv4 address lookup | RFC 1035 §3.2.2 | — (not implemented) |
-| REQ-DNS-006 | MUST | Support QTYPE AAAA (28) for IPv6 address lookup (V2) | RFC 3596 §2 | — (not implemented) |
+| REQ-DNS-006 | MUST | Support QTYPE AAAA (28) for IPv6 address lookup | RFC 3596 §2 | — (not implemented) |
 | REQ-DNS-007 | MUST | Set QCLASS = IN (1) | RFC 1035 §3.2.4, RFC 1123 §6.1.2.2 | — (not implemented) |
 | REQ-DNS-008 | MUST | Send query over UDP to DNS server on port 53 | RFC 1035 §4.2.1, RFC 1123 §6.1.3.2 | — (not implemented) |
 
@@ -55,7 +55,7 @@ Offset  Size  Field
 | REQ-DNS-013 | MUST | Parse answer section for matching RRs | RFC 1035 §4.1.3 | — (not implemented) |
 | REQ-DNS-014 | MUST | Support name compression (pointer labels, top 2 bits = 11) | RFC 1035 §4.1.4 | — (not implemented) |
 | REQ-DNS-015 | MUST | Extract IPv4 address from A record (TYPE=1, RDLENGTH=4) | RFC 1035 §3.4.1 | — (not implemented) |
-| REQ-DNS-016 | MUST | Extract IPv6 address from AAAA record (TYPE=28, RDLENGTH=16) (V2) | RFC 3596 §2.2 | — (not implemented) |
+| REQ-DNS-016 | MUST | Extract IPv6 address from AAAA record (TYPE=28, RDLENGTH=16) | RFC 3596 §2.2 | — (not implemented) |
 | REQ-DNS-017 | MUST | Extract TTL from answer RR for cache duration; an RR with a zero TTL is returned to the application and not cached | RFC 1035 §4.1.3, RFC 1123 §6.1.2.1 | — (not implemented) |
 | REQ-DNS-018 | MUST | Skip RRs with non-matching TYPE (e.g., CNAME in answer section before A record) | RFC 1035 §4.1.3 | — (not implemented) |
 

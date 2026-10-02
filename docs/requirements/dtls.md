@@ -3,7 +3,7 @@
 **Protocol:** Datagram Transport Layer Security 1.3  
 **Primary RFC:** RFC 9147 — The Datagram Transport Layer Security (DTLS) Protocol Version 1.3  
 **Supporting:** RFC 8446 (TLS 1.3, whose handshake DTLS reuses); [tls.md](tls.md) (REQ-TLS-*), which applies to DTLS except where this document says otherwise  
-**Scope:** V1 (the security layer over datagrams)  
+**Scope:** the security layer over datagrams  
 **Status:** Implemented, client and server; interoperates with wolfSSL 5.9.4.  Deviations are marked in their rows: REQ-DTLS-008 (no `connection_id`), REQ-DTLS-025 (no back-off to smaller records), REQ-DTLS-041 (no limit of records per transmission), REQ-DTLS-048 (the timer does not follow the round-trip time), REQ-DTLS-051 (one case of a record acknowledged in part) and REQ-DTLS-058 (a partial ACK does not narrow the retransmission).
 
 ## Overview

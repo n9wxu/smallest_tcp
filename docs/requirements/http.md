@@ -4,7 +4,7 @@
 **Primary RFC:** RFC 9110 — HTTP Semantics  
 **Supporting:** RFC 9112 — HTTP/1.1, RFC 7230 (obsoleted by RFC 9112)  
 **Supersession:** RFC 9110/9112 supersede RFC 7230-7235; RFC 9110 supersedes RFC 2616  
-**Scope:** V1 (IPv4), V2 (IPv6)  
+**Scope:** over IPv4 and IPv6  
 **Design:** [docs/design/http.md](../design/http.md)
 
 ## Overview
