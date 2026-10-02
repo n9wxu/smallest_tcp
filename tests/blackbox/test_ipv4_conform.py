@@ -61,7 +61,7 @@ def test_ipv4_002_wrong_dst_silently_dropped(ctx):
 
 @pytest.mark.sut_specific
 def test_ipv4_003_unknown_proto_icmp_unreachable(ctx):
-    """REQ-IPv4-020: unrecognized IP protocol MUST elicit ICMP type 3 code 2.
+    """REQ-IPv4-020: unrecognized IP protocol SHOULD elicit ICMP type 3 code 2.
 
     sut_specific: our stack sends ICMP Protocol Unreachable for unknown
     IP protocols; the Linux kernel reference SUT may not (it silently drops
@@ -79,17 +79,19 @@ def test_ipv4_003_unknown_proto_icmp_unreachable(ctx):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEST-IPv4-004  Fragment (MF=1) → silent drop
+# TEST-IPv4-004  Non-first fragments alone → no response
 # REQ-IPv4-024
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_ipv4_004_fragment_silently_dropped(ctx):
-    """REQ-IPv4-024: received IP fragment (MF=1 or offset≠0) MUST be silently discarded.
+    """REQ-IPv4-024: fragments that never complete a datagram draw no response.
 
+    A SUT without a reassembly buffer (the demos) drops fragments; one that
+    reassembles keeps them until the rest arrives or the timeout passes.
     Only non-first fragments are sent.  A first fragment (offset 0) makes a
-    reassembling host (the Linux reference SUT in blackbox-validate) send
-    ICMP Time Exceeded ~30 s later when reassembly times out (RFC 1122
-    §3.3.2), which would land in a later test's silence window.
+    reassembling host (the Linux reference SUT in blackbox-validate, or this
+    stack with a buffer) send ICMP Time Exceeded when reassembly times out
+    (RFC 1122 §3.3.2), which would land in a later test's silence window.
     """
     fragments = {
         "middle fragment (MF=1, offset=8)": dict(flags=1, frag=1),
@@ -99,7 +101,7 @@ def test_ipv4_004_fragment_silently_dropped(ctx):
         pkt = build_ip_raw(ctx, proto=1, payload=b"\x08\x00\x00\x00\x00\x01\x00\x01",
                            **frag_fields)
         assert silence_any(ctx, pkt, timeout=2), (
-            f"SUT responded to an IP {name} — MUST be silently dropped"
+            f"SUT responded to an IP {name} that completes no datagram"
         )
 
 

@@ -1,6 +1,6 @@
 /**
  * @file ipv4.c
- * @brief IPv4 (RFC 791, RFC 1112).  REQ-IPv4-001..057.
+ * @brief IPv4 (RFC 791, RFC 1112).  REQ-IPv4-001..083.
  */
 
 #include "ipv4.h"

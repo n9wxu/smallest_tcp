@@ -154,6 +154,7 @@ TEST(test_ipv4_is_multicast) {
   ASSERT_FALSE(ipv4_is_multicast(0x0A000002u));
 }
 
+/* REQ-IPv4-052: 01:00:5E and the group's low 23 bits */
 TEST(test_mcast_mac_mapping) {
   uint8_t mac[6];
   static const uint8_t expect1[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB};

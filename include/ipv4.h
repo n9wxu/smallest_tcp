@@ -1,8 +1,10 @@
 /**
  * @file ipv4.h
  * @brief IPv4 (RFC 791): headers parsed and built in place, dispatch by
- *        protocol, multicast membership (RFC 1112).  No fragmentation:
- *        every datagram is sent with DF set and fragments are dropped.
+ *        protocol, reassembly, multicast membership (RFC 1112).  Nothing
+ *        sent is fragmented: every datagram goes out with DF set.
+ *        Fragments received are reassembled in a buffer the application
+ *        gives (ipv4_set_reassembly()), and dropped without one.
  */
 
 #ifndef IPV4_H
@@ -58,13 +60,16 @@ typedef struct {
 } ipv4_hdr_t;
 
 /**
- * Parse and check an IPv4 header: version, length, header checksum.
- * @return NET_OK, or NET_ERR_INVALID_PARAM (fragments included: received,
- *         they go to reassembly).
+ * Parse and check an IPv4 header: version, lengths, header checksum.
+ * @return NET_OK, or NET_ERR_INVALID_PARAM — also for a fragment (received
+ *         by ipv4_input(), fragments go to reassembly) and for a datagram
+ *         carrying a Loose or Strict Source Route option.
  */
 net_err_t ipv4_parse(uint8_t *data, uint16_t data_len, ipv4_hdr_t *out);
 
-/** Deliver a datagram addressed to us to ICMP, UDP or TCP. */
+/** Deliver a datagram addressed to us, from a valid source, to ICMP, UDP,
+ *  TCP or IGMP — a fragment to reassembly; any other protocol draws ICMP
+ *  Protocol Unreachable.  Everything else is dropped. */
 void ipv4_input(net_t *net, const eth_frame_t *eth);
 
 /** Write a 20-byte header (DF set, ID 0: every datagram is atomic,
@@ -113,7 +118,7 @@ static inline void ipv4_build(uint8_t *buf, uint16_t payload_len,
  */
 net_err_t ipv4_set_reassembly(net_t *net, uint8_t *buf, uint16_t size);
 
-/** Time out reassembly (from net_tick()). */
+/** Time out reassembly and run IGMP's timers (from net_tick()). */
 void ipv4_tick(net_t *net, uint32_t elapsed_ms);
 
 /** Reassembly, as ipv4_set_reassembly() installs it in net->reasm_ops:

@@ -1,7 +1,8 @@
 /**
  * @file itest_ipv4.c
  * @brief IPv4 and ICMPv4, black box: datagrams on the wire, a UDP port
- *        the test registers, and what the stack sends back.
+ *        and an error handler the test registers, and what the stack sends
+ *        back.
  */
 
 #include "icmp.h"
@@ -51,6 +52,160 @@ static int sent_icmp(peer_ip_t *ip, peer_icmp_t *icmp) {
          peer_parse_icmp(ip, icmp);
 }
 
+/* ── The header ── */
+
+/* The header checksum of the IPv4 frame @p f written again, over its first
+ * 20 bytes */
+static void rechecksum(uint8_t *f) {
+  peer_put16(f + 14 + 10, 0);
+  peer_put16(f + 14 + 10, peer_cksum(f + 14, 20));
+}
+
+/* REQ-IPv4-001, 002, 003, 004, 005, 006: a datagram whose version is not
+ * 4, whose header length is less than 5 words, whose Total Length is less
+ * than its header or more than the frame holds, or whose header checksum
+ * is wrong, is discarded — to an open port or a closed one — without a
+ * word */
+TEST(itest_ipv4_001_invalid_headers_discarded) {
+  uint16_t port;
+  up();
+  for (port = OPEN_PORT; port <= CLOSED_PORT; port++) {
+    uint8_t f[128], good[128];
+    uint16_t n = peer_udp_frame(good, &t.net, PEER_IP, t.net.ipv4_addr, 5000,
+                                port, "x", 1);
+    wire_clear(&t);
+    memcpy(f, good, n);
+    f[14] = 0x55; /* version 5 */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    f[14] = 0x65; /* version 6 */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    f[14] = 0x05; /* version 0 */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    memcpy(f, good, n);
+    f[14] = 0x44; /* a header of 16 bytes */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    f[14] = 0x40; /* a header of none */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    memcpy(f, good, n);
+    peer_put16(f + 14 + 2, 19); /* Total Length less than the header */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    memcpy(f, good, n);
+    peer_put16(f + 14 + 2, (uint16_t)(n - 14 + 1)); /* more than the frame */
+    rechecksum(f);
+    itest_receive(&t, f, n);
+    memcpy(f, good, n);
+    itest_receive(&t, f, (uint16_t)(n - 1)); /* the frame cut short */
+    itest_receive(&t, f, 14 + 19);           /* less than a header */
+    f[14 + 10] ^= 0x01;                      /* the checksum wrong */
+    itest_receive(&t, f, n);
+    memcpy(f, good, n);
+    f[14 + 8] ^= 0x01; /* a field changed under the checksum */
+    itest_receive(&t, f, n);
+    ASSERT_EQ(delivered, 0);
+    ASSERT_EQ(t.wire.tx_count, 0);
+  }
+  datagram(PEER_IP, t.net.ipv4_addr, OPEN_PORT);
+  ASSERT_EQ(delivered, 1);
+}
+
+/* REQ-IPv4-007: the datagram ends where its Total Length says, not where
+ * the frame does: an Echo Request in a frame padded with other bytes is
+ * answered with its own four data bytes */
+TEST(itest_ipv4_007_total_length_bounds_the_datagram) {
+  static const uint8_t rest[4] = {0, 1, 0, 1};
+  uint8_t msg[64], f[128];
+  peer_ip_t ip = peer_ip(PEER_IP, 0, 1), rip;
+  peer_icmp_t icmp;
+  uint16_t n;
+  up();
+  ip.dst = t.net.ipv4_addr;
+  memset(f, 0xA5, sizeof(f));
+  n = peer_icmp(msg, 8, 0, rest, "ping", 4);
+  n = peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n);
+  ASSERT_EQ(n, 14 + 20 + 12);
+  wire_clear(&t);
+  itest_receive(&t, f, 60);
+  ASSERT_TRUE(sent_icmp(&rip, &icmp));
+  ASSERT_EQ(rip.total_len, 20 + 12);
+  ASSERT_EQ(wire_sent(&t, 0)->len, 14 + 20 + 12);
+  ASSERT_EQ(icmp.data_len, 4);
+  ASSERT_MEM_EQ(icmp.data, "ping", 4);
+}
+
+/* REQ-IPv4-019, 018, 036: the Protocol field chooses the transport — 17
+ * goes to UDP, 6 to TCP (which answers a SYN for a port nobody listens on
+ * with a RST, itself sent as protocol 6) */
+TEST(itest_ipv4_018_protocol_dispatch) {
+  up();
+  datagram(PEER_IP, t.net.ipv4_addr, OPEN_PORT);
+  ASSERT_EQ(delivered, 1);
+#if NET_USE_TCP
+  {
+    uint8_t f[128];
+    peer_tcp_seg_t syn;
+    peer_ip_t ip;
+    peer_tcp_t tcp;
+    memset(&syn, 0, sizeof(syn));
+    syn.sport = 40000;
+    syn.dport = 81;
+    syn.seq = 1000;
+    syn.flags = TCPF_SYN;
+    syn.window = 4096;
+    wire_clear(&t);
+    itest_receive(&t, f, peer_tcp_frame(f, &t.net, PEER_IP, &syn));
+    ASSERT_EQ(wire_find_tcp(&t, 0, &ip, &tcp), 0);
+    ASSERT_EQ(ip.proto, 6);
+    ASSERT_TRUE(tcp.flags & TCPF_RST);
+    ASSERT_EQ(delivered, 1);
+  }
+#endif
+}
+
+/* REQ-IPv4-042, 044: a datagram is taken whatever its TOS and its TTL — a
+ * TTL of 1 or 0 included */
+TEST(itest_ipv4_042_any_tos_and_ttl_accepted) {
+  static const struct {
+    uint8_t tos, ttl;
+  } field[] = {{0xFF, 64}, {0xB8, 64}, {0x01, 64}, {0, 1}, {0, 0}, {0, 255}};
+  uint8_t f[128], seg[64];
+  peer_ip_t ip = peer_ip(PEER_IP, 0, 17);
+  uint16_t n, i;
+  up();
+  ip.dst = t.net.ipv4_addr;
+  n = peer_udp(seg, &ip, 5000, OPEN_PORT, "x", 1);
+  for (i = 0; i < sizeof(field) / sizeof(field[0]); i++) {
+    ip.tos = field[i].tos;
+    ip.ttl = field[i].ttl;
+    itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, seg, n));
+    ASSERT_EQ(delivered, i + 1);
+  }
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* REQ-IPv4-011, 043: a datagram for another host that reaches our MAC is
+ * discarded: not delivered, not forwarded — on-link or through the
+ * gateway — and not answered */
+TEST(itest_ipv4_043_never_forwards) {
+  static const uint8_t gw[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
+  up();
+  t.net.gateway_ipv4 = 0x0A0000FEu;
+  memcpy(t.net.gateway_mac, gw, 6);
+  t.net.gateway_mac_valid = 1;
+  datagram(PEER_IP, PEER2_IP, OPEN_PORT);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  datagram(PEER_IP, REMOTE_IP, OPEN_PORT);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  datagram(PEER_IP, PEER2_IP, CLOSED_PORT);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(delivered, 0);
+}
+
 /* ── Destination addresses ── */
 
 /* REQ-IPv4-008, 009, 010: ours, the limited broadcast and our subnet's */
@@ -72,7 +227,8 @@ TEST(itest_ipv4_011_drops_another_subnets_broadcast) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
-/* REQ-IPv4-010, 011 (RFC 3021): a /31 or /32 has no directed broadcast */
+/* REQ-IPv4-010, 011, 080 (RFC 3021): the subnet mask is set by hand; a /31
+ * or /32 has no directed broadcast */
 TEST(itest_ipv4_011_point_to_point_masks_have_no_broadcast) {
   up();
   t.net.subnet_mask = 0xFFFFFFFEu; /* 10.0.0.2/31: 10.0.0.3 is the peer */
@@ -89,16 +245,21 @@ TEST(itest_ipv4_011_point_to_point_masks_have_no_broadcast) {
   ASSERT_EQ(delivered, 1);
 }
 
-/* REQ-IPv4-009, 011: before DHCP configures an address (0.0.0.0, mask 0)
- * only the limited broadcast is a broadcast */
+/* REQ-IPv4-009, 011, 012: before DHCP configures an address (0.0.0.0, mask
+ * 0) only the limited broadcast is a broadcast; a datagram to 0.0.0.0 is
+ * taken then, and only then */
 TEST(itest_ipv4_011_unconfigured_only_the_limited_broadcast) {
   up();
+  datagram(PEER_IP, 0, OPEN_PORT);
+  ASSERT_EQ(delivered, 0);
   t.net.ipv4_addr = 0;
   t.net.subnet_mask = 0;
   datagram(PEER_IP, 0x0A0000FFu, OPEN_PORT);
   ASSERT_EQ(delivered, 0);
   datagram(PEER_IP, 0xFFFFFFFFu, OPEN_PORT);
   ASSERT_EQ(delivered, 1);
+  datagram(PEER_IP, 0, OPEN_PORT);
+  ASSERT_EQ(delivered, 2);
 }
 
 /* ── Source addresses ── */
@@ -186,7 +347,7 @@ TEST(itest_icmpv4_001_echo_reply_code_zero) {
   ASSERT_MEM_EQ(icmp.data, "ping", 4);
 }
 
-/* ── More of RFC 1122 §3.2–3.3 (2026-10-01) ── */
+/* ── Broadcasts, reassembly, sizes, options (RFC 1122 §3.2–3.3) ── */
 
 /* A UDP datagram to OPEN_PORT carrying @p len bytes, sent as the IPv4
  * header @p ip describes (options, fragment fields), payload bytes
@@ -413,7 +574,8 @@ TEST(itest_ipv4_063_mms_s) {
   ASSERT_EQ(ipv4_mms_s(&t.net), 1480);
 }
 
-/* REQ-IPv4-064: the MTU is configurable, and nothing sent exceeds it */
+/* REQ-IPv4-064, 022: the MTU is configurable, and nothing sent exceeds it:
+ * a datagram that does not fit is refused, never fragmented */
 TEST(itest_ipv4_064_mtu_configurable) {
   static uint8_t data[1500];
   itest_up(&t, 1514, 1514);
@@ -422,22 +584,36 @@ TEST(itest_ipv4_064_mtu_configurable) {
   ASSERT_EQ(ipv4_mms_s(&t.net), 556);
   ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, data, 549),
             NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(t.wire.tx_count, 0);
   ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, data, 548), NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 1);
   ASSERT_EQ(wire_sent(&t, 0)->len, 14 + 576);
 }
 
-/* REQ-IPv4-028, 031, 032, 082, REQ-IPv4-023: what UDP sends has a 20-byte
- * header, no options, the right Total Length, reserved bit 0, DF set */
+/* REQ-IPv4-028, 030, 031, 032, 033, 034, 036, 037, 038, 039, 040, 082,
+ * REQ-IPv4-023, REQ-IPv4-065 (deviation: no options from the transport):
+ * what UDP sends has version 4, a 20-byte header without options, TOS 0,
+ * the right Total Length, an Identification of 0, the reserved bit 0, DF
+ * set, MF clear, offset 0, protocol 17, a correct header checksum, our
+ * address as source and the destination asked for */
 TEST(itest_ipv4_028_no_options_sent) {
   peer_ip_t ip;
   up();
   udp_send(&t.net, PEER_IP, peer_mac, 7, 7, (const uint8_t *)"abc", 3);
   ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_EQ(wire_sent(&t, 0)->data[14] >> 4, 4);
   ASSERT_EQ(ip.ihl_bytes, 20);
+  ASSERT_EQ(ip.tos, 0);
   ASSERT_EQ(ip.total_len, 20 + 8 + 3);
+  ASSERT_EQ(ip.id, 0);
   ASSERT_EQ(wire_sent(&t, 0)->data[14 + 6] & 0x80, 0);
   ASSERT_TRUE(ip.df);
+  ASSERT_FALSE(ip.mf);
+  ASSERT_EQ(ip.frag_offset, 0);
+  ASSERT_EQ(ip.proto, 17);
   ASSERT_TRUE(ip.header_cksum_ok);
+  ASSERT_EQ(ip.src, t.net.ipv4_addr);
+  ASSERT_EQ(ip.dst, PEER_IP);
 }
 
 /* A UDP datagram for OPEN_PORT with the IP options @p opt (a multiple of 4
@@ -487,8 +663,8 @@ TEST(itest_ipv4_067_source_routed_dropped) {
   ASSERT_EQ(delivered, 1);
 }
 
-/* REQ-IPv4-068: unknown options and Stream ID are ignored; a malformed
- * option length does not upset the IP layer */
+/* REQ-IPv4-068, 029: unknown options and Stream ID are ignored, their
+ * content unread; a malformed option length does not upset the IP layer */
 TEST(itest_ipv4_068_unknown_and_malformed_options) {
   static const uint8_t unknown[4] = {0x9E, 4, 0xAB, 0xCD};
   static const uint8_t stream_id[4] = {136, 4, 0x12, 0x34};
@@ -504,7 +680,7 @@ TEST(itest_ipv4_068_unknown_and_malformed_options) {
   ASSERT_TRUE(delivered >= 3);
 }
 
-/* REQ-IPv4-035: the default TTL is 64 */
+/* REQ-IPv4-035, 045: the default TTL is 64 */
 TEST(itest_ipv4_035_default_ttl) {
   peer_ip_t ip;
   up();
@@ -574,6 +750,65 @@ TEST(itest_ipv4_070_never_to_or_from_unspecified) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
+/* REQ-IPv4-048, 038: a datagram goes out from our address and from no
+ * other: not from a broadcast address, a group, or another host's */
+TEST(itest_ipv4_048_never_from_a_broadcast) {
+  static const uint32_t not_ours[] = {0xFFFFFFFFu, 0x0A0000FFu, 0x0AFFFFFFu,
+                                      0xE00000FBu, PEER2_IP};
+  peer_ip_t ip;
+  unsigned i;
+  up();
+  for (i = 0; i < sizeof(not_ours) / sizeof(not_ours[0]); i++) {
+    memcpy(t.net.tx.buf + UDP_PAYLOAD_OFFSET, "x", 1);
+    ASSERT_EQ(udp_send_inplace_from(&t.net, not_ours[i], PEER_IP, peer_mac, 7,
+                                    7, 1, 64),
+              NET_ERR_INVALID_PARAM);
+  }
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, (const uint8_t *)"x", 1),
+            NET_OK);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_EQ(ip.src, t.net.ipv4_addr);
+}
+
+/* REQ-IPv4-075 (deviation): there is no route cache: a datagram goes to
+ * the MAC its sender names, whatever its destination, with no ARP request
+ * and nothing remembered for the next */
+TEST(itest_ipv4_075_next_hop_is_the_senders) {
+  static const uint8_t hop1[6] = {0x02, 0x48, 0x4F, 0x50, 0x00, 0x01};
+  static const uint8_t hop2[6] = {0x02, 0x48, 0x4F, 0x50, 0x00, 0x02};
+  up();
+  t.net.gateway_mac_valid = 0;
+  ASSERT_EQ(udp_send(&t.net, REMOTE_IP, hop1, 7, 7, (const uint8_t *)"x", 1),
+            NET_OK);
+  ASSERT_EQ(udp_send(&t.net, REMOTE_IP, hop2, 7, 7, (const uint8_t *)"x", 1),
+            NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 2);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, hop1, 6);
+  ASSERT_MEM_EQ(wire_sent(&t, 1)->data, hop2, 6);
+  ASSERT_EQ(peer_get16(wire_sent(&t, 1)->data + 12), 0x0800);
+}
+
+/* REQ-IPv4-078: with no gateway configured the host works on its link:
+ * it answers and sends to on-link hosts, and asks no one for a gateway */
+TEST(itest_ipv4_078_works_without_a_gateway) {
+  peer_ip_t ip;
+  peer_icmp_t icmp;
+  up();
+  t.net.gateway_ipv4 = 0;
+  t.net.gateway_mac_valid = 0;
+  echo_request(PEER_IP, t.net.ipv4_addr, 4);
+  ASSERT_TRUE(sent_icmp(&ip, &icmp));
+  ASSERT_EQ(icmp.type, 0);
+  wire_clear(&t);
+  ASSERT_EQ(udp_send(&t.net, PEER2_IP, peer_mac, 7, 7, (const uint8_t *)"x", 1),
+            NET_OK);
+  datagram(PEER_IP, t.net.ipv4_addr, OPEN_PORT);
+  ASSERT_EQ(delivered, 1);
+  itest_advance(&t, 600000u, 1000);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
 /* REQ-IPv4-071: nothing is sent to or from 127/8 */
 TEST(itest_ipv4_071_never_loopback) {
   up();
@@ -587,16 +822,29 @@ TEST(itest_ipv4_071_never_loopback) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
-/* REQ-IPv4-072: the link-layer broadcast carries only IP broadcasts or
- * multicasts */
+/* REQ-IPv4-072, 046, 047, 049: the link-layer broadcast carries only IP
+ * broadcasts or multicasts; a datagram to the limited broadcast, or to the
+ * subnet's, goes out in a frame for the broadcast MAC */
 TEST(itest_ipv4_072_link_broadcast_needs_ip_broadcast) {
+  peer_ip_t ip;
   up();
   ASSERT_EQ(
       udp_send(&t.net, PEER_IP, broadcast_mac, 7, 7, (const uint8_t *)"x", 1),
       NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(t.wire.tx_count, 0);
   ASSERT_EQ(udp_send(&t.net, 0xFFFFFFFFu, broadcast_mac, 7, 7,
                      (const uint8_t *)"x", 1),
             NET_OK);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, broadcast_mac, 6);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_EQ(ip.dst, 0xFFFFFFFFu);
+  ASSERT_EQ(ip.src, t.net.ipv4_addr);
+  ASSERT_EQ(udp_send(&t.net, 0x0A0000FFu, broadcast_mac, 7, 7,
+                     (const uint8_t *)"x", 1),
+            NET_OK);
+  ASSERT_MEM_EQ(wire_sent(&t, 1)->data, broadcast_mac, 6);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 1), &ip));
+  ASSERT_EQ(ip.dst, 0x0A0000FFu);
 }
 
 /* REQ-IPv4-050, REQ-ETH-010: a host with a multicast table is in the
@@ -621,8 +869,9 @@ TEST(itest_ipv4_050_all_hosts_group) {
   ASSERT_EQ(delivered, 2);
 }
 
-/* REQ-IPv4-073 (deviation): what the host multicasts is never delivered
- * back to itself */
+/* REQ-IPv4-073 (deviation), REQ-IPv4-051: what the host multicasts — to
+ * the group's MAC, which the sender passes — is never delivered back to
+ * itself */
 TEST(itest_ipv4_073_no_multicast_loopback) {
   static const uint8_t group_mac[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB};
   up();
@@ -633,7 +882,8 @@ TEST(itest_ipv4_073_no_multicast_loopback) {
   ASSERT_EQ(delivered, 0);
 }
 
-/* REQ-IPv4-079: the gateway is never pinged to check it */
+/* REQ-IPv4-079, REQ-IPv4-077 (deviation: no dead-gateway detection): the
+ * gateway is never pinged, nor probed in any other way, to check it */
 TEST(itest_ipv4_079_never_pings_the_gateway) {
   up();
   t.net.gateway_ipv4 = 0x0A0000FEu;
@@ -656,8 +906,8 @@ TEST(itest_icmpv4_008_large_echo_truncated) {
   ASSERT_EQ(icmp.data[100], 100);
 }
 
-/* REQ-ICMPv4-019..022 (deviation): Redirects are ignored and answered with
- * nothing */
+/* REQ-ICMPv4-019..022, REQ-IPv4-054, 055 (deviation): Redirects, Host and
+ * Network, are ignored and answered with nothing */
 TEST(itest_icmpv4_019_redirect_ignored) {
   static const uint8_t gw[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
   uint8_t msg[64], f[128], quoted[28];
@@ -717,6 +967,11 @@ TEST(itest_icmpv4_045_address_mask_ignored) {
 
 int main(void) {
   fprintf(stderr, "=== itest_ipv4 ===\n");
+  RUN_TEST(itest_ipv4_001_invalid_headers_discarded);
+  RUN_TEST(itest_ipv4_007_total_length_bounds_the_datagram);
+  RUN_TEST(itest_ipv4_018_protocol_dispatch);
+  RUN_TEST(itest_ipv4_042_any_tos_and_ttl_accepted);
+  RUN_TEST(itest_ipv4_043_never_forwards);
   RUN_TEST(itest_ipv4_008_010_accepts_ours_and_our_broadcasts);
   RUN_TEST(itest_ipv4_011_drops_another_subnets_broadcast);
   RUN_TEST(itest_ipv4_011_point_to_point_masks_have_no_broadcast);
@@ -749,6 +1004,9 @@ int main(void) {
   RUN_TEST(itest_ipv4_041_tos_settable);
   RUN_TEST(itest_ipv4_083_atomic_id_ignored);
   RUN_TEST(itest_ipv4_070_never_to_or_from_unspecified);
+  RUN_TEST(itest_ipv4_048_never_from_a_broadcast);
+  RUN_TEST(itest_ipv4_075_next_hop_is_the_senders);
+  RUN_TEST(itest_ipv4_078_works_without_a_gateway);
   RUN_TEST(itest_ipv4_071_never_loopback);
   RUN_TEST(itest_ipv4_072_link_broadcast_needs_ip_broadcast);
   RUN_TEST(itest_ipv4_050_all_hosts_group);
