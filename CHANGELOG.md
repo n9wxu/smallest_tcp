@@ -10,6 +10,8 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-02
+
 The review of IPv6 — IPv6, ICMPv6, Neighbor Discovery, SLAAC, MLD and
 DHCPv6: every requirement row against its RFC, the code and the tests
 that verify it.
@@ -359,7 +361,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.6...v0.1.7
