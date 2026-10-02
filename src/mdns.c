@@ -2,7 +2,7 @@
  * @file mdns.c
  * @brief Multicast DNS responder (RFC 6762) with DNS-SD advertising (RFC 6763).
  *
- * Implements the responder requirements REQ-MDNS-001..033, 041..079 and
+ * Implements the responder requirements REQ-MDNS-001..033, 041..080 and
  * REQ-DNSSD-001..018, 029..038.  See mdns.h for the API and
  * docs/design/mdns.md for the design.
  *
@@ -1604,12 +1604,16 @@ static int on_link(const mdns_t *m, const dest_t *from) {
                    ipv6_on_link(m->net, from->ip6));
 }
 
-/* REQ-MDNS-061, 062 (RFC 6762 §6, §11): a response counts only from port
- * 5353 and from the local link — sent to the group, or from on-link */
+/* REQ-MDNS-061, 062, 080 (RFC 6762 §6, §11): a response counts only from
+ * port 5353 and from the local link — sent to the group, or by unicast
+ * from an on-link source in answer to the QU questions of our probes */
 static int response_acceptable(const mdns_t *m, const dest_t *from,
                                const uint8_t *msg) {
-  return from->port == MDNS_PORT &&
-         (sent_to_group(m, from, msg) || on_link(m, from));
+  if (from->port != MDNS_PORT)
+    return 0;
+  if (sent_to_group(m, from, msg))
+    return 1;
+  return m->state == MDNS_STATE_PROBING && m->step > 0 && on_link(m, from);
 }
 
 /* REQ-MDNS-044, 045 (RFC 6762 §18.3, §18.11): messages with a non-zero

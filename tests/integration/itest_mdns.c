@@ -1487,7 +1487,7 @@ int main(void) {
   RUN_TEST(itest_mdns_045_nonzero_rcode_ignored);
   RUN_TEST(itest_mdns_061_responses_from_other_ports_ignored);
   RUN_TEST(itest_mdns_062_responses_only_from_the_local_link);
-  RUN_XFAIL(itest_mdns_080_unicast_responses_only_to_our_probes);
+  RUN_TEST(itest_mdns_080_unicast_responses_only_to_our_probes);
   RUN_TEST(itest_mdns_070_questions_in_responses_ignored);
   RUN_TEST(itest_mdns_052_responses_before_the_first_probe_ignored);
   RUN_TEST(itest_mdns_053_any_record_of_the_name_conflicts_while_probing);

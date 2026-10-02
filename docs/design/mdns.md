@@ -141,7 +141,7 @@ Two gratuitous responses (QR=1, AA=1, ID=0), one on entering ANNOUNCING and one 
 ```
 mdns_input() / mdns_input6()  →  input()
     OPCODE or RCODE not 0          → ignored (§18.3, §18.11)
-    QR = 1, from port 5353 and the local link → check_conflicts()
+    QR = 1, from port 5353 and the local link; unicast only while PROBING → check_conflicts()
     QR = 0, not PROBING            → query_input()
         each question of class IN or ANY → match_question()        fills wanted_t
         suppress_known_answers()          (the query's Answer section)
@@ -224,7 +224,7 @@ What it sends goes into `recent[0]` (goodbyes excepted).
 
 **Robustness:** every read is bounds-checked; malformed messages, pointer loops and absurd section counts end processing without a reply.  Responses (QR=1) are never answered.  Messages with a non-zero OPCODE or RCODE are ignored, queries and responses alike (RFC 6762 §18.3, §18.11).
 
-**Which responses count** (`response_acceptable()`): only those from UDP port 5353 (§6) and from the local link (§11) — sent to 224.0.0.251 or ff02::fb, whatever the source, or else from a source on our IPv4 subnet, link-local, or on the /64 of one of our IPv6 addresses (`ipv6_on_link()`).  The UDP handlers do not pass the destination address, so `sent_to_group()` reads it from the frame in `net->rx.buf`, where the payload pointer they pass points (fixed offsets: the Ethernet header is always 14 bytes, and the destination field sits before any IPv4 option or IPv6 extension header).  A message handed to `mdns_input()` from anywhere else counts as unicast.
+**Which responses count** (`response_acceptable()`): only those from UDP port 5353 (§6) and from the local link (§11) — sent to 224.0.0.251 or ff02::fb, whatever the source, or else by unicast from a source on our IPv4 subnet, link-local, or on the /64 of one of our IPv6 addresses (`ipv6_on_link()`).  A unicast response counts only as the answer to a recent query that asked for unicast responses (§6, REQ-MDNS-080), and the responder asks only with its probes' QU questions: unicast responses are taken while PROBING, once the first probe is out, and ignored in every other state.  The UDP handlers do not pass the destination address, so `sent_to_group()` reads it from the frame in `net->rx.buf`, where the payload pointer they pass points (fixed offsets: the Ethernet header is always 14 bytes, and the destination field sits before any IPv4 option or IPv6 extension header).  A message handed to `mdns_input()` from anywhere else counts as unicast.
 
 ---
 
