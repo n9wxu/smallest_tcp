@@ -171,8 +171,10 @@ int ipv6_is_ours(const net_t *net, const uint8_t *addr);
 /**
  * Source address for a packet to @p dst (RFC 6724, one interface):
  * link-local for link-local and link-scope multicast destinations, else
- * a preferred global address, else a deprecated one.
- * @return Pointer into net->ip6, or NULL if none is usable.
+ * a preferred global address, else a deprecated one; a multicast group of
+ * wider scope falls back to the link-local address.
+ * @return Pointer into net->ip6, or NULL if none is usable — and for the
+ *         unspecified address, to which nothing is sent.
  */
 const uint8_t *ipv6_src_for(const net_t *net, const uint8_t *dst);
 

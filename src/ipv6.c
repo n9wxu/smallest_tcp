@@ -213,10 +213,13 @@ static int is_link_scope(const uint8_t *dst) {
          (ipv6_is_multicast(dst) && (dst[1] & 0x0F) <= 2);
 }
 
-/* RFC 6724 rules 2 and 3, for a single interface */
+/* RFC 6724 rules 2 and 3, for a single interface; REQ-IPv6-013: nothing
+ * is sent to the unspecified address */
 const uint8_t *ipv6_src_for(const net_t *net, const uint8_t *dst) {
   const net_ip6_addr_t *link_local = &net->ip6.addr[0];
   uint8_t i;
+  if (ipv6_is_unspecified(dst))
+    return NULL;
   if (is_link_scope(dst))
     return is_usable(link_local) ? link_local->addr : NULL;
   for (i = 1; i < NET_IPV6_ADDRS; i++) {

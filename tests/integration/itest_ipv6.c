@@ -1120,7 +1120,7 @@ int main(void) {
   RUN_TEST(itest_ipv6_011_multicast_source_dropped);
   RUN_TEST(itest_ipv6_012_own_source_dropped);
   RUN_TEST(itest_ipv6_013_unspecified_source);
-  RUN_XFAIL(itest_ipv6_013_nothing_sent_to_unspecified);
+  RUN_TEST(itest_ipv6_013_nothing_sent_to_unspecified);
   RUN_TEST(itest_ipv6_014_upper_layers_dispatched);
   RUN_TEST(itest_ipv6_017_unknown_next_header);
   RUN_TEST(itest_ipv6_018_extension_headers_walked);
