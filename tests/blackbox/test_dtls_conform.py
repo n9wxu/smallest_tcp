@@ -392,6 +392,7 @@ class TestSilence:
         b"\x16\xfe\xfd\x00\x00",                       # truncated
     ], ids=["type", "dtls12", "forged", "truncated"])
     def test_dtls_030_ignored(self, sut, udp, junk):
+        """REQ-DTLS-014, 022: no record of DTLS 1.3, no answer."""
         udp.send(junk)
         assert udp.recv() is None
 
