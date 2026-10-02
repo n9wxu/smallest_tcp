@@ -265,31 +265,36 @@ or must be accepted:
 | `byte_order_set_twice` | `NET_LITTLE_ENDIAN` together with `NET_BIG_ENDIAN` is refused |
 | `icmpv6_without_transports` | `icmpv6.c` compiles without a warning when neither UDP nor TCP is compiled in |
 
+The unit suites.  A REQ ID in the last column is one the file cites, and
+counts in the requirements coverage (§0); a suite that cites none verifies
+its module's functions, and the rows of its area are traced to the
+integration suite:
+
 | Suite | File | Protocols Covered |
 |---|---|---|
 | `test_endian` | tests/unit/test_endian.c | Byte-order utilities |
-| `test_checksum` | tests/unit/test_checksum.c | net_cksum (REQ-CKS-*) |
-| `test_eth` | tests/unit/test_eth.c | Ethernet (REQ-ETH-*) |
+| `test_checksum` | tests/unit/test_checksum.c | The checksum API: one-shot, incremental, verify, the RFC 1624 update (REQ-CKSUM-*) |
+| `test_eth` | tests/unit/test_eth.c | Ethernet II parse and build (REQ-ETH-009, 017, 019) |
 | `test_net` | tests/unit/test_net.c | net init/dispatch (frame buffers too small for TCP or overlapping refused), `net_transmit()` of a busy driver, `net_hash()` against the HalfSipHash-2-4 reference vectors, `net_random()`, seeds that count every byte and add up, the key from the whole MAC |
-| `test_arp` | tests/unit/test_arp.c | ARP (REQ-ARP-*) |
-| `test_ipv4` | tests/unit/test_ipv4.c | IPv4 (REQ-IPV4-*) |
-| `test_icmp` | tests/unit/test_icmp.c | ICMPv4 (REQ-ICMP-*) |
-| `test_udp` | tests/unit/test_udp.c | UDP (REQ-UDP-*) |
+| `test_arp` | tests/unit/test_arp.c | ARP: the reply to a request for our address, requests for others and malformed ones ignored, the gateway's MAC from a reply, the request sent, the next hop |
+| `test_ipv4` | tests/unit/test_ipv4.c | IPv4 header parse (length, version, IHL, checksum, fragments) and build, the broadcast and local-address tests |
+| `test_icmp` | tests/unit/test_icmp.c | ICMPv4 echo reply; none to a broadcast destination, for a bad checksum or an unknown type |
+| `test_udp` | tests/unit/test_udp.c | UDP dispatch to a handler, Port Unreachable, a bad length, a zero checksum accepted, sending and its checksum |
 | `test_tcp_buf` | tests/unit/test_tcp_buf.c | Stop-and-wait TX/RX buffers (incl. RX ring wrap; bytes in flight after a partial ACK, an ACK beyond the bytes sent) |
 | `test_tcp` | tests/unit/test_tcp.c | TCP (REQ-TCP-*), incl. data/FIN retransmission, partial ACKs, frames the driver did not send (a SYN too), retransmissions counted per segment and not while the peer answers probes of a zero window, tcp_write/output, window updates (also from an ACK of nothing new), the FIN queued behind unsent data, MSS from the RX and TX buffers, RFC 6528 initial sequence numbers, in-order delivery (overlaps trimmed, segments and FINs after a gap not taken), no RST for a broadcast SYN |
 | `test_dns_wire` | tests/unit/test_dns_wire.c | DNS names, compression, parsing (REQ-MDNS-003/043, REQ-DNSSD-031) |
 | `test_mcast` | tests/unit/test_mcast.c | Multicast RX, per-packet TTL, IGMPv2 (REQ-MDNS-002/006) |
 | `test_http` | tests/unit/test_http.c | The HTTP request parser and header formatter (REQ-HTTP-*) |
-| `test_ipv6` | tests/unit/test_ipv6.c | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD (REQ-IPv6-*, REQ-ICMPv6-*, REQ-NDP-*, REQ-SLAAC-004..013) |
-| `test_udp6` | tests/unit/test_udp6.c | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` within one Ethernet frame (REQ-IPv6-044,045, REQ-ICMPv6-016) |
+| `test_ipv6` | tests/unit/test_ipv6.c | IPv6 parse/build + extension headers, EUI-64 / solicited-node / multicast MAC, ICMPv6 echo + errors, NS/NA responder, DAD |
+| `test_udp6` | tests/unit/test_udp6.c | UDP over IPv6: `udp6_ports` dispatch, payload offset after extension headers, mandatory checksum (zero dropped, computed 0 sent as 0xFFFF), Port Unreachable, `udp6_send[_inplace]` within one Ethernet frame (REQ-IPv6-045) |
 | `test_tcp6` | tests/unit/test_tcp6.c | TCP over IPv6: passive/active open, data, RSTs, 4-tuple match by IPv6 address, retransmit, close, reply from the address used, one listener for both families, default MSS 1220, advertised MSS from the RX frame buffer and within the Ethernet MTU (1440), send MSS clamped to the TX frame buffer (IPv4 and IPv6) |
-| `test_slaac` | tests/unit/test_slaac.c | Router Solicitation (format, 3 × 4 s, stops at an RA), Router Advertisement (router + MAC, hop limit, M/O, lifetime 0/expiry, validation), SLAAC (A flag, /64, DAD, link-local prefix, duplicate), lifetimes (deprecate, remove, infinite, 2-hour rule, preferred again), `ipv6_addr_add`, on-link test, reply from the global address (REQ-NDP-034..048, REQ-SLAAC-014..031) |
+| `test_slaac` | tests/unit/test_slaac.c | Router Solicitation (format, 3 × 4 s, stops at an RA), Router Advertisement (router + MAC, hop limit, M/O, lifetime 0/expiry, validation), SLAAC (A flag, /64, DAD, link-local prefix, duplicate), lifetimes (deprecate, remove, infinite, 2-hour rule, preferred again), `ipv6_addr_add`, on-link test, reply from the global address (REQ-SLAAC-021) |
 | `test_mld` | tests/unit/test_mld.c | MLDv2 report before the DAD probe (from ::), repeated once, one group per solicited-node address, `ipv6_mcast_join/leave` (report, frame filter, delivery), general / group queries (delay, validation), MLDv1 compatibility (v1 reports, Done, fallback timeout) — RFC 3810, RFC 2710 |
 | `test_mdns6` | tests/unit/test_mdns6.c | mDNS over IPv6: ff02::fb joined, probes / announcements / goodbyes on both families, AAAA per usable address (not tentative), answers on the query's family, A ↔ AAAA and SRV → AAAA additionals, QU and legacy unicast over IPv6, known-answer suppression, NSEC with AAAA, delayed shared answers, explicit AAAA, conflicts, re-announcing (RFC 6762 §6.2, §8.4, §20) |
-| `test_dhcpv6` | tests/unit/test_dhcpv6.c | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-*) |
+| `test_dhcpv6` | tests/unit/test_dhcpv6.c | DHCPv6 client: Information-Request (DUID-LL, Elapsed Time, ORO), §15 backoff with jitter, stateless Reply → handlers, xid / Client ID / truncated-option checks, Solicit (IA_NA, first RT > IRT), Advertise → Request, Reply → address + DAD, Renew at T1, Rebind at T2, expiry, Request gives up after 10, T1/T2 from the preferred lifetime, Release (REQ-DHCPv6-015, 032..035, 038) |
 | `test_rawsock` | tests/unit/test_rawsock.c | Raw-socket driver: offloaded-checksum completion (portable); context and no-frame checks (Linux); live on a veth pair (Linux, root): send/receive, promiscuous mode, own/outgoing frames ignored, oversize frames dropped whole, kernel TCP/UDP checksums finished |
-| `test_tls_crypto` | tests/unit/test_tls_crypto.c | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, the AES block (FIPS-197, for DTLS), X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-006) |
-| `test_tls_keys` | tests/unit/test_tls_keys.c | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..034); DTLS 1.3's `"dtls13"` labels and `"sn"` key (REQ-DTLS-006) |
+| `test_tls_crypto` | tests/unit/test_tls_crypto.c | Mbed TLS backend known answers: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-128-GCM, the AES block (FIPS-197, for DTLS), X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, certificate chains (alerts, IP names), random (REQ-TLS-054) |
+| `test_tls_keys` | tests/unit/test_tls_keys.c | Key schedule and record protection against RFC 8448 §3 (all secrets, keys, IVs, Finished, eight records byte for byte), §4 (PSK binder, PSK + DHE), §5 (HRR transcript); malformed records (REQ-TLS-026..030, 032..034); DTLS 1.3's `"dtls13"` labels and `"sn"` key (REQ-DTLS-006) |
 | `test_tls_server` | tests/unit/test_tls_server.c | Server handshake against a scripted client: RFC 8448 ServerHellos byte for byte, every refusal, CCS, fragments, small tx, PSK, HelloRetryRequest, max_fragment_length, KeyUpdate (a request met by the peer's own), alerts, a failed key exchange leaving no secret (REQ-TLS-001, 018..025, 030, 031, 035..043) |
 | `test_tls_client` | tests/unit/test_tls_client.c | Client handshake against our server (memory transport) and a scripted server with faults: ClientHello contents, chain/name/CertificateVerify/Finished checks, PSK, HRR, max_fragment_length, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()` (REQ-TLS-010..017, 023, 031) |
 | `test_dtls` | tests/unit/test_dtls.c | DTLS 1.3 (RFC 9147): records rebuilt from the backend's primitives, the unified header, record number encryption, sequence reconstruction, the replay window; our client and server over a network that loses, repeats and reorders datagrams — every datagram of the handshake lost in turn, fragments in any order and overlapping, small MTUs, the timer and its give-up, ACKs, the cookie, HRR, PSK; KeyUpdate acknowledged before use, close_notify, release (REQ-DTLS-*) |
@@ -318,9 +323,14 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 
 ### TCP Unit Test Coverage Matrix (REQ-TCP-*)
 
+TCP rows with tests that cite them: unit tests (`test_tcp_*`),
+integration tests (`itest_tcp_*`) and blackbox tests.  The Test ID column
+of [requirements/tcp.md](requirements/tcp.md) names the tests of every
+row, and `scripts/trace.py --strict` checks it.
+
 | REQ | Description | Test |
 |---|---|---|
-| 001 | 11 TCP states defined | test_tcp_passive_open_syn_synack_ack, test_tcp_active_open_syn_synack_ack |
+| 001 | 11 TCP states defined | itest_tcp_002_passive_open, itest_tcp_003_active_open, itest_tcp_005_active_close, itest_tcp_006_passive_close, itest_tcp_007_simultaneous_close |
 | 002 | Passive open (LISTEN) | test_tcp_passive_open_syn_synack_ack |
 | 003 | Active open (SYN_SENT) | test_tcp_active_open_syn_synack_ack |
 | 005 | Active close (FIN_WAIT_1) | test_tcp_active_close |
@@ -331,15 +341,15 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 016 | `tcp_abort()`: RST only where the peer holds the connection open (§3.10.5) | itest_tcp_016_abort_before_open_sends_nothing, itest_tcp_016_abort_in_syn_received_sends_rst |
 | 018 | Checksum on TX | test_tcp_checksum_basic |
 | 019 | Checksum verify on RX | test_tcp_checksum_basic |
-| 028/029/153 | ISS = 4 µs clock + keyed hash (RFC 6528) | test_tcp_isn_is_clock_plus_keyed_hash, test_tcp_isn_depends_on_secret; test_tcp_153_iss_differs_across_connections (blackbox) |
+| 028/029/153 | ISS = 4 µs clock + keyed hash (RFC 6528) | itest_tcp_028_iss_clock_driven, itest_tcp_153_iss_depends_on_every_seed_byte; test_tcp_153_iss_differs_across_connections (blackbox) |
 | 031 | ACK in LISTEN → RST | test_tcp_ack_in_listen_generates_rst |
 | 041/042 | Out-of-window → ACK only | test_tcp_out_of_window_gets_ack |
 | 046/047 | RST in ESTABLISHED → CLOSED; in SYN-RECEIVED → LISTEN (passive open) or CLOSED (active) | test_tcp_rst_in_established_aborts; itest_tcp_046_rst_in_syn_received_listens_again, itest_tcp_046_rst_in_active_syn_received_closes, itest_tcp_090_syn_received_given_up_listens_again |
 | 048 | RST in LAST_ACK → CLOSED | test_tcp_rst_in_last_ack_closes |
 | 051 | SYN in ESTABLISHED → error; in a passive SYN-RECEIVED → LISTEN | test_tcp_syn_in_established_gets_rst; itest_tcp_051_syn_in_syn_received_listens_again |
 | 053 | No ACK bit → discard | test_tcp_no_ack_bit_discarded |
-| 054 | ESTABLISHED on ACK to SYN-ACK | test_tcp_passive_open_syn_synack_ack |
-| 058 | Window update from an ACK of nothing new | test_tcp_window_update_resumes_sending |
+| 054 | ESTABLISHED on ACK to SYN-ACK | itest_tcp_002_passive_open; test_tcp_003_three_way_handshake (blackbox) |
+| 058 | Window update from an ACK of nothing new | itest_tcp_058_send_window |
 | 059/071 | FIN exchange | test_tcp_active_close, test_tcp_passive_close |
 | 072 | Unknown port → RST | test_tcp_rst_sent_for_unknown_port |
 | 073 | RST.SEQ = ACK from LISTEN | test_tcp_ack_in_listen_generates_rst |
@@ -348,7 +358,7 @@ The `Makefile` has no host targets: it builds the Cortex-M0 size benchmarks
 | 077 | Advertised MSS ≤ 1460, from the RX frame buffer | test_tcp_synack_contains_mss, test_tcp_mss_advertised_from_rx_buffer, test_tcp6_our_mss_within_ethernet_mtu |
 | 078 | Peer MSS stored | test_tcp_peer_mss_stored |
 | 079 | Default MSS = 536 | test_tcp_default_peer_mss_536 |
-| 081 | Segments fit the TX frame buffer | test_tcp_segments_fit_tx_buffer |
+| 081 | Segments fit the TX frame buffer | itest_tcp_077_mss_from_the_frame_buffers, itest_tcp_078_peer_mss_and_options; test_tcp_078_sut_honors_our_mss (blackbox) |
 | 082/083 | Window advertised > 0 | test_tcp_window_advertised_nonzero |
 | 085–087 | Zero-window persist timer; data in flight or our FIN resent into a zero window as probes, never given up while the peer answers (RFC 1122 §4.2.2.17) | test_tcp_persist_starts_on_zero_window, test_tcp_persist_probe_sent_on_timeout, test_tcp_persist_stops_when_window_opens, test_tcp_fin_into_zero_window_waits_while_peer_answers, test_tcp_data_into_shrunk_window_waits_while_peer_answers, test_tcp_fin_into_zero_window_given_up_when_peer_silent; test_tcp_085_persist_probe_on_zero_window (blackbox) |
 | 090 | Retransmit on timeout | test_tcp_retransmit_on_timeout |
