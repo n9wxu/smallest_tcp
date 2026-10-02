@@ -183,3 +183,19 @@ add_config_rejected_test(dhcpv4_client_needs_ipv4 src/dhcpv4_client.c
     "IPv4 is not compiled in" -DNET_USE_IPV4=0 -DNET_USE_IPV6=1)
 add_config_rejected_test(network_layer_needed src/net.c
     "no network layer" -DNET_USE_IPV4=0 -DNET_USE_IPV6=0)
+
+# ── Configurations that must compile ─────────────────────────────────
+#
+# A compiler that does not predefine __BYTE_ORDER__ is told the byte order
+# by hand, as net_endian.h's own error message says.
+
+function(add_config_accepted_test name source)
+    add_test(NAME ${name} COMMAND ${CMAKE_C_COMPILER} -std=c99 -fsyntax-only
+        -I${PROJECT_SOURCE_DIR}/include ${ARGN} ${PROJECT_SOURCE_DIR}/${source})
+endfunction()
+
+add_config_accepted_test(byte_order_set_by_hand src/net_cksum.c
+    -U__BYTE_ORDER__ -DNET_LITTLE_ENDIAN=1)
+# Not met yet: the header stops at its #error whatever the application
+# defines.  The test must fail until it is.
+set_tests_properties(byte_order_set_by_hand PROPERTIES WILL_FAIL TRUE)
