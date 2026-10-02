@@ -106,7 +106,7 @@ def client(request):
 
 
 def test_dtls_c01_echo(server, client):
-    """REQ-DTLS-001..007, -019, -033: a handshake with the certificate
+    """REQ-DTLS-001..007, 019, 033: a handshake with the certificate
     checked, 3000 bytes in datagrams, echoed intact, close_notify."""
     server()
     rc, out = client(TLS_BYTES="3000")
@@ -124,7 +124,7 @@ def test_dtls_c02_cookie(server, client):
 
 
 def test_dtls_c03_key_update_from_server(server, client):
-    """REQ-DTLS-052, -061: the server updates its keys before sending; the
+    """REQ-DTLS-052, 061: the server updates its keys before sending; the
     client acknowledges the KeyUpdate and reads what follows."""
     server("-U")
     rc, out = client(TLS_BYTES="100")

@@ -430,7 +430,8 @@ static size_t cert_msg(const tls_config_t *cfg, uint8_t *m) {
 }
 
 /* Read and check the ServerHello (and a dummy CCS) at the start of
- * out[]; derive the handshake keys.  *off: the bytes read. */
+ * out[]; derive the handshake keys.  *off: the bytes read.
+ * REQ-TLS-018: supported_versions selects TLS 1.3 */
 static int peer_read_sh(peer_t *p, size_t *off) {
   const uint8_t *sh, *q, *key = NULL;
   size_t rl, sh_len, elen, klen = 0;
@@ -505,7 +506,9 @@ static int peer_read_sh(peer_t *p, size_t *off) {
   return 0;
 }
 
-/* Read and check the server's first flight in out[] */
+/* Read and check the server's first flight in out[].  REQ-TLS-019, 020,
+ * 021, 024: EncryptedExtensions, then Certificate and CertificateVerify
+ * (with a PSK neither), then Finished */
 static int peer_read_flight(peer_t *p) {
   static uint8_t buf[4096], want[2048];
   const uint8_t *q;
@@ -626,7 +629,8 @@ static int peer_open(peer_t *p, size_t *off, uint8_t *type, uint8_t *buf) {
   return tls_record_open(&c, &p->rd, buf, rl, type);
 }
 
-/* Full handshake with ClientHello options @p o */
+/* Full handshake with ClientHello options @p o.  REQ-TLS-022, 038: the
+ * client's Finished checks out, and only then TLS_EVT_CONNECTED */
 static int handshake(tls_conn_t *s, const tls_config_t *cfg,
                      const ch_opt_t *o, size_t tx_cap) {
   static uint8_t m[2048], rec[256];
@@ -649,7 +653,8 @@ static int handshake(tls_conn_t *s, const tls_config_t *cfg,
 }
 
 /* ClientHello with options @p o; the server must answer with fatal alert
- * @p alert in plaintext, as its only output */
+ * @p alert in plaintext, as its only output, and report TLS_EVT_ERROR
+ * (REQ-TLS-037, 040) */
 static int refused_by(const tls_config_t *cfg, const ch_opt_t *o,
                       uint8_t alert) {
   static uint8_t m[2048];
@@ -1138,6 +1143,7 @@ TEST(test_refuse_oversize_header_at_once) {
   ASSERT_EQ(s.alert, TLS_ALERT_RECORD_OVERFLOW);
 }
 
+/* REQ-TLS-041: a record that the receive buffer cannot hold */
 TEST(test_refuse_record_larger_than_buffer) {
   tls_conn_t s;
   ASSERT_EQ(tls_init(&s, &cfg_ec, srv_rx, 1024, srv_tx, sizeof(srv_tx)), 0);
@@ -1341,6 +1347,8 @@ TEST(test_empty_app_record) {
   ASSERT_EQ(buf[0], 'x');
 }
 
+/* REQ-TLS-043: tls_write() takes what fits in tx with the record's
+ * overhead */
 TEST(test_write_partial_when_tx_full) {
   tls_conn_t s;
   static uint8_t big[5000];
@@ -1626,6 +1634,7 @@ TEST(test_close_once) {
   ASSERT_EQ(drain(&s), (size_t)(2 + TLS_RECORD_OVERHEAD));
 }
 
+/* REQ-TLS-043 */
 TEST(test_write_needs_room_for_a_byte) {
   /* 20 bytes free cannot carry a record: nothing is written */
   static uint8_t big[5000];
@@ -1640,7 +1649,8 @@ TEST(test_write_needs_room_for_a_byte) {
 
 static int peer_read_hrr(peer_t *p, uint16_t *group);
 
-/* ══ Pre-shared keys (REQ-TLS-023/024) ════════════════════════════ */
+/* ══ Pre-shared keys (REQ-TLS-023/024; the key and its identity from
+ * the configuration, REQ-TLS-025) ═════════════════════════════════ */
 
 TEST(test_rfc8448_psk_server_hello) {
   /* The RFC's resumption ClientHello (a ticket as identity, "res binder",
@@ -2417,6 +2427,7 @@ TEST(test_key_update_needs_connection) {
 
 /* ══ API ══════════════════════════════════════════════════════════ */
 
+/* REQ-TLS-007, 042: no configuration, buffers too small */
 TEST(test_init_and_accept_checks) {
   tls_conn_t s;
   tls_config_t bare = cfg_ec;

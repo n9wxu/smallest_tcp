@@ -79,8 +79,10 @@ TEST(test_keys_from_secret) {
 
 /* ══ Sealing ══════════════════════════════════════════════════════ */
 
-/* 0x2C | epoch bits: fixed bits 001, no CID, 16-bit sequence number,
- * length present; the rest exactly as the RFC builds it */
+/* REQ-DTLS-011, 015, 016: 0x2C | epoch bits — fixed bits 001, no CID, a
+ * 16-bit sequence number, length present; the rest exactly as the RFC
+ * builds it (the header before masking as additional data, the nonce
+ * from the 64-bit sequence number, the record number masked) */
 TEST(test_seal_as_rfc_describes) {
   static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
   dtls_keys_t w, ref;
@@ -166,7 +168,7 @@ TEST(test_parse_uses_the_length) {
   ASSERT_EQ(h.len, n - 4);
 }
 
-/* REQ-DTLS-013, -014: a CID we never negotiated, a first byte that is no
+/* REQ-DTLS-013, 014: a CID we never negotiated, a first byte that is no
  * DTLSCiphertext, a header or length running past the datagram */
 TEST(test_parse_refuses) {
   uint8_t rec[40];
@@ -509,7 +511,7 @@ static size_t first_client_hello(uint8_t *out) {
 
 /* ── Formats ── */
 
-/* REQ-DTLS-002, -010, -030, -031: DTLSPlaintext, epoch 0, record 0; the
+/* REQ-DTLS-002, 010, 030, 031: DTLSPlaintext, epoch 0, record 0; the
  * whole ClientHello as message 0; legacy_version {254, 253}, no session
  * id, an empty legacy_cookie, DTLS 1.3 in supported_versions */
 TEST(test_client_hello_format) {
@@ -532,7 +534,7 @@ TEST(test_client_hello_format) {
   ASSERT_TRUE(v && vl == 3 && v[0] == 2 && be16(v + 1) == 0xfefc);
 }
 
-/* REQ-DTLS-004, -005, -043: the server's first answer is a
+/* REQ-DTLS-004, 005, 043: the server's first answer is a
  * HelloRetryRequest with a cookie; its ServerHello and HelloRetryRequest
  * say {254, 253}, echo no session id, select DTLS 1.3; nothing is a
  * change_cipher_spec */
@@ -561,7 +563,7 @@ TEST(test_server_hello_format) {
       ASSERT_TRUE(trace[d][i].b[0] != TLS_CT_CHANGE_CIPHER_SPEC);
 }
 
-/* REQ-DTLS-018, -011: epochs 0, 2, 3 as the handshake goes */
+/* REQ-DTLS-018, 011: epochs 0, 2, 3 as the handshake goes */
 TEST(test_epochs) {
   ASSERT_EQ(pair(&cli, &srv, MTU, 3), 0);
   ASSERT_TRUE(connected());
@@ -696,7 +698,7 @@ static int lose_one(int dir, int i, const uint8_t *dg, size_t n) {
   return dir == lose_dir && i == lose_index;
 }
 
-/* REQ-DTLS-036, -038, -039: each datagram of the handshake lost once in
+/* REQ-DTLS-036, 038, 039: each datagram of the handshake lost once in
  * turn — the flight it was part of is sent again, the ACK too */
 TEST(test_each_datagram_lost) {
   for (lose_dir = 0; lose_dir < 2; lose_dir++)
@@ -740,7 +742,7 @@ static int measure(int dir, int i, const uint8_t *dg, size_t n) {
   return 0;
 }
 
-/* REQ-DTLS-019, -020, -033: small datagrams — the flight in fragments */
+/* REQ-DTLS-019, 020, 033: small datagrams — the flight in fragments */
 TEST(test_small_mtu) {
   largest = 0;
   net_reset();
@@ -797,7 +799,8 @@ TEST(test_retransmission_cut_differently) {
 /* ── The timer ── */
 
 /* REQ-DTLS-037: 1 s, doubling, at most 60 s; given up after
- * DTLS_MAX_RETRANSMITS retransmissions (REQ-DTLS-038) */
+ * DTLS_MAX_RETRANSMITS retransmissions (REQ-DTLS-038).  REQ-DTLS-031, 035:
+ * a retransmission is the same message, byte for byte, in a new record */
 TEST(test_timer) {
   static const uint32_t wait[] = {1000, 2000, 4000, 8000, 16000, 32000};
   const uint8_t *p;
@@ -825,7 +828,7 @@ TEST(test_timer) {
 
 /* ── ACKs ── */
 
-/* REQ-DTLS-052, -053, -056: the server acknowledges the client's last
+/* REQ-DTLS-050, 052, 053, 056: the server acknowledges the client's last
  * flight, in epoch 3, naming its record; the client stops sending it */
 static dtls_keys_t ack_keys;
 static int ack_seen;
@@ -975,8 +978,9 @@ TEST(test_max_fragment_length) {
 
 /* ── Records that do not belong ── */
 
-/* REQ-DTLS-014, -022: garbage, a damaged record, a truncated one: dropped
- * without a word, and the handshake goes on */
+/* REQ-DTLS-014, 022: garbage, a damaged record, a truncated one: dropped
+ * without a word, and the handshake goes on.  REQ-DTLS-023: the record
+ * that failed authentication is counted */
 TEST(test_bad_records_dropped) {
   static const uint8_t junk[] = {0x40, 1, 2, 3, 4, 5, 6, 7};
   uint8_t bad[1600];
@@ -1217,7 +1221,7 @@ TEST(test_key_update) {
   ASSERT_MEM_EQ(buf, "new", 3);
 }
 
-/* REQ-DTLS-060, -039: the ACK lost: the KeyUpdate again, the ACK again */
+/* REQ-DTLS-060, 039: the ACK lost: the KeyUpdate again, the ACK again */
 TEST(test_key_update_ack_lost) {
   int acks;
   ASSERT_TRUE(handshake());
@@ -1293,7 +1297,7 @@ TEST(test_last_epoch) {
   ASSERT_EQ(dtls_pending(&cl, &p), 0);
 }
 
-/* REQ-DTLS-046, -047: close_notify once; what comes after is ignored */
+/* REQ-DTLS-046, 047: close_notify once; what comes after is ignored */
 TEST(test_close_notify) {
   uint8_t after[64], buf[16];
   const uint8_t *p;
@@ -1354,7 +1358,7 @@ TEST(test_release) {
   ASSERT_TRUE(connected());
 }
 
-/* REQ-DTLS-052, -053: a NewSessionTicket is ignored — and acknowledged */
+/* REQ-DTLS-052, 053: a NewSessionTicket is ignored — and acknowledged */
 TEST(test_new_session_ticket_acknowledged) {
   uint8_t rec[128], out[128], type;
   const uint8_t *p;

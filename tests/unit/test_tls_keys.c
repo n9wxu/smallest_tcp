@@ -47,7 +47,8 @@ static void transcript(int n, uint8_t out[32]) {
   c.hash_peek(&h, out);
 }
 
-/* ══ Key schedule ═════════════════════════════════════════════════ */
+/* ══ Key schedule (REQ-TLS-032, 033; the transcript hashes of RFC 8448's
+ * messages, REQ-TLS-034) ═════════════════════════════════════════ */
 
 TEST(test_early_secret_no_psk) {
   uint8_t s[32];
@@ -274,7 +275,7 @@ TEST(test_equal) {
   ASSERT_EQ(tls_equal(a, b, 0), 1);
 }
 
-/* ══ DTLS 1.3: the "dtls13" label prefix (RFC 9147 §5.9) ══════════
+/* ══ DTLS 1.3: the "dtls13" label prefix (RFC 9147 §5.9, REQ-DTLS-006)
  * Expected values from tests/tls/gen_dtls13.py, an independent HKDF, on
  * RFC 8448 §3's secrets. */
 
@@ -306,7 +307,8 @@ TEST(test_dtls13_labels_differ_from_tls) {
   ASSERT_TRUE(memcmp(k.key, d13_key, 16) != 0);
 }
 
-/* ══ Record protection ════════════════════════════════════════════ */
+/* ══ Record protection (REQ-TLS-026, 027: RFC 8448's records byte for
+ * byte) ══════════════════════════════════════════════════════════ */
 
 static uint8_t rec[TLS_RECORD_HDR + TLS_MAX_CIPHERTEXT + 64];
 

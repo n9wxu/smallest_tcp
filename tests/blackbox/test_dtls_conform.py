@@ -244,7 +244,7 @@ def established(sut, count=1):
 # ── Interop: wolfSSL's client ────────────────────────────────────────────────
 
 class TestInterop:
-    """REQ-DTLS-001..007, -042, -052, -060: a whole handshake, the echo of
+    """REQ-DTLS-001..007, 042, 052, 060: a whole handshake, the echo of
     the client's message, and close_notify, for each way a client may
     start."""
 
@@ -273,7 +273,7 @@ class TestInterop:
 
     def test_dtls_004_key_update_from_client(self, sut, wolfssl):
         """-I: the client updates its keys before sending; the SUT
-        acknowledges the KeyUpdate and follows it (REQ-DTLS-060, -061)."""
+        acknowledges the KeyUpdate and follows it (REQ-DTLS-060, 061)."""
         rc, out = wolfssl("-I")
         self._ok(sut, rc, out, "SECP256R1")
 
@@ -334,7 +334,7 @@ class TestInterop:
 
 class TestCookie:
     def test_dtls_020_cookie(self, sut, udp):
-        """REQ-DTLS-004, -043: a HelloRetryRequest with a cookie, DTLS's
+        """REQ-DTLS-004, 043: a HelloRetryRequest with a cookie, DTLS's
         versions, no session id echoed."""
         udp.send(plaintext_handshake(HS_CLIENT_HELLO, client_hello_body()))
         reply = udp.recv()
@@ -383,7 +383,7 @@ class TestCookie:
 
 
 class TestSilence:
-    """REQ-DTLS-014, -022: what is not DTLS 1.3 gets no answer at all."""
+    """REQ-DTLS-014, 022: what is not DTLS 1.3 gets no answer at all."""
 
     @pytest.mark.parametrize("junk", [
         b"\x40" + b"\x00" * 40,                        # no content type
