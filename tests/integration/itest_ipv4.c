@@ -15,6 +15,8 @@ static itest_t t;
 static int delivered;
 static uint8_t got[4096]; /* the last datagram delivered */
 static uint16_t got_len;
+static int errors;
+static udp_icmp_error_t err; /* the last error reported */
 
 static void on_datagram(net_t *net, uint32_t src_ip, uint16_t src_port,
                         const uint8_t *src_mac, const uint8_t *data,
@@ -28,6 +30,12 @@ static void on_datagram(net_t *net, uint32_t src_ip, uint16_t src_port,
   memcpy(got, data, got_len);
 }
 
+static void on_error(net_t *net, const udp_icmp_error_t *e) {
+  (void)net;
+  errors++;
+  err = *e;
+}
+
 #define OPEN_PORT 7000
 #define CLOSED_PORT 7001
 
@@ -36,7 +44,8 @@ static const udp_port_entry_t ports[] = {{OPEN_PORT, on_datagram}};
 static void up(void) {
   ASSERT_EQ(itest_up(&t, 1514, 1514), NET_OK);
   udp_set_ports(&t.net, ports, 1);
-  delivered = 0;
+  udp_set_error_handler(&t.net, on_error);
+  delivered = errors = 0;
 }
 
 /* A UDP datagram from @p src to @p dst at our MAC, port @p port */
@@ -320,10 +329,11 @@ TEST(itest_icmpv4_035_036_no_error_about_broadcasts_or_unspecified) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
-/* REQ-ICMPv4-001, 002, 003, 004, 005, 006, 032, 033, REQ-CKSUM-015,
+/* REQ-ICMPv4-001, 002, 003, 004, 005, 006, 007, 032, 033, REQ-CKSUM-015,
  * REQ-IPv4-017: Echo Reply, Code 0, the request's identifier, sequence and
  * data, from our address to its source, the checksum over the whole ICMP
- * message */
+ * message; the reply is built in the TX buffer, the request left as it
+ * came in the RX buffer */
 TEST(itest_icmpv4_001_echo_reply_code_zero) {
   static const uint8_t rest[4] = {0x12, 0x34, 0x00, 0x07};
   uint8_t msg[64], f[128];
@@ -333,9 +343,12 @@ TEST(itest_icmpv4_001_echo_reply_code_zero) {
   up();
   ip.dst = t.net.ipv4_addr;
   n = peer_icmp(msg, 8, 9 /* a non-zero Code */, rest, "ping", 4);
+  n = peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n);
   wire_clear(&t);
-  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
+  itest_receive(&t, f, n);
   ASSERT_TRUE(sent_icmp(&rip, &icmp));
+  ASSERT_MEM_EQ(t.rx_buf, f, n);
+  ASSERT_MEM_EQ(t.tx_buf, wire_sent(&t, 0)->data, n);
   ASSERT_EQ(rip.src, t.net.ipv4_addr);
   ASSERT_EQ(rip.dst, PEER_IP);
   ASSERT_EQ(rip.proto, 1);
@@ -965,6 +978,261 @@ TEST(itest_icmpv4_045_address_mask_ignored) {
   ASSERT_EQ(t.net.subnet_mask, 0xFFFFFF00u);
 }
 
+/* ── ICMP messages received, and the ones never sent ── */
+
+/* An ICMP message of @p type and @p code from the peer to us, with
+ * @p len bytes after its 8-byte header; its checksum made wrong if @p bad */
+static void icmp_message(uint8_t type, uint8_t code, const void *data,
+                         uint16_t len, int bad) {
+  uint8_t msg[128], f[192];
+  peer_ip_t ip = peer_ip(PEER_IP, t.net.ipv4_addr, 1);
+  uint16_t n = peer_icmp(msg, type, code, NULL, data, len);
+  if (bad)
+    msg[n - 1] ^= 0x01;
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
+}
+
+/* A datagram sent from port 5000 to the peer's port 6000; what an ICMP
+ * error about it quotes — its IP header and 8 bytes — into @p quote */
+static void send_and_quote(uint8_t quote[28]) {
+  wire_clear(&t);
+  udp_send(&t.net, PEER_IP, peer_mac, 5000, 6000, (const uint8_t *)"hello", 5);
+  memcpy(quote, wire_sent(&t, 0)->data + 14, 28);
+  wire_clear(&t);
+}
+
+/* REQ-ICMPv4-011, 013, 014, 015: Destination Unreachable about a datagram
+ * of ours goes up to its transport, whatever the code — Net, Host,
+ * Protocol, Port, Source Route Failed, administratively prohibited */
+TEST(itest_icmpv4_014_unreachable_codes_reported) {
+  static const uint8_t codes[] = {0, 1, 2, 3, 5, 13};
+  uint8_t quote[28];
+  unsigned i;
+  up();
+  send_and_quote(quote);
+  for (i = 0; i < sizeof(codes); i++) {
+    icmp_message(3, codes[i], quote, 28, 0);
+    ASSERT_EQ(errors, (int)i + 1);
+    ASSERT_EQ(err.type, 3);
+    ASSERT_EQ(err.code, codes[i]);
+    ASSERT_EQ(err.local_port, 5000);
+    ASSERT_EQ(err.dst_port, 6000);
+    ASSERT_EQ(err.dst_ip, PEER_IP);
+  }
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* REQ-ICMPv4-012, 042: an error is taken by the IP header it quotes; a
+ * quote that is no whole IPv4 header — its header length less than 5
+ * words, or cut short — names no transport, and the error is discarded */
+TEST(itest_icmpv4_012_quote_must_be_an_ip_header) {
+  uint8_t quote[28];
+  up();
+  send_and_quote(quote);
+  icmp_message(3, 3, quote, 28, 0);
+  ASSERT_EQ(errors, 1);
+  ASSERT_EQ(err.quote_len, 28);
+  quote[0] = 0x44; /* a header of 16 bytes */
+  icmp_message(3, 3, quote, 28, 0);
+  quote[0] = 0x40; /* a header of none */
+  icmp_message(3, 3, quote, 28, 0);
+  quote[0] = 0x4F; /* a header of 60 bytes, 28 of them here */
+  icmp_message(3, 3, quote, 28, 0);
+  quote[0] = 0x65; /* not IPv4 */
+  icmp_message(3, 3, quote, 28, 0);
+  quote[0] = 0x45;
+  icmp_message(3, 3, quote, 19, 0); /* less than a header */
+  ASSERT_EQ(errors, 1);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
+/* REQ-ICMPv4-041: an error is parsed where it lies: the quote its
+ * transport is handed points into the application's RX buffer */
+TEST(itest_icmpv4_041_error_parsed_in_place) {
+  uint8_t quote[28];
+  up();
+  send_and_quote(quote);
+  icmp_message(3, 3, quote, 28, 0);
+  ASSERT_EQ(errors, 1);
+  ASSERT_TRUE(err.quote == t.rx_buf + 14 + 20 + 8);
+  ASSERT_MEM_EQ(err.quote, quote, 28);
+}
+
+/* REQ-ICMPv4-031, 033: the checksum is checked over the whole message —
+ * header and data — before anything else: an Echo Request or an error with
+ * one bit of its data wrong is discarded */
+TEST(itest_icmpv4_031_bad_checksum_discarded) {
+  uint8_t quote[28];
+  up();
+  send_and_quote(quote);
+  icmp_message(8, 0, "ping", 4, 1);
+  icmp_message(3, 3, quote, 28, 1);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(errors, 0);
+  icmp_message(8, 0, "ping", 4, 0);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  icmp_message(3, 3, quote, 28, 0);
+  ASSERT_EQ(errors, 1);
+}
+
+/* REQ-ICMPv4-040, REQ-ICMPv4-010 (deviation: no ping client): a message of
+ * a type the host does not implement — unknown, Timestamp, Information
+ * Request, an Echo Reply nobody asked for — is discarded without a word */
+TEST(itest_icmpv4_040_unknown_types_discarded) {
+  static const uint8_t types[] = {42, 255, 13, 14, 15, 16, 0, 9, 10};
+  static const uint8_t body[12] = {0};
+  unsigned i;
+  up();
+  wire_clear(&t);
+  for (i = 0; i < sizeof(types); i++)
+    icmp_message(types[i], 0, body, sizeof(body), 0);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(errors, 0);
+  ASSERT_EQ(delivered, 0);
+  icmp_message(8, 0, "ping", 4, 0); /* still alive */
+  ASSERT_EQ(t.wire.tx_count, 1);
+}
+
+/* REQ-ICMPv4-009: an Echo Request to a broadcast address or a group is
+ * not answered */
+TEST(itest_icmpv4_009_no_echo_reply_to_many) {
+  static const uint8_t all_hosts_mac[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0x01};
+  static const uint8_t rest[4] = {0, 1, 0, 1};
+  static const uint32_t many[] = {0xFFFFFFFFu, 0x0A0000FFu, 0x0AFFFFFFu,
+                                  0xE0000001u};
+  uint8_t msg[32], f[64];
+  unsigned i;
+  up();
+  wire_clear(&t);
+  for (i = 0; i < sizeof(many) / sizeof(many[0]); i++) {
+    peer_ip_t ip = peer_ip(PEER_IP, many[i], 1);
+    uint16_t n = peer_icmp(msg, 8, 0, rest, "ping", 4);
+    itest_receive(&t, f,
+                  peer_ipv4_frame(f, i == 3 ? all_hosts_mac : broadcast_mac,
+                                  peer_mac, &ip, msg, n));
+  }
+  ASSERT_EQ(t.wire.tx_count, 0);
+  echo_request(PEER_IP, t.net.ipv4_addr, 4);
+  ASSERT_EQ(t.wire.tx_count, 1);
+}
+
+/* REQ-ICMPv4-028, 048: a Source Quench is discarded — nothing goes up,
+ * nothing is answered — and nothing reacts to it: the next datagrams to
+ * that destination go out at once, as before (no RFC 1016 delay) */
+TEST(itest_icmpv4_028_source_quench_changes_nothing) {
+  uint8_t quote[28];
+  int i;
+  up();
+  send_and_quote(quote);
+  for (i = 0; i < 5; i++)
+    icmp_message(4, 0, quote, 28, 0);
+  ASSERT_EQ(errors, 0);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  for (i = 0; i < 5; i++)
+    ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 5000, 6000,
+                       (const uint8_t *)"hello", 5),
+              NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 5);
+}
+
+/* REQ-ICMPv4-037: no error is sent about a fragment that is not the
+ * first: fragments of a datagram for a closed port, or of an unknown
+ * protocol, draw nothing while they are fragments; reassembled, the
+ * datagram draws one error, quoting fragment zero */
+TEST(itest_icmpv4_037_no_error_about_a_fragment) {
+  static uint8_t reasm[IPV4_REASSEMBLY_BUFFER(1500)];
+  static uint8_t data[1000];
+  uint8_t f[1600];
+  peer_ip_t ip = peer_ip(PEER_IP, 0, 17), rip;
+  peer_icmp_t icmp;
+  uint16_t n;
+  up();
+  ip.dst = t.net.ipv4_addr;
+  seg_len = peer_udp(seg, &ip, 5000, CLOSED_PORT, data, sizeof(data));
+  wire_clear(&t);
+  fragment(512, 496, 0, 90); /* no buffer: every fragment is dropped */
+  fragment(0, 512, 1, 90);
+  ip.proto = 253; /* an unknown protocol, in fragments */
+  ip.id = 91;
+  ip.mf = 1;
+  n = peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, data, 512);
+  itest_receive(&t, f, n);
+  ip.mf = 0;
+  ip.frag_offset = 512;
+  n = peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, data, 96);
+  itest_receive(&t, f, n);
+  ASSERT_EQ(t.wire.tx_count, 0);
+
+  ASSERT_EQ(ipv4_set_reassembly(&t.net, reasm, sizeof(reasm)), NET_OK);
+  fragment(512, 496, 0, 92);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  fragment(0, 512, 1, 92);
+  ASSERT_TRUE(sent_icmp(&rip, &icmp)); /* one error, about the whole */
+  ASSERT_EQ(icmp.type, 3);
+  ASSERT_EQ(icmp.code, 3);
+  ASSERT_EQ(peer_get16(icmp.data + 4), 92);         /* its ID */
+  ASSERT_EQ(peer_get16(icmp.data + 6) & 0x1FFF, 0); /* offset 0 */
+  ASSERT_EQ(peer_get16(icmp.data + 22), CLOSED_PORT);
+}
+
+/* The ICMP messages among the frames sent: how many, and in @p other how
+ * many of them are not Destination Unreachable with code 2 or 3 */
+static int icmp_sent(int *other) {
+  peer_ip_t ip;
+  peer_icmp_t icmp;
+  uint16_t i;
+  int n = 0;
+  *other = 0;
+  for (i = 0; wire_sent(&t, i); i++) {
+    if (!peer_parse_ipv4(wire_sent(&t, i), &ip) || !peer_parse_icmp(&ip, &icmp))
+      continue;
+    n++;
+    if (icmp.type != 3 || (icmp.code != 2 && icmp.code != 3))
+      (*other)++;
+  }
+  return n;
+}
+
+/* REQ-ICMPv4-023, 026, 027, REQ-ICMPv4-030 (deviation): what a router
+ * would answer with a Redirect, Time Exceeded in transit, Source Quench
+ * or Parameter Problem draws none of them from the host: a datagram for
+ * another host, datagrams whose TTL has run out, a burst, a malformed
+ * option.  The only errors sent are Protocol and Port Unreachable. */
+TEST(itest_icmpv4_023_only_host_errors_sent) {
+  static const uint8_t bad_option[4] = {0x9E, 40, 0, 0};
+  uint8_t f[128], s2[64];
+  peer_ip_t ip = peer_ip(PEER_IP, 0, 17);
+  uint16_t n;
+  int i, other;
+  up();
+  wire_clear(&t);
+  ip.dst = t.net.ipv4_addr;
+  n = peer_udp(s2, &ip, 5000, CLOSED_PORT, "x", 1);
+  ip.ttl = 0;
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, s2, n));
+  ip.ttl = 1;
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, s2, n));
+  ip.ttl = 64;
+  for (i = 0; i < 10; i++)
+    itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, s2, n));
+  ip.options = bad_option;
+  ip.options_len = 4;
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, s2, n));
+  ip.options_len = 0;
+  ip.proto = 253;
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, s2, n));
+  itest_receive(
+      &t, f,
+      peer_udp_frame(f, &t.net, PEER_IP, PEER2_IP, 5000, CLOSED_PORT, "x", 1));
+  itest_receive(
+      &t, f,
+      peer_udp_frame(f, &t.net, PEER_IP, REMOTE_IP, 5000, CLOSED_PORT, "x", 1));
+  itest_advance(&t, 120000, 1000);
+  ASSERT_EQ(icmp_sent(&other), 14);
+  ASSERT_EQ(other, 0);
+  ASSERT_EQ(t.wire.tx_count, 14);
+}
+
 int main(void) {
   fprintf(stderr, "=== itest_ipv4 ===\n");
   RUN_TEST(itest_ipv4_001_invalid_headers_discarded);
@@ -1016,6 +1284,15 @@ int main(void) {
   RUN_TEST(itest_icmpv4_019_redirect_ignored);
   RUN_TEST(itest_icmpv4_043_quote_unchanged);
   RUN_TEST(itest_icmpv4_045_address_mask_ignored);
+  RUN_TEST(itest_icmpv4_014_unreachable_codes_reported);
+  RUN_XFAIL(itest_icmpv4_012_quote_must_be_an_ip_header);
+  RUN_TEST(itest_icmpv4_041_error_parsed_in_place);
+  RUN_TEST(itest_icmpv4_031_bad_checksum_discarded);
+  RUN_TEST(itest_icmpv4_040_unknown_types_discarded);
+  RUN_TEST(itest_icmpv4_009_no_echo_reply_to_many);
+  RUN_TEST(itest_icmpv4_028_source_quench_changes_nothing);
+  RUN_TEST(itest_icmpv4_037_no_error_about_a_fragment);
+  RUN_TEST(itest_icmpv4_023_only_host_errors_sent);
   ITEST_REPORT();
   return test_failures;
 }

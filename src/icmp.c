@@ -1,6 +1,6 @@
 /**
  * @file icmp.c
- * @brief ICMPv4 (RFC 792).  REQ-ICMPv4-001..041.
+ * @brief ICMPv4 (RFC 792).  REQ-ICMPv4-001..048.
  */
 
 #include "icmp.h"

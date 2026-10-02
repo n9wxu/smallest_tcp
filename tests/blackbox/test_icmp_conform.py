@@ -26,14 +26,8 @@ from helpers import (
 def _icmp_checksum_ok(pkt):
     """Verify ICMP checksum.
 
-    The correct approach: compute the one's-complement sum of ALL bytes of
-    the ICMP message (including the checksum field as received).  If the
-    checksum is valid the result must equal 0xFFFF.
-
-    The previous implementation zeroed the checksum field and then checked
-    (~s & 0xFFFF) == 0xFFFF, which requires s == 0 — true only when the
-    checksum itself happens to be 0x0000.  That incorrectly fails valid
-    non-zero checksums.
+    The one's-complement sum of ALL bytes of the ICMP message, the checksum
+    field as received included, equals 0xFFFF when the checksum is valid.
     """
     raw = bytes(pkt[ICMP])
     s = 0
@@ -138,7 +132,8 @@ def test_icmp_005_bad_checksum_silently_dropped(ctx):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_icmp_006_broadcast_ping_silent(ctx):
-    """REQ-ICMPv4-009: SUT MUST NOT reply to Echo Request sent to broadcast."""
+    """REQ-ICMPv4-009: the SUT does not reply to an Echo Request sent to broadcast
+    (RFC 1122 §3.2.2.6 lets a host discard it; this stack always does)."""
     bcast_pkt = (
         Ether(dst="ff:ff:ff:ff:ff:ff", src=ctx.our_mac) /
         IP(src=ctx.our_ip, dst="255.255.255.255") /
@@ -146,7 +141,7 @@ def test_icmp_006_broadcast_ping_silent(ctx):
         b"bcast"
     )
     assert silence_any(ctx, bcast_pkt, timeout=2), (
-        "SUT replied to ICMP Echo sent to 255.255.255.255 (MUST NOT reply to broadcast)"
+        "SUT replied to ICMP Echo sent to 255.255.255.255 (it discards broadcast pings)"
     )
 
 

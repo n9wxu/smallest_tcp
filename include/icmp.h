@@ -1,6 +1,8 @@
 /**
  * @file icmp.h
- * @brief ICMPv4 (RFC 792): echo replies and Destination Unreachable.
+ * @brief ICMPv4 (RFC 792): echo replies, the errors a host sends
+ *        (Destination Unreachable, Time Exceeded in reassembly), and the
+ *        errors received, passed to UDP and TCP.
  */
 
 #ifndef ICMP_H
@@ -36,13 +38,22 @@
 /** Bytes of the invoking datagram's payload an error quotes (RFC 792). */
 #define ICMP_QUOTED_PAYLOAD 8
 
-/** Answer echo requests; errors and unknown types are dropped. */
+/** Answer Echo Requests (none sent to a broadcast or multicast address);
+ *  pass Destination Unreachable, Time Exceeded and Parameter Problem about
+ *  a datagram of ours to the transport the quoted header names
+ *  (udp_icmp_error(), tcp_icmp_error()).  A message with a wrong checksum
+ *  and every other type — Source Quench, Redirect, Echo Reply — is
+ *  dropped. */
 void icmp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth);
 
 /**
  * Report @p invoking undeliverable to its sender, quoting its header and
- * the start of its payload.  Nothing is sent about a datagram sent to a
- * broadcast or multicast address (RFC 1122 §3.2.2).
+ * the first ICMP_QUOTED_PAYLOAD bytes of its payload.
+ * @return NET_ERR_INVALID_PARAM, sending nothing, about a datagram sent to
+ *         a broadcast or multicast address (IP or link layer), one whose
+ *         source is no single host, an ICMP error message, or while we
+ *         have no address (RFC 1122 §3.2.2); NET_ERR_BUF_TOO_SMALL if the
+ *         message does not fit one frame; else net_transmit()'s result.
  */
 net_err_t icmp_send_dest_unreach(net_t *net, uint8_t code,
                                  const ipv4_hdr_t *invoking,
