@@ -1,8 +1,8 @@
 # Configuration — Design
 
 **Files:** `include/net_config.h`; tunables in `ipv4.h`, `ndp.h`,
-`dns_wire.h`, `http.h`, `dhcpv6_client.h`
-**Last updated:** 2026-09-27
+`dns_wire.h`, `http.h`, `dhcpv4_client.h`, `dhcpv6_client.h`, `tftp.h`,
+`tls.h`, `dtls.h`
 
 ## 1. Overview
 
@@ -54,8 +54,12 @@ not in the header.  Turning UDP or TCP off also drops the libraries built on
 it and the tests and demos, which use the whole stack; turning IPv4 off drops
 the applications that run only over IPv4 and their tests (§5).
 
-Every header with a tunable includes `net_config.h` (directly or through
-`net.h`), so the module tunables of §4 can go in either place.
+Every header of the stack with a tunable includes `net_config.h` (directly
+or through `net.h`), so its tunables (§4) can go in either place.  The TLS
+and DTLS headers (`tls.h`, `dtls.h`) are the exception: they do not depend
+on the network stack and do not include it, so `TLS_USE_DTLS` and the
+`DTLS_*` timer settings take effect only with `-D` (CMake defines
+`TLS_USE_DTLS` from `SMALLEST_TCP_DTLS`), not from the configuration header.
 
 ## 3. Library and application must agree
 
@@ -141,22 +145,19 @@ tunable in `dtls.h`: `DTLS_RTO_INITIAL_MS` (1000), `DTLS_RTO_MAX_MS`
 the Mbed TLS backend is configured by `tls_mbedtls_user_config.h`, which
 CMake passes to Mbed TLS as `MBEDTLS_USER_CONFIG_FILE`.
 
-### Removed
+### What has no setting
 
-These appeared in earlier versions of `net_config.h` or of this document and
-no longer exist, because nothing used them:
+Some things a stack often configures have no setting here, because the
+stack does not do them or does not choose them:
 
-- `NET_MAC_CAP_TX_CKSUM_IPV4/TCP/UDP`, `NET_MAC_CAP_RX_CKSUM_OK` —
-  checksum offload was documented but never implemented
-  ([checksum.md §7](checksum.md#7-hardware-offload-not-implemented)).
-- `NET_USE_DHCPV4`, `NET_USE_DHCPV6`, `NET_USE_DNS`, `NET_USE_TFTP`,
-  `NET_USE_HTTP` — application protocols are selected by linking (§5).
-- `NET_ASSERT` / `NET_ASSERT_ENABLED`.
-- `NET_DEFAULT_DNS_SERVER`, `NET_DEFAULT_TCP_RTO_MIN_MS`,
-  `NET_DEFAULT_TCP_DELAYED_ACK_MS` (there is no RTT estimator and no delayed
-  ACK), `NET_DEFAULT_ARP_RETRY_MS`, `NET_DEFAULT_ARP_MAX_RETRIES` and the
-  matching `net_t` fields `arp_retry_ms` / `arp_max_retries` (the stack does
-  not retry ARP; the application does — see
+- Hardware capabilities such as checksum offload: checksums are computed in
+  software ([checksum.md §7](checksum.md#7-hardware-offload-not-implemented)).
+- Which application protocols are built in (DHCP, TFTP, mDNS, HTTP, TLS):
+  they are selected by linking (§5).
+- Run-time assertions: there are none.
+- A DNS server (there is no resolver), a minimum RTO or a delayed-ACK time
+  (TCP has no RTT estimator and acknowledges at once), ARP retries (the
+  stack does not retry ARP; the application does — see
   [arp-resolution.md](arp-resolution.md)).
 
 ## 5. Compile-time protocol selection
@@ -172,7 +173,7 @@ layer can be left out, not both: an IPv6-only build (`NET_USE_IPV4` 0, CMake
 UDP and TCP keep only their IPv6 halves, and mDNS answers over IPv6 with
 AAAA records only (`mdns_init()` refuses an A record).  The DHCPv4 client
 and server and TFTP run only over IPv4 and are not built; DHCPv6, mDNS, HTTP
-and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,077 bytes, 2.0 KB
+and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,105 bytes, 3.0 KB
 less than the dual stack ([size-comparison.md](size-comparison.md)).  Those calls are
 references, so **linking IPv4 pulls in `udp.o` and `tcp.o`** unless the build
 compiles with `-DNET_USE_UDP=0` or `-DNET_USE_TCP=0`.  A transport that is
@@ -194,14 +195,16 @@ unused module is simply not linked.  In CMake each is its own library:
 
 | Target | Sources |
 |---|---|
-| `smallest_tcp::smallest_tcp` | The core: `net`, `net_cksum`, `net_text`, `eth`, `udp`, `tcp`, `tcp_buf_saw`; with `SMALLEST_TCP_IPV4`, also `arp`, `ipv4`, `icmp`; with `SMALLEST_TCP_IPV6`, also `ipv6`, `icmpv6`, `ndp`, `mld` |
-| `smallest_tcp::dhcpv4_client`, `::dhcpv4_server` | `dhcpv4_client.c`, `dhcpv4_server.c` (IPv4 builds) |
-| `smallest_tcp::dhcpv6_client` | `dhcpv6_client.c` (IPv6 builds) |
-| `smallest_tcp::tftp` | `tftp.c` (IPv4 builds) |
-| `smallest_tcp::mdns` | `mdns.c`, `dns_wire.c`; `igmp.c` in IPv4 builds |
-| `smallest_tcp::http` | `http.c` |
-| `smallest_tcp::tls`, `::tls_tcp`, `::https`, `::tls_mbedtls` | TLS 1.3 (and DTLS 1.3 with `SMALLEST_TCP_DTLS`), its glue to a TCP connection, HTTPS (`http_tls.c`), and the Mbed TLS crypto backend ([tls.md](tls.md), [dtls.md](dtls.md)) |
-| `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf`, `::driver_stm32f4_eth` | Platform MAC drivers (the last when cross-compiling for ARM) |
+| `smallest_tcp::core` (alias `smallest_tcp::smallest_tcp`) | The core: `net`, `net_cksum`, `net_text`, `eth`; with `SMALLEST_TCP_IPV4`, also `arp`, `ipv4`, `icmp`; with `SMALLEST_TCP_IPV6`, also `ipv6`, `icmpv6`, `ndp`, `mld`; with `SMALLEST_TCP_UDP`, `udp`; with `SMALLEST_TCP_TCP`, `tcp` and `tcp_buf_saw` |
+| `smallest_tcp::dhcpv4_client`, `::dhcpv4_server` | `dhcpv4_client.c`, `dhcpv4_server.c` (UDP over IPv4) |
+| `smallest_tcp::dhcpv6_client` | `dhcpv6_client.c` (UDP over IPv6) |
+| `smallest_tcp::tftp` | `tftp.c` (UDP over IPv4) |
+| `smallest_tcp::mdns` | `mdns.c`, `dns_wire.c`; `igmp.c` with IPv4 (UDP) |
+| `smallest_tcp::http` | `http.c` (TCP) |
+| `smallest_tcp::tls` | TLS 1.3, and DTLS 1.3 with `SMALLEST_TCP_DTLS` ([tls.md](tls.md), [dtls.md](dtls.md)); no dependencies |
+| `smallest_tcp::tls_tcp`, `::https` | A TLS connection carried over a TCP connection, and HTTPS (`http_tls.c`) (TCP) |
+| `smallest_tcp::tls_mbedtls` | The Mbed TLS crypto backend (`SMALLEST_TCP_TLS`) |
+| `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf`, `::driver_stm32f4_eth` | Platform MAC drivers (`SMALLEST_TCP_BUILD_DRIVERS`; the last when cross-compiling for ARM) |
 
 ## 6. Run-time values
 
@@ -212,7 +215,8 @@ values are ordinary fields the application or a protocol changes:
 |---|---|---|
 | `net->ipv4_addr`, `subnet_mask`, `gateway_ipv4` | `NET_DEFAULT_*` | The application (static configuration), the DHCPv4 client (lease, and 0 again on expiry or release) |
 | `net->mac` | `mac` argument, else `NET_DEFAULT_MAC` | Set once at init |
-| `net->gateway_mac`, `gateway_mac_valid` | unset | ARP replies from the gateway |
+| `net->mtu` | `NET_DEFAULT_MTU` | The application (a smaller link MTU) |
+| `net->gateway_mac`, `gateway_mac_valid` | unset | ARP replies from the gateway, valid for `NET_ARP_GATEWAY_TIMEOUT_MS` |
 | `net->ip6` | zero | `ipv6_start()`, NDP, SLAAC, DHCPv6, `ipv6_addr_add()` |
 | `net->secret` | derived from the MAC address | `net_random_seed()` ([architecture.md §9](../architecture.md#9-randomness)) |
 | `net->random_count` | 0 | `net_random()`, once per output |
