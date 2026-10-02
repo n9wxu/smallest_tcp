@@ -206,6 +206,38 @@ TEST(itest_igmp_008_all_hosts_never_reported) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
+/* REQ-IGMP-009, REQ-IPv4-020: until a group is joined with igmp_join()
+ * IGMP is no part of the host: a General Query starts nothing, and an IGMP
+ * message sent to the host alone is an unknown protocol's, answered with
+ * Protocol Unreachable.  Joined, the host takes both. */
+TEST(itest_igmp_009_not_before_a_group_is_joined) {
+  uint8_t msg[8], f[64];
+  peer_ip_t ip, rip;
+  peer_icmp_t icmp;
+  itest_up(&t, 1514, 1514);
+  query(10, 0);
+  itest_advance(&t, 2000, 10);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  memset(msg, 0, sizeof(msg));
+  msg[0] = 0x11;
+  msg[1] = 10;
+  peer_put16(msg + 2, peer_cksum(msg, 8));
+  ip = peer_ip(0x0A0000FEu, t.net.ipv4_addr, 2);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, router_mac, &ip, msg, 8));
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &rip));
+  ASSERT_TRUE(peer_parse_icmp(&rip, &icmp));
+  ASSERT_EQ(icmp.type, 3);
+  ASSERT_EQ(icmp.code, 2);
+
+  igmp_join(&t.net, GROUP);
+  wire_clear(&t);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, router_mac, &ip, msg, 8));
+  ASSERT_EQ(t.wire.tx_count, 0); /* a General Query: answered in a while */
+  itest_advance(&t, 1000, 10);
+  ASSERT_EQ(sent(V2_REPORT, GROUP), 1);
+}
+
 int main(void) {
   fprintf(stderr, "=== itest_igmp ===\n");
   RUN_TEST(itest_igmp_001_report_format);
@@ -218,6 +250,7 @@ int main(void) {
   RUN_TEST(itest_igmp_012_v1_querier);
   RUN_TEST(itest_igmp_013_v1_state_outlasts_a_v2_query);
   RUN_TEST(itest_igmp_008_all_hosts_never_reported);
+  RUN_TEST(itest_igmp_009_not_before_a_group_is_joined);
   ITEST_REPORT();
   return test_failures;
 }

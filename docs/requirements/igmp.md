@@ -1,10 +1,9 @@
 # IGMP Requirements
 
-**Protocol:** Internet Group Management Protocol, version 2 (host side)
-**Primary RFC:** RFC 2236 — Internet Group Management Protocol, Version 2
-**Supporting:** RFC 1112 — Host Extensions for IP Multicasting, RFC 1122 §3.3.7
-**Scope:** V1 (IPv4), built with the multicast group table (`NET_MAX_MCAST_GROUPS` ≥ 1)
-**Last updated:** 2026-10-01
+**Protocol:** Internet Group Management Protocol, version 2 (host side)  
+**Primary RFC:** RFC 2236 — Internet Group Management Protocol, Version 2  
+**Supporting:** RFC 1112 — Host Extensions for IP Multicasting, RFC 1122 §3.3.7  
+**Scope:** IPv4, built with the multicast group table (`NET_MAX_MCAST_GROUPS` ≥ 1); `src/igmp.c` is part of the mDNS library, the one module that joins a group
 
 ## Overview
 
@@ -34,8 +33,8 @@ them.
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-IGMP-006 | SHOULD | On joining a group, send an unsolicited Membership Report at once, and repeat it | RFC 2236 §3 | itest_igmp_001_report_format |
-| REQ-IGMP-007 | MUST | Send Leave Group to the all-routers group 224.0.0.2 | RFC 2236 §3, §9 | itest_igmp_007_leave_to_all_routers |
+| REQ-IGMP-006 | SHOULD | On joining a group, send an unsolicited Membership Report at once (`igmp_join()`); the repeat RFC 2236 recommends is the caller's, with `igmp_report()` — the mDNS responder sends one | RFC 2236 §3 | itest_igmp_001_report_format |
+| REQ-IGMP-007 | MUST | Send Leave Group to the all-routers group 224.0.0.2; one is sent whenever a group is left, as a host that does not remember whether it reported last may | RFC 2236 §3, §9 | itest_igmp_007_leave_to_all_routers |
 | REQ-IGMP-008 | MUST NOT | Report membership of the all-systems group 224.0.0.1 | RFC 2236 §3, §6 | itest_igmp_009_general_query_answered, itest_igmp_008_all_hosts_never_reported |
 
 ### Answering queries
@@ -60,5 +59,9 @@ them.
   multicast group table (REQ-IPv4-050), so it receives General Queries; it
   never reports that group.
 - **One interface:** the state of REQ-IGMP-013 is kept per `net_t`.
-- **Timers** run from `net_tick()`; the random delays come from
-  `net_random_below()` (no division).
+- **Timers** run from `net_tick()`, once a group has been joined with
+  `igmp_join()`; the random delays come from `net_random_below()` (no
+  division).
+- **Before the first `igmp_join()`** IGMP is not linked into the IP layer:
+  queries are not answered, and an IGMP message addressed to the host
+  alone draws ICMP Protocol Unreachable, as any unknown protocol does.

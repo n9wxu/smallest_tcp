@@ -3,6 +3,7 @@
  * @brief IGMPv2 host (RFC 2236): reports on joining, Leave Group, queries
  *        answered after a random delay, another host's report suppressing
  *        ours, IGMPv1 routers.  REQ-IGMP-001..014, REQ-MDNS-002.
+ *        Linked into the IP layer by igmp_join() (net->igmp_ops).
  */
 
 #include "igmp.h"
