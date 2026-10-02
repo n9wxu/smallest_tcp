@@ -166,8 +166,9 @@ static void error_input(net_t *net, const ipv6_hdr_t *ip) {
                     quote_len);
     break;
 #endif
-  default:
+  default: /* nor without a transport compiled in */
     (void)mtu;
+    (void)quote_len;
     break;
   }
 }

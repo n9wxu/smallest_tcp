@@ -226,5 +226,3 @@ add_config_rejected_test(byte_order_set_twice src/net_cksum.c
 add_config_accepted_test(icmpv6_without_transports src/icmpv6.c
     -Wall -Wextra -Werror -pedantic
     -DNET_USE_IPV6=1 -DNET_USE_UDP=0 -DNET_USE_TCP=0)
-# Not met yet: error_input() leaves a variable unused
-set_tests_properties(icmpv6_without_transports PROPERTIES WILL_FAIL TRUE)
