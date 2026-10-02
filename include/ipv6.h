@@ -41,6 +41,10 @@
 #define IPV6_NH_NONE 59
 #define IPV6_NH_DSTOPTS 60
 
+/* Routing header (RFC 8200 §4.4) */
+#define IPV6_ROUTING_OFF_TYPE 2
+#define IPV6_ROUTING_OFF_SEGMENTS 3 /* Segments Left */
+
 /* Parsed header */
 
 /**
@@ -50,7 +54,9 @@
 typedef struct {
   const uint8_t *src;   /**< Source address (16 bytes) */
   const uint8_t *dst;   /**< Destination address (16 bytes) */
-  uint8_t next_header;  /**< Upper-layer protocol after the chain */
+  uint8_t next_header;  /**< Upper-layer protocol after the chain; or
+                             IPV6_NH_ROUTING: the chain stops at a Routing
+                             header with segments left */
   uint8_t hop_limit;    /**< Hop Limit */
   uint8_t *header;      /**< Start of the IPv6 header */
   uint16_t header_len;  /**< 40 + extension headers */
@@ -120,7 +126,8 @@ static inline void ipv6_link_local_from_mac(const uint8_t mac[6],
  *
  * Checks the version and that 40 + Payload Length fits in @p data_len
  * (extra bytes are link padding).  Skips Hop-by-Hop (first only),
- * Routing and Destination Options headers.
+ * Routing and Destination Options headers; stops at a Routing header
+ * with segments left, which becomes @p out's next_header and payload.
  *
  * @return NET_OK; NET_ERR_INVALID_PARAM for a malformed packet, a
  *         fragment (no reassembly) or No Next Header.

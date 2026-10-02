@@ -1125,7 +1125,7 @@ int main(void) {
   RUN_TEST(itest_ipv6_017_unknown_next_header);
   RUN_TEST(itest_ipv6_018_extension_headers_walked);
   RUN_TEST(itest_ipv6_019_options_skipped);
-  RUN_XFAIL(itest_ipv6_048_routing_header_with_segments_left);
+  RUN_TEST(itest_ipv6_048_routing_header_with_segments_left);
   RUN_TEST(itest_ipv6_022_fragments_dropped);
   RUN_TEST(itest_ipv6_021_no_extension_headers_sent);
   RUN_TEST(itest_ipv6_030_source_selection);

@@ -35,6 +35,7 @@
 #define ICMPV6_REDIRECT 137
 
 #define ICMPV6_CODE_PORT_UNREACH 4        /* Destination Unreachable */
+#define ICMPV6_CODE_ERRONEOUS_HEADER 0    /* Parameter Problem */
 #define ICMPV6_CODE_UNRECOGNIZED_NH 1     /* Parameter Problem */
 #define ICMPV6_CODE_UNRECOGNIZED_OPTION 2 /* Parameter Problem */
 

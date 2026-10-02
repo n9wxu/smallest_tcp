@@ -32,7 +32,7 @@ static int is_skippable_extension(uint8_t nh, int first) {
          nh == IPV6_NH_DSTOPTS;
 }
 
-/* REQ-IPv6-001..003, 018..022 */
+/* REQ-IPv6-001..003, 018..022, 048 */
 net_err_t ipv6_parse(uint8_t *data, uint16_t data_len, ipv6_hdr_t *out) {
   uint32_t end, off = IPV6_HDR_SIZE;
   uint16_t nh_off = IPV6_OFF_NH;
@@ -53,9 +53,10 @@ net_err_t ipv6_parse(uint8_t *data, uint16_t data_len, ipv6_hdr_t *out) {
     if (off + ext_len > end)
       return NET_ERR_INVALID_PARAM;
     /* A Routing header with segments left would have us forward: hosts
-     * don't (RFC 8200 §4.4) */
-    if (nh == IPV6_NH_ROUTING && data[off + 3] != 0)
-      return NET_ERR_INVALID_PARAM;
+     * don't.  The walk ends at it, and ipv6_input() answers (RFC 8200
+     * §4.4) */
+    if (nh == IPV6_NH_ROUTING && data[off + IPV6_ROUTING_OFF_SEGMENTS] != 0)
+      break;
     nh_off = (uint16_t)off;
     nh = data[off];
     off += ext_len;
@@ -351,7 +352,7 @@ static int destination_is_us(const net_t *net, const uint8_t *dst) {
   return 0;
 }
 
-/* REQ-IPv6-011..017 */
+/* REQ-IPv6-011..017, 048 */
 void ipv6_input(net_t *net, const eth_frame_t *eth) {
   ipv6_hdr_t ip;
 
@@ -375,6 +376,11 @@ void ipv6_input(net_t *net, const eth_frame_t *eth) {
     tcp6_input(net, &ip, eth);
     break;
 #endif
+  case IPV6_NH_ROUTING: /* with segments left: its Routing Type is at fault */
+    icmpv6_send_error(net, ICMPV6_PARAM_PROBLEM, ICMPV6_CODE_ERRONEOUS_HEADER,
+                      (uint32_t)ip.header_len + IPV6_ROUTING_OFF_TYPE, &ip,
+                      eth);
+    break;
   default:
     icmpv6_send_error(net, ICMPV6_PARAM_PROBLEM, ICMPV6_CODE_UNRECOGNIZED_NH,
                       ip.nh_offset, &ip, eth);
