@@ -750,6 +750,7 @@ TEST(itest_dtls_038_flight_retransmitted_by_the_timer) {
  * processed a second time */
 TEST(itest_dtls_038_flight_again_for_a_repeated_client_hello) {
   drec_t r;
+  int i;
   ASSERT_TRUE(server_flight_from(&srv_psk, &ch_psk_ke));
   ASSERT_TRUE(all_read());
   ASSERT_EQ(
@@ -761,6 +762,12 @@ TEST(itest_dtls_038_flight_again_for_a_repeated_client_hello) {
   ASSERT_EQ(next_rec(&r), 1);
   ASSERT_EQ(r.epoch, 2);
   ASSERT_TRUE(all_read());
+  for (i = 0; i < 9; i++) { /* as often as the peer repeats itself */
+    ASSERT_EQ(
+        p_send_msg_as(0, last_hello, last_hello_len, (uint16_t)(p_mseq - 1)),
+        0);
+    ASSERT_EQ(collect(), 1);
+  }
   ASSERT_TRUE(client_finished());
   ASSERT_EQ(dtls_state(&sut), TLS_STATE_CONNECTED);
 }
@@ -1701,10 +1708,11 @@ TEST(itest_dtls_042_cookie_and_group_in_one_hello_retry) {
   ASSERT_TRUE(dtls_peer_verified(&ps));
 }
 
-/* REQ-TLS-031, 023: under DTLS as under TLS — max_fragment_length keeps
- * the records of the flight within 512 bytes of content, and the
- * pre-shared key authenticates both sides without a certificate */
-TEST(itest_dtls_020_fragment_limit_and_psk) {
+/* REQ-DTLS-070, REQ-TLS-031, 023: the handshake is TLS's, under DTLS as
+ * under TLS — max_fragment_length keeps the records of the flight within
+ * 512 bytes of content, and the pre-shared key authenticates both sides
+ * without a certificate */
+TEST(itest_dtls_070_fragment_limit_and_psk) {
   tls_config_t mfl = cli_cert;
   mfl.max_fragment = TLS_MFL_512;
   fate = NULL;
@@ -1721,10 +1729,10 @@ TEST(itest_dtls_020_fragment_limit_and_psk) {
   ASSERT_TRUE(tls_psk_used(&pc.tls) && tls_psk_used(&ps.tls));
 }
 
-/* REQ-TLS-014: under DTLS too the client refuses a chain that leads to no
- * trust anchor (unknown_ca) — the alert goes once, and the server, told,
- * stops as well */
-TEST(itest_dtls_014_untrusted_chain_refused) {
+/* REQ-DTLS-070, REQ-TLS-014: under DTLS too the client refuses a chain
+ * that leads to no trust anchor (unknown_ca) — the alert goes once, and
+ * the server, told, stops as well */
+TEST(itest_dtls_070_untrusted_chain_refused) {
   tls_config_t no_anchor = cli_cert;
   no_anchor.crypto = &crypto_no_ca;
   fate = NULL;
@@ -1737,11 +1745,12 @@ TEST(itest_dtls_014_untrusted_chain_refused) {
   ASSERT_EQ(pc_events, TLS_EVT_ERROR);
 }
 
-/* REQ-TLS-037, 041: buffers too small for the handshake end it rather
- * than stall it — a transmit buffer that cannot hold the server's flight
- * and a datagram is internal_error, a receive buffer that cannot hold the
+/* REQ-DTLS-071, REQ-TLS-037, 041: the application's buffers are all the
+ * memory there is: too small for the handshake, they end it rather than
+ * stall it — a transmit buffer that cannot hold the server's flight and
+ * a datagram is internal_error, a receive buffer that cannot hold the
  * Certificate with the record it comes in record_overflow */
-TEST(itest_dtls_041_buffers_too_small) {
+TEST(itest_dtls_071_buffers_too_small) {
   fate = NULL;
   ps_tx_cap = 600;
   ASSERT_TRUE(pair_start(&cli_cert, &srv_cert, MTU));
@@ -1753,6 +1762,159 @@ TEST(itest_dtls_041_buffers_too_small) {
   pair_run(0);
   ASSERT_EQ(dtls_state(&pc), TLS_STATE_ERROR);
   ASSERT_EQ(pc.tls.alert, 22);
+}
+
+/* REQ-DTLS-022, 034, 057: malformed handshake fragments and ACKs are
+ * dropped without a word — a fragment that runs past its message or its
+ * record, one that contradicts the message being reassembled, a
+ * DTLSPlaintext record cut short, an ACK whose length is wrong or that
+ * names records never sent — and the flight they did not answer is still
+ * retransmitted */
+TEST(itest_dtls_022_malformed_fragments_and_acks_dropped) {
+  static uint8_t m[2048], f[2100], rec[2200];
+  drec_t stranger;
+  size_t n, fl, rl;
+  ASSERT_TRUE(start(&srv_psk));
+  ASSERT_EQ(dtls_accept(&sut), 0);
+  n = tp_client_hello(&peer, &ch_psk_ke, m);
+  fl = tp_dfragment(m, 0, 0, 40, f);
+  tp_put(f + 9, 3, 4000); /* fragment_length past the record */
+  ASSERT_EQ(p_send(0, TP_HANDSHAKE, f, fl), 0);
+  fl = tp_dfragment(m, 0, n - 4 - 10, 10, f);
+  tp_put(f + 6, 3, (uint32_t)(n - 4)); /* .. and past the message */
+  ASSERT_EQ(p_send(0, TP_HANDSHAKE, f, fl), 0);
+  ASSERT_EQ(p_send_fragment(m, 0, 0, 40), 0); /* the message begins */
+  fl = tp_dfragment(m, 0, 40, 20, f);
+  tp_put(f + 1, 3, (uint32_t)(n - 4 + 1)); /* another total length */
+  ASSERT_EQ(p_send(0, TP_HANDSHAKE, f, fl), 0);
+  rl = tp_drecord(TP_HANDSHAKE, 50, f, fl, rec);
+  ASSERT_EQ(dtls_input(&sut, rec, 9), 0); /* less than a record header */
+  ASSERT_EQ(dtls_input(&sut, rec, rl - 5), 0);
+  ASSERT_EQ(collect(), 0);
+  ASSERT_EQ(dtls_state(&sut), TLS_STATE_HANDSHAKE);
+  ASSERT_EQ(p_send_fragment(m, 0, 40, n - 4 - 40), 0); /* the rest: taken */
+  ASSERT_EQ(collect(), 1);
+
+  ASSERT_TRUE(server_flight_from(&srv_psk, &ch_psk_ke));
+  stranger.epoch = 2;
+  stranger.seq = 77;
+  ASSERT_EQ(p_send_ack(2, &stranger, 1), 0);
+  ASSERT_EQ(p_send(2, TP_ACK, "\x00\x10\x00", 3), 0);
+  ASSERT_EQ(p_send(2, TP_ACK, "\x00", 1), 0);
+  ASSERT_EQ(collect(), 0);
+  dtls_tick(&sut, 1000);
+  ASSERT_EQ(collect(), 1);
+  ASSERT_EQ(dtls_state(&sut), TLS_STATE_HANDSHAKE);
+}
+
+/* REQ-DTLS-050, 020: an ACK lists the records in increasing order, and as
+ * many as its datagram holds — with a 128-byte MTU the six newest of the
+ * eight on the list; a ninth record takes the oldest one's place */
+TEST(itest_dtls_050_ack_lists_what_fits) {
+  drec_t recs[10];
+  int i;
+  sut_mtu = DTLS_MTU_MIN;
+  ASSERT_TRUE(server_flight_from(&srv_psk, &ch_psk_ke));
+  for (i = 0; i < 9; i++) { /* the Finished, in nine records */
+    uint8_t fin[36];
+    recs[i].epoch = 2;
+    recs[i].seq = (uint32_t)wk[2].seq;
+    if (i == 0) {
+      ASSERT_TRUE(client_finished());
+    } else {
+      memcpy(fin, peer.transcript + peer.transcript_len - 36, 36);
+      ASSERT_EQ(p_send_msg_as(2, fin, 36, (uint16_t)(p_mseq - 1)), 0);
+    }
+    ASSERT_EQ(collect(), 1);
+    ASSERT_TRUE(dgs[n_dgs - 1].n <= DTLS_MTU_MIN);
+    if (i < 6) {
+      ASSERT_TRUE(ack_sent(3, recs, i + 1));
+    } else {
+      ASSERT_TRUE(ack_sent(3, recs + i - 5, 6));
+    }
+    ASSERT_TRUE(all_read());
+  }
+}
+
+/* REQ-DTLS-060: a KeyUpdate asked for while the last flight is unanswered
+ * waits — it is written once the flight has been acknowledged */
+TEST(itest_dtls_060_key_update_waits_for_the_flight) {
+  drec_t fin;
+  unsigned epoch;
+  ASSERT_TRUE(client_hello_from(&cli_psk));
+  ASSERT_TRUE(send_server_hello());
+  ASSERT_TRUE(send_server_finished());
+  tp_application_secrets(&peer);
+  ASSERT_EQ(collect(), 1);
+  ASSERT_TRUE(read_client_finished(&fin) && all_read());
+  write_keys(3, peer.s_ap);
+  read_keys(3, peer.c_ap);
+  ASSERT_EQ(dtls_key_update(&sut, 1), 0);
+  ASSERT_EQ(collect(), 0);
+  ASSERT_EQ(p_send_ack(3, &fin, 1), 0);
+  ASSERT_EQ(collect(), 1);
+  ASSERT_EQ(next_msg(&epoch), 5);
+  ASSERT_EQ(epoch, 3);
+  ASSERT_MEM_EQ(reasm.msg, ku_requested, 5);
+}
+
+/* REQ-DTLS-047, 056: the peer's close_notify while a flight of ours is
+ * unanswered ends its retransmission: the peer is done */
+TEST(itest_dtls_047_close_notify_ends_retransmission) {
+  static const uint8_t close_notify[2] = {1, 0};
+  drec_t fin;
+  ASSERT_TRUE(client_hello_from(&cli_psk));
+  ASSERT_TRUE(send_server_hello());
+  ASSERT_TRUE(send_server_finished());
+  tp_application_secrets(&peer);
+  ASSERT_EQ(collect(), 1);
+  ASSERT_TRUE(read_client_finished(&fin));
+  write_keys(3, peer.s_ap);
+  ASSERT_EQ(p_send(3, TP_ALERT, close_notify, 2), 0);
+  ASSERT_EQ(dtls_state(&sut), TLS_STATE_CLOSED);
+  dtls_tick(&sut, 200000);
+  ASSERT_EQ(collect(), 0);
+  ASSERT_EQ(dtls_state(&sut), TLS_STATE_CLOSED);
+}
+
+/* REQ-DTLS-070, REQ-TLS-047, 056: what TLS refuses in an authentic record
+ * DTLS refuses too, with TLS's alert — a content type that is none of
+ * DTLS's is unexpected_message, and so is a message after one that
+ * changes keys in the same record (here a ServerHello) */
+TEST(itest_dtls_070_authentic_but_wrong) {
+  static uint8_t m[512], f[1024];
+  size_t n, fl;
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  ASSERT_EQ(p_send(3, 24, "x", 1), -10);
+  ASSERT_TRUE(failed_with(10));
+  ASSERT_TRUE(alert_sent(3, 10));
+
+  ASSERT_TRUE(client_hello_from(&cli_psk));
+  tp_add(&peer, hello_msg, hello_len);
+  tp_early_secret(&peer, 1);
+  n = tp_server_hello(&peer, &sh_psk_ke, m);
+  fl = tp_dfragment(m, 0, 0, n - 4, f);
+  fl += tp_dfragment(m, 1, 0, n - 4, f + fl);
+  ASSERT_EQ(p_send(0, TP_HANDSHAKE, f, fl), -10);
+  ASSERT_TRUE(failed_with(10));
+}
+
+/* REQ-DTLS-070, REQ-TLS-036, 040: a server that refuses the ClientHello —
+ * no group in common — says so in a DTLSPlaintext alert, and the client,
+ * which has no keys yet, takes it: handshake_failure, TLS_EVT_ERROR */
+TEST(itest_dtls_070_alert_from_a_refusing_server) {
+  tls_config_t p256 = cli_cert, x25519 = srv_cert;
+  p256.groups = TLS_GROUPS_SECP256R1;
+  x25519.groups = TLS_GROUPS_X25519;
+  fate = NULL;
+  ASSERT_TRUE(pair_start(&p256, &x25519, MTU));
+  pair_run(0);
+  ASSERT_EQ(dtls_state(&ps), TLS_STATE_ERROR);
+  ASSERT_EQ(ps.tls.alert, 40);
+  ASSERT_EQ(dtls_state(&pc), TLS_STATE_ERROR);
+  ASSERT_EQ(pc.tls.alert, 40);
+  ASSERT_EQ(pc_events, TLS_EVT_ERROR);
+  ASSERT_EQ(n_sent[1], 1);
 }
 
 /* ══ Architecture ═════════════════════════════════════════════════ */
@@ -1841,11 +2003,12 @@ TEST(itest_dtls_071_state_in_the_connection) {
   ASSERT_MEM_EQ(buf, "moved", 5);
 }
 
-/* REQ-TLS-042, 065, 066: the API's checks, as TLS's — dtls_init()
- * refuses buffers under 256 bytes and an MTU under DTLS_MTU_MIN; calls
- * out of place return an error; dtls_release() zeroes both buffers and
- * leaves the connection idle, ready for the next handshake */
-TEST(itest_dtls_066_api_checks) {
+/* REQ-DTLS-071, REQ-TLS-042, 065, 066: the API's checks, as TLS's —
+ * dtls_init() refuses buffers under 256 bytes and an MTU under
+ * DTLS_MTU_MIN; calls out of place return an error; dtls_release() zeroes
+ * both buffers and leaves the connection idle, ready for the next
+ * handshake */
+TEST(itest_dtls_071_api_checks) {
   uint8_t buf[8];
   size_t i;
   ASSERT_EQ(dtls_init(&sut, &srv_psk, sut_rx, 255, sut_tx, 4096, MTU), -1);
@@ -1947,12 +2110,18 @@ int main(void) {
   RUN_TEST(itest_dtls_032_every_datagram_twice);
   RUN_TEST(itest_dtls_034_fragments_in_reverse_order);
   RUN_TEST(itest_dtls_042_cookie_and_group_in_one_hello_retry);
-  RUN_TEST(itest_dtls_020_fragment_limit_and_psk);
-  RUN_TEST(itest_dtls_014_untrusted_chain_refused);
-  RUN_TEST(itest_dtls_041_buffers_too_small);
+  RUN_TEST(itest_dtls_070_fragment_limit_and_psk);
+  RUN_TEST(itest_dtls_070_untrusted_chain_refused);
+  RUN_TEST(itest_dtls_071_buffers_too_small);
+  RUN_TEST(itest_dtls_022_malformed_fragments_and_acks_dropped);
+  RUN_TEST(itest_dtls_050_ack_lists_what_fits);
+  RUN_TEST(itest_dtls_060_key_update_waits_for_the_flight);
+  RUN_TEST(itest_dtls_047_close_notify_ends_retransmission);
+  RUN_TEST(itest_dtls_070_authentic_but_wrong);
+  RUN_TEST(itest_dtls_070_alert_from_a_refusing_server);
   RUN_TEST(itest_dtls_070_cryptography_from_the_backend);
   RUN_TEST(itest_dtls_071_state_in_the_connection);
-  RUN_TEST(itest_dtls_066_api_checks);
+  RUN_TEST(itest_dtls_071_api_checks);
 
   tls_mbedtls_free(&backend);
   tls_mbedtls_free(&backend_no_ca);

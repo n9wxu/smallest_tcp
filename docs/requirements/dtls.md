@@ -60,7 +60,7 @@ against the demos).
 | REQ-DTLS-019 | MUST | Every record fits in one datagram; several records may share one; the first byte of a datagram starts a record | RFC 9147 §4.3 | itest_dtls_004_handshake_with_the_server, itest_dtls_033_flight_in_fragments, itest_dtls_012_short_header_received, itest_dtls_073_datagrams_moved_by_the_application, test_small_mtu |
 | REQ-DTLS-020 | SHOULD | Size records to fit the PMTU estimate (the application's `mtu`) | RFC 9147 §4.3, §4.4 | itest_dtls_033_flight_in_fragments, itest_dtls_034_fragments_in_reverse_order, test_small_mtu |
 | REQ-DTLS-021 | MUST | Anti-replay: a record whose sequence number duplicates one already received in its epoch is not accepted; the receive window (a sliding window per epoch, checked after deprotection — both SHOULD) is updated only for a record that deprotected | RFC 9147 §4.5.1 | itest_dtls_021_replayed_record_dropped, itest_dtls_039_ack_again_for_a_repeated_finished, itest_dtls_032_every_datagram_twice, test_replay_window |
-| REQ-DTLS-022 | SHOULD | Silently discard invalid records — bad format, length, MAC, unknown epoch, replay — without an alert | RFC 9147 §4.5.2 | itest_dtls_022_invalid_records_dropped_silently, test_bad_records_dropped, test_dtls_030_ignored |
+| REQ-DTLS-022 | SHOULD | Silently discard invalid records — bad format, length, MAC, unknown epoch, replay — without an alert | RFC 9147 §4.5.2 | itest_dtls_022_invalid_records_dropped_silently, test_bad_records_dropped, test_dtls_030_ignored, itest_dtls_022_malformed_fragments_and_acks_dropped |
 | REQ-DTLS-023 | MUST | Count received records that fail authentication; close the connection (SHOULD) before the AEAD's limit, 2^36 for AES-128-GCM — the count is one for the connection, and ends it at 2^32 − 1 | RFC 9147 §4.5.3 | itest_dtls_022_invalid_records_dropped_silently, test_bad_records_dropped |
 | REQ-DTLS-024 | SHOULD | Update keys before protecting more records than the AEAD allows | RFC 9147 §4.5.3 | test_key_update_at_record_limit |
 | REQ-DTLS-025 | SHOULD | When retransmissions go unanswered and the PMTU is unknown, back off to a smaller record size — **deviation:** every transmission uses the application's `mtu` | RFC 9147 §4.4 | — (deviation) |
@@ -86,14 +86,14 @@ against the demos).
 | REQ-DTLS-044 | MUST | A server receiving a ClientHello with an invalid cookie aborts with `illegal_parameter` | RFC 9147 §5.1 | itest_dtls_044_wrong_cookie_refused, test_refuse_wrong_cookie, test_dtls_022_wrong_cookie_refused |
 | REQ-DTLS-045 | MUST | A client aborts with `unexpected_message` on a second HelloRetryRequest | RFC 9147 §5.1 | itest_dtls_045_second_hello_retry_refused |
 | REQ-DTLS-046 | MUST NOT | Retransmit alerts | RFC 9147 §5.10 | itest_dtls_046_alert_not_retransmitted, itest_dtls_047_close_notify, test_alert_not_retransmitted |
-| REQ-DTLS-047 | MUST | Data received after a valid close_notify is ignored | RFC 9147 §5.10 | itest_dtls_047_close_notify, test_close_notify |
+| REQ-DTLS-047 | MUST | Data received after a valid close_notify is ignored | RFC 9147 §5.10 | itest_dtls_047_close_notify, test_close_notify, itest_dtls_047_close_notify_ends_retransmission |
 | REQ-DTLS-048 | SHOULD | Keep the timer value until a message is acknowledged without retransmission, then set it to 1.5 times the measured round-trip time — **deviation:** the round-trip time is not measured; every flight starts from 1000 ms | RFC 9147 §5.8.2 | — (deviation) |
 
 ### ACK
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DTLS-050 | MUST | ACK is content type 26, a list of RecordNumbers (64-bit epoch, 64-bit sequence number) in increasing order | RFC 9147 §7 | itest_dtls_052_final_flight_acknowledged, itest_dtls_039_ack_again_for_a_repeated_finished, test_last_flight_acknowledged |
+| REQ-DTLS-050 | MUST | ACK is content type 26, a list of RecordNumbers (64-bit epoch, 64-bit sequence number) in increasing order | RFC 9147 §7 | itest_dtls_052_final_flight_acknowledged, itest_dtls_039_ack_again_for_a_repeated_finished, test_last_flight_acknowledged, itest_dtls_050_ack_lists_what_fits |
 | REQ-DTLS-051 | MUST NOT | Acknowledge a record whose handshake fragments were not processed or buffered — **deviation:** a record is acknowledged once its first fragment has been taken; if a later message of the same record then finds no room behind unread application data, the record stays acknowledged.  This arises only for a NewSessionTicket that follows a shorter one in its record, and a client ignores tickets | RFC 9147 §7 | itest_dtls_051_only_records_taken_are_acknowledged, itest_dtls_051_record_with_a_fragment_not_taken, itest_dtls_051_record_acknowledged_in_part |
 | REQ-DTLS-052 | MUST | Acknowledge the client's final flight and post-handshake messages (KeyUpdate, NewSessionTicket) | RFC 9147 §5.7, §7.1 | itest_dtls_052_final_flight_acknowledged, itest_dtls_054_only_handshake_records_acknowledged, itest_dtls_061_key_update_from_the_peer, test_new_session_ticket_acknowledged |
 | REQ-DTLS-053 | MUST | Send ACKs in an epoch no lower than that of the records acknowledged — after the handshake the highest | RFC 9147 §7 | itest_dtls_052_final_flight_acknowledged, itest_dtls_051_only_records_taken_are_acknowledged, itest_dtls_061_key_update_from_the_peer, test_last_flight_acknowledged |
@@ -107,7 +107,7 @@ against the demos).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DTLS-060 | MUST | A KeyUpdate is acknowledged; no records with the new keys, and no further KeyUpdate, before its ACK | RFC 9147 §8, §5.8.4 | itest_dtls_060_key_update_of_ours, itest_dtls_061_key_update_from_the_peer, test_key_update_waits_for_flight, test_dtls_004_key_update_from_client |
+| REQ-DTLS-060 | MUST | A KeyUpdate is acknowledged; no records with the new keys, and no further KeyUpdate, before its ACK | RFC 9147 §8, §5.8.4 | itest_dtls_060_key_update_of_ours, itest_dtls_061_key_update_from_the_peer, test_key_update_waits_for_flight, test_dtls_004_key_update_from_client, itest_dtls_060_key_update_waits_for_the_flight |
 | REQ-DTLS-061 | MUST | Keep the peer's previous keys until a record under its new keys has been deprotected | RFC 9147 §8 | itest_dtls_061_key_update_from_the_peer, test_late_record_of_old_epoch |
 | REQ-DTLS-062 | MUST NOT | Let the sending epoch exceed its limit (the 16 bits kept here); an update request that would is not answered | RFC 9147 §8 | test_last_epoch |
 
@@ -115,8 +115,8 @@ against the demos).
 
 | ID | Level | Requirement | Source | Test ID |
 |---|---|---|---|---|
-| REQ-DTLS-070 | MUST | DTLS and TLS share the handshake, the key schedule and the `tls_crypto_t` backend; the protocol code contains no cryptography (REQ-TLS-006) — the AES block for record numbers comes from the backend, and `dtls_init()` refuses a backend without it | Architecture | itest_dtls_070_cryptography_from_the_backend |
-| REQ-DTLS-071 | MUST | No dynamic allocation; all state in the application's `dtls_conn_t` and buffers | Architecture | itest_dtls_071_state_in_the_connection |
+| REQ-DTLS-070 | MUST | DTLS and TLS share the handshake, the key schedule and the `tls_crypto_t` backend; the protocol code contains no cryptography (REQ-TLS-006) — the AES block for record numbers comes from the backend, and `dtls_init()` refuses a backend without it | Architecture | itest_dtls_070_cryptography_from_the_backend, itest_dtls_070_fragment_limit_and_psk, itest_dtls_070_untrusted_chain_refused, itest_dtls_070_authentic_but_wrong, itest_dtls_070_alert_from_a_refusing_server |
+| REQ-DTLS-071 | MUST | No dynamic allocation; all state in the application's `dtls_conn_t` and buffers | Architecture | itest_dtls_071_state_in_the_connection, itest_dtls_071_buffers_too_small, itest_dtls_071_api_checks |
 | REQ-DTLS-072 | MUST NOT | Link the DTLS record layer into a TLS-only build, or the TLS one into a DTLS-only build | Architecture | — (not observable: what a build links shows in no call and no datagram; `make arm-check-links` checks the Cortex-M0 objects) |
 | REQ-DTLS-073 | MUST | The application moves datagrams; nothing in the DTLS code depends on `udp.c` | Architecture | itest_dtls_073_datagrams_moved_by_the_application |
 
