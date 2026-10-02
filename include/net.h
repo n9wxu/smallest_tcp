@@ -158,8 +158,9 @@ typedef struct {
 
 /**
  * Initialise a network context: buffers, MAC address (NULL for
- * NET_DEFAULT_MAC), MAC driver, and the net_config.h identity defaults
- * (the IPv4 address, mask and gateway, with IPv4 compiled in).
+ * NET_DEFAULT_MAC), MAC driver, the MTU (NET_DEFAULT_MTU) and the
+ * net_config.h identity defaults (the IPv4 address, mask and gateway, with
+ * IPv4 compiled in).  The driver is not opened: call driver->init().
  * The RX and TX buffers must not overlap.
  * @return NET_OK, NET_ERR_INVALID_PARAM (also: overlapping buffers), or
  *         NET_ERR_BUF_TOO_SMALL for a buffer smaller than TCP_MIN_FRAME
@@ -171,12 +172,16 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
 
 /**
  * Receive and process one frame, if the MAC has one: it is read into
- * net->rx.buf, dispatched through the protocol layers, and released.
- * @return The frame's length, 0 if none was waiting, < 0 on driver error.
+ * net->rx.buf (cut to the buffer's capacity if longer), dispatched through
+ * the protocol layers, and released.
+ * @return The number of bytes read, 0 if no frame was waiting, < 0 on
+ *         driver error.
  */
 int net_poll(net_t *net);
 
-/** Advance the stack's own timers (TCP, IPv6) by @p elapsed_ms. */
+/** Advance the stack's own timers — ARP, IPv4 reassembly, IGMP, TCP, IPv6
+ *  — by @p elapsed_ms.  The modules the application declares (DHCP, TFTP,
+ *  mDNS, HTTP, DTLS) have ticks of their own. */
 void net_tick(net_t *net, uint32_t elapsed_ms);
 
 /**

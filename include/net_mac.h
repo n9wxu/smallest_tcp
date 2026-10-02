@@ -35,8 +35,10 @@ typedef struct {
   int (*poll)(void *ctx);
 
   /**
-   * Copy @p len bytes from @p offset of the current frame.
-   * @return Bytes copied (fewer past the end), < 0 if there is none.
+   * Copy @p len bytes from @p offset of the current frame.  The stack
+   * reads from offset 0.
+   * @return Bytes copied (fewer past the end), < 0 if there is none; for
+   *         an @p offset at or past the end, 0 or < 0.
    */
   int (*peek)(void *ctx, uint16_t offset, uint8_t *buf, uint16_t len);
 
