@@ -760,8 +760,9 @@ TEST(test_scripted_refusals_server_hello) {
   o.dup_versions = 1;
   ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
   memset(&o, 0, sizeof(o));
-  o.sh_ext = TLS_EXT_SIGNATURE_ALGORITHMS; /* not for a ServerHello */
-  ASSERT_EQ(script_refused(&o, TLS_ALERT_UNSUPPORTED_EXTENSION), 0);
+  o.sh_ext = TLS_EXT_SIGNATURE_ALGORITHMS; /* not for a ServerHello (RFC
+                                              8446 §4.2) */
+  ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
   memset(&o, 0, sizeof(o));
   o.hrr = 1; /* the HRR random on a full ServerHello: its key_share is
                 not a selected_group */

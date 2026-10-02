@@ -2500,7 +2500,7 @@ int main(void) {
   RUN_TEST(itest_tls_024_no_certificate_after_a_psk);
   RUN_TEST(itest_tls_053_extension_not_offered_refused);
   RUN_TEST(itest_tls_053_encrypted_extension_not_offered_refused);
-  RUN_XFAIL(itest_tls_053_extension_in_the_wrong_message);
+  RUN_TEST(itest_tls_053_extension_in_the_wrong_message);
   RUN_TEST(itest_tls_060_psk_server_hello_consistent);
   RUN_TEST(itest_tls_037_server_hello_refusals);
   RUN_TEST(itest_tls_014_certificate_from_the_peer);

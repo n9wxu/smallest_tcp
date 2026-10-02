@@ -243,6 +243,26 @@ static int client_hello(tls_conn_t *t, const uint8_t *cookie, size_t cookie_len,
 
 /* ── The server's messages ── */
 
+/* An extension of the server's that has no place where it came (RFC 8446
+ * §4.2, §4.3.1): one we know, in a message it is not specified for, is
+ * illegal_parameter; any other answers nothing we sent.  REQ-TLS-053 */
+static int refuse_extension(tls_conn_t *t, uint16_t type) {
+  switch (type) {
+  case TLS_EXT_SERVER_NAME:
+  case TLS_EXT_MAX_FRAGMENT_LENGTH:
+  case TLS_EXT_SUPPORTED_GROUPS:
+  case TLS_EXT_SIGNATURE_ALGORITHMS:
+  case TLS_EXT_PRE_SHARED_KEY:
+  case TLS_EXT_SUPPORTED_VERSIONS:
+  case TLS_EXT_COOKIE:
+  case TLS_EXT_PSK_KEY_EXCHANGE_MODES:
+  case TLS_EXT_KEY_SHARE:
+    return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
+  default:
+    return tls_fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
+  }
+}
+
 /* RFC 8446 §4.1.4: the server wants another share (or a cookie back): a
  * second ClientHello, once */
 static int on_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen) {
@@ -286,7 +306,7 @@ static int on_hello_retry(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         return tls_fail(t, TLS_ALERT_DECODE_ERROR);
       break;
     default:
-      return tls_fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
+      return refuse_extension(t, type);
     }
     if (d.bad || d.n)
       return tls_fail(t, TLS_ALERT_DECODE_ERROR);
@@ -376,8 +396,8 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
         return tls_fail(t, TLS_ALERT_ILLEGAL_PARAMETER);
       psk = 1;
       break;
-    default: /* nothing else was offered for a ServerHello */
-      return tls_fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
+    default: /* nothing else belongs in a ServerHello */
+      return refuse_extension(t, type);
     }
     if (d.bad || d.n)
       return tls_fail(t, TLS_ALERT_DECODE_ERROR);
@@ -427,8 +447,12 @@ static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
       t->max_frag = (uint16_t)(256u << d.p[0]);
       continue;
     }
-    if (type != TLS_EXT_SUPPORTED_GROUPS || !first_group(t->cfg))
+    if (type == TLS_EXT_SUPPORTED_GROUPS && first_group(t->cfg))
+      continue;
+    if (type == TLS_EXT_SERVER_NAME || type == TLS_EXT_SUPPORTED_GROUPS ||
+        type == TLS_EXT_MAX_FRAGMENT_LENGTH) /* its place, but unasked */
       return tls_fail(t, TLS_ALERT_UNSUPPORTED_EXTENSION);
+    return refuse_extension(t, type);
   }
   t->cfg->crypto->hash_update(&t->transcript, m, mlen);
   t->step = (t->flags & F_PSK) ? ST_C_WAIT_FIN : ST_C_WAIT_CERT;
