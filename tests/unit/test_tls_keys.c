@@ -92,6 +92,7 @@ TEST(test_master_secret) {
   ASSERT_MEM_EQ(s, r3_master_secret, 32);
 }
 
+/* REQ-TLS-032 */
 TEST(test_handshake_traffic_secrets) {
   uint8_t th[32], s[32];
   hash2(r3_client_hello, sizeof(r3_client_hello), r3_server_hello,
@@ -103,6 +104,7 @@ TEST(test_handshake_traffic_secrets) {
   ASSERT_MEM_EQ(s, r3_s_hs_traffic, 32);
 }
 
+/* REQ-TLS-032 */
 TEST(test_application_traffic_secrets) {
   uint8_t th[32], s[32];
   transcript(6, th); /* ClientHello .. server Finished */
@@ -127,6 +129,7 @@ TEST(test_resumption_secrets) {
   ASSERT_MEM_EQ(s, r3_resumption_psk, 32);
 }
 
+/* REQ-TLS-033 */
 TEST(test_traffic_keys) {
   tls_keys_t k;
   memset(&k, 0xAA, sizeof(k));
@@ -245,6 +248,7 @@ TEST(test_p256_shared_secret) {
   ASSERT_MEM_EQ(z, r5_ecdhe_shared, 32);
 }
 
+/* REQ-TLS-034: ClientHello1 replaced by message_hash */
 TEST(test_hrr_transcript) {
   /* ClientHello1 becomes message_hash (RFC 8446 §4.4.1); then the
    * HelloRetryRequest, ClientHello2 and ServerHello */
@@ -343,6 +347,7 @@ TEST(test_seal_client_finished) {
                       sizeof(r3_c_fin_record)));
 }
 
+/* REQ-TLS-026, 027 */
 TEST(test_seal_server_application_records) {
   /* NewSessionTicket is the server's first application-key record, then
    * data (seq 1), then close_notify (seq 2) */

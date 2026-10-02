@@ -759,6 +759,7 @@ TEST(test_rfc8448_client_hello_full_handshake) {
 
 /* ══ Handshakes ═══════════════════════════════════════════════════ */
 
+/* REQ-TLS-020: the chain and a CertificateVerify the client verifies */
 TEST(test_handshake_ecdsa) {
   tls_conn_t s;
   ch_opt_t o;
@@ -900,6 +901,7 @@ TEST(test_refuse_tls12_only) {
   ASSERT_EQ(refused(&o, TLS_ALERT_PROTOCOL_VERSION), 0);
 }
 
+/* REQ-TLS-002 */
 TEST(test_refuse_no_common_suite) {
   ch_opt_t o;
   ch_default(&o);
@@ -2292,6 +2294,7 @@ TEST(test_key_update_api) {
   ASSERT_MEM_EQ(buf + 5, "\x18\x00\x00\x01\x00", 5);
 }
 
+/* REQ-TLS-058: a KeyUpdate before the record limit of one key */
 TEST(test_key_update_by_itself) {
   /* After TLS_KEY_UPDATE_RECORDS records under one key */
   tls_conn_t s;

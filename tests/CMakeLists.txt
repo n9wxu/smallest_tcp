@@ -147,6 +147,14 @@ if(SMALLEST_TCP_IPV4 AND SMALLEST_TCP_TCP)
     endif()
 endif()
 
+# TLS 1.3 and DTLS 1.3: the peer is the tests' own (integration/tls_peer.c,
+# on Mbed TLS's primitives)
+if(SMALLEST_TCP_TLS AND SMALLEST_TCP_IPV4 AND SMALLEST_TCP_TCP)
+    add_integration_test(itest_tls
+        smallest_tcp_tls_tcp smallest_tcp_tls_mbedtls)
+    target_sources(itest_tls PRIVATE integration/tls_peer.c)
+endif()
+
 # ── Configurations that must not compile ─────────────────────────────
 #
 # Each test passes when the compiler reports the configuration error.

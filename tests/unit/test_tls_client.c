@@ -905,6 +905,7 @@ TEST(test_scripted_refusals_encrypted_extensions) {
   ASSERT_EQ(script_refused(&o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
 }
 
+/* REQ-TLS-062: an empty Certificate, a context, too long a chain */
 TEST(test_scripted_refusals_certificate) {
   script_t o;
   memset(&o, 0, sizeof(o));
@@ -918,6 +919,7 @@ TEST(test_scripted_refusals_certificate) {
   ASSERT_EQ(script_refused(&o, TLS_ALERT_UNEXPECTED_MESSAGE), 0);
 }
 
+/* REQ-TLS-062: a signature scheme that was not offered */
 TEST(test_scripted_refusals_certificate_verify) {
   /* REQ-TLS-015 */
   script_t o;

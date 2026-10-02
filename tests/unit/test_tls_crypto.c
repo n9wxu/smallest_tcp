@@ -232,6 +232,7 @@ TEST(test_p256_keygen_agrees) {
   ASSERT_MEM_EQ(s1, s2, 32);
 }
 
+/* REQ-TLS-054 */
 TEST(test_p256_rejects_point_off_curve) {
   uint8_t a[32], ap[65], s[32];
   size_t al = 0;

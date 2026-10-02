@@ -187,7 +187,8 @@ def test_tls_c10_wrong_name(client):
 
 
 def test_tls_c11_untrusted(client):
-    """A chain that does not lead to the trust anchors: unknown_ca."""
+    """REQ-TLS-014: a chain that does not lead to the trust anchors:
+    unknown_ca."""
     srv = serve(client)
     rc, out = client(TLS_CA=cred("rsa.pem"))
     finish(srv)
@@ -197,7 +198,7 @@ def test_tls_c11_untrusted(client):
 
 
 def test_tls_c12_tls12_server(client):
-    """A TLS 1.2 server cannot serve a TLS 1.3-only client."""
+    """REQ-TLS-001: a TLS 1.2 server cannot serve a TLS 1.3-only client."""
     srv = serve(client, maximum=ssl.TLSVersion.TLSv1_2)
     rc, out = client()
     finish(srv)
@@ -262,8 +263,8 @@ def test_tls_c05_max_fragment_length(client):
 
 
 def test_tls_c06_key_update(client):
-    """The client updates its keys and asks the server to; data flows on
-    under the new keys both ways."""
+    """REQ-TLS-044: the client updates its keys and asks the server to;
+    data flows on under the new keys both ways."""
     srv = serve(client)
     rc, out = client(TLS_KEY_UPDATE=1, TLS_BYTES=5000)
     finish(srv)
@@ -273,8 +274,9 @@ def test_tls_c06_key_update(client):
 
 
 def test_tls_c31_hello_retry(client):
-    """A secp256r1-only s_server answers the x25519 share with a
-    HelloRetryRequest; the second ClientHello has a secp256r1 share."""
+    """REQ-TLS-049, 005: a secp256r1-only s_server answers the x25519 share
+    with a HelloRetryRequest; the second ClientHello has a secp256r1
+    share."""
     if not OPENSSL:
         pytest.skip("no openssl CLI")
     p = subprocess.Popen(
@@ -341,7 +343,8 @@ def test_tls_c41_psk_openssl(client):
 
 
 def test_tls_c42_psk_ke_openssl(client):
-    """psk_ke: the PSK alone, no (EC)DHE — the cheapest handshake."""
+    """REQ-TLS-023: psk_ke: the PSK alone, no (EC)DHE — the cheapest
+    handshake."""
     p = s_server(client, "-allow_no_dhe_kex")
     try:
         rc, out = client(TLS_MESSAGE="ke\n", TLS_PSK_MODES="ke", **PSK_ENV)

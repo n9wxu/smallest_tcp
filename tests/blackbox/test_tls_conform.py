@@ -257,8 +257,9 @@ def s_client(sut, *args, line=b"hello", timeout=10):
 # ── Handshake and data (REQ-TLS-001/002/004/005/018..022) ─────────────────────
 
 def test_tls_001_handshake(sut):
-    """Python ssl completes a TLS 1.3 handshake: the only suite, the test
-    certificate verified against its CA and the host name."""
+    """REQ-TLS-002, 018..022: Python ssl completes a TLS 1.3 handshake: the
+    only suite, the test certificate verified against its CA and the host
+    name."""
     with tls_connect(sut) as s:
         assert s.version() == "TLSv1.3"
         assert s.cipher()[0] == "TLS_AES_128_GCM_SHA256"
@@ -280,7 +281,7 @@ def test_tls_003_echo_many_records(sut):
 
 
 def test_tls_004_full_size_record(sut):
-    """One 2^14-byte record — the largest a peer may send."""
+    """REQ-TLS-041: one 2^14-byte record — the largest a peer may send."""
     data = os.urandom(16384)
     with tls_connect(sut) as s:
         s.sendall(data)
@@ -326,8 +327,8 @@ def test_tls_010_tls12_refused(sut):
 
 
 def test_tls_011_not_tls(sut):
-    """Plain HTTP on the TLS port: an unexpected_message alert in the clear,
-    then the connection closes."""
+    """REQ-TLS-047: plain HTTP on the TLS port: an unexpected_message alert
+    in the clear, then the connection closes."""
     with connect(sut.host) as s:
         s.sendall(b"GET / HTTP/1.0\r\n\r\n")
         s.settimeout(5)
@@ -434,8 +435,9 @@ def test_tls_030_groups(sut, group, shown):
 
 
 def test_tls_031_default_client_hello(sut):
-    """OpenSSL's default ClientHello (post-quantum X25519MLKEM768 share
-    first, x25519 second, compatibility-mode session id)."""
+    """REQ-TLS-045, 046: OpenSSL's default ClientHello (post-quantum
+    X25519MLKEM768 share first, x25519 second, compatibility-mode session
+    id)."""
     rc, out = s_client(sut, "-brief")
     assert rc is None, out
     assert "Ciphersuite: TLS_AES_128_GCM_SHA256" in out
@@ -456,15 +458,16 @@ def test_tls_032_no_middlebox_compat(sut):
     ("-sigalgs", "rsa_pss_rsae_sha256"),
 ], ids=["group", "chacha20", "aes256", "sigalg"])
 def test_tls_033_nothing_in_common(sut, args):
-    """No shared group, suite or signature scheme: handshake_failure."""
+    """REQ-TLS-002: no shared group, suite or signature scheme:
+    handshake_failure."""
     rc, out = s_client(sut, *args, "-brief")
     assert rc not in (None, 0), out
     assert "alert handshake failure" in out, out
 
 
 def test_tls_035_hello_retry(sut):
-    """A secp384r1 key share only: the server asks for x25519 with a
-    HelloRetryRequest, and the second ClientHello brings it."""
+    """REQ-TLS-061: a secp384r1 key share only: the server asks for x25519
+    with a HelloRetryRequest, and the second ClientHello brings it."""
     rc, out = s_client(sut, "-groups", "P-384:X25519", "-msg", "-brief")
     assert rc is None, out
     assert out.count(">>> TLS 1.3, Handshake") >= 2
@@ -484,8 +487,8 @@ def test_tls_036_max_fragment_length(sut):
 
 
 def test_tls_034_key_update(sut):
-    """s_client 'K': KeyUpdate(update_requested); the SUT answers with its
-    own and data flows under the new keys both ways."""
+    """REQ-TLS-044: s_client 'K': KeyUpdate(update_requested); the SUT
+    answers with its own and data flows under the new keys both ways."""
     if not OPENSSL:
         pytest.skip("no openssl CLI")
     cmd = [OPENSSL, "s_client", "-connect", f"{sut.host}:{PORT}",
@@ -535,7 +538,8 @@ def test_tls_040_over_ipv6(sut, request):
 # ── Pre-shared keys (REQ-TLS-023/024) ──────────────────────────────────────────
 
 def test_tls_050_psk_openssl(sut):
-    """An external PSK: no certificate, (EC)DHE for forward secrecy."""
+    """REQ-TLS-023, 024: an external PSK: no certificate, (EC)DHE for
+    forward secrecy."""
     rc, out = s_client(sut, "-psk", PSK.hex(), "-psk_identity", PSK_ID,
                        "-brief")
     assert rc is None, out
@@ -545,7 +549,7 @@ def test_tls_050_psk_openssl(sut):
 
 
 def test_tls_051_psk_wrong_key(sut):
-    """The binder does not check out: decrypt_error."""
+    """REQ-TLS-051: the binder does not check out: decrypt_error."""
     rc, out = s_client(sut, "-psk", "00" * 32, "-psk_identity", PSK_ID,
                        "-brief")
     assert rc not in (None, 0), out
