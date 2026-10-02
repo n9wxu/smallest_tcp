@@ -218,3 +218,13 @@ add_config_accepted_test(byte_order_set_by_hand src/net_cksum.c
     -U__BYTE_ORDER__ -DNET_LITTLE_ENDIAN=1)
 add_config_rejected_test(byte_order_set_twice src/net_cksum.c
     "are both defined" -DNET_LITTLE_ENDIAN=1 -DNET_BIG_ENDIAN=1)
+
+# An IPv6 host without UDP or TCP — ICMPv6, Neighbor Discovery and MLD
+# alone — compiles without a warning, though icmpv6.c then has no
+# transport to hand a received error to.
+
+add_config_accepted_test(icmpv6_without_transports src/icmpv6.c
+    -Wall -Wextra -Werror -pedantic
+    -DNET_USE_IPV6=1 -DNET_USE_UDP=0 -DNET_USE_TCP=0)
+# Not met yet: error_input() leaves a variable unused
+set_tests_properties(icmpv6_without_transports PROPERTIES WILL_FAIL TRUE)
