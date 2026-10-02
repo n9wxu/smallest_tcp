@@ -1242,11 +1242,11 @@ static void error_about_datagram(uint8_t type, uint8_t code,
                 peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, n));
 }
 
-/* REQ-ICMPv6-011, 019, 020, 022, 025, 040, 041, 043: an error about a UDP
- * datagram we sent reaches the application's handler, with the datagram's
- * ports and destination, the error's type and code, the MTU of a Packet
- * Too Big, and the quote — in place, in the RX buffer; an error quoting a
- * datagram from another address does not */
+/* REQ-ICMPv6-011, 019, 020, 022, 025, 040, 041, 043, REQ-UDP-039: an error
+ * about a UDP datagram we sent reaches the application's handler, with
+ * the datagram's ports and destination, the error's type and code, the
+ * MTU of a Packet Too Big, and the quote — in place, in the RX buffer; an
+ * error quoting a datagram from another address does not */
 TEST(itest_icmpv6_011_errors_reach_the_udp_application) {
   static const uint8_t mtu_1300[4] = {0, 0, 0x05, 0x14};
   static const uint8_t mtu_1000[4] = {0, 0, 0x03, 0xE8};

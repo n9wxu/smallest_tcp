@@ -161,8 +161,7 @@ with a second function would make every application initializer name it.
 The handler is stored in `net_t` as `void (*)(void)` (net.h cannot see
 `udp.h`'s types) and converted back to be called.  Without a handler the
 error is dropped.  The quote, like a payload, is valid only until the
-handler returns.  ICMPv6 errors do not reach UDP: `icmpv6_input()` passes
-on only those that quote a TCP segment (section 9).
+handler returns.  ICMPv6 errors have a handler of their own (section 7).
 
 ---
 
@@ -289,6 +288,21 @@ net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
                             const uint8_t *dst_mac, uint16_t src_port,
                             uint16_t dst_port, uint16_t data_len,
                             uint8_t hop_limit);
+
+typedef struct {
+  uint16_t local_port;   /* the quoted source port: ours */
+  const uint8_t *dst_ip; /* where the datagram was going: 16 bytes, in the quote */
+  uint16_t dst_port;
+  uint8_t type;          /* ICMPV6_DEST_UNREACH, _PKT_TOO_BIG, _TIME_EXCEEDED,
+                            _PARAM_PROBLEM, or an error type the stack does not know */
+  uint8_t code;
+  uint32_t mtu;          /* Packet Too Big: the path's MTU, else 0 */
+  const uint8_t *quote;  /* the quoted IPv6 header and data, unchanged */
+  uint16_t quote_len;
+} udp6_icmp_error_t;
+
+typedef void (*udp6_error_handler_t)(net_t *net, const udp6_icmp_error_t *err);
+void udp6_set_error_handler(net_t *net, udp6_error_handler_t handler);
 ```
 
 - **A separate table.**  The IPv6 handler gets the 16-byte source address
@@ -303,6 +317,15 @@ net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
   enforces RFC 4443 §2.4(e) itself (nothing about a packet sent to a group, to
   a link-layer multicast/broadcast address, or from a multicast or unspecified
   source).
+- **ICMPv6 errors.**  `icmpv6_input()` hands every error — of the four
+  known types or any other below 128 (RFC 4443 §2.4(a)) — that quotes a UDP
+  datagram from one of our addresses to `udp6_icmp_error()`, which reads the
+  quoted ports and calls the handler set with `udp6_set_error_handler()`;
+  like the IPv4 one it is kept in `net_t` as `void (*)(void)`, is one per
+  interface, and gets a quote valid only during the call.  A quote shorter
+  than the IPv6 header plus the two ports is dropped, as is a Packet Too Big
+  whose MTU is below 1280 (RFC 8201 §4).  The stack keeps no path MTU: an
+  application told of a smaller one sends smaller datagrams.
 - **Send.**  The source address is always chosen by `ipv6_src_for()`
   (RFC 6724, one interface); if no usable address can reach `dst_ip` the send
   fails with `NET_ERR_INVALID_PARAM`.  There is no `_from` variant: DHCPv6
@@ -338,7 +361,6 @@ Problem).  See [configuration.md §5](configuration.md#5-compile-time-protocol-s
 | Receive queues | A datagram is delivered during `net_poll()` or not at all. |
 | Sending without a checksum (REQ-UDP-010) | Every datagram sent is checksummed. |
 | IP options (REQ-UDP-042) | Received options are skipped, not passed to the handler; none can be sent. |
-| ICMPv6 errors to the application (REQ-UDP-039) | `udp_set_error_handler()` hears ICMPv4 errors only. |
 | Over IPv6: the destination address of a received datagram, a source address chosen by the application | `udp_rx_dst_ip()` and `udp_send_inplace_from()` are IPv4 only; `ipv6_src_for()` picks the IPv6 source. |
 | UDP-Lite, zero-checksum IPv6 tunnels (RFC 6935) | — |
 

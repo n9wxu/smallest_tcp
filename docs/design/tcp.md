@@ -458,9 +458,9 @@ RCV.NXT, is acknowledged, and moves the connection:
 `icmp_input()` hands Destination Unreachable, Time Exceeded and Parameter
 Problem quoting a TCP segment of ours to `tcp_icmp_error()` with the quote
 (the quoted IP header and at least 8 bytes of TCP); `icmpv6_input()` hands
-ICMPv6 Destination Unreachable, Packet Too Big, Time Exceeded and Parameter
-Problem quoting one to `tcp6_icmp_error()`, with the message's 4-byte field
-(the MTU of a Packet Too Big).  The quoted addresses and ports name the
+every ICMPv6 error quoting one — Destination Unreachable, Packet Too Big,
+Time Exceeded, Parameter Problem, or a type it does not know — to
+`tcp6_icmp_error()`, with the MTU of a Packet Too Big.  The quoted addresses and ports name the
 connection (`quoted_conn()`: not CLOSED or LISTEN, both addresses compared
 by `is_peer()`); the quoted sequence number must lie in SND.UNA ≤ SEQ <
 SND.NXT, so an error about a segment we never sent — or one acknowledged
@@ -470,7 +470,7 @@ since — is ignored (RFC 5927 §4.1).  Then (RFC 1122 §4.2.3.9, RFC 9293
 | Error | Effect |
 |---|---|
 | IPv4: Fragmentation Needed with a next-hop MTU ≥ 68 | `snd_mss` drops to MTU − 40 if that is smaller (`path_mss()`, RFC 1191); the retransmission timer resends the segment in flight in pieces of the new size (section 5.1) |
-| IPv6: Packet Too Big | `snd_mss` drops to MTU − 60 if that is smaller, an MTU below 1280 counting as 1280 (RFC 8201 §4); resent as above |
+| IPv6: Packet Too Big | `snd_mss` drops to MTU − 60 if that is smaller; resent as above.  One with an MTU below 1280 does not arrive: `icmpv6_input()` discards it (RFC 8201 §4, REQ-ICMPv6-042) — `tcp6_icmp_error()` itself would count it as 1280 |
 | IPv4: Protocol Unreachable, Port Unreachable, Fragmentation Needed without a usable MTU.  IPv6: Port Unreachable | Hard: `abort_on_error()` — CLOSED with `TCP_EVT_ERROR`, or LISTEN again for a passive open in SYN-RECEIVED (REQ-TCP-135, 137) |
 | Any other: Network/Host Unreachable, no route, Time Exceeded, Parameter Problem… | Soft: `TCP_EVT_SOFT_ERROR`, the connection goes on (REQ-TCP-136, 173) |
 
