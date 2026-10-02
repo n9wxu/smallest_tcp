@@ -289,8 +289,12 @@ static void dad_step(net_t *net, uint8_t slot) {
   }
   /* No one answered: the address is ours */
   a->state = a->preferred_s ? NET_IP6_PREFERRED : NET_IP6_DEPRECATED;
-  if (slot == 0)
+  if (slot == 0) {
+    /* REQ-IPv6-054: the groups again, from an address routers accept
+     * (RFC 3810 §5.2.13) */
+    mld_report_change(net, NULL);
     start_router_discovery(net);
+  }
 }
 
 /* REQ-NDP-034..038; solicitations go before DAD so one scheduled by DAD

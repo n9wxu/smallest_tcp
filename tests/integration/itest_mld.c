@@ -428,7 +428,7 @@ TEST(itest_mld_052_other_listeners_ignored) {
 int main(void) {
   fprintf(stderr, "=== itest_mld ===\n");
   RUN_TEST(itest_mld_049_groups_reported_at_start);
-  RUN_XFAIL(itest_mld_054_reported_from_the_link_local_address);
+  RUN_TEST(itest_mld_054_reported_from_the_link_local_address);
   RUN_TEST(itest_mld_049_join_reported_and_received);
   RUN_TEST(itest_mld_055_leave_reported);
   RUN_TEST(itest_mld_049_solicited_node_group_of_each_address);

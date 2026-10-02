@@ -73,6 +73,15 @@ static int sent(uint8_t type, peer_ip6_t *ip, peer_icmp_t *icmp) {
   return wire_find_icmp6(&t, 0, type, ip, icmp) >= 0;
 }
 
+/* Time passes in steps of 1 ms until a Router Solicitation has been
+ * sent, at most @p max_ms; @return the time passed, or -1 */
+static long advance_until_rs(uint32_t max_ms) {
+  uint32_t ms;
+  for (ms = 0; ms < max_ms && !wire_count_icmp6(&t, T_RS); ms++)
+    itest_advance(&t, 1, 1);
+  return wire_count_icmp6(&t, T_RS) ? (long)ms : -1;
+}
+
 /* ── The peer's Neighbor Discovery messages ── */
 
 /* What a test may get wrong on purpose in an ND message */
@@ -538,6 +547,7 @@ TEST(itest_ndp_034_router_solicitations) {
   uint8_t k;
   for (k = 0; k < 8; k++) { /* several devices: the delays are random */
     long ms;
+    int at;
     itest_up(&t, 1514, 1514);
     t.net.mac[5] = (uint8_t)(k * 37);
     net_random_seed(&t.net, &k, 1);
@@ -547,10 +557,10 @@ TEST(itest_ndp_034_router_solicitations) {
       itest_advance(&t, 1, 1);
     ASSERT_EQ(wire_count_icmp6(&t, T_RS), 0); /* none from a tentative one */
     wire_clear(&t);
-    ms = advance_until_sent(2000, 1);
+    ms = advance_until_rs(2000);
     ASSERT_TRUE(ms >= 0 && ms <= 1001);
-    ASSERT_TRUE(sent(T_RS, &ip, &icmp));
-    ASSERT_MEM_EQ(wire_sent(&t, 0)->data, all_routers_mac, 6);
+    at = wire_find_icmp6(&t, 0, T_RS, &ip, &icmp);
+    ASSERT_MEM_EQ(wire_sent(&t, (uint16_t)at)->data, all_routers_mac, 6);
     ASSERT_MEM_EQ(ip.dst, all_routers6, 16);
     ASSERT_MEM_EQ(ip.src, ll, 16);
     ASSERT_EQ(ip.hop_limit, 255);
@@ -561,10 +571,10 @@ TEST(itest_ndp_034_router_solicitations) {
     ASSERT_NOT_NULL(slla = peer_nd_option(icmp.data, 8, 1));
     ASSERT_MEM_EQ(slla + 2, t.net.mac, 6);
     wire_clear(&t);
-    ASSERT_EQ(advance_until_sent(10000, 1), 4000);
+    ASSERT_EQ(advance_until_rs(10000), 4000);
     ASSERT_EQ(wire_count_icmp6(&t, T_RS), 1);
     wire_clear(&t);
-    ASSERT_EQ(advance_until_sent(10000, 1), 4000);
+    ASSERT_EQ(advance_until_rs(10000), 4000);
     ASSERT_EQ(wire_count_icmp6(&t, T_RS), 1);
     wire_clear(&t);
     itest_advance(&t, 30000, 100);
