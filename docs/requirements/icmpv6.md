@@ -51,11 +51,11 @@ ICMPv6 Types are divided into:
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-ICMPv6-011 | MUST | Pass a received Destination Unreachable to the upper-layer protocol that sent the quoted packet: TCP (`tcp6_icmp_error()`) or the UDP application's error handler (`udp6_set_error_handler()`) | RFC 4443 §3.1, §2.4(d) | itest_icmpv6_011_errors_reach_tcp, itest_icmpv6_015_port_unreachable_reaches_tcp, itest_icmpv6_011_errors_reach_the_udp_application |
+| REQ-ICMPv6-011 | MUST | Pass a received Destination Unreachable to the upper-layer protocol that sent the quoted packet: TCP (`tcp6_icmp_error()`) or the UDP application's error handler (`udp6_set_error_handler()`) | RFC 4443 §3.1, §2.4(d) | itest_icmpv6_011_errors_reach_tcp, itest_icmpv6_015_port_unreachable_reaches_tcp, itest_icmpv6_011_errors_reach_the_udp_application, itest_tcp_135_unreachable_ipv6 |
 | REQ-ICMPv6-012 | MUST | Code 0: No route to destination — passed up (a soft error for TCP) | RFC 4443 §3.1 | itest_icmpv6_011_errors_reach_tcp |
 | REQ-ICMPv6-013 | MUST | Code 1: Communication with destination administratively prohibited — passed up (a soft error for TCP) | RFC 4443 §3.1 | itest_icmpv6_011_errors_reach_tcp |
 | REQ-ICMPv6-014 | MUST | Code 3: Address unreachable — passed up (a soft error for TCP) | RFC 4443 §3.1 | itest_icmpv6_011_errors_reach_tcp |
-| REQ-ICMPv6-015 | MUST | Code 4: Port unreachable — passed up; TCP aborts the connection | RFC 4443 §3.1 | itest_icmpv6_015_port_unreachable_reaches_tcp |
+| REQ-ICMPv6-015 | MUST | Code 4: Port unreachable — passed up; TCP aborts the connection | RFC 4443 §3.1 | itest_icmpv6_015_port_unreachable_reaches_tcp, itest_tcp_135_unreachable_ipv6 |
 | REQ-ICMPv6-016 | SHOULD | Generate Destination Unreachable Code 4 for UDP datagrams to closed ports | RFC 4443 §3.1 | itest_icmpv6_016_port_unreachable, test_ipv6_016_udp_closed_port_unreachable |
 | REQ-ICMPv6-017 | MUST | Quote as much of the invoking packet as fits without the error exceeding the minimum IPv6 MTU (1280) — and the TX frame buffer, if that is smaller | RFC 4443 §3.1, §2.4(c) | itest_icmpv6_016_port_unreachable, itest_icmpv6_017_quote_fits_the_tx_buffer |
 
@@ -63,10 +63,10 @@ ICMPv6 Types are divided into:
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-ICMPv6-018 | MUST | Process received Packet Too Big messages: pass them to the upper-layer protocol that sent the quoted packet | RFC 4443 §3.2 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size |
-| REQ-ICMPv6-019 | MUST | Take the MTU field (bytes 4-7) as the path's MTU | RFC 4443 §3.2, RFC 8201 §4 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size |
-| REQ-ICMPv6-020 | MUST | Pass the MTU to the upper layer: TCP lowers the connection's segment size to MTU − 60; a UDP application's error handler gets it | RFC 4443 §3.2, RFC 8201 §5.2 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size |
-| REQ-ICMPv6-042 | MUST | Discard a Packet Too Big whose MTU is below the IPv6 minimum link MTU (1280) | RFC 8201 §4 | itest_icmpv6_042_packet_too_big_below_the_minimum_ignored, itest_icmpv6_011_errors_reach_the_udp_application |
+| REQ-ICMPv6-018 | MUST | Process received Packet Too Big messages: pass them to the upper-layer protocol that sent the quoted packet | RFC 4443 §3.2 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size, itest_tcp_135_packet_too_big_ipv6 |
+| REQ-ICMPv6-019 | MUST | Take the MTU field (bytes 4-7) as the path's MTU | RFC 4443 §3.2, RFC 8201 §4 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size, itest_tcp_135_packet_too_big_ipv6 |
+| REQ-ICMPv6-020 | MUST | Pass the MTU to the upper layer: TCP lowers the connection's segment size to MTU − 60; a UDP application's error handler gets it | RFC 4443 §3.2, RFC 8201 §5.2 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size, itest_tcp_135_packet_too_big_ipv6, itest_icmpv6_011_errors_reach_the_udp_application |
+| REQ-ICMPv6-042 | MUST | Discard a Packet Too Big whose MTU is below the IPv6 minimum link MTU (1280) | RFC 8201 §4 | itest_icmpv6_042_packet_too_big_below_the_minimum_ignored, itest_icmpv6_011_errors_reach_the_udp_application, itest_tcp_135_packet_too_big_ipv6 |
 | REQ-ICMPv6-021 | MUST NOT | MUST NOT generate Packet Too Big (only routers generate this) | RFC 4443 §3.2 | itest_icmpv6_021_no_router_errors |
 
 ### Time Exceeded (Type 3)
