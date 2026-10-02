@@ -139,8 +139,8 @@ returns, and handlers run before `discard()`, so they should be short.
 UDP handlers get a pointer, not a frame offset from which to `peek()` the
 payload out of the MAC driver themselves: the frame is in `rx.buf` anyway,
 since checksums are computed over it, so an offset would cost a second copy
-in every handler and expose the driver to applications.  The decision
-record is in [udp.md §10.1](design/udp.md#101-decision-record-payload-pointers-not-frame-offsets);
+in every handler and expose the driver to applications.  The reasoning
+is in [udp.md §10.1](design/udp.md#101-payload-pointers-not-frame-offsets);
 the driver side is in [mac-hal.md §3](design/mac-hal.md#3-the-receive-lifecycle-net_poll).
 
 ## 6. Transmit path

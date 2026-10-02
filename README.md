@@ -161,7 +161,7 @@ ctest --test-dir build --output-on-failure
 | `SMALLEST_TCP_IPV6` | ON | Dual stack: IPv6, ICMPv6, NDP, MLD in the core (`NET_USE_IPV6`); OFF for IPv4 only |
 | `SMALLEST_TCP_UDP` | ON | UDP in the core (`NET_USE_UDP`) and the libraries over it |
 | `SMALLEST_TCP_TCP` | ON | TCP in the core (`NET_USE_TCP`) and the libraries over it |
-| `SMALLEST_TCP_TLS` | ON at top level | The Mbed TLS crypto backend, the TLS and DTLS demos and tests; CMake downloads Mbed TLS 3.6.7 (pinned by SHA-256) |
+| `SMALLEST_TCP_TLS` | ON at top level, OFF when cross-compiling | The Mbed TLS crypto backend, the TLS and DTLS demos and tests; CMake downloads Mbed TLS 3.6.7 (pinned by SHA-256) |
 | `SMALLEST_TCP_DTLS` | ON | DTLS 1.3 (`dtls.c`) as well as TLS, sharing the handshake (`TLS_USE_DTLS`); OFF builds the handshake for TLS alone |
 | `SMALLEST_TCP_DEBUG` | OFF | `NET_LOG()` output to `stderr` (`NET_DEBUG=1`) |
 | `SMALLEST_TCP_COVERAGE` | OFF | Instruments the stack and the tests for gcov line and branch coverage ([test-plan.md §0](docs/test-plan.md#code-coverage)) |
