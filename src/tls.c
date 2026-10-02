@@ -185,8 +185,9 @@ static void rx_keep(tls_conn_t *t, size_t off, size_t n, size_t rlen) {
 
 static int on_alert(tls_conn_t *t, const uint8_t *a, size_t n, size_t rlen) {
   uint8_t desc;
-  if (n != 2)
-    return tls_fail(t, TLS_ALERT_DECODE_ERROR);
+  if (n != 2) /* one alert, whole (RFC 8446 §5.1); no content at all: §5.4 */
+    return tls_fail(t,
+                    n ? TLS_ALERT_DECODE_ERROR : TLS_ALERT_UNEXPECTED_MESSAGE);
   desc = a[1];
   rx_keep(t, 0, 0, rlen);
   return tls_alert_received(t, desc);

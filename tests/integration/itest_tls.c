@@ -2480,7 +2480,7 @@ int main(void) {
   RUN_TEST(itest_tls_047_record_too_long_or_unknown);
   RUN_TEST(itest_tls_057_records_out_of_place);
   RUN_TEST(itest_tls_047_plaintext_too_long);
-  RUN_XFAIL(itest_tls_059_empty_alert_record);
+  RUN_TEST(itest_tls_059_empty_alert_record);
   RUN_TEST(itest_tls_068_early_data_not_accepted);
   RUN_TEST(itest_tls_059_padding_and_no_content_type);
   RUN_TEST(itest_tls_035_close_notify);
