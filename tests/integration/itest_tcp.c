@@ -2637,7 +2637,7 @@ int main(void) {
   RUN_TEST(itest_tcp_182_ip_options);
   RUN_TEST(itest_tcp_082_window_advertised);
   RUN_TEST(itest_tcp_085_zero_window_probe);
-  RUN_XFAIL(itest_tcp_088_receiver_silly_window_avoidance);
+  RUN_TEST(itest_tcp_088_receiver_silly_window_avoidance);
   RUN_TEST(itest_tcp_089_small_window_small_segment);
   RUN_TEST(itest_tcp_090_retransmission_schedule);
   RUN_TEST(itest_tcp_097_ack_restarts_or_stops_the_timer);

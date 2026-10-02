@@ -814,6 +814,23 @@ static int can_receive(const tcp_conn_t *conn) {
          conn->state == TCP_FIN_WAIT_2;
 }
 
+/* REQ-TCP-088 (§3.8.6.2.2), receiver silly-window avoidance: the window
+ * opens to the buffer's free space only when that is min(half the
+ * buffer, the MSS) more than the window on offer; until then its right
+ * edge stays.  Returns 1 if it opened. */
+static int open_window(tcp_conn_t *conn) {
+  uint16_t avail = conn->rxbuf_ops->available(conn->rxbuf_ctx);
+  uint32_t buffer =
+      (uint32_t)avail + conn->rxbuf_ops->readable(conn->rxbuf_ctx);
+  uint16_t step = (uint16_t)(buffer / 2u);
+  if (conn->our_mss && conn->our_mss < step)
+    step = conn->our_mss;
+  if (avail <= conn->rcv_wnd || (uint16_t)(avail - conn->rcv_wnd) < step)
+    return 0;
+  conn->rcv_wnd = avail;
+  return 1;
+}
+
 /* Step 7, REQ-TCP-064..067: in-order data only — there is no reassembly
  * queue.  Bytes before RCV.NXT (a retransmission with new boundaries)
  * were taken already; a segment after a gap is dropped. */
@@ -831,7 +848,8 @@ static void data_input(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
     delivered =
         conn->rxbuf_ops->deliver(conn->rxbuf_ctx, s->data + seen, new_len);
     conn->rcv_nxt += delivered;
-    conn->rcv_wnd = conn->rxbuf_ops->available(conn->rxbuf_ctx);
+    conn->rcv_wnd = (uint16_t)(conn->rcv_wnd - delivered);
+    open_window(conn);
     if (delivered > 0)
       notify(conn, TCP_EVT_DATA);
   }
@@ -850,7 +868,6 @@ static void fin_input(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
     return;
   }
   conn->rcv_nxt++;
-  conn->rcv_wnd = conn->rxbuf_ops->available(conn->rxbuf_ctx);
   send_ack(net, conn);
   switch (conn->state) {
   case TCP_ESTABLISHED: /* (SYN-RECEIVED has become it, in step 5) */
@@ -1271,21 +1288,8 @@ uint16_t tcp_recv(tcp_conn_t *conn, uint8_t *buf, uint16_t maxlen) {
 }
 
 void tcp_window_update(net_t *net, tcp_conn_t *conn) {
-  uint16_t avail, threshold;
-  uint32_t buffer;
-  if (!net || !conn || !can_receive(conn))
-    return;
-  avail = conn->rxbuf_ops->available(conn->rxbuf_ctx);
-  if (avail <= conn->rcv_wnd)
-    return;
-  buffer = (uint32_t)avail + conn->rxbuf_ops->readable(conn->rxbuf_ctx);
-  threshold = (uint16_t)(buffer / 2u);
-  if (conn->our_mss && conn->our_mss < threshold)
-    threshold = conn->our_mss;
-  if ((uint16_t)(avail - conn->rcv_wnd) < threshold)
-    return;
-  conn->rcv_wnd = avail;
-  send_ack(net, conn);
+  if (net && conn && can_receive(conn) && open_window(conn))
+    send_ack(net, conn);
 }
 
 uint16_t tcp_last_error(const tcp_conn_t *conn) {
