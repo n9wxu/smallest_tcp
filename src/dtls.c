@@ -590,8 +590,6 @@ static int message_done(dtls_conn_t *d) {
   size_t from;
   int r, in_handshake = t->state == TLS_STATE_HANDSHAKE;
   d->rx_seq++;
-  if (in_handshake)
-    flight_acked(d); /* the peer's next flight answers ours (§7) */
   r = tls_on_handshake(t, t->rx + t->hs_off, (size_t)(t->hs_len - t->hs_off));
   if (r < 0)
     return r;
@@ -637,6 +635,8 @@ static int on_fragments(dtls_conn_t *d, const uint8_t *p, size_t n,
       if (!placed) /* before the message can start a flight of ours */
         note_record(d, epoch, seq);
       placed = 1;
+      if (!after)        /* any record of the peer's next flight answers ours */
+        flight_acked(d); /* (§7.2) */
       if (d->hs_have == mlen) {
         if ((r = message_done(d)) < 0)
           return r;

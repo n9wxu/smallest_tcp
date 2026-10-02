@@ -1938,7 +1938,7 @@ int main(void) {
   RUN_TEST(itest_dtls_036_finished_resent_under_its_own_keys);
   RUN_TEST(itest_dtls_051_only_records_taken_are_acknowledged);
   RUN_TEST(itest_dtls_054_only_handshake_records_acknowledged);
-  RUN_XFAIL(itest_dtls_056_flight_answered_by_a_fragment_of_the_next);
+  RUN_TEST(itest_dtls_056_flight_answered_by_a_fragment_of_the_next);
   RUN_TEST(itest_dtls_033_flight_in_fragments);
   RUN_TEST(itest_dtls_051_record_with_a_fragment_not_taken);
   RUN_TEST(itest_dtls_051_record_acknowledged_in_part);
