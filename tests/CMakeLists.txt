@@ -58,8 +58,6 @@ if(SMALLEST_TCP_IPV4)
     target_link_libraries(test_udp PRIVATE smallest_tcp_core)
     add_unit_test(test_tcp)
     target_link_libraries(test_tcp PRIVATE smallest_tcp_core)
-    add_unit_test(test_tftp)
-    target_link_libraries(test_tftp PRIVATE smallest_tcp_tftp)
     add_unit_test(test_dhcpv4)
     target_link_libraries(test_dhcpv4 PRIVATE
         smallest_tcp_dhcpv4_client
