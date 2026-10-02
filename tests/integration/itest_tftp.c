@@ -1112,8 +1112,8 @@ int main(void) {
   RUN_TEST(itest_tftp_008_only_the_next_block_is_taken);
   RUN_TEST(itest_tftp_008_block_number_wraps);
   RUN_TEST(itest_tftp_013_duplicate_block_acked_not_delivered);
-  RUN_XFAIL(itest_tftp_041_oversize_data_dropped);
-  RUN_XFAIL(itest_tftp_041_data_above_the_negotiated_size_dropped);
+  RUN_TEST(itest_tftp_041_oversize_data_dropped);
+  RUN_TEST(itest_tftp_041_data_above_the_negotiated_size_dropped);
   RUN_TEST(itest_tftp_016_error_ends_the_transfer);
   RUN_TEST(itest_tftp_016_error_while_receiving);
   RUN_TEST(itest_tftp_019_every_error_code_reported);
@@ -1145,7 +1145,7 @@ int main(void) {
   RUN_TEST(itest_tftp_028_unrequested_blksize_refused);
   RUN_TEST(itest_tftp_028_unrequested_option_refused);
   RUN_TEST(itest_tftp_028_oack_without_blksize_means_512);
-  RUN_XFAIL(itest_tftp_028_malformed_oack_dropped);
+  RUN_TEST(itest_tftp_028_malformed_oack_dropped);
   RUN_TEST(itest_tftp_031_data_instead_of_oack_means_512);
   ITEST_REPORT();
   return test_failures;

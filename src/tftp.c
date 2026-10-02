@@ -1,7 +1,7 @@
 /**
  * @file tftp.c
  * @brief TFTP client (RFC 1350) with the blksize option (RFC 2348) and an
- *        adaptive timeout (RFC 1123 §4.2.3.2).  REQ-TFTP-001..039.
+ *        adaptive timeout (RFC 1123 §4.2.3.2).  REQ-TFTP-001..041.
  */
 
 #include "tftp.h"
@@ -200,15 +200,20 @@ static void refuse_oack(net_t *net, tftp_client_t *c, const char *why) {
 
 /* REQ-TFTP-027, 028, 038: the server's blksize, acknowledged with ACK(0).
  * RFC 2347 lets it acknowledge only options we requested — blksize is
- * the only one — so any other is refused. */
+ * the only one — so any other is refused.  An OACK whose last name or
+ * value does not end within the datagram is malformed, and dropped. */
 static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
   const uint8_t *p = data + 2, *end = data + len;
-  const char *name, *value;
   uint16_t requested = blksize_requested(c) ? c->blksize : 0;
-  c->blksize = TFTP_DEFAULT_BLKSIZE; /* an OACK without blksize declines it */
-  while ((name = next_string(&p, end)) && (value = next_string(&p, end))) {
-    uint32_t v = parse_decimal(value);
+  uint16_t blksize = TFTP_DEFAULT_BLKSIZE; /* no blksize declines it */
+  while (p < end) {
+    const char *name = next_string(&p, end);
+    const char *value = name ? next_string(&p, end) : NULL;
+    uint32_t v;
+    if (!value)
+      return;
+    v = parse_decimal(value);
     if (!net_equal_nocase(name, "blksize")) {
       refuse_oack(net, c, "Option not requested");
       return;
@@ -217,8 +222,9 @@ static void oack_input(net_t *net, tftp_client_t *c, const uint8_t *data,
       refuse_oack(net, c, "Bad blksize");
       return;
     }
-    c->blksize = (uint16_t)v;
+    blksize = (uint16_t)v;
   }
+  c->blksize = blksize;
   c->state = TFTP_STATE_RECEIVING;
   made_progress(c);
   send_ack(net, c, 0);
@@ -264,15 +270,18 @@ static void deliver_netascii(tftp_client_t *c, uint16_t block,
   }
 }
 
-/* REQ-TFTP-009..015, 031 */
+/* REQ-TFTP-009..015, 031, 041.  DATA that answers the RRQ means the
+ * server took no option: the block size in force is the default. */
 static void data_input(net_t *net, tftp_client_t *c, const uint8_t *data,
                        uint16_t len) {
   uint16_t block = net_read16be(data + 2);
   uint16_t block_len = (uint16_t)(len - TFTP_DATA_HDR_SIZE);
-  if (c->state == TFTP_STATE_REQUESTING) { /* blksize option ignored */
-    c->blksize = TFTP_DEFAULT_BLKSIZE;
-    c->state = TFTP_STATE_RECEIVING;
-  }
+  uint16_t blksize =
+      c->state == TFTP_STATE_REQUESTING ? TFTP_DEFAULT_BLKSIZE : c->blksize;
+  if (block_len > blksize)
+    return; /* more than a block: not one */
+  c->blksize = blksize;
+  c->state = TFTP_STATE_RECEIVING;
   if (block == c->next_block) {
     made_progress(c);
     if (c->mode == TFTP_MODE_NETASCII)
