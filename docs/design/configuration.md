@@ -178,7 +178,7 @@ less than the dual stack ([size-comparison.md](size-comparison.md)).  Those call
 references, so **linking IPv4 pulls in `udp.o` and `tcp.o`** unless the build
 compiles with `-DNET_USE_UDP=0` or `-DNET_USE_TCP=0`.  A transport that is
 switched off is not dispatched to, its fields leave `net_t`, and its header
-no longer compiles — so its source files must also be left out of the build.
+does not compile — so its source files must also be left out of the build.
 The ARM size benchmark does this (`make arm-size` builds with
 `-DNET_USE_TCP=0` and without `tcp.c`), and so do the CMake options
 `SMALLEST_TCP_UDP` and `SMALLEST_TCP_TCP`: turned off, they leave the
