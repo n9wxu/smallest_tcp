@@ -1,9 +1,8 @@
 /**
  * @file test_dns_wire.c
- * @brief Unit tests for DNS wire-format helpers (RFC 1035 §3-4).
- *
- * Tests REQ-MDNS-003 (DNS wire format), REQ-MDNS-043 (name compression),
- * REQ-DNSSD-031 (label / name length limits).
+ * @brief The DNS wire-format functions of dns_wire.h (RFC 1035 §3-4):
+ *        names written, compressed, compared and decoded, questions and
+ *        records read, the writer's bounds.
  */
 
 #include "dns_wire.h"
@@ -31,6 +30,7 @@ TEST(test_name_encode_uncompressed) {
   ASSERT_MEM_EQ(buf, expect, sizeof(expect));
 }
 
+/* REQ-MDNS-003 */
 TEST(test_name_trailing_dot_equivalent) {
   uint8_t a[64];
   fresh();
@@ -43,6 +43,7 @@ TEST(test_name_trailing_dot_equivalent) {
   ASSERT_MEM_EQ(buf, a, alen);
 }
 
+/* REQ-MDNS-003 */
 TEST(test_name_root) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "."), 0);
@@ -53,7 +54,7 @@ TEST(test_name_root) {
   ASSERT_EQ(w.len, 1);
 }
 
-/* DNS-SD instance labels may contain spaces */
+/* REQ-MDNS-003, REQ-DNSSD-034: DNS-SD instance labels may contain spaces */
 TEST(test_name_label_with_spaces) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "Pyro Unit 1._pyro._tcp.local"), 0);
@@ -79,6 +80,7 @@ TEST(test_name_label_too_long) {
   ASSERT_EQ(dns_write_name(&w, name), 0);
 }
 
+/* REQ-MDNS-051, REQ-DNSSD-031 */
 TEST(test_name_wire_len) {
   ASSERT_EQ(dns_name_wire_len("pyro-dead01.local"), 19);
   ASSERT_EQ(dns_name_wire_len("pyro-dead01.local."), 19);
@@ -86,6 +88,7 @@ TEST(test_name_wire_len) {
   ASSERT_EQ(dns_name_wire_len("a..local"), -2);
 }
 
+/* REQ-DNSSD-031 */
 TEST(test_name_empty_label_rejected) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "a..local"), -2);
@@ -95,6 +98,7 @@ TEST(test_name_empty_label_rejected) {
 
 /* ── Compression (REQ-MDNS-043) ───────────────────────────────────── */
 
+/* REQ-MDNS-043 */
 TEST(test_compress_shared_suffix) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "pyro-dead01.local"), 0); /* offset 0 */
@@ -107,6 +111,7 @@ TEST(test_compress_shared_suffix) {
   ASSERT_EQ(buf[second + 7], 12);
 }
 
+/* REQ-MDNS-043 */
 TEST(test_compress_whole_name) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "_pyro._tcp.local"), 0);
@@ -117,7 +122,8 @@ TEST(test_compress_whole_name) {
   ASSERT_EQ(buf[second + 1], 0);
 }
 
-/* A name that extends an earlier one points at the earlier name */
+/* REQ-MDNS-043: a name that extends an earlier one points at the earlier name
+ */
 TEST(test_compress_prefix_label) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "_pyro._tcp.local"), 0);
@@ -128,7 +134,8 @@ TEST(test_compress_prefix_label) {
   ASSERT_EQ(buf[second + 13], 0);
 }
 
-/* Compression targets recorded after the header use message offsets */
+/* REQ-MDNS-043: compression targets recorded after the header use message
+ * offsets */
 TEST(test_compress_after_header) {
   fresh();
   ASSERT_EQ(dns_write_header(&w, 0, DNS_FLAG_QR | DNS_FLAG_AA, 0, 2, 0, 0), 0);
@@ -141,6 +148,7 @@ TEST(test_compress_after_header) {
 
 /* ── Writer bounds + rollback ─────────────────────────────────────── */
 
+/* REQ-MDNS-042 */
 TEST(test_writer_overflow_is_sticky) {
   uint8_t small[8];
   dns_writer_init(&w, small, sizeof(small));
@@ -154,6 +162,7 @@ TEST(test_writer_overflow_is_sticky) {
   ASSERT_EQ(small[7], 8);
 }
 
+/* REQ-MDNS-042 */
 TEST(test_writer_name_overflow_writes_nothing) {
   uint8_t small[10];
   dns_writer_init(&w, small, sizeof(small));
@@ -162,6 +171,7 @@ TEST(test_writer_name_overflow_writes_nothing) {
   ASSERT_EQ(w.overflow, 1);
 }
 
+/* REQ-MDNS-042, 043 */
 TEST(test_writer_rollback_forgets_offsets) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "a.local"), 0);
@@ -174,6 +184,7 @@ TEST(test_writer_rollback_forgets_offsets) {
   ASSERT_EQ(w.len, m.len + 1 + 1 + 1 + 7 + 1);
 }
 
+/* REQ-MDNS-003 */
 TEST(test_header_and_counts) {
   fresh();
   ASSERT_EQ(dns_write_header(&w, 0x1234, DNS_FLAG_QR, 1, 2, 3, 4), 0);
@@ -189,6 +200,7 @@ TEST(test_header_and_counts) {
 
 /* ── Reading names ────────────────────────────────────────────────── */
 
+/* REQ-MDNS-048 */
 TEST(test_decode_roundtrip_compressed) {
   char out[64];
   fresh();
@@ -200,6 +212,7 @@ TEST(test_decode_roundtrip_compressed) {
   ASSERT_EQ(dns_name_skip(buf, w.len, second), w.len);
 }
 
+/* REQ-MDNS-048 */
 TEST(test_decode_root_and_small_out) {
   char out[8];
   fresh();
@@ -211,6 +224,7 @@ TEST(test_decode_root_and_small_out) {
   ASSERT_EQ(dns_name_decode(buf, w.len, 0, out, sizeof(out)), -1);
 }
 
+/* REQ-MDNS-048 */
 TEST(test_name_equals) {
   fresh();
   ASSERT_EQ(dns_write_name(&w, "_pyro._tcp.local"), 0);
@@ -227,7 +241,8 @@ TEST(test_name_equals) {
   ASSERT_EQ(dns_name_equals(buf, w.len, 0, "_pyro._tcp.local"), 1);
 }
 
-/* Robustness: a pointer loop must be rejected, not followed forever */
+/* REQ-MDNS-041: robustness: a pointer loop must be rejected, not followed
+ * forever */
 TEST(test_pointer_loop_rejected) {
   char out[64];
   uint8_t msg[] = {1, 'a', 0xC0, 0x00}; /* "a" then pointer back to 0 */
@@ -237,6 +252,7 @@ TEST(test_pointer_loop_rejected) {
   ASSERT_EQ(dns_name_skip(msg, sizeof(msg), 0), 4);
 }
 
+/* REQ-MDNS-041 */
 TEST(test_truncated_and_bad_names_rejected) {
   char out[64];
   uint8_t trunc[] = {5, 'l', 'o', 'c'};              /* label runs off end */
@@ -254,6 +270,7 @@ TEST(test_truncated_and_bad_names_rejected) {
 
 /* ── Reading questions and records ────────────────────────────────── */
 
+/* REQ-MDNS-003 */
 TEST(test_read_question) {
   dns_question_t q;
   fresh();
@@ -269,6 +286,7 @@ TEST(test_read_question) {
   ASSERT_EQ(dns_read_question(buf, w.len - 1, DNS_HDR_SIZE, &q), -1);
 }
 
+/* REQ-MDNS-003 */
 TEST(test_read_rr) {
   dns_rr_t rr;
   static const uint8_t addr[4] = {10, 0, 0, 2};

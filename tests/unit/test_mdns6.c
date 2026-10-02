@@ -1,10 +1,12 @@
 /**
  * @file test_mdns6.c
- * @brief Unit tests for mDNS over IPv6 (RFC 6762 §6.2, §20): ff02::fb,
- *        AAAA records, answering on the query's address family, probing
- *        and announcing on both.  Built with NET_USE_IPV6=1; without IPv4
- *        the responder has no A record and IPv6 is the only family (V4 is
- *        0 in the expected counts).
+ * @brief mDNS over IPv6 (RFC 6762 §6.2, §20) through mdns_input6() and
+ *        the frames sent: ff02::fb, AAAA records, answering on the
+ *        query's address family, probing and announcing on both.  Built
+ *        with NET_USE_IPV6=1; without IPv4 the responder has no A record
+ *        and IPv6 is the only family (V4 is 0 in the expected counts) —
+ *        these are the IPv6-only build's mDNS tests, the scripted link of
+ *        tests/integration needing IPv4.
  */
 
 #include "dns_wire.h"
@@ -259,6 +261,7 @@ static void input6(uint16_t port, uint16_t len) {
 
 /* ══ Start, probes, announcements ═════════════════════════════════ */
 
+/* REQ-MDNS-038 */
 TEST(test_mdns6_start_joins_ff02_fb) {
   setup();
   ASSERT_FALSE(ipv6_mcast_is_member(&net, group6));
@@ -267,6 +270,7 @@ TEST(test_mdns6_start_joins_ff02_fb) {
   ASSERT_TRUE(ipv6_mac_accepted(&net, group6_mac));
 }
 
+/* REQ-MDNS-039, 016, 006 */
 TEST(test_mdns6_probes_on_both_families) {
   setup();
   mdns_start(&m);
@@ -293,6 +297,7 @@ TEST(test_mdns6_probes_on_both_families) {
   ASSERT_EQ(count_rr(v6, 1, DNS_TYPE_AAAA, a, NULL, NULL), 2);
 }
 
+/* REQ-MDNS-013, 039, 074, 078 */
 TEST(test_mdns6_announcement_aaaa_for_each_usable_address) {
   setup();
   mdns_start(&m);
@@ -326,6 +331,7 @@ TEST(test_mdns6_announcement_aaaa_for_each_usable_address) {
 #endif
 }
 
+/* REQ-MDNS-074 */
 TEST(test_mdns6_tentative_address_not_advertised) {
   static const uint8_t extra[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 7, 0, 0,
                                     0,    0,    0,    0,    0, 0, 0, 7};
@@ -355,6 +361,7 @@ TEST(test_mdns6_tentative_address_not_advertised) {
 
 /* ══ Answers ══════════════════════════════════════════════════════ */
 
+/* REQ-MDNS-013, 039, 071 */
 TEST(test_mdns6_aaaa_query_over_ipv6) {
   setup();
   to_running();
@@ -373,6 +380,7 @@ TEST(test_mdns6_aaaa_query_over_ipv6) {
 }
 
 #if NET_USE_IPV4
+/* REQ-MDNS-074 */
 TEST(test_mdns6_a_query_adds_aaaa) {
   setup();
   to_running();
@@ -384,6 +392,7 @@ TEST(test_mdns6_a_query_adds_aaaa) {
   ASSERT_EQ(count_rr(r, 2, DNS_TYPE_AAAA, NULL, NULL, NULL), 2);
 }
 
+/* REQ-MDNS-039, 074 */
 TEST(test_mdns6_aaaa_query_over_ipv4) {
   setup();
   to_running();
@@ -395,6 +404,7 @@ TEST(test_mdns6_aaaa_query_over_ipv4) {
 }
 #endif
 
+/* REQ-DNSSD-008 */
 TEST(test_mdns6_srv_additionals_include_aaaa) {
   setup();
   to_running();
@@ -406,6 +416,7 @@ TEST(test_mdns6_srv_additionals_include_aaaa) {
   ASSERT_EQ(count_rr(r, 2, DNS_TYPE_AAAA, NULL, NULL, NULL), 2);
 }
 
+/* REQ-MDNS-028, 071 */
 TEST(test_mdns6_qu_query_unicast_reply) {
   setup();
   to_running();
@@ -418,6 +429,7 @@ TEST(test_mdns6_qu_query_unicast_reply) {
   ASSERT_EQ(net_read16be(frames[0] + 14 + 42), MDNS_PORT);
 }
 
+/* REQ-MDNS-041, 076 */
 TEST(test_mdns6_legacy_unicast_reply) {
   setup();
   to_running();
@@ -438,6 +450,7 @@ TEST(test_mdns6_legacy_unicast_reply) {
   ASSERT_FALSE(cls & DNS_CLASS_TOPBIT);
 }
 
+/* REQ-MDNS-029 */
 TEST(test_mdns6_known_answer_suppression) {
   setup();
   to_running();
@@ -446,6 +459,7 @@ TEST(test_mdns6_known_answer_suppression) {
   ASSERT_EQ(n_frames, 0);
 }
 
+/* REQ-MDNS-065, 067 */
 TEST(test_mdns6_nsec_lists_aaaa) {
   setup();
   to_running();
@@ -468,6 +482,7 @@ TEST(test_mdns6_nsec_lists_aaaa) {
   ASSERT_TRUE(bm[2 + 3] & (0x80 >> 4)); /* type 28: AAAA */
 }
 
+/* REQ-MDNS-027, 039 */
 TEST(test_mdns6_shared_query_delayed_on_ipv6_only) {
   setup();
   to_running();
@@ -479,6 +494,7 @@ TEST(test_mdns6_shared_query_delayed_on_ipv6_only) {
   ASSERT_EQ(count_family(1), 1);
 }
 
+/* REQ-MDNS-013, 074 */
 TEST(test_mdns6_explicit_aaaa_record) {
   static const mdns_record_t recs[1] = {{.type = DNS_TYPE_AAAA,
                                          .ttl = MDNS_TTL_HOST,
@@ -495,6 +511,7 @@ TEST(test_mdns6_explicit_aaaa_record) {
 
 /* ══ Conflicts, re-announcing, goodbye ════════════════════════════ */
 
+/* REQ-MDNS-019, 053 */
 TEST(test_mdns6_conflict_on_foreign_aaaa_while_probing) {
   dns_writer_t w;
   setup();
@@ -513,6 +530,7 @@ TEST(test_mdns6_conflict_on_foreign_aaaa_while_probing) {
   ASSERT_EQ(mdns_state(&m), MDNS_STATE_CONFLICT);
 }
 
+/* REQ-MDNS-057 */
 TEST(test_mdns6_own_aaaa_is_not_a_conflict) {
   dns_writer_t w;
   setup();
@@ -529,6 +547,7 @@ TEST(test_mdns6_own_aaaa_is_not_a_conflict) {
   ASSERT_EQ(conflicts, 0);
 }
 
+/* REQ-MDNS-059 */
 TEST(test_mdns6_readdress_announces_on_ipv6) {
   setup();
   to_running();
@@ -542,6 +561,7 @@ TEST(test_mdns6_readdress_announces_on_ipv6) {
   ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
 }
 
+/* REQ-MDNS-059 */
 TEST(test_mdns6_readdress_while_announcing) {
   /* IPv6 came up mid-sequence: both families still get two announcements */
   setup();
@@ -557,6 +577,7 @@ TEST(test_mdns6_readdress_while_announcing) {
   ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
 }
 
+/* REQ-MDNS-032, 033, 039 */
 TEST(test_mdns6_goodbye_on_both_families) {
   setup();
   to_running();

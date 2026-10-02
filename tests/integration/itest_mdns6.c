@@ -16,7 +16,9 @@
 #define SVC "_pyro._tcp.local"
 #define INST "Pyro Unit 1._pyro._tcp.local"
 #define T_A 1
+#define T_PTR 12
 #define T_AAAA 28
+#define T_SRV 33
 #define T_NSEC 47
 #define C_IN 1
 #define C_TOP 0x8000
@@ -120,8 +122,11 @@ static void probing(void) {
 
 /* ── The peer over IPv6 ── */
 
-/* An IPv6 UDP frame from @p src:5353 to @p dst:5353 carrying @p len bytes
- * of DNS */
+/* The port the peer sends from: 5353, or another for a legacy query */
+static uint16_t peer_sport = MDNS_PORT;
+
+/* An IPv6 UDP frame from @p src, port peer_sport, to @p dst:5353 carrying
+ * @p len bytes of DNS */
 static uint16_t frame6(uint8_t *f, const uint8_t *dst_mac, const uint8_t *src,
                        const uint8_t *dst, const uint8_t *msg, uint16_t len) {
   static uint8_t pseudo[40 + 1520];
@@ -137,7 +142,7 @@ static uint16_t frame6(uint8_t *f, const uint8_t *dst_mac, const uint8_t *src,
   ip[7] = 255;
   memcpy(ip + 8, src, 16);
   memcpy(ip + 24, dst, 16);
-  peer_put16(udp, MDNS_PORT);
+  peer_put16(udp, peer_sport);
   peer_put16(udp + 2, MDNS_PORT);
   peer_put16(udp + 4, ulen);
   peer_put16(udp + 6, 0);
@@ -184,9 +189,10 @@ static void query4(const char *name, uint16_t type) {
 
 /* ── What the stack sent ── */
 
-/* The @p k-th mDNS response sent over IPv6 (@p v6) or IPv4, parsed; its
- * IPv6 destination into @p dst; 0 if none */
-static int response(int v6, int k, peer_dns_msg_t *msg, const uint8_t **dst) {
+/* The @p k-th mDNS response (@p qr 1) or probe (0) sent over IPv6 (@p v6)
+ * or IPv4, parsed; its IP header into @p ip; 0 if none */
+static int message(int v6, int qr, int k, peer_dns_msg_t *msg,
+                   const uint8_t **ip) {
   uint16_t i;
   const wire_frame_t *f;
   for (i = 0; (f = wire_sent(&t, i)) != NULL; i++) {
@@ -205,13 +211,24 @@ static int response(int v6, int k, peer_dns_msg_t *msg, const uint8_t **dst) {
     }
     len = (uint16_t)(peer_get16(udp + 4) - 8u);
     if (peer_get16(udp) != MDNS_PORT || !peer_dns_parse(udp + 8, len, msg) ||
-        !(msg->flags & FLAG_QR) || k-- != 0)
+        ((msg->flags & FLAG_QR) != 0) != qr || k-- != 0)
       continue;
-    if (dst)
-      *dst = f->data + 38;
+    if (ip)
+      *ip = f->data + 14;
     return 1;
   }
   return 0;
+}
+
+/* The @p k-th mDNS response sent over IPv6 (@p v6) or IPv4, parsed; its
+ * IPv6 destination into @p dst; 0 if none */
+static int response(int v6, int k, peer_dns_msg_t *msg, const uint8_t **dst) {
+  const uint8_t *ip;
+  if (!message(v6, 1, k, msg, &ip))
+    return 0;
+  if (dst)
+    *dst = ip + 24;
+  return 1;
 }
 
 /* AAAA records answered in @p msg: how many, and whether @p addr is one */
@@ -232,7 +249,9 @@ static int aaaa(const peer_dns_msg_t *msg, const uint8_t *addr, int *has) {
 
 /* REQ-MDNS-059 (RFC 6762 §8.4): an IPv6 address that is no longer usable
  * leads to a new announcement of the address records — the application
- * calls mdns_readdress6() — listing only the addresses left */
+ * calls mdns_readdress6() — listing only the addresses left: twice, a
+ * second apart, to ff02::fb.  Nothing goes to 224.0.0.251 (the row's
+ * deviation) */
 TEST(itest_mdns6_059_lost_address_reannounced) {
   peer_dns_msg_t r;
   const uint8_t *dst;
@@ -248,6 +267,10 @@ TEST(itest_mdns6_059_lost_address_reannounced) {
   ASSERT_TRUE(has);
   ASSERT_NOT_NULL(a = peer_dns_find(&r, 0, HOST, T_AAAA));
   ASSERT_EQ(a->class_, C_IN | C_TOP);
+  ASSERT_TRUE(response(1, 1, &r, &dst));
+  ASSERT_FALSE(response(1, 2, &r, &dst));
+  ASSERT_FALSE(response(0, 0, &r, NULL));
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
 }
 
 /* REQ-MDNS-062 (RFC 6762 §11): over IPv6, a unicast response counts only
@@ -288,7 +311,8 @@ TEST(itest_mdns6_065_nsec_for_aaaa_without_an_address) {
 }
 
 /* REQ-MDNS-074 (RFC 6762 §6.2): AAAA records carry every usable address
- * of the interface and no other — not a fixed one that is not ours */
+ * of the interface and no other — not a fixed one that is not ours, not
+ * one still tentative; a fixed one that is ours is carried */
 TEST(itest_mdns6_074_aaaa_only_for_usable_addresses) {
   static const mdns_record_t recs[] = {
       {.type = DNS_TYPE_A, .ttl = 120, .name = HOST, .rdata.a = 0},
@@ -297,6 +321,9 @@ TEST(itest_mdns6_074_aaaa_only_for_usable_addresses) {
        .ttl = 120,
        .name = HOST,
        .rdata.aaaa = elsewhere},
+  };
+  static const mdns_record_t fixed[] = {
+      {.type = DNS_TYPE_AAAA, .ttl = 120, .name = HOST, .rdata.aaaa = global},
   };
   peer_dns_msg_t r;
   int has;
@@ -309,6 +336,304 @@ TEST(itest_mdns6_074_aaaa_only_for_usable_addresses) {
   ASSERT_TRUE(has);
   aaaa(&r, elsewhere, &has);
   ASSERT_FALSE(has);
+
+  /* the global address replaced by one whose DAD has not finished */
+  ipv6_addr_remove(&t.net, global);
+  ASSERT_EQ(
+      ipv6_addr_add(&t.net, elsewhere, NET_IP6_INFINITE, NET_IP6_INFINITE),
+      NET_OK);
+  mdns_tick(&m, 2000);
+  wire_clear(&t);
+  query4(HOST, T_AAAA);
+  ASSERT_TRUE(response(0, 0, &r, NULL));
+  ASSERT_EQ(aaaa(&r, our_ll, &has), 1);
+  ASSERT_TRUE(has);
+
+  running(fixed, 1, 1);
+  query4(HOST, T_AAAA);
+  ASSERT_TRUE(response(0, 0, &r, NULL));
+  ASSERT_EQ(aaaa(&r, global, &has), 1);
+  ASSERT_TRUE(has);
+}
+
+/* A query over IPv6, multicast from the peer's link-local address */
+static void query6(const char *name, uint16_t type, uint16_t class_) {
+  peer_dns_t q;
+  peer_dns_begin(&q, 0, 0);
+  peer_dns_question(&q, name, type, class_);
+  deliver6(peer_ll, mdns_group6, &q);
+}
+
+/* A response from the peer, to ff02::fb, with an AAAA record @p addr for
+ * our host name */
+static void claim_aaaa(const uint8_t *addr) {
+  peer_dns_t r;
+  peer_dns_begin(&r, 0, FLAG_QR | FLAG_AA);
+  peer_dns_rr(&r, 0, HOST, T_AAAA, C_IN | C_TOP, 120, addr, 16);
+  deliver6(peer_ll, mdns_group6, &r);
+}
+
+/* Records of @p type in @p section of @p msg */
+static int count_type(const peer_dns_msg_t *msg, int section, uint16_t type) {
+  uint16_t i;
+  int n = 0;
+  for (i = 0; i < msg->n_rr; i++)
+    n += msg->rr[i].section == section && msg->rr[i].type == type;
+  return n;
+}
+
+/* Responses (@p qr 1) or probes (0) sent over IPv6 (@p v6) or IPv4 */
+static int count(int v6, int qr) {
+  peer_dns_msg_t msg;
+  int k = 0;
+  while (message(v6, qr, k, &msg, NULL))
+    k++;
+  return k;
+}
+
+/* REQ-MDNS-013, 038, 039 (RFC 6762 §20): a dual-stack responder joins
+ * ff02::fb as well as 224.0.0.251, and probes and announces on both:
+ * the same probe, from the link-local address with Hop Limit 255, the
+ * AAAA records proposed — one for each usable address — beside the A */
+TEST(itest_mdns6_038_both_groups_probed_and_announced) {
+  peer_dns_msg_t p4, p6, r;
+  const uint8_t *ip;
+  const peer_rr_t *a;
+  int has;
+  up(records, N_REC, 1);
+  ASSERT_FALSE(ipv6_mcast_is_member(&t.net, mdns_group6));
+  mdns_start(&m);
+  ASSERT_TRUE(ipv6_mcast_is_member(&t.net, mdns_group6));
+  wire_clear(&t);
+  mdns_tick(&m, 250);
+  ASSERT_EQ(count(0, 0), 1);
+  ASSERT_EQ(count(1, 0), 1);
+  ASSERT_TRUE(message(0, 0, 0, &p4, NULL));
+  ASSERT_TRUE(message(1, 0, 0, &p6, &ip));
+  ASSERT_MEM_EQ(ip - 14, group6_mac, 6);
+  ASSERT_MEM_EQ(ip + 24, mdns_group6, 16);
+  ASSERT_MEM_EQ(ip + 8, our_ll, 16);
+  ASSERT_EQ(ip[7], 255);
+  ASSERT_EQ(peer_get16(ip + 40), MDNS_PORT);
+  ASSERT_EQ(peer_get16(ip + 42), MDNS_PORT);
+  ASSERT_EQ(p4.len, p6.len);
+  ASSERT_MEM_EQ(p4.msg, p6.msg, p4.len);
+  ASSERT_EQ(count_type(&p6, 1, T_AAAA), 2);
+  ASSERT_EQ(count_type(&p6, 1, T_A), 1);
+
+  wire_clear(&t);
+  ticks(750, 250); /* two more probes, the first announcement */
+  ASSERT_EQ(count(0, 1), 1);
+  ASSERT_EQ(count(1, 1), 1);
+  ASSERT_TRUE(message(1, 1, 0, &r, &ip));
+  ASSERT_MEM_EQ(ip + 24, mdns_group6, 16);
+  ASSERT_EQ(ip[7], 255);
+  ASSERT_EQ(aaaa(&r, our_ll, &has), 2);
+  ASSERT_TRUE(has);
+  aaaa(&r, global, &has);
+  ASSERT_TRUE(has);
+  ASSERT_NOT_NULL(a = peer_dns_find(&r, 0, HOST, T_AAAA));
+  ASSERT_EQ(a->class_, C_IN | C_TOP);
+  ASSERT_EQ(count_type(&r, 0, T_A), 1);
+  ASSERT_TRUE(message(0, 1, 0, &r, NULL)); /* all addresses on IPv4 too */
+  ASSERT_EQ(count_type(&r, 0, T_AAAA), 2);
+
+  mdns_stop(&m);
+  ASSERT_FALSE(ipv6_mcast_is_member(&t.net, mdns_group6));
+}
+
+/* REQ-MDNS-039, 013, 071, REQ-DNSSD-008 (RFC 6762 §6, §6.2): a query is
+ * answered on the family it came over; an answer with the addresses of
+ * one family brings those of the other as additional records, and an SRV
+ * answer brings both; a shared record's answer is delayed, and goes to
+ * the family that asked */
+TEST(itest_mdns6_039_answered_on_the_family_that_asked) {
+  peer_dns_msg_t r;
+  const uint8_t *ip;
+  int has;
+  running(records, N_REC, 1);
+  query6(HOST, T_AAAA, C_IN);
+  ASSERT_EQ(count(0, 1), 0);
+  ASSERT_EQ(count(1, 1), 1);
+  ASSERT_TRUE(message(1, 1, 0, &r, &ip));
+  ASSERT_MEM_EQ(ip + 24, mdns_group6, 16);
+  ASSERT_EQ(aaaa(&r, global, &has), 2);
+  ASSERT_TRUE(has);
+  ASSERT_EQ(count_type(&r, 2, T_A), 1);
+
+  mdns_tick(&m, 2000);
+  wire_clear(&t);
+  query6(HOST, T_A, C_IN);
+  ASSERT_TRUE(message(1, 1, 0, &r, NULL));
+  ASSERT_EQ(count_type(&r, 0, T_A), 1);
+  ASSERT_EQ(count_type(&r, 2, T_AAAA), 2);
+
+  mdns_tick(&m, 2000);
+  wire_clear(&t);
+  query4(HOST, T_AAAA);
+  ASSERT_EQ(count(1, 1), 0);
+  ASSERT_EQ(count(0, 1), 1);
+  ASSERT_TRUE(message(0, 1, 0, &r, NULL));
+  ASSERT_EQ(count_type(&r, 0, T_AAAA), 2);
+
+  mdns_tick(&m, 2000);
+  wire_clear(&t);
+  query6(INST, T_SRV, C_IN);
+  ASSERT_TRUE(message(1, 1, 0, &r, NULL));
+  ASSERT_EQ(count_type(&r, 0, T_SRV), 1);
+  ASSERT_EQ(count_type(&r, 2, T_A), 1);
+  ASSERT_EQ(count_type(&r, 2, T_AAAA), 2);
+
+  mdns_tick(&m, 2000);
+  wire_clear(&t);
+  query6(SVC, T_PTR, C_IN);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  mdns_tick(&m, 150);
+  ASSERT_EQ(count(0, 1), 0);
+  ASSERT_EQ(count(1, 1), 1);
+}
+
+/* REQ-MDNS-028, 041, 076 (RFC 6762 §5.4, §6.7): over IPv6 too, a QU
+ * question is answered by unicast to the querier, and a legacy query to
+ * its port, with its ID and question, TTLs of at most 10 s and no
+ * cache-flush bit */
+TEST(itest_mdns6_028_unicast_and_legacy_answers_over_ipv6) {
+  peer_dns_t q;
+  peer_dns_msg_t r;
+  const uint8_t *ip;
+  uint16_t i;
+  running(records, N_REC, 1);
+  query6(HOST, T_AAAA, C_IN | C_TOP);
+  ASSERT_EQ(count(0, 1), 0);
+  ASSERT_EQ(count(1, 1), 1);
+  ASSERT_TRUE(message(1, 1, 0, &r, &ip));
+  ASSERT_MEM_EQ(ip - 14, peer_mac, 6);
+  ASSERT_MEM_EQ(ip + 24, peer_ll, 16);
+  ASSERT_EQ(ip[7], 255);
+  ASSERT_EQ(peer_get16(ip + 42), MDNS_PORT);
+  ASSERT_EQ(count_type(&r, 0, T_AAAA), 2);
+
+  wire_clear(&t);
+  peer_dns_begin(&q, 0x4242, 0);
+  peer_dns_question(&q, HOST, T_AAAA, C_IN);
+  peer_sport = 40000;
+  deliver6(peer_ll, mdns_group6, &q);
+  peer_sport = MDNS_PORT;
+  ASSERT_TRUE(message(1, 1, 0, &r, &ip));
+  ASSERT_MEM_EQ(ip + 24, peer_ll, 16);
+  ASSERT_EQ(peer_get16(ip + 40), MDNS_PORT);
+  ASSERT_EQ(peer_get16(ip + 42), 40000);
+  ASSERT_EQ(r.id, 0x4242);
+  ASSERT_EQ(r.qd, 1);
+  ASSERT_TRUE(strcmp(r.qname, HOST) == 0);
+  ASSERT_EQ(count_type(&r, 0, T_AAAA), 2);
+  for (i = 0; i < r.n_rr; i++) {
+    ASSERT_TRUE(r.rr[i].ttl <= 10);
+    ASSERT_EQ(r.rr[i].class_, C_IN);
+  }
+}
+
+/* REQ-MDNS-029, 067 (RFC 6762 §7.1, §6.1): an AAAA answer the querier
+ * already knows is not sent; the NSEC of a name with addresses of both
+ * families lists A and AAAA */
+TEST(itest_mdns6_029_known_aaaa_and_the_nsec_of_both_families) {
+  peer_dns_t q;
+  peer_dns_msg_t r;
+  const peer_rr_t *n;
+  running(records, N_REC, 1);
+  peer_dns_begin(&q, 0, 0);
+  peer_dns_question(&q, HOST, T_AAAA, C_IN);
+  peer_dns_rr(&q, 0, HOST, T_AAAA, C_IN, 120, global, 16);
+  deliver6(peer_ll, mdns_group6, &q);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  peer_dns_begin(&q, 0, 0);
+  peer_dns_question(&q, HOST, T_AAAA, C_IN);
+  peer_dns_rr(&q, 0, HOST, T_AAAA, C_IN, 120, elsewhere, 16);
+  deliver6(peer_ll, mdns_group6, &q);
+  ASSERT_EQ(count(1, 1), 1);
+
+  wire_clear(&t);
+  query6(HOST, 13 /* HINFO */, C_IN);
+  ASSERT_TRUE(message(1, 1, 0, &r, NULL));
+  ASSERT_NOT_NULL(n = peer_dns_find(&r, 0, HOST, T_NSEC));
+  ASSERT_EQ(n->rdlen, 2 + 2 + 4); /* its own name, block 0, 4 bytes */
+  ASSERT_MEM_EQ(n->rdata + 2, "\x00\x04\x40\x00\x00\x08", 6);
+}
+
+/* REQ-MDNS-053, 057 (RFC 6762 §8.1, §9): an AAAA record of our name with
+ * an address that is not ours conflicts — while probing, and once the
+ * name is ours (it is probed for again); one with an address of ours
+ * does not */
+TEST(itest_mdns6_053_another_hosts_aaaa_conflicts) {
+  probing();
+  claim_aaaa(global);
+  ASSERT_EQ(conflicts, 0);
+  claim_aaaa(elsewhere);
+  ASSERT_EQ(conflicts, 1);
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_CONFLICT);
+
+  running(records, N_REC, 1);
+  claim_aaaa(our_ll);
+  ticks(500, 250);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  claim_aaaa(elsewhere);
+  ticks(500, 250);
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_PROBING);
+  ASSERT_EQ(count(1, 0), 2);
+  ASSERT_EQ(conflicts, 0);
+}
+
+/* REQ-MDNS-059 (RFC 6762 §8.4): mdns_readdress6() while the announcements
+ * are still going out starts them over, so that both families get two
+ * with the addresses usable now; while still probing, the announcements
+ * to come carry them anyway */
+TEST(itest_mdns6_059_readdressed_before_running) {
+  peer_dns_msg_t r;
+  int has;
+  up(records, N_REC, 1);
+  mdns_start(&m);
+  ticks(1000, 250); /* three probes, the first announcement */
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_ANNOUNCING);
+  ipv6_addr_remove(&t.net, global);
+  mdns_readdress6(&m);
+  wire_clear(&t);
+  ticks(2500, 250);
+  ASSERT_EQ(count(0, 1), 2);
+  ASSERT_EQ(count(1, 1), 2);
+  ASSERT_TRUE(message(1, 1, 0, &r, NULL));
+  ASSERT_EQ(aaaa(&r, our_ll, &has), 1);
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
+
+  up(records, N_REC, 1);
+  mdns_start(&m);
+  mdns_tick(&m, 250); /* the first probe */
+  ipv6_addr_remove(&t.net, global);
+  mdns_readdress6(&m);
+  wire_clear(&t);
+  ticks(2500, 250);
+  ASSERT_EQ(count(0, 0), 2); /* the two probes left */
+  ASSERT_EQ(count(0, 1), 2);
+  ASSERT_EQ(count(1, 1), 2);
+  ASSERT_TRUE(message(0, 1, 0, &r, NULL));
+  ASSERT_EQ(aaaa(&r, our_ll, &has), 1);
+}
+
+/* REQ-MDNS-032, 033, 039 (RFC 6762 §10.1): the goodbye goes to both
+ * groups, the AAAA records in it */
+TEST(itest_mdns6_032_goodbye_on_both_families) {
+  peer_dns_msg_t r;
+  uint16_t i;
+  running(records, N_REC, 1);
+  mdns_readdress6(&m); /* the announcements narrowed to IPv6 */
+  ticks(3000, 250);
+  wire_clear(&t);
+  mdns_stop(&m);
+  ASSERT_EQ(count(0, 1), 1);
+  ASSERT_EQ(count(1, 1), 1);
+  ASSERT_TRUE(message(1, 1, 0, &r, NULL));
+  ASSERT_EQ(count_type(&r, 0, T_AAAA), 2);
+  for (i = 0; i < r.n_rr; i++)
+    ASSERT_EQ(r.rr[i].ttl, 0u);
 }
 
 int main(void) {
@@ -317,6 +642,13 @@ int main(void) {
   RUN_TEST(itest_mdns6_062_ipv6_responses_only_from_the_link);
   RUN_TEST(itest_mdns6_065_nsec_for_aaaa_without_an_address);
   RUN_TEST(itest_mdns6_074_aaaa_only_for_usable_addresses);
+  RUN_TEST(itest_mdns6_038_both_groups_probed_and_announced);
+  RUN_TEST(itest_mdns6_039_answered_on_the_family_that_asked);
+  RUN_TEST(itest_mdns6_028_unicast_and_legacy_answers_over_ipv6);
+  RUN_TEST(itest_mdns6_029_known_aaaa_and_the_nsec_of_both_families);
+  RUN_TEST(itest_mdns6_053_another_hosts_aaaa_conflicts);
+  RUN_TEST(itest_mdns6_059_readdressed_before_running);
+  RUN_TEST(itest_mdns6_032_goodbye_on_both_families);
   ITEST_REPORT();
   return test_failures;
 }

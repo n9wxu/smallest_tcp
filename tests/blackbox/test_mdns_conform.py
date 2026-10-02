@@ -212,7 +212,8 @@ def capture_startup(s, seconds):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_mdns_001_hostname_a_query(sut):
-    """REQ-MDNS-009, 026: A query for the host name → A record with our IP."""
+    """REQ-MDNS-009, 014, 026, 078: A query for the host name → A record with
+    our IP, TTL 120, the cache-flush bit."""
     sut.start()
     resp = ask(sut, HOST, "A")
     assert resp, "no response to A query"
@@ -274,7 +275,8 @@ def test_mdns_005_id_zero(sut):
 
 
 def test_mdns_006_ip_ttl_255(sut):
-    """REQ-MDNS-006: IP TTL 255 on responses (announcements: test 011)."""
+    """REQ-MDNS-001, 006: IP TTL 255 on responses, from port 5353
+    (announcements: test 011)."""
     sut.start()
     resp = ask(sut, HOST, "A")
     assert resp
@@ -399,8 +401,9 @@ def test_mdns_013_igmp_join(sut):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_mdns_014_legacy_unicast(sut):
-    """RFC 6762 §6.7: query from a port other than 5353 → unicast reply with
-    the query ID and question, TTL <= 10 s, no cache-flush bit."""
+    """REQ-MDNS-041, 076 (RFC 6762 §6.7): query from a port other than 5353 →
+    unicast reply with the query ID and question, TTL <= 10 s, no
+    cache-flush bit."""
     sut.start()
     resp = ask(sut, HOST, "A", qid=0x4242, sport=40000,
                extra="dst port 40000")
@@ -424,7 +427,8 @@ def test_mdns_015_qu_unicast(sut):
 
 
 def test_mdns_016_foreign_names_ignored(sut):
-    """REQ-MDNS-030: names we do not own, or outside .local, get no answer."""
+    """REQ-MDNS-030, 064: names we do not own, or outside .local, get no
+    answer."""
     sut.start()
     assert not ask(sut, "pyro-dead01.example", "A", timeout=1.0, retry=False)
     assert not ask(sut, "nobody.local", "A", timeout=1.0, retry=False)
@@ -441,7 +445,7 @@ def test_mdns_017_txt_record(sut):
 
 
 def test_mdns_018_any_query(sut):
-    """REQ-MDNS-026: ANY for the instance → both SRV and TXT."""
+    """REQ-MDNS-026, 072: ANY for the instance → both SRV and TXT."""
     sut.start()
     resp = ask(sut, INST, T_ANY)
     assert resp
@@ -450,10 +454,10 @@ def test_mdns_018_any_query(sut):
 
 
 def test_mdns_019_nsec_for_missing_type(sut):
-    """RFC 6762 §6.1: a type our host name doesn't have (HINFO) → NSEC
-    asserting which types exist, so lookups don't wait for a timeout (an
-    IPv4-only build answers AAAA this way: curl http://pyro-dead01.local/
-    took 5 s without it)."""
+    """REQ-MDNS-065, 067 (RFC 6762 §6.1): a type our host name doesn't have
+    (HINFO) → NSEC asserting which types exist, so lookups don't wait for a
+    timeout (an IPv4-only build answers AAAA this way; without it a
+    dual-stack resolver waits 5 s for the AAAA answer)."""
     sut.start()
     resp = ask(sut, HOST, "HINFO")
     assert resp, "no negative response to HINFO query"
@@ -487,8 +491,9 @@ def ipv6_up(sut):
 
 
 def test_mdns_020_aaaa_over_ipv6(sut):
-    """A query to ff02::fb for AAAA → answer over IPv6 to ff02::fb (Hop
-    Limit 255) with the link-local address; the A record as additional."""
+    """REQ-MDNS-013, 038, 039: a query to ff02::fb for AAAA → answer over IPv6
+    to ff02::fb (Hop Limit 255) with the link-local address; the A record
+    as additional."""
     sut.start()
     ipv6_up(sut)
     time.sleep(RATE_LIMIT_S)  # the announcement over IPv6 that follows
@@ -512,8 +517,8 @@ def test_mdns_020_aaaa_over_ipv6(sut):
 
 
 def test_mdns_021_announced_over_ipv6(sut):
-    """RFC 6762 §8.3/§8.4: the records are announced over IPv6 once the
-    link-local address is usable, AAAA included."""
+    """REQ-MDNS-039, 059 (RFC 6762 §8.3, §8.4): the records are announced
+    over IPv6 once the link-local address is usable, AAAA included."""
     sn = start_sniffer(sut.iface,
                        filter=f"ip6 and udp and src port {MDNS_PORT} and "
                               f"ether src {sut.sut_mac}",
