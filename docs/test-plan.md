@@ -201,9 +201,9 @@ RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
 |---|---|
 | `itest_ipv4` | IPv4 destination and source checks, every broadcast form, options and source routes, reassembly and its timeout, MMS_R/MMS_S and the MTU, TTL/TOS, addresses never sent, the all-hosts group; ICMP echo (truncated), errors, Redirect and Address Mask ignored |
 | `itest_link` | Ethernet (filter, dispatch, header, buffers, looped-back frames), ARP (replies, next hop, rate limit, gateway MAC expiry), UDP sending limits, checksums (the API and on the wire) |
-| `itest_udp` | The destination address passed up, the source ours, ICMP errors to the application |
+| `itest_udp` | Every UDP row: length and checksum checks, dispatch by port, Port Unreachable, broadcasts both ways, datagrams copied and built in place, the source and destination addresses, TTL and TOS, ICMP errors to the application, the checksum over IPv6 |
 | `itest_igmp` | Reports and leaves, queries answered, timers, suppression, IGMPv1 routers, all-hosts never reported |
-| `itest_tcp` | CLOSE/ABORT in every state, a listener outliving a failed handshake, ISNs; RST into a zero window, R1/R2, LISTEN on a live connection, local address (IPv4 and IPv6), broadcast opens, TOS, PSH, RTO after a SYN timeout, ICMP errors, the MTU |
+| `itest_tcp` | The TCP state machine row by row: opens and closes in every state, segment acceptability, RST/SYN/ACK/FIN processing, RST generation, options and the MSS, windows (silly-window avoidance, probing), the retransmission schedule (R1/R2, the RTO), ISNs, the local address, TOS, PSH, ICMP and ICMPv6 errors, the MTU, the buffer interface, IPv6 |
 | `itest_http` | Request parsing and framing, Host, Date, conditional requests, Expect, 4xx/5xx without bodies; with `SMALLEST_TCP_TLS`, HTTPS hosts (421) with the stack's own TLS client as the peer |
 | `itest_dhcpv4` | Every observable DHCPv4 row, client and server: the state machine and its timers, options (in `file`/`sname`, split, the handler table), T1/T2, the address probe and DECLINE, the server's one client, reply routing and option order |
 | `itest_tftp` | Every implemented TFTP row: the request, blocks and ACKs, transfer IDs, blksize negotiation, errors, the adaptive retransmission timeout, netascii |

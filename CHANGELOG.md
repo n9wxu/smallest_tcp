@@ -35,6 +35,13 @@ that verify it.
 - `net_endian.h`: `NET_BIG_ENDIAN` or `NET_LITTLE_ENDIAN` defined by the
   application is honoured, as the error message for an unknown byte order
   says.
+- TCP: an active open on a connection in use is refused (`NET_ERR_BUSY`),
+  not started over it; a connection is matched by its local address too;
+  the receive window's right edge moves only in steps of min(buffer / 2,
+  MSS) on every ACK (receiver silly-window avoidance, RFC 9293 MUST-39);
+  ICMPv6 errors reach the connection they are about (`tcp6_icmp_error()`:
+  Packet Too Big lowers the segment size, Port Unreachable aborts, the
+  rest are soft errors).
 - TFTP: a DATA packet longer than the block size in force is dropped, not
   delivered with a length above `blksize`; an OACK with an unterminated
   option string is dropped whole.
