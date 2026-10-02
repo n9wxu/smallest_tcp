@@ -14,7 +14,7 @@
 #include "udp.h"
 #include <string.h>
 
-#define SOL_MAX_DELAY_MS 1000u
+#define SOL_MAX_DELAY_MS 1000u /* and INF_MAX_DELAY */
 #define SOL_TIMEOUT_MS 1000u
 #define SOL_MAX_RT_MS 3600000u
 #define REQ_TIMEOUT_MS 1000u
@@ -24,7 +24,6 @@
 #define REN_MAX_RT_MS 600000u
 #define REB_TIMEOUT_MS 10000u
 #define REB_MAX_RT_MS 600000u
-#define INF_MAX_DELAY_MS 1000u
 #define INF_TIMEOUT_MS 1000u
 #define INF_MAX_RT_MS 3600000u
 
@@ -203,6 +202,12 @@ static void transmit(net_t *net, dhcpv6_client_t *c) {
   c->timer_ms = c->rt_ms;
 }
 
+/** The random wait before an exchange's first message (REQ-DHCPv6-048,
+ *  055): 1 ms to SOL_MAX_DELAY = INF_MAX_DELAY = 1 s. */
+static uint32_t start_delay(net_t *net) {
+  return net_random_below(net, SOL_MAX_DELAY_MS) + 1u;
+}
+
 /** A new message exchange: new transaction ID (REQ-DHCPv6-039). */
 static void begin(net_t *net, dhcpv6_client_t *c, uint8_t state,
                   uint32_t delay_ms) {
@@ -336,12 +341,10 @@ void dhcpv6_client_init(dhcpv6_client_t *c, dhcpv6_event_fn_t on_event,
 
 void dhcpv6_client_start(net_t *net, dhcpv6_client_t *c, uint8_t mode) {
   c->mode = mode;
-  if (mode == DHCPV6_MODE_STATEFUL)
-    begin(net, c, DHCPV6_CLI_SOLICIT,
-          net_random_below(net, SOL_MAX_DELAY_MS + 1u) + 1u);
-  else
-    begin(net, c, DHCPV6_CLI_INFO_REQUEST,
-          net_random_below(net, INF_MAX_DELAY_MS + 1u) + 1u);
+  begin(net, c,
+        mode == DHCPV6_MODE_STATEFUL ? DHCPV6_CLI_SOLICIT
+                                     : DHCPV6_CLI_INFO_REQUEST,
+        start_delay(net));
 }
 
 void dhcpv6_client_tick(net_t *net, dhcpv6_client_t *c, uint32_t ms) {
@@ -353,7 +356,7 @@ void dhcpv6_client_tick(net_t *net, dhcpv6_client_t *c, uint32_t ms) {
 
     if (c->state == DHCPV6_CLI_INFORMED) {
       if (c->since_s >= c->t1_s) /* information refresh */
-        begin(net, c, DHCPV6_CLI_INFO_REQUEST, 0);
+        begin(net, c, DHCPV6_CLI_INFO_REQUEST, start_delay(net));
       return;
     }
     if (c->valid_s != NET_IP6_INFINITE && c->since_s >= c->valid_s) {

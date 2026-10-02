@@ -486,8 +486,8 @@ TEST(itest_dhcpv6_054_information_refreshed) {
   wire_clear(&t);
   run(86399000u, 1000);
   ASSERT_EQ(dhcp_count(), 0);
-  run(1500, 100);
-  ASSERT_EQ(dhcp_count(), 1);
+  run(2100, 100);
+  ASSERT_TRUE(dhcp_count() >= 1);
 }
 
 /* ── Retransmission ── */
@@ -1089,10 +1089,10 @@ int main(void) {
   RUN_TEST(itest_dhcpv6_049_release);
   RUN_TEST(itest_dhcpv6_045_leased_prefix_on_link);
   RUN_TEST(itest_dhcpv6_053_sol_max_rt_out_of_range_ignored);
-  RUN_XFAIL(itest_dhcpv6_048_start_delay_at_most_a_second);
+  RUN_TEST(itest_dhcpv6_048_start_delay_at_most_a_second);
   RUN_XFAIL(itest_dhcpv6_047_t1_above_t2_discarded);
   RUN_XFAIL(itest_dhcpv6_053_sol_max_rt_from_a_refusing_server);
-  RUN_XFAIL(itest_dhcpv6_055_refresh_delayed_at_random);
+  RUN_TEST(itest_dhcpv6_055_refresh_delayed_at_random);
   ITEST_REPORT();
   return test_failures;
 }

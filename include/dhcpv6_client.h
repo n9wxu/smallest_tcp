@@ -126,9 +126,9 @@ void dhcpv6_client_init(dhcpv6_client_t *c, dhcpv6_event_fn_t on_event,
                         void *evt_ctx, const dhcpv6_opt_table_t *opts);
 
 /**
- * Start stateless (Information-Request) or stateful (Solicit) operation
- * after a random 0-1 s delay (RFC 8415 §18.2.1, §18.2.6).  Needs a
- * preferred link-local address.
+ * Start stateless (Information-request) or stateful (Solicit) operation
+ * after a random delay of up to 1 s (RFC 8415 §18.2.1, §18.2.6).  Needs a
+ * usable link-local address.
  */
 void dhcpv6_client_start(net_t *net, dhcpv6_client_t *c, uint8_t mode);
 
