@@ -10,6 +10,28 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-02
+
+### Changes
+
+- docs, ci: the tls/dtls review's changes in the shared files
+- docs: dtls: which ACKs answer a flight
+- tests: dtls: test_dtls_030_ignored names its requirements itself
+- docs: tls, dtls: the two alert fixes, sizes measured again
+- tls: unexpected_message for an alert record with no content
+- tls: illegal_parameter for an extension in the wrong message
+- tests: tls: misplaced extensions, an empty alert, early data, unknowns
+- docs: tls, dtls: the design documents describe the code as it is
+- tests: dtls: malformed fragments and ACKs, the ACK that fits, the rest
+- dtls: any record of the peer's next flight answers ours
+- tests: dtls: integration tests against a peer written from RFC 9147
+- tests: tls: certificates from the peer, small buffers, the rest of the API
+- tls: illegal_parameter for a PSK ServerHello without its key_share
+- tls: the client refuses EncryptedExtensions it did not ask for
+- tls: a ClientHello with supported_groups and no key_share is refused
+- tests: tls: integration tests against a peer written from the RFC
+- tests: tls, dtls: requirement citations that trace.py reads
+
 ## [0.1.8] - 2026-10-02
 
 ### Changes
@@ -309,7 +331,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.5...v0.1.6
