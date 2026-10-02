@@ -561,15 +561,15 @@ Cortex-M0 `.text` (`make arm-size-tls`, `make arm-size-dtls`; `-Os -mthumb`,
 | `tls_common.c` | 766 | 770 |
 | `tls_keys.c` | 1,086 | 1,086 |
 | `tls_server.c` | 3,126 | 3,554 |
-| `tls_client.c` | 3,544 | 3,724 |
-| `tls.c` (stream records) | 2,490 | 2,490 |
+| `tls_client.c` | 3,612 | 3,800 |
+| `tls.c` (stream records) | 2,498 | 2,498 |
 | `dtls.c` (datagram records) | — | 5,861 |
-| **Server only** | **7,468** (TLS) | **11,271** (DTLS) |
-| **Client and server** | **11,012** (TLS) | **14,995** (DTLS) |
+| **Server only** | **7,476** (TLS) | **11,271** (DTLS) |
+| **Client and server** | **11,088** (TLS) | **15,071** (DTLS) |
 
-A device with both protocols and both roles carries all six objects: 17,485
+A device with both protocols and both roles carries all six objects: 17,569
 bytes.  The DTLS branches cost the roles 428 bytes (server: the cookie, the
-hello formats) and 180 (client).  The crypto backend is extra, as for TLS,
+hello formats) and 188 (client).  The crypto backend is extra, as for TLS,
 and adds only `aes_block`.  `make arm-check-links` checks that the DTLS
 objects reference nothing only `tls.c` defines, and the TLS-only objects
 nothing only `dtls.c` defines (REQ-DTLS-072).

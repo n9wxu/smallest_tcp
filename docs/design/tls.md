@@ -17,7 +17,7 @@
 | `include/tls_crypto.h` | The crypto backend interface, `tls_crypto_t` |
 | `include/tls_crypto_mbedtls.h`, `src/tls_crypto_mbedtls.c`, `include/tls_mbedtls_user_config.h` | The Mbed TLS 3.6 backend and its build configuration |
 
-**Requirements:** [docs/requirements/tls.md](../requirements/tls.md) (REQ-TLS-001..067)
+**Requirements:** [docs/requirements/tls.md](../requirements/tls.md) (REQ-TLS-001..069)
 
 ---
 
@@ -109,14 +109,14 @@ Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`,
 | Object | Bytes |
 |---|---:|
 | `tls_common.c` | 766 |
-| `tls.c` | 2,490 |
+| `tls.c` | 2,498 |
 | `tls_keys.c` | 1,086 |
 | `tls_server.c` | 3,126 |
-| `tls_client.c` | 3,544 |
-| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,468** |
-| **Client and server** | **11,012** |
+| `tls_client.c` | 3,612 |
+| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,476** |
+| **Client and server** | **11,088** |
 
-A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,886 bytes
+A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,962 bytes
 by the same objects.  These are object sizes; the crypto backend is extra
 (section 3).  No object calls a library divide (`make arm-check-division`).
 
@@ -378,7 +378,8 @@ records are opened one at a time, the keys a message installs are in place
 before the next record is opened.
 
 **Alerts** (`on_alert()`, then `tls_alert_received()` in `tls_common.c`): the
-body must be two bytes (`decode_error`).
+body must be two bytes (`decode_error`; `unexpected_message` if there is
+none at all, RFC 8446 §5.4).
 close_notify moves to `CLOSED` and reports `TLS_EVT_CLOSED`; user_canceled is
 ignored (close_notify follows it); any other alert, whatever its level, moves
 to `ERROR`, wipes the keys, reports `TLS_EVT_ERROR`, and `tls_rx_commit()`
@@ -553,9 +554,9 @@ Secret.  The private key waits in `tls->kx_priv` until the ServerHello.
 **HelloRetryRequest** (a ServerHello whose random is `tls_hrr_random`) is
 accepted once (`unexpected_message` the second time).  It must echo the
 empty session id and our suite, carry only supported_versions (TLS 1.3),
-key_share (the selected group) and a non-empty cookie
-(`unsupported_extension` for anything else; `protocol_version` without
-supported_versions), and change something: a selected group that is allowed
+key_share (the selected group) and a non-empty cookie (anything else is
+refused, see below; `protocol_version` without supported_versions), and
+change something: a selected group that is allowed
 and different from our share's, or a cookie (`illegal_parameter`).  The
 transcript restarts as message_hash of ClientHello1 plus the HRR, and the
 second ClientHello keeps the same random, has a fresh key pair (of the
@@ -565,8 +566,11 @@ binder over message_hash + HRR + itself.
 **ServerHello** must echo the session id (empty), select our suite, and carry
 only supported_versions (TLS 1.3 — without it the server is TLS 1.2 or
 older: `protocol_version`), key_share for the group we sent a share of, and
-pre_shared_key selecting identity 0 if we offered one.  Anything else is
-`unsupported_extension` or `illegal_parameter`.  Without a key_share the
+pre_shared_key selecting identity 0 if we offered one.  An extension that
+has no place in the message it came in is refused by `refuse_extension()`
+(RFC 8446 §4.2): `illegal_parameter` if it is one the client knows from
+another message, `unsupported_extension` if it answers nothing the client
+sent.  Without a key_share the
 server may only have chosen psk_ke, and only if we offered it
 (`illegal_parameter` if it took the PSK, RFC 8446 §4.2.11; else
 `missing_extension`).  The shared secret is computed into `rsec` (as on
@@ -578,8 +582,11 @@ zeros.
 **EncryptedExtensions** may answer only what the ClientHello carried (RFC
 8446 §4.2): an empty server_name if we sent one, the max_fragment_length we
 asked for (the same code, `illegal_parameter` otherwise; `max_frag` is set
-from it) and supported_groups if we sent that; anything else is
-`unsupported_extension`.  With a PSK the next message is Finished.
+from it) and supported_groups if we sent that.  One of the three that we
+did not send is `unsupported_extension`; an extension that belongs to
+another message (key_share, say) is `illegal_parameter` (§4.3.1); anything
+unknown is `unsupported_extension`.  With a PSK the next message is
+Finished.
 
 **Certificates.**  One CertificateRequest may come first (an empty context);
 it is answered later with an empty Certificate.  The Certificate's chain —
@@ -726,7 +733,7 @@ The Master Secret exists only on the stack for the moment it is used.
 
 ## 13. Testing
 
-**Integration (`itest_tls`, 63 tests, CMake with `SMALLEST_TCP_TLS`):** the
+**Integration (`itest_tls`, 66 tests, CMake with `SMALLEST_TCP_TLS`):** the
 server and the client through the API in `tls.h`, against a peer of the
 tests' own (`tests/integration/tls_peer.c`) written from RFC 8446 on
 Mbed TLS's SHA-256, AES-GCM, X25519 and ECDSA — its own HKDF labels, key
