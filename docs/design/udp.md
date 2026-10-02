@@ -3,7 +3,7 @@
 **Protocol:** User Datagram Protocol, over IPv4 and IPv6
 **Files:** `include/udp.h`, `src/udp.c`
 **Primary RFC:** RFC 768; RFC 8200 §8.1 (over IPv6); RFC 1122 §4.1
-**Last updated:** 2026-09-27
+**Requirements:** [docs/requirements/udp.md](../requirements/udp.md) (REQ-UDP-001..044)
 
 ---
 
@@ -141,21 +141,28 @@ transport the quoted header names (RFC 1122 §3.2.2).  For UDP,
 
 ```c
 typedef struct {
-  uint16_t local_port, dst_port; /* from the quoted UDP header */
-  uint32_t dst_ip;
-  uint8_t type, code;            /* ICMP */
-  uint16_t mtu;                  /* Fragmentation Needed: next-hop MTU */
-  const uint8_t *quote;          /* the quoted IP header and data */
+  uint16_t local_port;  /* the quoted source port: ours */
+  uint32_t dst_ip;      /* where the datagram was going */
+  uint16_t dst_port;
+  uint8_t type;         /* ICMP_TYPE_DEST_UNREACH, _TIME_EXCEEDED, _PARAM_PROBLEM */
+  uint8_t code;
+  uint16_t mtu;         /* Fragmentation Needed: the next-hop MTU, else 0 */
+  const uint8_t *quote; /* the quoted IP header and data, unchanged */
   uint16_t quote_len;
 } udp_icmp_error_t;
+
+typedef void (*udp_error_handler_t)(net_t *net, const udp_icmp_error_t *err);
+void udp_set_error_handler(net_t *net, udp_error_handler_t handler);
 ```
 
-One handler per interface, not one per port: a port table entry with a
-second function would make every application initializer name it.  The
-handler is stored in `net_t` as `void (*)(void)` (net.h cannot see
+An error whose quote is shorter than the IP header plus the two ports is
+dropped.  One handler per interface, not one per port: a port table entry
+with a second function would make every application initializer name it.
+The handler is stored in `net_t` as `void (*)(void)` (net.h cannot see
 `udp.h`'s types) and converted back to be called.  Without a handler the
 error is dropped.  The quote, like a payload, is valid only until the
-handler returns.
+handler returns.  ICMPv6 errors do not reach UDP: `icmpv6_input()` drops
+them (section 9).
 
 ---
 
@@ -179,6 +186,12 @@ net_err_t udp_send_inplace_from(net_t *net, uint32_t src_ip, uint32_t dst_ip,
                                 uint8_t ttl);
 
 /* The same, with the source, TTL and TOS in udp_tx_opts_t */
+typedef struct {
+  uint32_t src_ip; /* ours, or 0.0.0.0 while DHCP acquires an address */
+  uint8_t ttl;     /* not 0 */
+  uint8_t tos;     /* the IP TOS / DSCP byte */
+} udp_tx_opts_t;
+
 net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
                                 const uint8_t *dst_mac, uint16_t src_port,
                                 uint16_t dst_port, uint16_t data_len,
@@ -217,7 +230,8 @@ Notes:
 
 - **The caller supplies `dst_mac`.**  UDP does no address resolution; see
   [arp-resolution.md](arp-resolution.md).  A reply normally uses the
-  `src_mac` its handler was given.
+  `src_mac` its handler was given; a broadcast goes to the broadcast MAC,
+  which the caller passes (REQ-UDP-030).
 - **Protocols with larger messages build in place.**  DHCP, TFTP and mDNS
   write their message at `net->tx.buf + UDP_PAYLOAD_OFFSET` and call
   `udp_send_inplace*()`, so the payload is never copied.  `udp_send()`'s
@@ -226,8 +240,8 @@ Notes:
   until its lease is bound (and from its leased address when renewing), and
   the DHCP server sends from its configured address — which must be the
   host's (`dhcpv4_server_init()` checks).  They pass that address
-  explicitly; previously the modules overwrote `net->ipv4_addr` around each
-  send, which briefly changed the interface's address for everything else.
+  explicitly: overwriting `net->ipv4_addr` around each send would change
+  the interface's address, briefly, for everything else.
 - **TTL.**  `udp_send()` uses `NET_DEFAULT_TTL`; mDNS passes 255
   (RFC 6762 §11).
 
@@ -266,7 +280,8 @@ typedef void (*udp6_handler_t)(net_t *net, const uint8_t *src_ip,
 typedef struct udp6_port_entry_s { uint16_t port; udp6_handler_t handler; }
     udp6_port_entry_t;
 
-void udp6_set_ports(net_t *net, const udp6_port_entry_t *ports, uint8_t count);
+static inline void udp6_set_ports(net_t *net, const udp6_port_entry_t *ports,
+                                  uint8_t count);
 net_err_t udp6_send(net_t *net, const uint8_t *dst_ip, const uint8_t *dst_mac,
                     uint16_t src_port, uint16_t dst_port,
                     const uint8_t *data, uint16_t data_len);
@@ -279,9 +294,9 @@ net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
 - **A separate table.**  The IPv6 handler gets the 16-byte source address
   (valid, like the payload, during the call).  A port missing from the IPv6
   table is closed over IPv6 even if it is open over IPv4; register a handler
-  in both tables to serve both (mDNS does).  Keeping `udp_port_entry_t` at
-  two fields means existing positional `{port, handler}` initializers stay
-  warning-free under `-Wextra`.
+  in both tables to serve both (mDNS does).  A second handler field in
+  `udp_port_entry_t` instead would make every positional `{port, handler}`
+  initializer warn under `-Wextra`.
 - **Receive.**  `udp6_input()` applies the same length checks, drops a zero
   checksum, and verifies with `ipv6_cksum()`.  A port miss calls
   `icmpv6_send_error(ICMPV6_DEST_UNREACH, ICMPV6_CODE_PORT_UNREACH, …)`, which
@@ -299,8 +314,9 @@ net_err_t udp6_send_inplace(net_t *net, const uint8_t *dst_ip,
 
 ## 8. Dependencies and composition
 
-`udp.c` uses `ipv4.h` (`ipv4_cksum()`, `ipv4_build_ttl()`), `eth.h`,
-`icmp.h`, `net_cksum.h`, `net_endian.h`, and with IPv6 `ipv6.h` and
+`udp.c` uses `ipv4.h` (`ipv4_cksum()`, `ipv4_build_tos()`), `eth.h`
+(`eth_build()`, `eth_frame_room()`), `icmp.h`, `net_endian.h`, and with
+IPv6 `ipv6.h` (`ipv6_cksum()`, `ipv6_build()`, `ipv6_src_for()`) and
 `icmpv6.h`.  Nothing in it depends on TCP or on application protocols.
 
 Whether UDP is in the build is decided at compile time: `ipv4_input()` and
@@ -320,48 +336,51 @@ Problem).  See [configuration.md §5](configuration.md#5-compile-time-protocol-s
 | Per-address dispatch | One table for every address; the handler reads `udp_rx_dst_ip()`. |
 | IP fragmentation | Datagrams sent are limited by the TX buffer and the MTU; received fragments are reassembled only with a reassembly buffer (`ipv4_set_reassembly()`). |
 | Receive queues | A datagram is delivered during `net_poll()` or not at all. |
+| Sending without a checksum (REQ-UDP-010) | Every datagram sent is checksummed. |
+| IP options (REQ-UDP-042) | Received options are skipped, not passed to the handler; none can be sent. |
+| ICMPv6 errors to the application (REQ-UDP-039) | `udp_set_error_handler()` hears ICMPv4 errors only. |
+| Over IPv6: the destination address of a received datagram, a source address chosen by the application | `udp_rx_dst_ip()` and `udp_send_inplace_from()` are IPv4 only; `ipv6_src_for()` picks the IPv6 source. |
 | UDP-Lite, zero-checksum IPv6 tunnels (RFC 6935) | — |
 
 ---
 
 ## 10. Design decisions
 
-### 10.1 Decision record: payload pointers, not frame offsets
+### 10.1 Payload pointers, not frame offsets
 
 **Decision.**  Handlers receive `const uint8_t *payload`, a pointer into
 `net->rx.buf`, valid for the duration of the call.
 
-**Previous design.**  Handlers received a *frame offset* and length and were
-expected to call `net->mac_driver->peek(net->mac_ctx, offset, buf, n)` for the
-bytes they needed, so that `net->rx.buf` could shrink to a few header bytes
-and an SPI MAC would transfer only what the handler read.
+**Why.**  The whole frame is in `net->rx.buf` when a handler runs: the IP
+header checksum and the UDP and TCP checksums are computed over the bytes
+in memory.  A pointer costs one copy per frame (the driver's, into
+`rx.buf`), needs no driver calls in application code, and shows the handler
+the whole datagram.  TCP receives a pointer for the same reason.
 
-**Why it changed.**  That design was only half implemented.  The whole frame
-was staged in `net->rx.buf` anyway, because the IP header checksum and the
-UDP/TCP checksums are computed over the bytes in memory; nothing ever streamed
-a checksum through `peek()`.  So every handler made a *second* copy of a
-payload that was already in RAM, into a stack buffer it had to size itself,
-and applications had to call into the MAC driver — an interface that should be
-private to the stack.  TCP already received a pointer.  Passing the pointer is
-the simpler system: one copy per frame, no driver calls in application code,
-and the handler sees the whole datagram.
+**Rejected: a frame offset and the driver's `peek()`.**  Handing each
+handler an offset and a length, for it to fetch the bytes it wants with
+`net->mac_driver->peek()`, would let `net->rx.buf` shrink to a few header
+bytes — but only if the checksums were also accumulated over chunked
+`peek()` reads.  Without that, the frame is staged in `rx.buf` anyway and
+every handler makes a second copy of a payload already in RAM, into a
+buffer it must size itself, through an interface (the MAC driver) that
+should be private to the stack.
 
 **Cost.**  `net->rx.buf` must hold the largest datagram the device accepts.
 
-**Possible future.**  A true peek-based receive path — each layer peeking its
-own header, checksums accumulated over chunked `peek()` reads, a small
-`rx.buf` — would suit an ENC28J60-class MAC with frames in its own SRAM.  It
-would read payload bytes twice (once for the checksum, once for the handler)
-and would need the handler interface revisited, since a pointer into a small
-buffer cannot describe a whole datagram.  Nothing in the current code depends
-on the old offset interface.
+**A peek-based receive path** — each layer peeking its own header,
+checksums accumulated over chunked `peek()` reads, a small `rx.buf` — would
+suit an ENC28J60-class MAC with frames in its own SRAM.  It would read
+payload bytes twice (once for the checksum, once for the handler) and would
+need another handler interface, since a pointer into a small buffer cannot
+describe a whole datagram.  It is not implemented.
 
 ### 10.2 Port tables in `net_t`
 
-The tables were once globals (`udp_ports`, `udp6_ports`).  They are now
-fields of `net_t`, bound with `udp_set_ports()` / `udp6_set_ports()`, so the
-stack has no global mutable state: two interfaces can have different
-services, and tests can set up independent contexts.
+The tables are fields of `net_t`, bound with `udp_set_ports()` /
+`udp6_set_ports()`, not globals: the stack has no global mutable state, two
+interfaces can have different services, and tests can set up independent
+contexts.
 
 ### 10.3 Linear scan
 
