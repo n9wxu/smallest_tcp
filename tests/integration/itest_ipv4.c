@@ -519,7 +519,8 @@ TEST(itest_ipv4_069_ttl_settable) {
   ASSERT_EQ(ip.ttl, 17);
 }
 
-/* REQ-IPv4-041, REQ-UDP-044: the transport sets the TOS of each datagram */
+/* REQ-IPv4-041, REQ-UDP-044, REQ-ETH-023: the transport sets the TOS of each
+ * datagram, and the frame handed to the link carries it */
 TEST(itest_ipv4_041_tos_settable) {
   peer_ip_t ip;
   udp_tx_opts_t o;
@@ -594,8 +595,9 @@ TEST(itest_ipv4_072_link_broadcast_needs_ip_broadcast) {
             NET_OK);
 }
 
-/* REQ-IPv4-050: a host with a multicast table is in the all-hosts group
- * from the start, whatever it joins and leaves */
+/* REQ-IPv4-050, REQ-ETH-010: a host with a multicast table is in the
+ * all-hosts group from the start, whatever it joins and leaves, and takes
+ * the frames for the group's MAC */
 TEST(itest_ipv4_050_all_hosts_group) {
   static const uint8_t all_hosts_mac[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0x01};
   uint8_t f[128], s2[64];

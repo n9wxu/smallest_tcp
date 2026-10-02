@@ -53,7 +53,9 @@ uint8_t *eth_build(uint8_t *buf, uint16_t buf_capacity, const uint8_t *dst_mac,
 
 /**
  * Accept a received frame addressed to us (our MAC, broadcast, or a
- * joined multicast group) and dispatch it by EtherType.
+ * joined multicast group) and dispatch it by EtherType: IPv4, ARP, IPv6.
+ * A frame whose source MAC is ours (our own, looped back) is dropped, as
+ * is any other EtherType.
  */
 void eth_input(net_t *net, uint8_t *frame, uint16_t len);
 

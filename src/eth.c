@@ -1,6 +1,6 @@
 /**
  * @file eth.c
- * @brief Ethernet II framing (RFC 894).  REQ-ETH-001..020.
+ * @brief Ethernet II framing (RFC 894).  REQ-ETH-001..025.
  */
 
 #include "eth.h"
@@ -43,7 +43,7 @@ uint8_t *eth_build(uint8_t *buf, uint16_t buf_capacity, const uint8_t *dst_mac,
   return buf + ETH_HDR_SIZE;
 }
 
-/* REQ-ETH-001..003 */
+/* REQ-ETH-001..003, 010 */
 static int addressed_to_us(const net_t *net, const uint8_t *dst_mac) {
   if (net_mac_equal(dst_mac, net->mac) || net_mac_is_broadcast(dst_mac))
     return 1;
