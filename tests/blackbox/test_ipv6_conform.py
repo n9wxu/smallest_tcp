@@ -519,7 +519,7 @@ def test_ipv6_022_router_solicitation(sut):
 
 
 def test_ipv6_023_slaac_global_address(sut):
-    """REQ-SLAAC-014..018: an autonomous /64 gives a global address (after
+    """REQ-SLAAC-014..018, REQ-NDP-045: an autonomous /64 gives a global address (after
     DAD), which answers from itself, back through the router."""
     sut.start()
     target = global_addr(sut)
