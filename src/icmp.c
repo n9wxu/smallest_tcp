@@ -57,14 +57,18 @@ static void echo_reply(net_t *net, const ipv4_hdr_t *ip,
 }
 
 /* REQ-ICMPv4-011..016, 024, 029, 042: an error quoting a datagram we sent
- * goes to the transport the quoted header names, with the whole quote */
+ * goes to the transport the quoted header names, with the whole quote.
+ * The quote must begin with a whole IPv4 header: the transports find
+ * their own header after it. */
 static void error_input(net_t *net, const ipv4_hdr_t *ip) {
   const uint8_t *icmp = ip->payload;
   const uint8_t *quote = icmp + ICMP_HDR_SIZE;
   uint16_t quote_len = (uint16_t)(ip->payload_len - ICMP_HDR_SIZE);
-  uint16_t mtu = 0;
-  if (quote_len < IPV4_HDR_SIZE || (quote[IPV4_OFF_VER_IHL] >> 4) != 4 ||
-      (uint16_t)((quote[IPV4_OFF_VER_IHL] & 0x0F) * 4) > quote_len ||
+  uint16_t quoted_ihl, mtu = 0;
+  if (quote_len < IPV4_HDR_SIZE || (quote[IPV4_OFF_VER_IHL] >> 4) != 4)
+    return;
+  quoted_ihl = (uint16_t)((quote[IPV4_OFF_VER_IHL] & 0x0F) * 4);
+  if (quoted_ihl < IPV4_HDR_SIZE || quoted_ihl > quote_len ||
       net_read32be(quote + IPV4_OFF_SRC) != net->ipv4_addr)
     return;
   if (icmp[ICMP_OFF_TYPE] == ICMP_TYPE_DEST_UNREACH &&

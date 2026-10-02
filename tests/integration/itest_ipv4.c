@@ -1285,7 +1285,7 @@ int main(void) {
   RUN_TEST(itest_icmpv4_043_quote_unchanged);
   RUN_TEST(itest_icmpv4_045_address_mask_ignored);
   RUN_TEST(itest_icmpv4_014_unreachable_codes_reported);
-  RUN_XFAIL(itest_icmpv4_012_quote_must_be_an_ip_header);
+  RUN_TEST(itest_icmpv4_012_quote_must_be_an_ip_header);
   RUN_TEST(itest_icmpv4_041_error_parsed_in_place);
   RUN_TEST(itest_icmpv4_031_bad_checksum_discarded);
   RUN_TEST(itest_icmpv4_040_unknown_types_discarded);
