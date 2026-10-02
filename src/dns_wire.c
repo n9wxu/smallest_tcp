@@ -3,9 +3,10 @@
  * @brief DNS wire-format helpers (RFC 1035 §3-4), and the rdata order of
  *        RFC 6762 §8.2.
  *
- * Implements REQ-MDNS-003 (wire format), REQ-MDNS-043 (name compression)
- * and REQ-MDNS-051, REQ-DNSSD-031 (label / name length limits: 63 and 255
- * bytes, the name's terminating zero not counted, RFC 6762 App. C).
+ * Implements REQ-MDNS-003 (wire format), REQ-MDNS-043, 048 (name
+ * compression, written and read) and REQ-MDNS-051, REQ-DNSSD-031 (label /
+ * name length limits: 63 and 255 bytes, the name's terminating zero not
+ * counted, RFC 6762 App. C).
  */
 
 #include "dns_wire.h"

@@ -75,7 +75,7 @@ static uint32_t ptr_bit(void) {
   return 1u << i;
 }
 
-/* RFC 6762 §9 / RFC 6763 §8: pick a new name and probe again */
+/* RFC 6762 §9, RFC 6763 App. D: pick a new name and probe again */
 static void on_conflict(mdns_t *m, uint8_t index, void *ctx) {
   (void)ctx;
   if (records[index].name == host) {

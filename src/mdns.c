@@ -2,9 +2,9 @@
  * @file mdns.c
  * @brief Multicast DNS responder (RFC 6762) with DNS-SD advertising (RFC 6763).
  *
- * Implements the responder requirements REQ-MDNS-001..033, 041..080 and
- * REQ-DNSSD-001..018, 029..038.  See mdns.h for the API and
- * docs/design/mdns.md for the design.
+ * Implements the responder: REQ-MDNS-001..033, 038..080 (not the querier,
+ * 034..037) and REQ-DNSSD-001..020, 026..038 (not the browser, 021..025).
+ * See mdns.h for the API and docs/design/mdns.md for the design.
  *
  * Messages are built directly in net->tx.buf at UDP_PAYLOAD_OFFSET and sent
  * with udp_send_inplace() (IP TTL 255).  Record sets are addressed by bitmask
@@ -53,7 +53,7 @@ const uint8_t mdns_group6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
 #define BIT(i) ((uint32_t)1u << (i))
 
 /* PTR records are shared (many hosts advertise the same service type);
- * A, SRV and TXT records are unique to this host (RFC 6762 §2). */
+ * A, AAAA, SRV and TXT records are unique to this host (RFC 6762 §2). */
 static int is_shared(const mdns_record_t *r) { return r->type == DNS_TYPE_PTR; }
 
 /* A PTR whose owner is a service type ("_x._tcp.local") */

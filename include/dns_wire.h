@@ -1,6 +1,7 @@
 /**
  * @file dns_wire.h
- * @brief DNS wire-format helpers (RFC 1035 §3-4) shared by mDNS and DNS.
+ * @brief DNS wire-format helpers (RFC 1035 §3-4): what mDNS uses, kept
+ *        apart from it for a DNS resolver to share.
  *
  * Writing: a dns_writer_t builds a message in a caller-provided buffer
  * (normally the UDP payload area of net->tx.buf — zero copy).  Names are

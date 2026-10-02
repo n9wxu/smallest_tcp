@@ -163,6 +163,7 @@ struct mdns_s {
 
 /**
  * Initialise a responder (state STOPPED).  Sends nothing.
+ * @param on_conflict  Told when probing for a name fails; may be NULL.
  * @return NET_ERR_INVALID_PARAM if @p count is 0 or > MDNS_MAX_RECORDS, or
  *         a record is malformed — a type other than those above, a name
  *         that is not valid (labels of 1-63 bytes, 255 bytes before the
@@ -178,8 +179,9 @@ net_err_t mdns_init(mdns_t *m, net_t *net, const mdns_record_t *records,
                     uint8_t count, mdns_conflict_fn_t on_conflict, void *ctx);
 
 /**
- * Join 224.0.0.251 (IGMP) and start probing after a random 0-250 ms delay
- * (5 s after fifteen conflicts in ten seconds, RFC 6762 §8.1).  Call again
+ * Join 224.0.0.251 (IGMP) — and ff02::fb (MLD) in IPv6 builds — and start
+ * probing after a random 0-250 ms delay (5 s after fifteen conflicts in
+ * ten seconds, RFC 6762 §8.1).  Call again
  * to re-probe and re-announce every record: after a conflict, a link-up,
  * a new IPv4 address, or a change to a record's rdata — its strings, its
  * port — which RFC 6762 §8.4 requires to be announced again.
@@ -195,7 +197,8 @@ void mdns_tick(mdns_t *m, uint32_t elapsed_ms);
  * payload pointer the UDP handler received, into net->rx.buf: the
  * responder reads the packet's destination address from the frame, as a
  * response sent by unicast counts only from an on-link source (RFC 6762
- * §11).  A message from anywhere else is taken as unicast.
+ * §11) and only while the responder probes (§6).  A message from anywhere
+ * else is taken as unicast.
  * @param src_port  Querier's source port; not 5353 = legacy unicast query.
  */
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,
@@ -213,9 +216,11 @@ void mdns_input6(mdns_t *m, const uint8_t *src_ip, const uint8_t *src_mac,
  * SLAAC or DHCPv6 address) or stopped being usable (removed, expired):
  * announce the records again over IPv6, AAAA records with the addresses
  * usable now (RFC 6762 §8.4), without re-probing.  While running, over
- * IPv6 only; while still announcing, the announcement sequence starts over
- * with IPv6 added; while probing, the announcements to come include every
- * record and IPv6.
+ * IPv6 only: nothing is sent to 224.0.0.251, so a querier that learned the
+ * AAAA records over IPv4 keeps the old ones until their TTL runs out.
+ * While still announcing, the announcement sequence starts over with IPv6
+ * added; while probing, the announcements to come include every record
+ * and IPv6.
  */
 void mdns_readdress6(mdns_t *m);
 #endif

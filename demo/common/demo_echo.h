@@ -90,7 +90,7 @@ static inline void demo_echo_service(net_t *net, demo_echo_t *e) {
       e->gone = 1;
   }
   if (e->gone) {
-    usleep(50000); /* the pacing the blackbox TCP suite was tuned against */
+    usleep(50000); /* the pacing the blackbox TCP suite is tuned to */
     demo_echo_listen(e);
   }
 }
