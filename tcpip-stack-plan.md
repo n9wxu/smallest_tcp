@@ -184,7 +184,7 @@ firmware.  Built in CI; not run on hardware.
 | MAC drivers | The six-function interface; TAP and raw socket (Linux), BPF (macOS), STM32F4 Ethernet, a stub | `net_mac.h`, `src/driver/` | [mac-hal](docs/design/mac-hal.md) |
 | Link | Ethernet II; ARP without a cache | `eth.c`, `arp.c` | [arp-resolution](docs/design/arp-resolution.md) |
 | IPv4 | Host IPv4 with options skipped, every broadcast form, the MTU and MMS_R/MMS_S, reassembly in an application buffer; ICMP echo and errors, received errors passed to the transports; multicast reception and IGMPv2 | `ipv4.c`, `icmp.c`, `igmp.c` | [architecture §5–§6](docs/architecture.md#5-receive-path) |
-| IPv6 | Header and extension headers, ICMPv6, Neighbor Discovery with Duplicate Address Detection, router discovery and SLAAC, MLDv2/v1; dual stack or IPv6 alone | `ipv6.c`, `icmpv6.c`, `ndp.c`, `mld.c` | [ipv6](docs/design/ipv6.md) |
+| IPv6 | Header and extension headers, ICMPv6 (errors sent under a rate limit, received errors passed to the transports), Neighbor Discovery with Duplicate Address Detection, router discovery and SLAAC, MLDv2/v1; dual stack or IPv6 alone | `ipv6.c`, `icmpv6.c`, `ndp.c`, `mld.c` | [ipv6](docs/design/ipv6.md) |
 | Transport | UDP with port tables; TCP with the full state machine, stop-and-wait buffers, retransmission and persist timers, RFC 6528 initial sequence numbers — both over IPv4 and IPv6 | `udp.c`, `tcp.c`, `tcp_buf_saw.c` | [udp](docs/design/udp.md), [tcp](docs/design/tcp.md), [tcp-buffer](docs/design/tcp-buffer.md) |
 | Configuration | DHCPv4 client and a one-client server; DHCPv6 client, stateless and stateful | `dhcpv4_client.c`, `dhcpv4_server.c`, `dhcpv6_client.c` | [dhcpv4](docs/design/dhcpv4.md), [ipv6](docs/design/ipv6.md) |
 | File transfer | TFTP client (read requests, blksize, netascii) | `tftp.c` | [tftp](docs/design/tftp.md) |
@@ -243,13 +243,13 @@ says **deviation** and what the stack does instead:
 | Hardware | The STM32F4 port run on a board, and the nightly hardware fuzz job with it | Firmware built in CI; fixture described in [test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture-recommended) |
 | MAC drivers | ENC28J60 (SPI), USB CDC-ECM; checksum offload; scatter-gather transmit | [mac-hal.md §8](docs/design/mac-hal.md) |
 | Timers | Tickless operation (`net_next_event_ms()`) | What it takes is in [timer-model.md §7](docs/design/timer-model.md) |
-| IPv6 | Fragment reassembly; a neighbour cache with unreachability detection; Redirects; the RA's MTU option; ICMPv6 error rate limiting; DHCPv6 Confirm, Decline, Reconfigure, Rapid Commit | [ipv6.md §13](docs/design/ipv6.md) |
+| IPv6 | Fragment reassembly; a neighbour cache with unreachability detection; Redirects; the RA's MTU option; DHCPv6 Confirm, Decline, Reconfigure, Rapid Commit | [ipv6.md §13](docs/design/ipv6.md) |
 | IPv4 | Address conflict detection after an address is in use (RFC 5227); the DHCPv4 client probes an offered address once | [dhcpv4.md §7](docs/design/dhcpv4.md) |
 | HTTP | Persistent connections and pipelining; chunked transfer coding; percent-decoding | [http.md §2](docs/design/http.md) |
 | TLS | ChaCha20-Poly1305; client certificates; session tickets and 0-RTT; record_size_limit | [tls.md §1](docs/design/tls.md) |
 | DTLS | Connection IDs; resending only the unacknowledged part of a flight | [dtls.md §1](docs/design/dtls.md) |
 | TFTP | Write requests; the tsize, timeout and windowsize options; IPv6 | [tftp.md §9](docs/design/tftp.md) |
-| Tests | Integration tests for IPv6, NDP, MLD, DHCPv6, TLS and DTLS; a test for every MUST row; fuzzing beyond TCP | [test-plan.md §5](docs/test-plan.md#5-open-items--known-gaps) |
+| Tests | Fuzzing beyond TCP | [test-plan.md §5](docs/test-plan.md#5-open-items--known-gaps) |
 
 ## Language & Build
 
