@@ -154,6 +154,21 @@ if(SMALLEST_TCP_TLS AND SMALLEST_TCP_IPV4 AND SMALLEST_TCP_TCP)
         smallest_tcp_tls_tcp smallest_tcp_tls_mbedtls)
     target_sources(itest_tls PRIVATE integration/tls_peer.c)
 endif()
+# DTLS: linked without the stack's core and without the scripted link — the
+# test moves the datagrams itself, as an application does (REQ-DTLS-073)
+if(SMALLEST_TCP_TLS AND SMALLEST_TCP_DTLS)
+    add_executable(itest_dtls integration/itest_dtls.c integration/tls_peer.c)
+    target_include_directories(itest_dtls PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/integration
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit
+    )
+    target_compile_options(itest_dtls PRIVATE -Wall -Wextra -Werror -pedantic)
+    target_compile_features(itest_dtls PRIVATE c_std_99)
+    target_link_libraries(itest_dtls PRIVATE
+        smallest_tcp_tls smallest_tcp_tls_mbedtls)
+    add_test(NAME itest_dtls COMMAND itest_dtls)
+    set_tests_properties(itest_dtls PROPERTIES LABELS integration)
+endif()
 
 # ── Configurations that must not compile ─────────────────────────────
 #

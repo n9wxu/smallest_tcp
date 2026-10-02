@@ -506,9 +506,9 @@ static int peer_read_sh(peer_t *p, size_t *off) {
   return 0;
 }
 
-/* Read and check the server's first flight in out[].  REQ-TLS-019, 020,
- * 021, 024: EncryptedExtensions, then Certificate and CertificateVerify
- * (with a PSK neither), then Finished */
+/* Read and check the server's first flight in out[]: EncryptedExtensions,
+ * then Certificate and CertificateVerify (with a PSK neither), then
+ * Finished.  REQ-TLS-019, 020, 021, 024 */
 static int peer_read_flight(peer_t *p) {
   static uint8_t buf[4096], want[2048];
   const uint8_t *q;
