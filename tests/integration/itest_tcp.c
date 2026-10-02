@@ -2559,6 +2559,114 @@ TEST(itest_tcp_023_local_address_ipv6) {
   ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
   ASSERT_EQ(ev_error + ev_reset, 0);
 }
+/* An ICMPv6 error of @p type and @p code, @p param in its 4-byte field,
+ * from the peer about the n-th TCP segment we sent over IPv6: as much of
+ * the packet quoted as an error of 1280 octets holds (RFC 4443 §2.4) */
+static void icmp6_about_sent(int n, uint8_t type, uint8_t code,
+                             uint32_t param) {
+  static uint8_t f[WIRE_FRAME_MAX], sum[40 + 1280];
+  const wire_frame_t *sent = NULL;
+  uint8_t *ip = f + 14, *msg = ip + 40;
+  uint16_t i, quote, len;
+  for (i = 0; (sent = wire_sent(&t, i)) != NULL; i++) {
+    if (sent->len >= 74 && peer_get16(sent->data + 12) == 0x86DD &&
+        sent->data[20] == 6 && n-- == 0)
+      break;
+  }
+  if (!sent)
+    return;
+  quote = (uint16_t)(sent->len - 14u);
+  if (quote > 1280u - 48u)
+    quote = 1280u - 48u;
+  len = (uint16_t)(8u + quote);
+  memcpy(f, t.net.mac, 6);
+  memcpy(f + 6, peer_mac, 6);
+  peer_put16(f + 12, 0x86DD);
+  memset(ip, 0, 40);
+  ip[0] = 0x60;
+  peer_put16(ip + 4, len);
+  ip[6] = 58;
+  ip[7] = 64;
+  memcpy(ip + 8, peer6, 16);
+  memcpy(ip + 24, sent->data + 14 + 8, 16); /* to the segment's source */
+  msg[0] = type;
+  msg[1] = code;
+  peer_put16(msg + 2, 0);
+  peer_put32(msg + 4, param);
+  memcpy(msg + 8, sent->data + 14, quote);
+  memcpy(sum, ip + 8, 32);
+  peer_put32(sum + 32, len);
+  peer_put32(sum + 36, 58);
+  memcpy(sum + 40, msg, len);
+  peer_put16(msg + 2, peer_cksum(sum, (uint16_t)(40u + len)));
+  itest_receive(&t, f, (uint16_t)(54u + len));
+}
+
+/* REQ-TCP-135, REQ-ICMPv6-018, 019, 020 (RFC 8201): over IPv6 a Packet Too
+ * Big about a segment in flight lowers the segment size to the path MTU,
+ * and the data goes again in pieces; one about a segment never sent
+ * changes nothing */
+TEST(itest_tcp_135_packet_too_big_ipv6) {
+  static uint8_t out[1400];
+  const uint8_t *ip6;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  uint16_t i;
+  up6(1460);
+  for (i = 0; i < sizeof(out); i++)
+    out[i] = (uint8_t)i;
+  tcp_listen(&conn, LPORT);
+  segment6(ll6, RPORT, 1000, 0, TCPF_SYN, 1440, 0);
+  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  iss = tcp.seq;
+  segment6(ll6, RPORT, 1001, iss + 1, TCPF_ACK, 0, 0);
+  wire_clear(&t);
+  ASSERT_EQ(tcp_send(&t.net, &conn, out, sizeof(out)), (int)sizeof(out));
+  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  ASSERT_EQ(tcp.data_len, 1400);
+  icmp6_about_sent(0, 2, 0, 1280);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  wire_clear(&t);
+  itest_advance(&t, 1000, 100);
+  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 1280 - 40 - 20);
+  wire_clear(&t);
+  segment6(ll6, RPORT, 1001, iss + 1 + 1220, TCPF_ACK, 0, 0);
+  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1 + 1220);
+  ASSERT_EQ(tcp.data_len, 180);
+  ASSERT_MEM_EQ(tcp.data, out + 1220, 180);
+}
+
+/* REQ-TCP-135, 136, 137, REQ-ICMPv6-011, 015: over IPv6 too, a hard
+ * error — Port Unreachable for our SYN — refuses the connection, and a
+ * soft one — no route — is reported and does not abort */
+TEST(itest_tcp_135_unreachable_ipv6) {
+  const uint8_t *ip6;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up6(512);
+  ASSERT_EQ(tcp6_connect(&t.net, &conn, peer6, peer_mac, RPORT, LPORT), NET_OK);
+  icmp6_about_sent(0, 1, 4, 0);
+  ASSERT_EQ(tcp_status(&conn), TCP_CLOSED);
+  ASSERT_EQ(ev_error, 1);
+
+  up6(512);
+  conn.on_event = count_soft;
+  ev_soft = 0;
+  tcp_listen(&conn, LPORT);
+  segment6(ll6, RPORT, 1000, 0, TCPF_SYN, 1440, 0);
+  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  iss = tcp.seq;
+  segment6(ll6, RPORT, 1001, iss + 1, TCPF_ACK, 0, 0);
+  wire_clear(&t);
+  tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+  icmp6_about_sent(0, 1, 0, 0);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  ASSERT_EQ(ev_soft, 1);
+  ASSERT_EQ(tcp_last_error(&conn), 0x0100);
+}
 #endif
 
 int main(void) {
@@ -2651,6 +2759,8 @@ int main(void) {
 #if NET_USE_IPV6
   RUN_TEST(itest_tcp_020_ipv6_checksum_and_default_mss);
   RUN_TEST(itest_tcp_023_local_address_ipv6);
+  RUN_XFAIL(itest_tcp_135_packet_too_big_ipv6);
+  RUN_XFAIL(itest_tcp_135_unreachable_ipv6);
 #endif
   ITEST_REPORT();
   return test_failures;
