@@ -161,8 +161,8 @@ with a second function would make every application initializer name it.
 The handler is stored in `net_t` as `void (*)(void)` (net.h cannot see
 `udp.h`'s types) and converted back to be called.  Without a handler the
 error is dropped.  The quote, like a payload, is valid only until the
-handler returns.  ICMPv6 errors do not reach UDP: `icmpv6_input()` drops
-them (section 9).
+handler returns.  ICMPv6 errors do not reach UDP: `icmpv6_input()` passes
+on only those that quote a TCP segment (section 9).
 
 ---
 

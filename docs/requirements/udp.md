@@ -116,7 +116,7 @@ Minimum: 8 bytes (header only, zero-length data).
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-UDP-038 | MUST | Process ICMP Destination Unreachable directed at a UDP flow (match by port + IP from ICMP error body) | RFC 1122 §4.1.3.3 | itest_udp_038_port_unreachable_reported, itest_udp_038_only_our_datagrams_errors |
-| REQ-UDP-039 | MUST | Pass every ICMP error message received about a UDP datagram up to the application (`udp_set_error_handler()`) — **not met over IPv6:** ICMPv6 errors do not reach UDP: `icmpv6_input()` drops them (REQ-ICMPv6-011, 015, 022) | RFC 1122 §4.1.3.3 | itest_udp_038_errors_of_every_kind_reported |
+| REQ-UDP-039 | MUST | Pass every ICMP error message received about a UDP datagram up to the application (`udp_set_error_handler()`) — **not met over IPv6:** ICMPv6 errors do not reach UDP: there is no IPv6 error handler, and `icmpv6_input()` passes on only those that quote TCP (REQ-ICMPv6-011, 015, 022) | RFC 1122 §4.1.3.3 | itest_udp_038_errors_of_every_kind_reported |
 
 ### Application Interface
 
