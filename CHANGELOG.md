@@ -81,58 +81,60 @@ The review of TLS and DTLS.
 
 ## [0.1.8] - 2026-10-02
 
-### Changes
+The review of the HTTP server and of mDNS / DNS-SD.
 
-- docs: the http/mdns review's changes in the shared documents
-- tests: dns_wire's public functions, malformed names on the wire
-- docs: mdns — the design as the code is
-- docs: mdns, dns-sd — rows as the RFCs have them, tests by name
-- tests: mdns — the responder's requirements on the wire
-- mdns: take unicast responses only while probing
-- tests, docs: mdns — unicast responses count only as answers to our probes
-- docs: http — the design as the code is
-- tests, docs: http — every requirement tested on the wire and named
-- trace: rows no test can verify are counted apart; the Test ID column is checked
+### Changed
+
+- mDNS and the HTTP server are tested black box (`itest_mdns`,
+  `itest_http`); the unit tests that read their private fields are
+  removed.  Requirement rows of HTTP, mDNS and DNS-SD: levels and wording
+  as the RFCs have them.
+- `scripts/trace.py` counts the MUST rows no test can verify (`not
+  observable`, `not implemented`) apart, and with `--strict` checks that a
+  test named in a row's Test ID column exists and cites the row.
+
+### Fixed
+
+- mDNS: a unicast response is taken only as an answer to our probes (RFC
+  6762 §6); once running it changes nothing.
 
 ## [0.1.7] - 2026-10-02
 
-### Changes
+The review of UDP and TCP.
 
-- docs: the udp/tcp review's changes in the shared documents
-- tests: udp — an icmp error whose quote stops short of the ports
-- tests: tcp tests tightened where mutants of tcp.c survived
-- docs: udp — icmpv6 passes on only the errors that quote tcp
-- tcp: icmpv6 errors reach the connection they are about
-- tests: icmpv6 errors do not reach tcp (expected failures)
-- docs: the tcp design documents as the code is
-- tcp: the receive window's right edge moves only in worthwhile steps
-- tcp: the local address is part of a connection's identity
-- tcp: an active open on a connection in use is refused
-- tests: tcp verified black box, row by row; three rows not met yet
-- docs: the udp design document as the code is
-- tests: udp verified black box, every MUST row traced to a test
+### Added
+
+- `tcp6_icmp_error()`: ICMPv6 errors reach the TCP connection they are
+  about — Packet Too Big lowers the segment size, Port Unreachable
+  aborts, the rest are soft errors; `tcp_last_error()` holds the ICMPv6
+  type and code on an IPv6 connection.
+
+### Changed
+
+- `tcp_connect()` and `tcp6_connect_from()` return `NET_ERR_BUSY` on a
+  connection in use.
+- Requirement rows of UDP and TCP: levels and wording as the RFCs have
+  them; every MUST row is verified black box (`itest_udp`, `itest_tcp`).
+
+### Fixed
+
+- TCP: an active open on a connection in use is refused, not started over
+  it; a connection is matched by its local address too; the receive
+  window's right edge moves only in steps of min(buffer / 2, MSS) on every
+  ACK (receiver silly-window avoidance, RFC 9293 MUST-39).
 
 ## [0.1.6] - 2026-10-02
 
-A review of every requirement row against its RFC, the code and the tests
-that verify it.
+The review of the link and IP layer, DHCPv4 and TFTP: every requirement
+row against its RFC, the code and the tests that verify it.
 
 ### Changed
 
 - Requirement rows: levels and wording follow the RFC text; what the
   design leaves out is a **deviation** row; the Test ID column names the
   tests that verify each row, and every test cites its rows.
-- The documents describe the stack as it is, in the present tense; this
-  file keeps the history.
-- TFTP, DHCPv4, mDNS and the HTTP server are tested black box
-  (`itest_tftp`, `itest_dhcpv4`, `itest_mdns`, `itest_http`); the unit
-  tests that read their private fields are removed.
-- TLS and DTLS have black-box integration suites (`itest_tls`,
-  `itest_dtls`) against a peer written from the RFCs
-  (`tests/integration/tls_peer.c`).
-- Test counts are no longer reported: requirements coverage
-  (`scripts/trace.py`) and code coverage (the CI job `coverage`, now built
-  with TLS) are.
+- TFTP and DHCPv4 are tested black box (`itest_tftp`, `itest_dhcpv4`);
+  their unit suites, which read private fields, are removed.
 
 ### Fixed
 
@@ -141,42 +143,21 @@ that verify it.
 - `net_endian.h`: `NET_BIG_ENDIAN` or `NET_LITTLE_ENDIAN` defined by the
   application is honoured, as the error message for an unknown byte order
   says.
-- TCP: an active open on a connection in use is refused (`NET_ERR_BUSY`),
-  not started over it; a connection is matched by its local address too;
-  the receive window's right edge moves only in steps of min(buffer / 2,
-  MSS) on every ACK (receiver silly-window avoidance, RFC 9293 MUST-39);
-  ICMPv6 errors reach the connection they are about (`tcp6_icmp_error()`:
-  Packet Too Big lowers the segment size, Port Unreachable aborts, the
-  rest are soft errors).
-- mDNS: a unicast response is taken only as an answer to our probes (RFC
-  6762 §6); once running it changes nothing.
-- TLS: a ClientHello with `supported_groups` and no `key_share` is
-  refused; the client refuses extensions in EncryptedExtensions it did not
-  offer; the alerts for a PSK ServerHello without its key share, for an
-  extension in the wrong message and for an empty alert record are the
-  ones RFC 8446 names.
-- DTLS: any record of the peer's next flight, not only a whole message,
-  stops the retransmission of ours (RFC 9147 §7.2).
 - TFTP: a DATA packet longer than the block size in force is dropped, not
   delivered with a length above `blksize`; an OACK with an unterminated
   option string is dropped whole.
 
 ## [0.1.5] - 2026-10-02
 
-### Changes
+### Changed
 
-- docs: configuration says a switched-off transport's header does not compile
-- build: comments in net_config.h and the CMake files say what is there
-- docs: net_text.c holds the decimal formatter only
-- docs: the plan is the project's current plan, not a task log
-- docs: README presents the stack as it is, measured by coverage
-- docs: test plan presents the tests as they are, measured by coverage
-- ci: the coverage job builds with TLS
-- docs: ci-debugging describes the jobs and known failures as they are
-- docs: integrating-modules, coding rules and release process, current
-- docs: architecture matches the code, without history
-- docs: memory model and configuration match the code
-- docs: size-comparison re-measured, in the present tense
+- The documents describe the stack as it is, in the present tense; this
+  file keeps the history.  The plan is the current scope and roadmap, not
+  a task log.
+- Test counts are no longer reported: requirements coverage
+  (`scripts/trace.py`) and code coverage (the CI job `coverage`, built
+  with TLS) are.
+- The Cortex-M0 sizes in the documents are measured again.
 
 ## [0.1.4] - 2026-10-01
 
