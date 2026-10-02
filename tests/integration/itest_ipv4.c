@@ -159,8 +159,10 @@ TEST(itest_icmpv4_035_036_no_error_about_broadcasts_or_unspecified) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
-/* REQ-ICMPv4-001, 002, 003, 005: Echo Reply, Code 0, the request's
- * identifier, sequence and data, to its source */
+/* REQ-ICMPv4-001, 002, 003, 004, 005, 006, 032, 033, REQ-CKSUM-015,
+ * REQ-IPv4-017: Echo Reply, Code 0, the request's identifier, sequence and
+ * data, from our address to its source, the checksum over the whole ICMP
+ * message */
 TEST(itest_icmpv4_001_echo_reply_code_zero) {
   static const uint8_t rest[4] = {0x12, 0x34, 0x00, 0x07};
   uint8_t msg[64], f[128];
@@ -173,7 +175,9 @@ TEST(itest_icmpv4_001_echo_reply_code_zero) {
   wire_clear(&t);
   itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
   ASSERT_TRUE(sent_icmp(&rip, &icmp));
+  ASSERT_EQ(rip.src, t.net.ipv4_addr);
   ASSERT_EQ(rip.dst, PEER_IP);
+  ASSERT_EQ(rip.proto, 1);
   ASSERT_EQ(icmp.type, 0);
   ASSERT_EQ(icmp.code, 0);
   ASSERT_TRUE(icmp.cksum_ok);

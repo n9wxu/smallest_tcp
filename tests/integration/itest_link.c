@@ -678,7 +678,9 @@ TEST(itest_ipv4_058_never_ttl_zero) {
 
 /* ── The checksum API ── */
 
-/* REQ-CKSUM-006: pieces of any length add up to the one-shot checksum */
+/* REQ-CKSUM-002, 005, 006, 007, 008, 029: init, add, add, finalize —
+ * pieces of any length, at any alignment, add up to the one-shot checksum,
+ * an odd length padded with a zero byte */
 TEST(itest_cksum_006_pieces_of_any_length) {
   uint8_t data[23];
   uint16_t cut, oneshot;
@@ -699,6 +701,193 @@ TEST(itest_cksum_006_pieces_of_any_length) {
   net_cksum_add(&c, data + 5, 18);
   ASSERT_EQ(net_cksum_finalize(&c), oneshot);
 }
+
+/* REQ-CKSUM-001, 003, 009, 026: the one's complement sum of the 16-bit
+ * words, carries folded back in, complemented — RFC 1071 §3's example, and
+ * sums whose carries carry again; always in software */
+TEST(itest_cksum_001_rfc1071_example) {
+  static const uint8_t rfc[8] = {0x00, 0x01, 0xF2, 0x03,
+                                 0xF4, 0xF5, 0xF6, 0xF7};
+  static uint8_t ones[1500];
+  net_cksum_t c;
+  ASSERT_EQ(net_cksum(rfc, sizeof(rfc)), 0x220D); /* the sum is 0xDDF2 */
+  net_cksum_init(&c);
+  net_cksum_add(&c, rfc, sizeof(rfc));
+  ASSERT_EQ(net_cksum_finalize(&c), 0x220D);
+  memset(ones, 0xFF, sizeof(ones)); /* 750 words of 0xFFFF sum to 0xFFFF */
+  ASSERT_EQ(net_cksum(ones, sizeof(ones)), 0x0000);
+  ones[0] = 0x00;
+  ones[1] = 0x01; /* 0x0001 + 749 × 0xFFFF = 0x0001 */
+  ASSERT_EQ(net_cksum(ones, sizeof(ones)), 0xFFFE);
+  ASSERT_EQ(net_cksum(ones, sizeof(ones)), peer_cksum(ones, sizeof(ones)));
+}
+
+/* REQ-CKSUM-010, 011: over data that holds its own checksum the result is
+ * 0, and net_cksum_verify() says so; one bit wrong and it is not */
+TEST(itest_cksum_010_verify) {
+  uint8_t data[21];
+  uint16_t i;
+  for (i = 0; i < sizeof(data); i++)
+    data[i] = (uint8_t)(0x53 * i + 11);
+  data[10] = data[11] = 0;
+  peer_put16(data + 10, peer_cksum(data, sizeof(data)));
+  ASSERT_EQ(net_cksum(data, sizeof(data)), 0);
+  ASSERT_TRUE(net_cksum_verify(data, sizeof(data)));
+  data[20] ^= 0x01;
+  ASSERT_TRUE(net_cksum(data, sizeof(data)) != 0);
+  ASSERT_FALSE(net_cksum_verify(data, sizeof(data)));
+  memset(data, 0, sizeof(data)); /* all zero: no valid checksum either */
+  ASSERT_FALSE(net_cksum_verify(data, sizeof(data)));
+}
+
+/* REQ-CKSUM-014: the IPv4 header checksum covers the header and nothing
+ * else: sent so, and a datagram whose checksum also covers its payload is
+ * dropped */
+TEST(itest_cksum_014_ipv4_header_only) {
+  uint8_t f[128];
+  peer_ip_t ip;
+  uint16_t n;
+  up();
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, (const uint8_t *)"yz", 2),
+            NET_OK);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_EQ(peer_cksum(wire_sent(&t, 0)->data + 14, 20), 0);
+  n = datagram_frame(f, t.net.mac, t.net.ipv4_addr);
+  peer_put16(f + 14 + 10, 0);
+  peer_put16(f + 14 + 10, peer_cksum(f + 14, (uint16_t)(n - 14)));
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered, 0);
+  peer_put16(f + 14 + 10, 0);
+  peer_put16(f + 14 + 10, peer_cksum(f + 14, 20));
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered, 1);
+}
+
+/* REQ-CKSUM-016, 018, 021: the UDP checksum covers the pseudo-header
+ * (addresses, protocol, length), the UDP header and the data — on what is
+ * sent, and checked on what is received; a checksum field of 0 over IPv4
+ * means none was computed */
+TEST(itest_cksum_016_udp_pseudo_header) {
+  uint8_t f[128];
+  peer_ip_t ip;
+  peer_udp_t udp;
+  uint16_t n;
+  up();
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, (const uint8_t *)"yz", 2),
+            NET_OK);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_TRUE(peer_parse_udp(&ip, &udp));
+  ASSERT_TRUE(udp.cksum != 0);
+  ASSERT_TRUE(udp.cksum_ok);
+
+  n = datagram_frame(f, t.net.mac, t.net.ipv4_addr);
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered, 1);
+  f[n - 1] ^= 0x01; /* the data */
+  itest_receive(&t, f, n);
+  f[n - 1] ^= 0x01;
+  f[14 + 20 + 1] ^= 0x01; /* the header: the source port */
+  itest_receive(&t, f, n);
+  f[14 + 20 + 1] ^= 0x01;
+  /* a checksum over the datagram alone, without the pseudo-header */
+  peer_put16(f + 14 + 20 + 6, 0);
+  peer_put16(f + 14 + 20 + 6, peer_cksum(f + 14 + 20, 9));
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered, 1);
+  peer_put16(f + 14 + 20 + 6, 0); /* no checksum */
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered, 2);
+  ASSERT_EQ(t.wire.tx_count, 1);
+}
+
+/* REQ-CKSUM-004, REQ-UDP-009: a UDP checksum that computes to 0 is sent as
+ * 0xFFFF, 0 meaning "no checksum".  A payload equal to the checksum of the
+ * same datagram with a zero payload makes the sum come to 0. */
+TEST(itest_cksum_004_udp_zero_sent_as_ffff) {
+  uint8_t payload[2] = {0, 0};
+  peer_ip_t ip;
+  peer_udp_t udp;
+  up();
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, payload, 2), NET_OK);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_TRUE(peer_parse_udp(&ip, &udp));
+  ASSERT_TRUE(udp.cksum != 0 && udp.cksum != 0xFFFF);
+  peer_put16(payload, udp.cksum);
+  ASSERT_EQ(udp_send(&t.net, PEER_IP, peer_mac, 7, 7, payload, 2), NET_OK);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 1), &ip));
+  ASSERT_TRUE(peer_parse_udp(&ip, &udp));
+  ASSERT_EQ(udp.cksum, 0xFFFF);
+  ASSERT_TRUE(udp.cksum_ok);
+}
+
+#if NET_USE_TCP
+/* REQ-CKSUM-017, 018: the TCP checksum covers the pseudo-header, the TCP
+ * header and the data: a SYN for a port nobody listens on draws a RST with
+ * such a checksum; a SYN whose checksum is wrong, or leaves the
+ * pseudo-header out, draws nothing */
+TEST(itest_cksum_017_tcp_pseudo_header) {
+  uint8_t f[128];
+  peer_tcp_seg_t syn;
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint16_t n;
+  up();
+  memset(&syn, 0, sizeof(syn));
+  syn.sport = 40000;
+  syn.dport = 81;
+  syn.seq = 1000;
+  syn.flags = TCPF_SYN;
+  syn.window = 4096;
+  n = peer_tcp_frame(f, &t.net, PEER_IP, &syn);
+  itest_receive(&t, f, n);
+  ASSERT_EQ(wire_find_tcp(&t, 0, &ip, &tcp), 0);
+  ASSERT_TRUE(tcp.flags & TCPF_RST);
+  ASSERT_TRUE(tcp.cksum_ok);
+  wire_clear(&t);
+  f[14 + 20 + 4] ^= 0x01; /* the sequence number */
+  itest_receive(&t, f, n);
+  f[14 + 20 + 4] ^= 0x01;
+  peer_put16(f + 14 + 20 + 16, 0);
+  peer_put16(f + 14 + 20 + 16, peer_cksum(f + 14 + 20, 20));
+  itest_receive(&t, f, n);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+#endif
+
+#if NET_USE_IPV6
+/* REQ-CKSUM-019, 020: over IPv6 the pseudo-header is the two 16-byte
+ * addresses, the length in 32 bits and the next header; the UDP checksum
+ * is not optional: one is always sent, and a datagram without one is
+ * dropped */
+TEST(itest_cksum_019_ipv6_pseudo_header) {
+  uint8_t f[128];
+  const wire_frame_t *s;
+  uint16_t n;
+  up6();
+  ASSERT_EQ(
+      udp6_send(&t.net, peer_ll, peer_mac, 7, 7, (const uint8_t *)"yz", 2),
+      NET_OK);
+  s = wire_sent(&t, 0);
+  ASSERT_EQ(s->len, 14 + 40 + 8 + 2);
+  ASSERT_TRUE(peer_get16(s->data + 14 + 40 + 6) != 0);
+  ASSERT_EQ(peer_udp6_cksum(our_ll, peer_ll, s->data + 54, 10), 0);
+  wire_clear(&t);
+
+  n = peer_udp6_frame(f, "x", 1); /* the checksum field 0: none */
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered6, 0);
+  peer_put16(f + 54 + 6, peer_cksum(f + 54, 9)); /* no pseudo-header */
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered6, 0);
+  peer_put16(f + 54 + 6, 0);
+  peer_put16(f + 54 + 6, peer_udp6_cksum(peer_ll, our_ll, f + 54, 9));
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered6, 1);
+  f[n - 1] ^= 0x01;
+  itest_receive(&t, f, n);
+  ASSERT_EQ(delivered6, 1);
+}
+#endif
 
 int main(void) {
   fprintf(stderr, "=== itest_link ===\n");
@@ -732,6 +921,17 @@ int main(void) {
   RUN_TEST(itest_udp_032_frame_buffer_limit);
   RUN_TEST(itest_ipv4_058_never_ttl_zero);
   RUN_TEST(itest_cksum_006_pieces_of_any_length);
+  RUN_TEST(itest_cksum_001_rfc1071_example);
+  RUN_TEST(itest_cksum_010_verify);
+  RUN_TEST(itest_cksum_014_ipv4_header_only);
+  RUN_TEST(itest_cksum_016_udp_pseudo_header);
+  RUN_TEST(itest_cksum_004_udp_zero_sent_as_ffff);
+#if NET_USE_TCP
+  RUN_TEST(itest_cksum_017_tcp_pseudo_header);
+#endif
+#if NET_USE_IPV6
+  RUN_TEST(itest_cksum_019_ipv6_pseudo_header);
+#endif
   ITEST_REPORT();
   return test_failures;
 }

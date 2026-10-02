@@ -4,12 +4,15 @@
 `ipv4_cksum()` (`src/ipv4.c`) and `ipv6_cksum()` (`src/ipv6.c`)
 **RFCs:** RFC 1071 (computing the Internet checksum), RFC 1624 (incremental
 update), RFC 768 / RFC 9293 / RFC 8200 §8.1 (pseudo-headers)
-**Last updated:** 2026-09-27
+**Requirements:** [checksum.md](../requirements/checksum.md)
 
 ## 1. API
 
 ```c
-typedef struct { uint32_t sum; } net_cksum_t;
+typedef struct {
+  uint32_t sum;
+  uint8_t odd;   /* the last piece ended half-way through a word */
+} net_cksum_t;
 
 void     net_cksum_init(net_cksum_t *c);
 void     net_cksum_add(net_cksum_t *c, const uint8_t *data, uint16_t len);
@@ -18,7 +21,7 @@ void     net_cksum_add_u32(net_cksum_t *c, uint32_t val);
 uint16_t net_cksum_finalize(net_cksum_t *c);
 
 uint16_t net_cksum(const uint8_t *data, uint16_t len);      /* one block */
-int      net_cksum_verify(const uint8_t *data, uint16_t len); /* == 0 */
+int      net_cksum_verify(const uint8_t *data, uint16_t len); /* 1 if it is 0 */
 
 uint16_t net_cksum_update(uint16_t old_cksum, uint16_t old_val,
                           uint16_t new_val);                  /* RFC 1624 */
@@ -47,8 +50,7 @@ add up without being copied into one buffer.
   a zero byte, as RFC 1071 specifies — and `odd` remembers it, so the next
   piece's first byte goes in as the low half of that word (REQ-CKSUM-006).
   Pieces may therefore be cut anywhere; the word helpers go through the same
-  path.  (Until the flag, every piece but the last had to be of even length,
-  which the stack's own callers kept to.)
+  path.
 - **Host-order word helpers.**  `net_cksum_add_u16()` and
   `net_cksum_add_u32()` add values in host order as if they had been read
   big-endian, which is what the pseudo-header needs for addresses and
@@ -71,16 +73,16 @@ S +' C  =  S +' ~S  =  0xFFFF
 because a number plus its complement is all ones — in one's complement
 arithmetic `0xFFFF` is "negative zero".  `net_cksum_finalize()` then returns
 `~0xFFFF = 0x0000`.  So verification is a single comparison with 0, whether
-the checksum covers a header (`net_cksum_verify()` for the IPv4 header and
-ICMPv4) or a pseudo-header and segment (`ipv4_cksum(...) != 0` in
+the checksum covers a header or message (`net_cksum_verify()` for the IPv4
+header, ICMPv4 and IGMP) or a pseudo-header and segment (`ipv4_cksum(...) != 0` in
 `udp_input()` and TCP's `parse_segment()`; `ipv6_cksum(...) != 0` in
 `udp6_input()`, `icmpv6_input()` and TCP).
 
-Earlier code accepted a finalized `0xFFFF` as valid too.  That value means
-the folded sum was `0x0000`, which an end-around-carry sum reaches only when
-every word added — checksum field included — is zero: not a correctly
-checksummed message, and impossible anyway once a pseudo-header with a
-non-zero protocol number is part of the sum.  Comparing with 0 is exact.
+A finalized `0xFFFF` is not accepted as valid.  That value means the folded
+sum was `0x0000`, which an end-around-carry sum reaches only when every word
+added — checksum field included — is zero: not a correctly checksummed
+message, and impossible anyway once a pseudo-header with a non-zero protocol
+number is part of the sum.  Comparing with 0 is exact.
 
 The same identity is why a computed checksum is written into a field that
 holds 0: the value to store and the verification use the same function.
@@ -122,14 +124,14 @@ Where each checksum is computed:
 
 | Checksum | Covers | Send | Verify |
 |---|---|---|---|
-| IPv4 header | Header incl. options | `ipv4_build_ttl()` / `ipv4_build_router_alert()`: `net_cksum()` | `ipv4_parse()`: `net_cksum_verify()` |
+| IPv4 header | Header incl. options | `ipv4_build_tos()` / `ipv4_build_router_alert()` (`build_header()` in `ipv4.c`): `net_cksum()` | `ipv4_input()` and `ipv4_parse()`: `net_cksum_verify()` |
 | ICMPv4 | Message | `icmp_send()`: `net_cksum()` | `icmp_input()`: `net_cksum_verify()` |
-| IGMP | Message | `igmp_send()`: `net_cksum()` | — (IGMP is not received) |
+| IGMP | Message | `igmp_send()`: `net_cksum()` | `igmp_input()`: `net_cksum_verify()` |
 | UDP / TCP over IPv4 | Pseudo-header + segment | `ipv4_cksum()` | `ipv4_cksum() == 0` |
-| UDP / TCP / ICMPv6 over IPv6 | Pseudo-header + message | `ipv6_cksum()` | `ipv6_cksum() == 0` |
+| UDP / TCP / ICMPv6 (NDP and MLD included) over IPv6 | Pseudo-header + message | `ipv6_cksum()` | `ipv6_cksum() == 0` |
 
-The former `udp_checksum()` and `tcp_checksum()` are gone: both protocols
-use `ipv4_cksum()` / `ipv6_cksum()`.
+UDP and TCP have no checksum functions of their own: both use
+`ipv4_cksum()` / `ipv6_cksum()`.
 
 ## 5. The UDP zero rule
 
@@ -166,18 +168,18 @@ This is the form that is correct in every case.  The older RFC 1141 form,
 was written to fix.  Working on `~HC` (the sum itself) and complementing at
 the end avoids the negative-zero problem.
 
-The stack does not use it today: it never forwards packets, so it never
+The stack does not use it: it never forwards packets, so it never
 decrements a TTL, and the one "modify and send back" case — an ICMP echo
 reply, which only changes the type — recomputes the checksum in full, which
-keeps `icmp_send()` shared by echo replies and errors.  It is kept, and unit
+keeps `icmp_send()` shared by echo replies and errors.  It is there, and unit
 tested, for applications that patch a field of a prebuilt frame.
 
 ## 7. Hardware offload (not implemented)
 
-Every checksum is computed and verified in software.  The
-`NET_MAC_CAP_*` switches that earlier documents described never had any
-effect and have been removed from `net_config.h`.  The only offload handling
-is in the Linux raw-socket driver, which *completes* checksums that the local
-kernel left partial, so the stack sees ordinary frames
+Every checksum is computed and verified in software; `net_config.h` and
+`net_mac_t` have no offload switches or capability flags
+(REQ-CKSUM-022..025).  The only offload handling is in the Linux raw-socket
+driver, which *completes* checksums that the local kernel left partial, so
+the stack sees ordinary frames
 ([mac-hal.md §6](mac-hal.md#6-bundled-drivers)).  What adding offload would
 take is in [mac-hal.md §8](mac-hal.md#8-future-work).
