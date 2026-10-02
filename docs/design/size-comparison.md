@@ -213,7 +213,7 @@ serving a static page.
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
 | `http.c` | 5,922 | 0 | 0 | Request parser, header formatter, routes, streaming, conditional requests, `Expect`, Date, slot recycling, timeouts, the TCP transport |
-| `net_text.c` | 108 | 0 | 0 | Case-insensitive compare, decimal formatting (no division) |
+| `net_text.c` | 108 | 0 | 0 | Decimal formatting without division (`net_u32_to_dec()`) |
 | `tcp.c` + `tcp_buf_saw.c` | 4,756 | 0 | 0 | As in "Adding TCP" |
 
 HTTP costs about 6.4 KB of flash on top of TCP (14,974 B against the TCP
