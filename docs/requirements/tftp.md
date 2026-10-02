@@ -1,8 +1,8 @@
 # TFTP Requirements
 
-**Protocol:** Trivial File Transfer Protocol
-**Primary RFC:** RFC 1350 — The TFTP Protocol (Revision 2)
-**Supporting:** RFC 1123 §4.2 — Requirements for Internet Hosts (TFTP), RFC 2347 — TFTP Option Extension, RFC 2348 — TFTP Blocksize Option, RFC 2349 — TFTP Timeout Interval and Transfer Size Options, RFC 7440 — TFTP Windowsize Option
+**Protocol:** Trivial File Transfer Protocol  
+**Primary RFC:** RFC 1350 — The TFTP Protocol (Revision 2)  
+**Supporting:** RFC 1123 §4.2 — Requirements for Internet Hosts (TFTP), RFC 2347 — TFTP Option Extension, RFC 2348 — TFTP Blocksize Option, RFC 2349 — TFTP Timeout Interval and Transfer Size Options, RFC 7440 — TFTP Windowsize Option  
 **Scope:** a client that reads files (RRQ), over IPv4
 
 ## Overview
