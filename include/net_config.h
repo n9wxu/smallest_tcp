@@ -6,7 +6,8 @@
  * application's settings in a header named by NET_CONFIG_FILE (CMake:
  * -DSMALLEST_TCP_CONFIG_FILE=path), which is included first.  The library
  * and the application must be compiled with the same settings: several of
- * them change the layout of net_t.
+ * them change the layout of net_t.  The modules' own tunables are in their
+ * headers; docs/design/configuration.md lists every one.
  */
 
 #ifndef NET_CONFIG_H
@@ -16,7 +17,11 @@
 #include NET_CONFIG_FILE
 #endif
 
-/* Protocols compiled into the IPv4 / IPv6 dispatch */
+/* The network layers Ethernet dispatches to (IPv4 with ARP and ICMP; IPv6
+ * with ICMPv6, NDP and MLD) — one or both — and the transports they
+ * dispatch to.  A layer set to 0 is left out of net_t and of the API, and
+ * its source files out of the build.  CMake sets all four
+ * (SMALLEST_TCP_IPV4, _IPV6, _UDP, _TCP). */
 #ifndef NET_USE_IPV4
 #define NET_USE_IPV4 1
 #endif
@@ -50,7 +55,9 @@
 #define NET_ARP_RATE_SLOTS 2
 #endif
 
-/* Multicast groups joined at once (0 compiles multicast RX out) */
+/* Multicast groups joined at once, IPv4 (ipv4_mcast_join(), igmp_join();
+ * 0 compiles IPv4 multicast reception out) and IPv6 (ipv6_mcast_join()).
+ * All-hosts, all-nodes and the solicited-node groups need no slot. */
 #ifndef NET_MAX_MCAST_GROUPS
 #define NET_MAX_MCAST_GROUPS 1
 #endif
@@ -71,7 +78,8 @@
 #define NET_IPV6_DEFAULT_HOP_LIMIT 64
 #endif
 
-/* Architecture */
+/* Byte order where the compiler does not predefine __BYTE_ORDER__: 1
+ * selects big-endian (net_endian.h) */
 #ifndef NET_8BIT_TARGET
 #define NET_8BIT_TARGET 0
 #endif
@@ -100,7 +108,9 @@
   { 0x02, 0x00, 0x00, 0xde, 0xad, 0x01 }
 #endif
 
-/* TCP timing */
+/* TCP timing, in milliseconds: the first retransmission timeout and
+ * zero-window probe interval, the ceiling of their doubling, and the
+ * maximum segment lifetime (TIME-WAIT lasts twice that) */
 #ifndef NET_DEFAULT_TCP_RTO_INIT_MS
 #define NET_DEFAULT_TCP_RTO_INIT_MS 1000
 #endif

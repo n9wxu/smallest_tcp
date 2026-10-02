@@ -10,7 +10,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── IPv4-only build (the default of net_config.h) ───────────────────
+  # ── IPv4-only build (NET_USE_IPV6 0, the default of net_config.h) ───
   cmake-ipv4-only:
     name: CMake — Linux, IPv4 only, no TLS; no-TCP and no-UDP builds
     runs-on: ubuntu-latest

@@ -23,7 +23,7 @@ if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CROSSCOMPILING)
 else()
     set(SMALLEST_TCP_HOSTED OFF)
 endif()
-option(SMALLEST_TCP_BUILD_TESTS   "Build unit tests"           ${SMALLEST_TCP_HOSTED})
+option(SMALLEST_TCP_BUILD_TESTS   "Build unit and integration tests" ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_BUILD_DEMO    "Build demo applications"    ${SMALLEST_TCP_HOSTED})
 option(SMALLEST_TCP_BUILD_DRIVERS "Build platform MAC drivers" ${PROJECT_IS_TOP_LEVEL})
 option(SMALLEST_TCP_IPV4          "IPv4 + ARP + ICMP in the core, and the applications that run only over IPv4" ON)
@@ -206,7 +206,7 @@ if(SMALLEST_TCP_BOARD)
     add_subdirectory(boards/${SMALLEST_TCP_BOARD})
 endif()
 
-# ── Unit tests ────────────────────────────────────────────────────────
+# ── Unit and integration tests ────────────────────────────────────────
 
 # The tests and demos exercise the whole stack.
 if(NOT (SMALLEST_TCP_UDP AND SMALLEST_TCP_TCP))

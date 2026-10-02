@@ -1,7 +1,10 @@
-# Unit tests for smallest_tcp
+# Tests of smallest_tcp: unit tests (tests/unit), integration tests that
+# drive the stack through its API on a scripted link (tests/integration,
+# CTest label "integration"), and checks that configurations which cannot
+# work fail to compile.
 #
-# Each test is a standalone executable linked against the library sources
-# it needs. CTest runs them all.
+# Each test is a standalone executable linked against the libraries it
+# needs.  CTest runs them all.
 
 # Helper: define a unit test executable
 function(add_unit_test name)
@@ -14,7 +17,7 @@ function(add_unit_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-# ── test_endian (header-only, no library link needed) ─────────────────
+# ── test_endian ───────────────────────────────────────────────────────
 
 add_unit_test(test_endian)
 target_link_libraries(test_endian PRIVATE smallest_tcp_core)
