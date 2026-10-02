@@ -1,7 +1,5 @@
 # Architecture — smallest_tcp
 
-**Last updated:** 2026-09-28
-
 smallest_tcp is a TCP/IP stack in portable C99 for devices from small
 microcontrollers up to Linux and macOS hosts.  This document describes how
 it is put together and why; the design documents under
@@ -90,17 +88,17 @@ One `net_t` per interface holds everything the core knows:
 | Part | Fields |
 |---|---|
 | Buffers | `rx`, `tx` — `{buf, capacity}`, supplied to `net_init()` |
-| Link | `mac`, `mac_driver`, `mac_ctx` |
+| Link | `mac`, `mtu`, `mac_driver`, `mac_ctx` |
 | Randomness | `secret`, `random_count` (§9) |
-| IPv4 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` (host byte order), `gateway_mac`, `gateway_mac_valid`, `mcast_groups[]` |
+| IPv4 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` (host byte order), `gateway_mac`, `gateway_mac_valid` and its expiry, the ARP request rate limit, `mcast_groups[]` and IGMP's state, the reassembly buffer and operations, the DHCP client's address probe |
 | IPv6 | `ip6` — address slots with DAD state and lifetimes, hop limit, RA flags, default router, solicitation, lifetime and MLD timers; `mcast6_groups[][16]` |
-| Dispatch | `udp_ports` / `udp_port_count`, `udp6_ports` / `udp6_port_count`, `tcp_conns` / `tcp_conn_count` — tables the application binds with `udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()` |
+| Dispatch | `udp_ports` / `udp_port_count`, `udp6_ports` / `udp6_port_count`, `tcp_conns` / `tcp_conn_count` — tables the application binds with `udp_set_ports()`, `udp6_set_ports()`, `tcp_set_connections()`; UDP's error handler (`udp_set_error_handler()`) |
 | TCP | `tcp_clock` — 4 µs ticks, advanced by `tcp_tick()`, for initial sequence numbers ([tcp.md §4.6](design/tcp.md#46-initial-sequence-numbers)) |
 
-The dispatch tables used to be globals (`udp_ports`, `udp6_ports`,
-`tcp_connections`); in `net_t` they leave the stack with no global mutable
-state.  On Cortex-M0, `net_t` is 72 bytes for a UDP-only IPv4 build, 88 with
-the defaults and 208 dual stack ([memory-model.md](design/memory-model.md)).
+The dispatch tables are the application's, bound into `net_t`, so the stack
+has no global mutable state.  On Cortex-M0, `net_t` is 116 bytes for a
+UDP-only IPv4 build, 144 with the defaults of `net_config.h` and 264 dual
+stack ([memory-model.md](design/memory-model.md)).
 
 ## 5. Receive path
 
@@ -112,11 +110,14 @@ net_poll(net)
  ├─ driver->peek(0, net->rx.buf, len)   the one copy (len clamped to rx.capacity)
  ├─ eth_input()                         our MAC, broadcast or a joined group, not sent by us; EtherType
  │   ├─ arp_input()                     answer requests; learn the gateway's MAC
- │   ├─ ipv4_input()                    ipv4_parse(); source and destination checks
- │   │   ├─ icmp_input()                echo replies
+ │   ├─ ipv4_input()                    header and options; source and destination checks;
+ │   │   │                                fragments to reassembly, if installed
+ │   │   ├─ icmp_input()                echo replies; errors received → udp_icmp_error(),
+ │   │   │                                tcp_icmp_error()
  │   │   ├─ udp_input()                 → port handler (payload pointer)
  │   │   ├─ tcp_input()                 → state machine; data into the connection's
  │   │   │                                RX buffer; on_event
+ │   │   ├─ IGMP                        → igmp.c, once a group is joined
  │   │   └─ other protocols             ICMP Protocol Unreachable
  │   └─ ipv6_input()                    ipv6_parse(), extension headers, address checks
  │       ├─ icmpv6_input()              echo; ndp_input(); mld_input()
@@ -131,11 +132,11 @@ Every layer parses in place and passes pointers into `net->rx.buf` upward
 receive buffer.  Everything a handler is given is valid only until it
 returns, and handlers run before `discard()`, so they should be short.
 
-UDP handlers used to receive a frame offset and `peek()` the payload out of
-the MAC driver themselves.  That design was half implemented — the frame was
-staged in `rx.buf` anyway, since checksums are computed over it — so it cost
-a second copy in every handler and exposed the driver to applications.  The
-decision record is in [udp.md §10.1](design/udp.md#101-decision-record-payload-pointers-not-frame-offsets);
+UDP handlers get a pointer, not a frame offset from which to `peek()` the
+payload out of the MAC driver themselves: the frame is in `rx.buf` anyway,
+since checksums are computed over it, so an offset would cost a second copy
+in every handler and expose the driver to applications.  The decision
+record is in [udp.md §10.1](design/udp.md#101-decision-record-payload-pointers-not-frame-offsets);
 the driver side is in [mac-hal.md §3](design/mac-hal.md#3-the-receive-lifecycle-net_poll).
 
 ## 6. Transmit path
@@ -148,8 +149,9 @@ and sent with `net_transmit(net, len)`:
    directly by the module or copied by `udp_send()` / `tcp_send()`.
 2. The transport header, with its checksum over the pseudo-header:
    `ipv4_cksum()` or `ipv6_cksum()` (UDP sends a computed 0 as `0xFFFF`).
-3. `eth_build()`, then `ipv4_build()` / `ipv4_build_ttl()` (20 bytes,
-   DF set, ID 0 — every datagram is atomic, RFC 6864 §4.1 — header checksum),
+3. `eth_build()`, then `ipv4_build()` / `ipv4_build_ttl()` /
+   `ipv4_build_tos()` (20 bytes, DF set, ID 0 — every datagram is atomic,
+   RFC 6864 §4.1 — header checksum),
    `ipv4_build_router_alert()` (24 bytes with the Router Alert option and
    TTL 1, for IGMP) or `ipv6_build()`.
 4. `net_transmit()` hands the frame to `driver->send()`.
@@ -165,7 +167,9 @@ its payload and send nothing about a broadcast or multicast datagram, an
 ICMP error, or a source that is no single host (RFC 1122 §3.2.2);
 `icmpv6_send_error()` applies RFC 4443 §2.4(e).  Callers just report.
 Received ICMP errors about a datagram we sent go to the transport the
-quoted header names: UDP's error handler (`udp_set_error_handler()`).
+quoted header names: to UDP, which passes them to the application's error
+handler (`udp_set_error_handler()`), or to the TCP connection, which treats
+them as soft or hard errors and lowers its MSS on Fragmentation Needed.
 
 `net->tx.buf` holds one frame at a time and is reused by the next send, so
 nothing keeps a built frame: TCP retransmits from the connection's TX buffer,
@@ -179,7 +183,7 @@ Fragments received are reassembled in a buffer the application gives
 `IPV4_REASSEMBLY_BUFFER(emtu_r)`), one datagram at a time; without one
 they are dropped.  `ipv4_set_reassembly()` also installs reassembly's code
 (`net->reasm_ops`), so a program that never calls it links none of it —
-about 1 KB on Cortex-M0.  The buffer starts with 96 bytes of bookkeeping — the
+about 800 bytes on Cortex-M0.  The buffer starts with 96 bytes of bookkeeping — the
 datagram's key, a 60 s timer (`ipv4_tick()`), the sender's MAC and a copy
 of fragment zero's header with 8 bytes of data, which is what Time
 Exceeded (code 1) quotes when the timer runs out — then a bitmap of the
@@ -243,22 +247,23 @@ seed, a 12- or 36-byte TCP connection id — and HalfSipHash puts the length
 into its last block, so zero padding cannot make one kind of input the same
 message as another.
 
-**Why a keyed hash.**  The generator it replaced, xorshift32, returned its
+**Why a keyed hash.**  A small generator such as xorshift32 returns its
 whole 32-bit state as every output: anyone who saw one value — a DHCPv4
 transaction ID on the wire, the initial sequence number of a SYN,ACK — could
 compute every value after it.  An output of a pseudo-random function reveals
 nothing of the key or of any other output.  It also serves as the keyed hash
 RFC 6528 asks for, so TCP's initial sequence numbers need no second
-primitive.  With it `net.c` grew by 234 bytes on Cortex-M0 and `net_t` by 8
-([size-comparison.md](design/size-comparison.md)).
+primitive.  On Cortex-M0 the generator is about 350 bytes of `net.c`
+(HalfSipHash, the seed, `net_random()`, `net_random_below()`) and 12 bytes
+of `net_t` (the key and the count).
 
 Users: TCP initial sequence numbers, which hash the connection's addresses
 and ports with `net_hash()` directly ([tcp.md §4.6](design/tcp.md#46-initial-sequence-numbers));
 and through `net_random()`, DHCPv4 and DHCPv6 transaction IDs and the
 randomized delays of mDNS (probing, shared-record answers), NDP (DAD, Router
 Solicitations), MLD (query responses) and DHCPv6 (start delay, retransmission
-jitter).  It replaced five separate generators in earlier versions.  TLS
-does not use it; its randomness comes from the crypto backend.
+jitter).  It is the only generator in the stack.  TLS does not use it; its
+randomness comes from the crypto backend.
 
 **Seed it.**  The MAC address differs per device but is public, so an
 unseeded device's key — and with it its sequence numbers and transaction IDs
@@ -274,11 +279,13 @@ not a source for cryptographic keys or nonces.
 
 ## 10. Timers
 
-`net_tick(net, elapsed_ms)` runs the stack's own timers: `tcp_tick()` if
-TCP is compiled in (retransmission, zero-window probes, TIME-WAIT, and the
-clock of initial sequence numbers) and
-`ipv6_tick()` if IPv6 is (DAD, router solicitation, MLD, address and router
-lifetimes).  ARP has none.  Application-owned modules — the DHCP clients,
+`net_tick(net, elapsed_ms)` runs the stack's own timers: `arp_tick()` and
+`ipv4_tick()` if IPv4 is compiled in (the gateway MAC's expiry, the ARP
+request rate limit, the reassembly timeout, IGMP's report delays),
+`tcp_tick()` if TCP is (retransmission, zero-window probes, TIME-WAIT, and
+the clock of initial sequence numbers) and `ipv6_tick()` if IPv6 is (DAD,
+router solicitation, MLD, address and router lifetimes).  Application-owned
+modules — the DHCP clients,
 TFTP, mDNS, HTTP — keep their own `*_tick()` functions, because the stack
 cannot reach their state; the application calls them with the same elapsed
 time.  Timers are countdown fields with `net_countdown()`,
@@ -293,9 +300,10 @@ full timer inventory, are in [timer-model.md](design/timer-model.md).
 Every setting is an `#ifndef` default in `net_config.h` (or in a module
 header); an application overrides them with `-D` or in a header named by
 `NET_CONFIG_FILE`, included first (CMake: `SMALLEST_TCP_CONFIG_FILE`).
-Several settings change `net_t`'s layout (`NET_USE_IPV6`, `NET_USE_UDP`,
-`NET_USE_TCP`, `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS`,
-`NET_IPV6_ADDRS`), which is why library and application must agree.  Identity
+Several settings change `net_t`'s layout (`NET_USE_IPV4`, `NET_USE_IPV6`,
+`NET_USE_UDP`, `NET_USE_TCP`, `NET_MAX_MCAST_GROUPS`,
+`NET_MAX_MCAST6_GROUPS`, `NET_ARP_RATE_SLOTS`, `NET_IPV6_ADDRS`), which is
+why library and application must agree.  Identity
 defaults (`NET_DEFAULT_IPV4_ADDR`, `_SUBNET_MASK`, `_GATEWAY`, `_MAC`) are
 copied into `net_t` by `net_init()` and are ordinary run-time fields after
 that.  There are no hardware-capability switches: checksum offload is not
@@ -381,6 +389,8 @@ smallest_tcp/
 │       http_demo/  https_demo/  mdns_demo/  tcp_echo/  tftp_client/
 │       tls_client/  tls_echo/
 ├── tests/
+│   ├── integration/        the stack through its API on a scripted link (wire.h),
+│   │                       traced to the requirements
 │   ├── unit/               C unit tests (test_main.h framework), per module or feature
 │   ├── blackbox/           pytest + Scapy conformance suites and interop scripts
 │   └── tls/                test certificates; RFC 8448 and DTLS label vector generators
@@ -389,7 +399,8 @@ smallest_tcp/
 ├── cmake/                  arm-none-eabi.cmake: cross-compiling the libraries
 ├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
 ├── examples/fetchcontent/  consuming the library with CMake FetchContent
-├── scripts/                release.py: the next version, stamping it, its release notes
+├── scripts/                release.py: the next version, stamping it, its release notes;
+│                           trace.py: which tests verify which requirements
 └── docs/
     ├── architecture.md     this document
     ├── integrating-modules.md
@@ -452,5 +463,6 @@ smallest_tcp/
 | RFC 9293 | TCP | `tcp.c` |
 
 Partly implemented: RFC 6298 (initial RTO and back-off, no RTT
-estimation).  Not implemented: ARP address conflict detection (RFC 5227), TCP
-congestion control (RFC 5681) and TCP extensions (RFC 7323).
+estimation), RFC 5227 (the DHCPv4 client's probe of an offered address; no
+conflict detection after that).  Not implemented: TCP congestion control
+(RFC 5681), TCP extensions (RFC 7323), the DNS stub resolver.
