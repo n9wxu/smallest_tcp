@@ -162,8 +162,8 @@ uint16_t ipv6_cksum(const uint8_t *src, const uint8_t *dst, uint8_t next_header,
  */
 void ipv6_start(net_t *net);
 
-/** Advance DAD, router discovery, MLD and the address lifetimes (called
- *  by net_tick()). */
+/** Advance DAD, router discovery, MLD, the address lifetimes and the
+ *  ICMPv6 error rate limit (called by net_tick()). */
 void ipv6_tick(net_t *net, uint32_t elapsed_ms);
 
 /** State (NET_IP6_*) of address slot @p slot. */

@@ -112,6 +112,7 @@ void ipv6_start(net_t *net) {
   net_ip6_t *ip6 = &net->ip6;
   memset(ip6, 0, sizeof(*ip6));
   ip6->hop_limit = NET_IPV6_DEFAULT_HOP_LIMIT;
+  ip6->error_tokens = ICMPV6_ERROR_BURST;
   ipv6_link_local_from_mac(net->mac, ip6->addr[0].addr);
   ip6->addr[0].valid_s = NET_IP6_INFINITE;
   ip6->addr[0].preferred_s = NET_IP6_INFINITE;
@@ -149,6 +150,7 @@ void ipv6_tick(net_t *net, uint32_t elapsed_ms) {
   uint32_t secs = net_whole_seconds(&net->ip6.lifetime_carry_ms, elapsed_ms);
   if (secs)
     lifetimes_elapse(net, secs);
+  icmpv6_tick(net, elapsed_ms);
   /* MLD first: a report that ND sends now is then repeated a full
    * interval later, not in this same tick */
   mld_tick(net, elapsed_ms);

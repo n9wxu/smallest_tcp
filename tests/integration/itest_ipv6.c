@@ -1141,7 +1141,7 @@ int main(void) {
   RUN_TEST(itest_icmpv6_021_no_router_errors);
   RUN_TEST(itest_icmpv6_028_no_error_about_errors);
   RUN_TEST(itest_icmpv6_029_no_error_about_group_packets);
-  RUN_XFAIL(itest_icmpv6_033_errors_rate_limited);
+  RUN_TEST(itest_icmpv6_033_errors_rate_limited);
   RUN_TEST(itest_icmpv6_039_unknown_informational_dropped);
   RUN_TEST(itest_icmpv6_015_port_unreachable_reaches_tcp);
   RUN_XFAIL(itest_icmpv6_011_errors_reach_tcp);

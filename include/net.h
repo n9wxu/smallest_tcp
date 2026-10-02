@@ -72,9 +72,11 @@ typedef struct {
   uint8_t ra_flags;                    /**< NDP_RA_MANAGED / NDP_RA_OTHER */
   net_ip6_router_t router;
   uint8_t router_solicits_left;
+  uint8_t error_tokens;       /**< ICMPv6 errors that may be sent now */
   uint16_t router_solicit_ms; /**< Until the next one */
   uint16_t lifetime_carry_ms; /**< Toward the next lifetime second */
   net_mld_t mld;
+  uint16_t error_refill_ms; /**< Toward the next error token */
 } net_ip6_t;
 #endif
 

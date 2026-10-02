@@ -75,6 +75,9 @@ net_err_t icmpv6_send_error(net_t *net, uint8_t type, uint8_t code,
                                          : ipv6_src_for(net, invoking->src);
   if (!src)
     return NET_ERR_INVALID_PARAM;
+  if (net->ip6.error_tokens == 0) /* REQ-ICMPv6-033 */
+    return NET_ERR_BUSY;
+  net->ip6.error_tokens--;
   quote = quote_len(net, invoking);
 
   uint8_t *msg = net->tx.buf + ICMPV6_OFFSET;
@@ -85,6 +88,21 @@ net_err_t icmpv6_send_error(net_t *net, uint8_t type, uint8_t code,
 
   return icmpv6_send(net, src, invoking->src, eth->src_mac,
                      (uint16_t)(ICMPV6_HDR_SIZE + quote), net->ip6.hop_limit);
+}
+
+/* REQ-ICMPv6-033: a token for every ICMPV6_ERROR_INTERVAL_MS, up to
+ * ICMPV6_ERROR_BURST (RFC 4443 §2.4(f)) */
+void icmpv6_tick(net_t *net, uint32_t elapsed_ms) {
+  net_ip6_t *ip6 = &net->ip6;
+  uint32_t ms =
+      (elapsed_ms > 0xFFFFu ? 0xFFFFu : elapsed_ms) + ip6->error_refill_ms;
+  while (ip6->error_tokens < ICMPV6_ERROR_BURST &&
+         ms >= ICMPV6_ERROR_INTERVAL_MS) {
+    ms -= ICMPV6_ERROR_INTERVAL_MS;
+    ip6->error_tokens++;
+  }
+  ip6->error_refill_ms =
+      ip6->error_tokens < ICMPV6_ERROR_BURST ? (uint16_t)ms : 0;
 }
 
 /* REQ-ICMPv6-004..009 */

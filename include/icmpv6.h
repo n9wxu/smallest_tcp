@@ -39,6 +39,16 @@
 #define ICMPV6_CODE_UNRECOGNIZED_NH 1     /* Parameter Problem */
 #define ICMPV6_CODE_UNRECOGNIZED_OPTION 2 /* Parameter Problem */
 
+/* Rate limit of the errors sent (RFC 4443 §2.4(f)): a token bucket of
+ * ICMPV6_ERROR_BURST errors, refilled by one each ICMPV6_ERROR_INTERVAL_MS
+ * (at most 65535) */
+#ifndef ICMPV6_ERROR_BURST
+#define ICMPV6_ERROR_BURST 10
+#endif
+#ifndef ICMPV6_ERROR_INTERVAL_MS
+#define ICMPV6_ERROR_INTERVAL_MS 100
+#endif
+
 /** Answer echo requests; hand Neighbor Discovery to ndp_input() and MLD
  *  to mld_input(). */
 void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
@@ -64,9 +74,15 @@ net_err_t icmpv6_send(net_t *net, const uint8_t *src, const uint8_t *dst,
  *
  * @param param  The 4-byte field after the checksum (pointer, MTU or 0).
  * @param eth    The invoking frame (its source MAC gets the error).
+ * @return NET_OK; NET_ERR_INVALID_PARAM if no error may be sent about the
+ *         packet; NET_ERR_BUSY if the rate limit holds it back;
+ *         NET_ERR_BUF_TOO_SMALL.
  */
 net_err_t icmpv6_send_error(net_t *net, uint8_t type, uint8_t code,
                             uint32_t param, const ipv6_hdr_t *invoking,
                             const eth_frame_t *eth);
+
+/** Refill the bucket of the error rate limit (called by ipv6_tick()). */
+void icmpv6_tick(net_t *net, uint32_t elapsed_ms);
 
 #endif /* ICMPV6_H */
