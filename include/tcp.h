@@ -138,7 +138,7 @@ typedef struct tcp_conn_s {
   /* Receive sequence space */
   uint32_t irs;
   uint32_t rcv_nxt;
-  uint16_t rcv_wnd; /**< Free space in the RX buffer, as last advertised */
+  uint16_t rcv_wnd; /**< The window on offer: at most the RX buffer's room */
   uint16_t our_mss; /**< What our RX buffer takes; in our SYN */
 
   /* One timer at a time: retransmission, zero-window probe or TIME-WAIT */

@@ -2,8 +2,7 @@
 
 **Files:** `include/tcp_buf.h` (the interface, stop-and-wait declarations), `src/tcp_buf_saw.c`  
 **Requirements:** REQ-TCP-142..147 ([docs/requirements/tcp.md](../requirements/tcp.md))  
-**Status:** stop-and-wait implemented; the ring and packet-list designs (section 5) are not  
-**Last updated:** 2026-09-27
+**Status:** stop-and-wait implemented; the ring and packet-list designs (section 5) are not
 
 The protocol side is described in [tcp.md](tcp.md).  Section numbers with §
 refer to RFC 9293.
@@ -24,7 +23,7 @@ it uses.
 
 There is one implementation, stop-and-wait (`tcp_buf_saw.c`, REQ-TCP-145).
 The ring buffer (REQ-TCP-146) and packet list (REQ-TCP-147) in section 5 are
-designs only; their declarations have been removed from `tcp_buf.h`.
+designs only: `tcp_buf.h` declares neither.
 
 ---
 
@@ -57,12 +56,12 @@ SND.NXT, the buffer keeps bytes, and the two stay in step by these rules:
 | Operation | Called by | Contract |
 |---|---|---|
 | `write` | `tcp_write()`, in ESTABLISHED and CLOSE-WAIT, with `len` > 0 | Copy in what fits; return the count, which may be less than `len` or 0 |
-| `next_segment` | `send_data()` with min(SND.WND, `snd_mss`); `probe_zero_window()` with 1 | Return up to `mss` bytes, or 0 if nothing is ready; they are then in flight.  `*data` points into buffer memory and must stay valid until the next call into the buffer — `tcp.c` copies it into the frame at once |
+| `next_segment` | `send_data()` with min(SND.WND, `snd_mss`); `resend_in_flight()` with min(`in_flight()`, `snd_mss`), after `mark_retransmit`; `probe_zero_window()` with 1 | Return up to `mss` bytes, or 0 if nothing is ready; they are then in flight.  `*data` points into buffer memory and must stay valid until the next call into the buffer — `tcp.c` copies it into the frame at once |
 | `ack` | `take_ack()`, when SEG.ACK advances SND.UNA; `bytes_acked` = SEG.ACK − SND.UNA | Release that many of the oldest bytes, capped at the bytes in flight: the count includes our FIN once the FIN is acknowledged, and bytes not yet sent must never be released.  Never called for the SYN |
-| `in_flight` | `retransmission_timeout()`, `probe_zero_window()`, `all_data_sent()` | Bytes handed out and not yet acknowledged.  `tcp.c` reads > 0 as "there is data to resend", and `in_flight()` = `queued()` as "all data has been sent" (the queued FIN may go) |
+| `in_flight` | `retransmission_timeout()`, `resend_in_flight()`, `probe_zero_window()`, `all_data_sent()` | Bytes handed out and not yet acknowledged.  `tcp.c` reads > 0 as "there is data to resend", and `in_flight()` = `queued()` as "all data has been sent" (the queued FIN may go) |
 | `queued` | `tcp_tx_idle()`, `all_data_sent()` | Bytes written and not yet acknowledged, sent or not |
-| `writable` | `send_side_ack()`, which raises `TCP_EVT_WRITABLE` when new data was acknowledged and it is > 0 | Room for `write` now |
-| `mark_retransmit` | `retransmission_timeout()`, `probe_zero_window()` (a probe still unacknowledged) | The next `next_segment()` returns the in-flight bytes again, from the oldest (REQ-TCP-095) |
+| `writable` | `send_side_ack()`, which raises `TCP_EVT_WRITABLE` when new data was acknowledged and it is > 0 | Room for `write` |
+| `mark_retransmit` | `resend_in_flight()` (a retransmission timeout), `probe_zero_window()` (a probe still unacknowledged) | The next `next_segment()` returns the in-flight bytes again, from the oldest (REQ-TCP-095) |
 
 One more rule, which comes from `tcp.c` rather than the interface:
 **`next_segment()` must return 0 while anything is in flight.**  `send_data()`
@@ -92,18 +91,18 @@ typedef struct {
 |---|---|---|
 | `deliver` | `data_input()` | Store bytes; return the count taken.  They are always the next in-order bytes: `tcp.c` has skipped what was already received, trimmed to RCV.WND, and never offers data after a gap.  `data` points into the received frame and is valid only during the call.  RCV.NXT advances by the return value |
 | `read` | `tcp_recv()` | Copy out up to `maxlen` bytes; return the count |
-| `readable` | `tcp_window_update()` | Bytes waiting to be read |
-| `available` | Connection set-up, `data_input()`, `fin_input()`, `tcp_window_update()` | Free space: the receive window (REQ-TCP-083) |
+| `readable` | `open_window()` (from `data_input()` and `tcp_window_update()`) | Bytes waiting to be read |
+| `available` | Connection set-up (`take_peer_syn()`, `open_to()`), `open_window()` | Free space: what the receive window is opened to (REQ-TCP-083) |
 
-`available()` is RCV.WND, which puts three constraints on an implementation:
+RCV.WND is never more than `available()` ([tcp.md](tcp.md) section 4.5),
+which puts three constraints on an implementation:
 
 - It shrinks only in `deliver()`, by what `deliver()` took.  The right edge of
   the advertised window then never moves back (§3.8.6 discourages shrinking
   the window), and `tcp.c` can rely on data trimmed to the last advertised
   window fitting.
-- `available()` + `readable()` is the buffer size.  `tcp_window_update()` uses
-  the sum for its silly-window threshold, min(buffer / 2, MSS)
-  (§3.8.6.2.2).
+- `available()` + `readable()` is the buffer size.  `open_window()` uses the
+  sum for its silly-window step, min(buffer / 2, MSS) (§3.8.6.2.2).
 - It is at most 65535: the window field is 16 bits and window scaling is not
   implemented.
 
@@ -146,9 +145,9 @@ flight and the rest are not yet sent.
   `capacity − data_len`.
 
 Counting the bytes sent, rather than flagging that something was, is what
-keeps the buffer in step with SND.NXT.  The flag it replaces covered the whole
-buffer and was cleared by any ACK, so after a partial ACK the buffer offered
-the rest as a new segment, and `tcp.c` sent it at SND.NXT — past the bytes'
+keeps the buffer in step with SND.NXT.  A flag would cover the whole buffer
+and be cleared by any ACK: after a partial ACK the buffer would offer the
+rest as a new segment, and `tcp.c` would send it at SND.NXT — past the bytes'
 real sequence numbers — corrupting the stream.
 
 The buffer is linear rather than a ring because the unacknowledged data then
@@ -196,8 +195,8 @@ segment costs the peer a retransmission of everything it sent after it.
 
 | TX / RX memory | RAM per connection (Cortex-M0, IPv4) | Sending, per round trip | Receiving, per round trip |
 |---|---|---|---|
-| 536 / 536 | 1,192 B | ≤ 536 B | ≤ 536 B |
-| 1460 / 4096 | 5,676 B | ≤ 1,460 B | ≤ 4,096 B |
+| 536 / 536 | 1,200 B | ≤ 536 B | ≤ 536 B |
+| 1460 / 4096 | 5,684 B | ≤ 1,460 B | ≤ 4,096 B |
 
 The trade: the smallest RAM of any design, at the cost of send throughput on
 links with a long round trip.  For a device page, a TLS handshake or a
@@ -209,8 +208,7 @@ it is.
 ## 5. Future designs — not implemented
 
 Nothing in this section exists in the code.  `tcp_buf.h` declares only the
-stop-and-wait buffers; earlier versions also declared ring and packet-list
-contexts that were never written.
+stop-and-wait buffers.
 
 ### 5.1 Ring buffer (REQ-TCP-146)
 
@@ -230,8 +228,11 @@ change first:
 - `send_data()` must use the usable window, SND.UNA + SND.WND − SND.NXT, and
   keep sending while it and the buffer allow.
 - Congestion control (RFC 5681: congestion window, slow start, congestion
-  avoidance, REQ-TCP-101..105), since REQ-TCP-108 no longer covers it; fast
-  retransmit and recovery (REQ-TCP-106, 107) need duplicate-ACK counting.
+  avoidance, REQ-TCP-101..105), which REQ-TCP-108 stands in for only with
+  one segment in flight; fast retransmit and recovery (REQ-TCP-106, 107)
+  need duplicate-ACK counting.
+- Sender silly-window avoidance (REQ-TCP-089) and, with it, Nagle
+  (REQ-TCP-129).
 - RTT measurement and a computed RTO (REQ-TCP-091, 099, 100).
 - Partial acknowledgements become normal.  The stop-and-wait buffer leaves the
   rest of a partly acknowledged segment in flight until a timeout; a ring must
@@ -273,5 +274,7 @@ It needs the same `tcp.c` changes as the ring.
   supports more (section 5.1).
 - Shrink `available()` only in `deliver()`, keep `available()` + `readable()`
   constant, and stay within 65535.
-- Run `tests/unit/test_tcp.c` with the new tables, and write the equivalent of
+- Run `tests/integration/itest_tcp.c` with the new tables
+  (`itest_tcp_142_buffers_through_their_operations` drives the stack with
+  buffers of its own), and write the equivalent of
   `tests/unit/test_tcp_buf.c` for the buffer itself.

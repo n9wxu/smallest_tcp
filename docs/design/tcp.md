@@ -1,17 +1,16 @@
 # TCP — Design
 
 **Protocol:** Transmission Control Protocol (RFC 9293)  
-**Supporting:** RFC 6298 (retransmission timer), RFC 6528 (initial sequence numbers), RFC 6691 (MSS), RFC 1122 §4.2  
+**Supporting:** RFC 6298 (retransmission timer), RFC 6528 (initial sequence numbers), RFC 1191 (path MTU), RFC 1122 §4.2  
 **Files:** `include/tcp.h`, `src/tcp.c`; buffers in `include/tcp_buf.h`, `src/tcp_buf_saw.c` — see [tcp-buffer.md](tcp-buffer.md)  
-**Requirements:** [docs/requirements/tcp.md](../requirements/tcp.md) (REQ-TCP-001..155)  
-**Status:** V1 implemented — IPv4 and IPv6, passive and active open, one segment in flight  
-**Last updated:** 2026-09-27
+**Requirements:** [docs/requirements/tcp.md](../requirements/tcp.md) (REQ-TCP-001..182)  
+**Status:** IPv4 and IPv6, passive and active open, one segment in flight
 
 Section numbers with § refer to RFC 9293 unless another document is named; "section N" refers to this document.
 
 ---
 
-## 1. Scope and V1 decisions
+## 1. Scope and decisions
 
 `tcp.c` is the smallest TCP that interoperates with full stacks for
 device-sized traffic: web pages, TLS records, a firmware download.  It keeps
@@ -19,16 +18,16 @@ one segment in flight, delivers in-order data only, and owns no memory: the
 application provides every connection, its buffers and the table that binds
 them.  `tcp.c` has no static data.
 
-| Decision | V1 choice | Requirement |
+| Decision | Choice | Requirement |
 |---|---|---|
 | Segments in flight | One — the stop-and-wait buffers (`tcp_buf_saw.c`) | REQ-TCP-145 |
-| Congestion control | Satisfied by one segment in flight; there is no cwnd or ssthresh | REQ-TCP-108 (in place of 101..107) |
-| Acknowledgements | Immediate: every data segment is acknowledged at once; no delayed ACK | REQ-TCP-128 |
-| Nagle | None: `tcp_send()` sends at once.  `tcp_write()` + `tcp_output()` build one segment from several pieces | REQ-TCP-131 |
+| Congestion control | No cwnd or ssthresh: one segment in flight is never more than RFC 5681 allows | REQ-TCP-108; 101..107 are deviations |
+| Acknowledgements | Immediate: every data segment is acknowledged at once; no delayed ACK | REQ-TCP-128; 125 is a deviation |
+| Nagle | None: `tcp_send()` sends at once.  `tcp_write()` + `tcp_output()` build one segment from several pieces | REQ-TCP-131; 129, 089 are deviations |
 | Out-of-order data | Dropped — no reassembly queue; the ACK asks for RCV.NXT again | REQ-TCP-067 |
 | Options | MSS sent on every SYN and read from the peer's; every other option skipped by its length.  No SACK, window scale or timestamps | REQ-TCP-076..081, 109..117 |
-| Urgent data | URG flag and urgent pointer ignored; the pointer is sent as 0 | REQ-TCP-063 |
-| Retransmission timeout | Starts at `NET_DEFAULT_TCP_RTO_INIT_MS`, doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS`; no RTT measurement | REQ-TCP-092, 094..098 |
+| Urgent data | URG flag and urgent pointer ignored; the pointer is sent as 0 | REQ-TCP-063 (deviation) |
+| Retransmission timeout | Starts at `NET_DEFAULT_TCP_RTO_INIT_MS`, doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS`; no RTT measurement | REQ-TCP-092, 094..098; 091, 099 are deviations |
 | Initial sequence number | RFC 6528: a 4 µs clock plus a keyed hash of the addresses and ports (section 4.6) | REQ-TCP-028, 153 |
 
 Stop-and-wait is what keeps the sender small.  With one segment outstanding,
@@ -61,7 +60,7 @@ cost is throughput — one segment per round trip
 | `fin_sent` | Our FIN has been sent and is SND.NXT − 1.  Until then a closing connection's FIN waits behind the data queued before it (section 4.7) |
 | `passive` | Opened by `tcp_listen()`: a reset, a SYN or a give-up in SYN-RECEIVED returns it to LISTEN (section 3.4) |
 | `close_queued` | `tcp_close()` came in SYN-RECEIVED: the FIN follows the ACK of our SYN (section 4.7) |
-| `irs`, `rcv_nxt`, `rcv_wnd` | Receive sequence space; `rcv_wnd` is the RX buffer's free space as last advertised |
+| `irs`, `rcv_nxt`, `rcv_wnd` | Receive sequence space; `rcv_wnd` is the window on offer, at most the RX buffer's free space (section 4.5) |
 | `our_mss` | The MSS we advertise: what the RX frame buffer takes (section 4.4) |
 | `timer_ms`, `timer`, `rto_ms`, `retransmits`, `persist_ms` | One timer at a time — retransmission, zero-window probe or TIME-WAIT (section 5) |
 | `txbuf_ops`/`txbuf_ctx`, `rxbuf_ops`/`rxbuf_ctx` | The two buffers ([tcp-buffer.md](tcp-buffer.md)) |
@@ -74,9 +73,10 @@ Invariants the code relies on:
   (`in_flight()`) follow it.  Neither our SYN nor our FIN is ever in the TX
   buffer: they exist only in SND.UNA/SND.NXT (the SYN at ISS, the FIN at
   SND.NXT − 1 once `fin_sent` is set).
-- `rcv_wnd` ≤ the RX buffer's `available()`.  It is recomputed from
-  `available()` whenever data or a FIN is taken, and only `tcp_recv()` makes
-  `available()` grow — so data trimmed to `rcv_wnd` always fits.
+- `rcv_wnd` ≤ the RX buffer's `available()`.  It shrinks by the data taken
+  and is raised to `available()` only by `open_window()` (section 4.5), and
+  only `tcp_recv()` makes `available()` grow — so data trimmed to `rcv_wnd`
+  always fits.
 - Both windows fit 16 bits (no window scaling); `rcv_wnd` is a `uint16_t`.
 - `snd_mss` ≤ `segment_room(tx.capacity)`, so every data segment fits the TX
   frame buffer.  It does not depend on `our_mss`, which comes from the RX
@@ -100,9 +100,10 @@ The buffers are chosen per connection by the ops tables passed to
 `tcp_conn_init()`.  To reuse a connection — after CLOSED, or to recycle it out
 of TIME-WAIT — re-initialise its buffers and call `tcp_conn_init()` again
 before `tcp_listen()` or `tcp_connect()`.  `tcp_listen()` alone resets only the
-state, the ports, the remote IPv4 address and the timer, and refuses a
-connection in use — neither CLOSED nor LISTEN — with `NET_ERR_BUSY`, so a
-LISTEN never disturbs a live connection (REQ-TCP-168, MUST-41).
+state, the ports, the remote IPv4 address and the timer.  Both opens refuse
+a connection in use — neither CLOSED nor LISTEN — with `NET_ERR_BUSY`
+(`in_use()`), so an OPEN never disturbs a live connection (REQ-TCP-013,
+168; §3.10.1, MUST-41).
 
 `tcp_connect()` needs the MAC address already resolved: the peer's, or the
 gateway's for an off-link peer.  TCP never resolves addresses; a passive
@@ -203,7 +204,7 @@ goes out after the next `TCP_EVT_WRITABLE`.
 |---|---|---|
 | `tcp_conn_init()` | Zero the connection, attach buffers and callback; CLOSED | any |
 | `tcp_listen()` | LISTEN on a port | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
-| `tcp_connect()`, `tcp6_connect()`, `tcp6_connect_from()` | Send the SYN now; SYN-SENT.  `tcp6_connect_from()` names the local address — one of the host's (REQ-TCP-170).  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  An error, and still CLOSED, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED |
+| `tcp_connect()`, `tcp6_connect()`, `tcp6_connect_from()` | Send the SYN now; SYN-SENT.  `tcp6_connect_from()` names the local address — one of the host's (REQ-TCP-170).  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  `NET_ERR_INVALID_PARAM`, and the connection untouched, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
 | `tcp_set_tos()`, `tcp_set_max_retransmits()` | The TOS of the connection's IPv4 segments (REQ-TCP-174); R2, its retransmission limit (REQ-TCP-165, section 5.1) | any, after `tcp_conn_init()` |
 | `tcp_last_error()` | The last ICMP error (type << 8 \| code) or `TCP_SOFT_RETRANSMITTING`; 0 for none (section 3.8) | any |
 | `tcp_write()` | Queue data; returns bytes accepted — 0 while the stop-and-wait buffer has a segment in flight | ESTABLISHED, CLOSE-WAIT (else < 0) |
@@ -259,13 +260,15 @@ applies — 536 over IPv4, 1220 over IPv6 (REQ-TCP-079, 080).
 ### 3.2 Finding the connection
 
 `find_conn()` scans the table for the destination port.  A connection that is
-neither CLOSED nor LISTEN matches when its remote port and address (same
-family) equal the segment's source; such an exact match wins wherever it is in
-the table.  Otherwise the first listener on the port takes the segment
-(REQ-TCP-148, 149).  Our local address is not compared: there is one IPv4
-address, and over IPv6 a peer keeps using the address it connected to.  A
-CLOSED connection matches nothing, so a segment for it is answered like any
-segment with no connection (§3.10.7.1).
+neither CLOSED nor LISTEN matches when its remote port equals the segment's
+source port and `is_peer()` finds both addresses the connection's: the
+segment's source its remote address, and the address the segment was sent to
+its local one (`local_ip`, or the IPv6 address in slot `local_slot`).  Such an
+exact match wins wherever it is in the table.  Otherwise the first listener
+on the port takes the segment (REQ-TCP-023, 148, 149) — so the same peer and
+ports to another of our IPv6 addresses is another connection.  A CLOSED
+connection matches nothing, so a segment for it is answered like any segment
+with no connection (§3.10.7.1).
 
 ### 3.3 No connection: `send_reset_reply()`
 
@@ -402,7 +405,8 @@ FIN-WAIT-2 only.  There is no reassembly queue:
 - bytes before RCV.NXT were taken already (a retransmission with different
   boundaries) and are skipped;
 - what remains is trimmed to RCV.WND and passed to `deliver()`; RCV.NXT
-  advances by what the buffer took, RCV.WND is recomputed from `available()`,
+  advances by what the buffer took, RCV.WND shrinks by as much — its right
+  edge stays — unless `open_window()` finds it worth raising (section 4.5),
   and `TCP_EVT_DATA` is raised if anything was taken.
 
 Every segment with data is acknowledged at once, including a duplicate or one
@@ -425,8 +429,8 @@ RCV.NXT, is acknowledged, and moves the connection:
 
 | From | Event | To | Where |
 |---|---|---|---|
-| CLOSED | `tcp_listen()` | LISTEN | `tcp_listen()` |
-| CLOSED | `tcp_connect()` / `tcp6_connect()`: SYN sent | SYN-SENT | `open_to()` |
+| CLOSED, LISTEN | `tcp_listen()` | LISTEN | `tcp_listen()` |
+| CLOSED, LISTEN | `tcp_connect()` / `tcp6_connect()`: SYN sent | SYN-SENT | `open_to()` |
 | LISTEN | SYN: SYN,ACK sent | SYN-RECEIVED | `listen_input()` |
 | SYN-SENT | SYN,ACK: ACK sent | ESTABLISHED | `syn_sent_input()` |
 | SYN-SENT | SYN: SYN,ACK sent | SYN-RECEIVED | `syn_sent_input()` |
@@ -485,9 +489,8 @@ TCP ignores what `net_transmit()` returns: a segment the driver did not take
 is treated as lost on the wire.  A SYN or SYN,ACK, data, a FIN or a probe is
 sent again by its timer (section 4.3), and an ACK or RST is answered again
 when the peer retransmits.  That includes the first SYN of an active open:
-`tcp_connect()` used to fail with `NET_ERR_BUSY` for a busy driver, the one
-segment treated differently.  Every segment fits `net->tx`, since
-`net_init()` insists on `TCP_MIN_FRAME` (section 4.4).
+`tcp_connect()` does not fail for a busy driver.  Every segment fits
+`net->tx`, since `net_init()` insists on `TCP_MIN_FRAME` (section 4.4).
 
 ### 4.2 Segments
 
@@ -574,29 +577,41 @@ is at most 1460 over IPv4 and 1440 over IPv6 (REQ-TCP-077, REQ-IPv4-063,
   segment fits `net->tx` (RFC 9293 §3.7.1: the peer's MSS limits what we
   send, our own buffer limits it too).
 
-The two buffers can therefore differ in size either way.  The advertised MSS
-used to come from the TX buffer: an RX buffer smaller than the TX one invited
-segments `net_poll()` truncated, so the RX buffer had to be at least as large;
-and with a frame buffer larger than a frame, IPv6 advertised 1460, 20 bytes
+The two buffers can therefore differ in size either way.  Taking the
+advertised MSS from the TX buffer instead would invite segments an RX buffer
+smaller than the TX one cannot hold, and bounding it by the buffer alone
+would advertise, over IPv6 with a buffer larger than a frame, 1460: 20 bytes
 more than an Ethernet frame carries after the IPv6 header.
 
 Neither is ever 0: with TCP compiled in, `net_init()` refuses a buffer
 smaller than `TCP_MIN_FRAME` — room for a SYN with the longest header a peer
-may send, 60 bytes, over IPv6 when it is compiled in (94 bytes, or 114).  A
-buffer of 54 bytes over IPv4 used to leave an MSS of 0.
+may send, 60 bytes, over IPv6 when it is compiled in (94 bytes, or 114).
 
 ### 4.5 Receive window
 
-`rcv_wnd` is the RX buffer's free space.  It is advertised in every segment and
-recomputed when data or a FIN is taken (REQ-TCP-082, 083).  `tcp_recv()` frees
-space but cannot send — it has no `net_t` — so the application calls
-`tcp_window_update()` after reading.  That sends an ACK only when the window
-has grown by at least min(buffer size / 2, `our_mss`), where the buffer size is
-`available()` + `readable()`: receiver silly-window avoidance, §3.8.6.2.2
-(REQ-TCP-088).  A smaller increase is advertised by the next ACK for data
-(`data_input()` recomputes `rcv_wnd` without the threshold).  Without
-`tcp_window_update()`, a peer facing a zero window learns of the space only
-through its own window probes.
+`rcv_wnd` is the window on offer: at most the RX buffer's free space, and
+advertised in every segment but a RST (REQ-TCP-082, 083).  It starts as
+`available()` when the connection opens.  Data taken shrinks it by as much,
+which leaves the right window edge, RCV.NXT + RCV.WND, where the peer was
+told it is.
+
+`open_window()` is the receiver's silly-window avoidance of §3.8.6.2.2
+(REQ-TCP-088, MUST-39): it raises `rcv_wnd` to `available()` only when that
+is at least min(buffer size / 2, `our_mss`) more than the window on offer,
+the buffer size being `available()` + `readable()`.  A smaller gain is not
+advertised: the edge does not creep forward a few bytes at a time as the
+application reads a few bytes at a time.  It runs in two places:
+
+- `data_input()`, after the data is taken, so the ACK of a segment carries a
+  window worth opening;
+- `tcp_window_update()`, which sends an ACK if the window opened.
+  `tcp_recv()` frees space but cannot send — it has no `net_t` — so the
+  application calls `tcp_window_update()` after reading.
+
+Without `tcp_window_update()`, a peer facing a zero window learns of the
+space only through its own window probes — and only once the space is worth
+a step.  An application must therefore read what has arrived rather than
+wait, with less than a step free, for more than the window on offer.
 
 ### 4.6 Initial sequence numbers
 
@@ -619,10 +634,10 @@ new connection between the same addresses and ports starts beyond where the
 old one was, so stray segments of the old incarnation are unlikely to fall in
 the new one's window (§3.4.1).  The keyed hash gives every connection id a
 different, secret offset: an attacker who opens a connection of his own learns
-M + F for his own id and nothing about F for anyone else's.  The random ISS
-this code used before (`net_random()`) lacked the first property, and
-xorshift32, the generator then, did not give it the second: every output was
-its whole state, so one SYN,ACK was enough to predict the next ISS.
+M + F for his own id and nothing about F for anyone else's.  A random ISS
+(`net_random()`) would lack the first property, and a generator whose every
+output is its whole state would not give the second: one SYN,ACK would be
+enough to predict the next ISS.
 
 Three things follow:
 
@@ -753,16 +768,16 @@ become a window probe, and RFC 1122 §4.2.2.17 keeps a connection open as
 long as the peer answers its probes.  The timeout still doubles up to
 `NET_DEFAULT_TCP_RTO_MAX_MS`, so the resends settle at one a minute, like
 the persist timer's probes for unsent data (section 5.2).  A peer that stops
-answering is given up after `TCP_MAX_RETRANSMITS` as before.  Linux does the
-same: with a zero send window its retransmissions become probes that do not
-time the connection out.
+answering is given up after R2 retransmissions, like any other.  Linux does
+the same: with a zero send window its retransmissions become probes that do
+not time the connection out.
 
 A partial ACK — one that covers only the first part of the segment in flight —
 releases those bytes and restarts the timer.  The rest stay in flight at their
 sequence numbers and are resent at the next expiry, from SND.UNA; the
-stop-and-wait buffer never offers them as new data (it used to, and `flush()`
-then sent them at SND.NXT, under the wrong sequence numbers).  Waiting costs a
-timeout; peers seldom acknowledge part of a segment.
+stop-and-wait buffer never offers them as new data, which `flush()` would
+send at SND.NXT, under the wrong sequence numbers.  Waiting costs a timeout;
+peers seldom acknowledge part of a segment.
 
 With the defaults (1 s initial RTO, 60 s maximum) the waits are 1, 2, 4, 8, 16,
 32, 60, 60 and 60 s: a connection whose peer has gone is reset about four
@@ -796,8 +811,8 @@ A peer that has opened its window accepts the byte; its ACK advances SND.UNA,
 and `send_side_ack()` takes the new window and flushes.  A peer that opens its
 window without taking the byte sends a window update (SEG.ACK = SND.UNA): the
 `flush()` after it stops the persist timer, finds the byte still in flight and
-starts the retransmission timer, which resends it at the head of the next
-segment.  A peer still at zero sends a duplicate ACK, which leaves the persist
+starts the retransmission timer, which resends the byte; the rest follows
+its ACK.  A peer still at zero sends a duplicate ACK, which leaves the persist
 timer running.
 
 A probe starts no retransmission timer and does not count toward
@@ -827,7 +842,7 @@ application's own timeout must cover a peer that never sends it.
 ## 6. Events and the callback rule
 
 `on_event(conn, events)` receives a bitmask of `TCP_EVT_*`.  Each call
-currently carries one event.
+carries one event.
 
 | Event | Raised by | When |
 |---|---|---|
@@ -903,22 +918,27 @@ single-stack build reduces to its own family's.
 
 ## 8. Not implemented and known gaps
 
-### 8.1 Not implemented in V1
+### 8.1 Not implemented
 
 | Feature | Requirement | Instead |
 |---|---|---|
 | Delayed ACK | REQ-TCP-125 (SHOULD) | Immediate ACK (REQ-TCP-128), which also meets 126 and 127 |
-| Nagle; sender silly-window avoidance | REQ-TCP-129, 089 (SHOULD) | `tcp_write()` + `tcp_output()` (REQ-TCP-131) |
-| Slow start, congestion avoidance, fast retransmit | REQ-TCP-101..107 | One segment in flight (REQ-TCP-108) |
-| RTT measurement, computed RTO, Karn's rule, 1 s minimum | REQ-TCP-091, 093, 099, 100 | Fixed initial RTO with backoff (section 5.1) |
-| Reassembly of out-of-order segments | — | Dropped; the peer retransmits |
+| Nagle | REQ-TCP-129 (SHOULD) | `tcp_write()` + `tcp_output()` (REQ-TCP-131) |
+| Sender silly-window avoidance | REQ-TCP-089 (MUST) | A segment as large as the window and the MSS allow goes at once (section 4.3) |
+| Slow start, congestion avoidance | REQ-TCP-101..105 (MUST) | One segment in flight (REQ-TCP-108) |
+| Fast retransmit and recovery | REQ-TCP-106, 107 (SHOULD) | The retransmission timer |
+| RTT measurement, a computed RTO | REQ-TCP-091, 099 (MUST) | A fixed initial RTO with backoff, never below 1 s (section 5.1) |
+| Reassembly of out-of-order segments | REQ-TCP-067 (SHLD-31) | Dropped; the peer retransmits |
 | SACK, window scale, timestamps | REQ-TCP-113, 114, 117..124 | Options skipped by length |
-| Urgent data | REQ-TCP-063 (MAY) | Ignored |
+| Urgent data | REQ-TCP-063 (MUST) | Ignored; delivered in line |
 | Security/compartment check | REQ-TCP-050 (MAY) | Skipped |
 | Keep-alive | REQ-TCP-132 (MAY) | None (so off by default, REQ-TCP-133) |
-| Challenge ACKs, RST rate limiting (RFC 5961) | REQ-TCP-052, 154, 155 | RST and SYN accepted anywhere in the window (section 3.6) |
+| Challenge ACKs and their throttling (RFC 5961) | REQ-TCP-052, 154, 155 (SHOULD) | RST and SYN accepted anywhere in the window (section 3.6) |
 | Checksum offload | REQ-TCP-141 | Always software |
+| ICMPv6 errors: Packet Too Big, Destination Unreachable | REQ-TCP-135 | `icmpv6_input()` drops them; only ICMPv4 errors reach `tcp_icmp_error()` (section 3.8).  Over IPv6 the segment size does not follow the path MTU |
+| IP options and source routes | REQ-TCP-182 | Options on a received segment are ignored, a source-routed one is dropped, none are sent |
 | Data or FIN on a SYN | — | Not taken; the peer resends |
+| Data written before the connection is open | REQ-TCP-014 | `tcp_write()` refuses it; §3.10.2 would queue it |
 
 ### 8.2 Behaviour that differs from RFC 9293
 
@@ -929,27 +949,33 @@ single-stack build reduces to its own family's.
 - At R1 the application is told (`TCP_EVT_SOFT_ERROR`), but no negative
   advice goes to the IP layer: there is no gateway choice to advise
   (REQ-TCP-162).
+- Zero-window probes for unsent data have no limit: a peer that stops
+  answering them is probed until the application closes (section 5.2).
+- The RTO keeps its backed-off value for the rest of the connection, there
+  being no RTT sample to recompute it from (section 5.1).
 
 ---
 
 ## 9. Tests and files
 
-- **Unit:** `tests/unit/test_tcp.c` (63 tests: handshakes, `tcp_write()` /
-  `tcp_output()`, in-order delivery with gaps, overlaps, duplicates and FIN
-  placement, window updates including pure ones, active and passive close,
-  the FIN queued behind unsent data, RST, retransmission of SYN, data and FIN,
-  partial ACKs, a zero window that outlasts the retransmission limit while
-  the peer answers, retransmissions counted per segment, frames the driver
-  did not send (an active open's SYN among them), TIME-WAIT, MSS from the RX and TX buffers, RFC 6528 initial
-  sequence numbers, persist),
-  `tests/unit/test_tcp6.c` (19: IPv6, dual-stack listeners, source address,
-  MSS within the Ethernet MTU), `tests/unit/test_tcp_buf.c` (22: the
-  stop-and-wait buffers).
-- **Black-box:** `tests/blackbox/test_tcp_conform.py` (RFC 9293 conformance
-  against a live stack over raw frames) and `tests/blackbox/test_tcp_fuzz.py`.
+- **Integration (black box):** `tests/integration/itest_tcp.c` (85 tests):
+  the stack on a scripted link, driven through the `tcp_*` API and checked on
+  the wire — opens and closes, every step of §3.10.7, RST generation,
+  options and segment sizes, both windows, probing, the retransmission
+  schedule, ICMP errors, the buffer interface, IPv6.  Each names the
+  requirements it verifies; the Test ID column of
+  [the requirements](../requirements/tcp.md) names the tests of each row.
+- **Unit:** `tests/unit/test_tcp.c` (63 tests, calling `tcp_input()` and
+  reading `tcp_conn_t`), `tests/unit/test_tcp6.c` (19: IPv6, dual-stack
+  listeners, source address, MSS within the Ethernet MTU),
+  `tests/unit/test_tcp_buf.c` (22: the stop-and-wait buffers through their
+  operation tables).
+- **Black-box, live:** `tests/blackbox/test_tcp_conform.py` (RFC 9293
+  conformance against a running stack over raw frames) and
+  `tests/blackbox/test_tcp_fuzz.py`.
 
 ```
 include/tcp.h, src/tcp.c             — the protocol
 include/tcp_buf.h, src/tcp_buf_saw.c — buffer interface, stop-and-wait buffers
-docs/requirements/tcp.md             — REQ-TCP-001..155
+docs/requirements/tcp.md             — REQ-TCP-001..182
 ```
