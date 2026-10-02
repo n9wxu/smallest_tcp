@@ -254,7 +254,7 @@ static int status_ok(const uint8_t *p, uint16_t len) {
   return !s || l < 2 || net_read16be(s) == DHCPV6_STATUS_SUCCESS;
 }
 
-/** A lease offered in an IA_NA (REQ-DHCPv6-021,028..030,044). */
+/** A lease offered in an IA_NA (REQ-DHCPv6-021,028..030,044,047). */
 typedef struct {
   uint32_t t1, t2, preferred, valid;
   const uint8_t *addr;
@@ -270,6 +270,8 @@ static int ia_na_lease(const net_t *net, const uint8_t *ia, uint16_t len,
     return 0; /* NoAddrsAvail, NoBinding, ... */
   out->t1 = net_read32be(ia + 4);
   out->t2 = net_read32be(ia + 8);
+  if (out->t2 && out->t1 > out->t2)
+    return 0; /* RFC 8415 §21.4: such an IA_NA is discarded */
   while (sub_len >= 4) {
     uint16_t l = net_read16be(sub + 2);
     if (net_read16be(sub) == DHCPV6_OPT_IAADDR && l >= IAADDR_LEN) {
@@ -418,16 +420,17 @@ void dhcpv6_client_input(net_t *net, dhcpv6_client_t *c, const uint8_t *src_ip,
   if (!sid || l == 0 || l > DHCPV6_MAX_DUID)
     return;
   uint16_t sid_len = l;
-  if (!status_ok(opts, opts_len))
-    return;
 
-  /* SOL_MAX_RT / INF_MAX_RT from the server (60..86400 s, §21.24/25) */
+  /* REQ-DHCPv6-053: SOL_MAX_RT / INF_MAX_RT from the server (60..86400 s,
+   * §21.24/25), whatever its Status Code says (§18.2.9, §18.2.10) */
   const uint8_t *mrt = find(opts, opts_len, OPT_SOL_MAX_RT, &l);
   if (mrt && l == 4 && net_read32be(mrt) >= 60u && net_read32be(mrt) <= 86400u)
     c->sol_max_rt_ms = net_read32be(mrt) * 1000u;
   mrt = find(opts, opts_len, OPT_INF_MAX_RT, &l);
   if (mrt && l == 4 && net_read32be(mrt) >= 60u && net_read32be(mrt) <= 86400u)
     c->inf_max_rt_ms = net_read32be(mrt) * 1000u;
+  if (!status_ok(opts, opts_len))
+    return;
 
   const uint8_t *ia = find(opts, opts_len, DHCPV6_OPT_IA_NA, &l);
   int have_lease = ia && ia_na_lease(net, ia, l, &lease);

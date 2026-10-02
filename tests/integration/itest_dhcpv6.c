@@ -957,7 +957,7 @@ TEST(itest_dhcpv6_045_leased_prefix_on_link) {
   ASSERT_TRUE(ipv6_on_link(&t.net, lease2));
 }
 
-/* ── Requirements not met yet ── */
+/* ── Delays, and what a server may override ── */
 
 /* REQ-DHCPv6-048: the first Information-request (or Solicit) waits a
  * random time of at most INF_MAX_DELAY (SOL_MAX_DELAY): 1 s */
@@ -1090,8 +1090,8 @@ int main(void) {
   RUN_TEST(itest_dhcpv6_045_leased_prefix_on_link);
   RUN_TEST(itest_dhcpv6_053_sol_max_rt_out_of_range_ignored);
   RUN_TEST(itest_dhcpv6_048_start_delay_at_most_a_second);
-  RUN_XFAIL(itest_dhcpv6_047_t1_above_t2_discarded);
-  RUN_XFAIL(itest_dhcpv6_053_sol_max_rt_from_a_refusing_server);
+  RUN_TEST(itest_dhcpv6_047_t1_above_t2_discarded);
+  RUN_TEST(itest_dhcpv6_053_sol_max_rt_from_a_refusing_server);
   RUN_TEST(itest_dhcpv6_055_refresh_delayed_at_random);
   ITEST_REPORT();
   return test_failures;
