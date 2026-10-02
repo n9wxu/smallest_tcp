@@ -4,7 +4,7 @@
 **Primary RFC:** RFC 9147 — The Datagram Transport Layer Security (DTLS) Protocol Version 1.3  
 **Supporting:** RFC 8446 (TLS 1.3, whose handshake DTLS reuses); [tls.md](tls.md) (REQ-TLS-*), which applies to DTLS except where this document says otherwise  
 **Scope:** V1 (the security layer over datagrams)  
-**Status:** Implemented, client and server; interoperates with wolfSSL 5.9.4.  Deviations are marked in their rows: REQ-DTLS-008 (no `connection_id`), REQ-DTLS-025 (no back-off to smaller records), REQ-DTLS-048 (the timer does not follow the round-trip time), REQ-DTLS-051 (one case of a record acknowledged in part) and REQ-DTLS-058 (a partial ACK does not narrow the retransmission).
+**Status:** Implemented, client and server; interoperates with wolfSSL 5.9.4.  Deviations are marked in their rows: REQ-DTLS-008 (no `connection_id`), REQ-DTLS-025 (no back-off to smaller records), REQ-DTLS-041 (no limit of records per transmission), REQ-DTLS-048 (the timer does not follow the round-trip time), REQ-DTLS-051 (one case of a record acknowledged in part) and REQ-DTLS-058 (a partial ACK does not narrow the retransmission).
 
 ## Overview
 
@@ -80,7 +80,7 @@ against the demos).
 | REQ-DTLS-038 | MUST | Retransmit the flight when the timer expires, and when the peer's retransmitted flight shows ours was not received | RFC 9147 §5.8.1 | itest_dtls_038_flight_retransmitted_by_the_timer, itest_dtls_038_flight_again_for_a_repeated_client_hello, itest_dtls_038_each_datagram_lost_once, itest_dtls_036_finished_resent_under_its_own_keys, test_finished_lost |
 | REQ-DTLS-039 | MUST | A server that has finished answers a retransmission of the client's final flight with its ACK again | RFC 9147 §5.8.1 | itest_dtls_039_ack_again_for_a_repeated_finished, itest_dtls_038_each_datagram_lost_once, test_ack_lost |
 | REQ-DTLS-040 | MUST | Discard or buffer application data of epoch 3 and above until the peer's Finished has been received (it is discarded) | RFC 9147 §5.8.1 | itest_dtls_040_no_application_data_before_finished, test_data_before_finished_dropped |
-| REQ-DTLS-041 | SHOULD NOT | Send more than 10 records in one transmission | RFC 9147 §5.8.3 | itest_dtls_033_flight_in_fragments, test_records_per_transmission |
+| REQ-DTLS-041 | SHOULD NOT | Send more than 10 records in one transmission — **deviation:** no limit is enforced; a transmission is the whole flight, which is within 10 records unless a long flight (an RSA chain) is cut for a very small MTU | RFC 9147 §5.8.3 | itest_dtls_033_flight_in_fragments, test_records_per_transmission |
 | REQ-DTLS-042 | MUST | A client answers a HelloRetryRequest's cookie by echoing it in its second ClientHello | RFC 9147 §5.1 | itest_dtls_042_cookie_echoed, itest_dtls_042_cookie_and_group_in_one_hello_retry, test_dtls_c02_cookie |
 | REQ-DTLS-043 | SHOULD | A server performs a cookie exchange for every new handshake by default; it MAY be configured not to | RFC 9147 §5.1 | itest_dtls_043_cookie_exchange_by_default, itest_dtls_004_handshake_with_the_server, test_no_cookie, test_dtls_009_no_cookie |
 | REQ-DTLS-044 | MUST | A server receiving a ClientHello with an invalid cookie aborts with `illegal_parameter` | RFC 9147 §5.1 | itest_dtls_044_wrong_cookie_refused, test_refuse_wrong_cookie, test_dtls_022_wrong_cookie_refused |

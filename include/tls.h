@@ -4,8 +4,8 @@
  *        transport: the application moves ciphertext between the
  *        connection's buffers and the transport (tls_tcp.h does it for
  *        TCP).  One cipher suite, TLS_AES_128_GCM_SHA256; every
- *        cryptographic primitive comes from a tls_crypto_t backend
- *.  See docs/design/tls.md.
+ *        cryptographic primitive comes from a tls_crypto_t backend.  See
+ *        docs/design/tls.md.
  */
 
 #ifndef TLS_H
@@ -67,7 +67,7 @@
 
 /** Connection state, tls_state(). */
 typedef enum {
-  TLS_STATE_IDLE = 0,  /**< Initialised; tls_accept() not yet called */
+  TLS_STATE_IDLE = 0,  /**< Initialised; no tls_accept() or tls_connect() */
   TLS_STATE_HANDSHAKE, /**< Handshake in progress */
   TLS_STATE_CONNECTED, /**< Application data may flow */
   TLS_STATE_CLOSED,    /**< The peer sent close_notify */
@@ -174,12 +174,18 @@ typedef struct tls_conn_s {
  * peer may send records of up to 16 KiB; ClientHellos reach 2 KiB);
  * @p tx the largest message this side sends (the Certificate) plus
  * TLS_RECORD_OVERHEAD.  Buffers of up to 64 KiB are used.
- * @return 0, or -1 for a bad argument.
+ * @return 0, or -1 for a bad argument: no configuration, backend or
+ *         buffer, or a buffer under 256 bytes.
  */
 int tls_init(tls_conn_t *tls, const tls_config_t *cfg, uint8_t *rx,
              size_t rx_cap, uint8_t *tx, size_t tx_cap);
 
-/** Server: wait for a ClientHello. */
+/**
+ * Server: wait for a ClientHello.
+ * @return 0, or -1 unless the connection is IDLE and the configuration has
+ *         a certificate chain with its key and scheme, a complete PSK, or
+ *         both.
+ */
 int tls_accept(tls_conn_t *tls);
 
 /**
@@ -188,7 +194,9 @@ int tls_accept(tls_conn_t *tls);
  * anchors and name @p host (a DNS name, sent as server_name, or an
  * address literal); NULL skips the name check.  @p host must stay valid
  * for the handshake.
- * @return 0, or -1 (bad state, or no room in tx).
+ * @return 0, or -1: the connection is not IDLE, the PSK is incomplete,
+ *         the host name is longer than 255 bytes, the backend gave no
+ *         random bytes or key pair, or tx has no room for the ClientHello.
  */
 int tls_connect(tls_conn_t *tls, const char *host);
 
@@ -232,8 +240,12 @@ size_t tls_read(tls_conn_t *tls, uint8_t *buf, size_t len);
  */
 int tls_key_update(tls_conn_t *tls, int request);
 
-/** Send close_notify; nothing more may be written.  Once close_notify has
- *  gone both ways, the keys are wiped. */
+/**
+ * Send close_notify; nothing more may be written.  Once close_notify has
+ * gone both ways, the keys are wiped.
+ * @return 0 (also when it was sent before), or -1: no handshake was
+ *         started, the connection failed, or tx has no room yet.
+ */
 int tls_close(tls_conn_t *tls);
 
 /**

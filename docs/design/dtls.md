@@ -12,9 +12,7 @@
 | `include/tls_crypto.h` | The crypto backend, with one addition for DTLS: `aes_block` |
 
 **Requirements:** [docs/requirements/dtls.md](../requirements/dtls.md) (REQ-DTLS-001..073)  
-**Milestone:** 14  
-**Status:** implemented (Milestone 14) — interoperates with wolfSSL 5.9.4 in both roles  
-**Last updated:** 2026-09-27
+**Interoperates with:** wolfSSL 5.9.4, in both roles
 
 ---
 
@@ -40,7 +38,8 @@ Not implemented: Connection IDs (RFC 9146, and the `connection_id`
 extension a client SHOULD offer), 0-RTT (epoch 1), DTLS 1.2, issuing
 session tickets, post-handshake client authentication, retransmitting only
 the part of a flight an ACK leaves unacknowledged (the timer resends the
-flight), and backing off to smaller records when the PMTU is unknown.
+flight), backing off to smaller records when the PMTU is unknown, and a
+retransmission timer that follows the measured round-trip time.
 Everything TLS 1.3 leaves out ([tls.md §1](tls.md#1-scope)) DTLS leaves
 out too.
 
@@ -60,7 +59,7 @@ lives:
 | KeyUpdate: acknowledged, new keys only after the ACK | §8 | `dtls.c` |
 | HKDF label prefix `"dtls13"` instead of `"tls13 "` | §5.9 | `tls_keys.c`, a parameter |
 | ClientHello: `legacy_version` {254, 253}, a `legacy_cookie` field; version 0xfefc in supported_versions; ServerHello `legacy_version` 0xfefd; the server does not echo `legacy_session_id`; no change_cipher_spec | §5, §5.3, §5.4 | `tls_server.c`, `tls_client.c`, a few branches |
-| Cookie exchange in a HelloRetryRequest | §5.1 | `tls_server.c` (the client already echoes a cookie) |
+| Cookie exchange in a HelloRetryRequest | §5.1 | `tls_server.c` (the client echoes a cookie under TLS too) |
 
 Everything else — parsing and refusing hellos, PSK binders, certificates,
 CertificateVerify, Finished, the key schedule, KeyUpdate's secrets — is the
@@ -91,10 +90,10 @@ TLS code, unchanged.
 
 ### 3.1 The record-layer interface
 
-`tls.c` used to be both the TLS record layer and the helpers the roles call
-(`tls_hs_begin()`, `tls_hs_end()`, `tls_fail()` …).  The helpers are now in
-`tls_common.c`, and the few that depend on the record layer call it through
-a pointer in the connection, as the handshake is reached through `t->role`:
+The helpers the roles call (`tls_hs_begin()`, `tls_hs_end()`, `tls_fail()` …)
+are in `tls_common.c`, apart from either record layer, and the few that
+depend on the record layer call it through a pointer in the connection, as
+the handshake is reached through `t->role`:
 
 ```c
 typedef struct tls_rl_s {
@@ -112,18 +111,18 @@ typedef struct tls_rl_s {
 static).  No shared code names either record layer, so a TLS-only device
 does not link `dtls.c` and a DTLS-only device does not link `tls.c` — the
 argument of [tls.md §2.1](tls.md#21-the-role-interface), one level down.
-The cost to TLS is the pointer in `tls_conn_t` and an indirect call where
-there was a direct one (section 12).
+The cost to TLS is the pointer in `tls_conn_t` and an indirect call in place
+of a direct one.
 
 `tls_common.c` holds:
 
-- the helpers the roles already shared (`tls_next_extension()`, the group
+- the helpers the roles share (`tls_next_extension()`, the group
   helpers, `tls_cert_verify_content()`, `tls_hrr_random`, `tls_notify()`);
 - `tls_hs_begin()` → `rl->hs_begin`; `tls_hs_end()` (header, transcript —
   the same for both); `tls_hs_flush()` → `rl->hs_flush`;
   `tls_queue_ccs()` → `rl->ccs`;
-- `tls_set_keys(t, write)` → `rl->set_keys`: every place the roles
-  installed keys directly now calls it, so DTLS sees each epoch begin;
+- `tls_set_keys(t, write)` → `rl->set_keys`: the roles install keys only
+  through it, so DTLS sees each epoch begin;
 - `tls_fail()`: `rl->alert`, then the state, alert, wipe and event;
 - `tls_wipe_keys()`, with `rl->wipe` for DTLS's own key sets;
 - `tls_on_handshake()`: whole messages to the role, or once connected
@@ -140,8 +139,7 @@ keys at once; DTLS changes keys only when it is acknowledged (section 9).
 `TLS_USE_DTLS` (`tls.h`; CMake `SMALLEST_TCP_DTLS`, on by default) set to 0
 makes `tls_is_dtls()` a constant 0: the roles lose their DTLS branches
 (the hello formats, the cookie) and `dtls.c` refuses to build.  A TLS-only
-device pays nothing for DTLS but the record-layer interface: 24 bytes more
-for a TLS server than before DTLS (section 12).
+device pays nothing for DTLS but the record-layer interface (section 12).
 
 ### 3.3 The label prefix
 
@@ -150,7 +148,7 @@ RFC 9147 §5.9 replaces `"tls13 "` by `"dtls13"` in every HKDF-Expand-Label
 that expand labels (`tls_expand_label()`, `tls_derive_secret()`,
 `tls_next_secret()`, `tls_traffic_keys()`, `tls_finished_mac()`,
 `tls_psk_binder()`, `tls_update_secret()`) take a `dtls` flag after the
-backend; the roles pass `t->rl->dtls`.  They stay pure functions over a
+backend; the roles pass `tls_is_dtls(t)`.  They stay pure functions over a
 `tls_crypto_t`, and the RFC 8448 tests pass 0.
 
 ### 3.4 The roles
@@ -166,9 +164,9 @@ backend; the roles pass `t->rl->dtls`.  They stay pure functions over a
 | Server: first ClientHello | — | HelloRetryRequest with a cookie, unless `cfg->dtls_no_cookie` (section 8) |
 
 `client_hello()`'s fixed part grows by the one `legacy_cookie` byte.
-`pump_client()` reserves its empty Certificate and Finished together, as
-today; the DTLS flight store keeps TLS-format messages, so reserving two at
-once is fine (section 6.1).
+`pump_client()` reserves its empty Certificate and Finished together; the
+DTLS flight store keeps TLS-format messages, so reserving two at once is
+fine (section 6.1).
 
 ---
 
@@ -276,9 +274,11 @@ running past its message — is **dropped silently** (§4.5.2): an alert is
 what a forger would probe for.  Handshake failures of authentic messages
 (a bad Finished, a refused ClientHello) are still fatal alerts, as in TLS.
 
-`bad_records` ends the connection (without an alert) if it ever reaches
-2^32 − 1; RFC 9147 §4.5.3 allows 2^36 failed authentications for
-AES-128-GCM, so this is stricter (REQ-DTLS-023).
+`bad_records` counts every record that fails to open — a failed
+authentication, less than 16 bytes of ciphertext, a replay — for the
+connection as a whole, and ends the connection (`bad_record_mac`) if it
+ever reaches 2^32 − 1; RFC 9147 §4.5.3 allows 2^36 failed authentications
+per key for AES-128-GCM, so this is stricter (REQ-DTLS-023).
 
 ### 5.4 The receive buffer
 
@@ -325,9 +325,9 @@ tx: 0                         fl_split                    tx_len        tx_cap
   starts.
 - `message_seq` is not stored: the first message has `fl_seq` and the rest
   follow on.
-- A new flight replaces the old one once the old one is acknowledged
-  (section 6.3): `hs_begin` then empties the store and moves `fl_seq` past
-  the old flight's messages.
+- A new flight can be written once the old one is acknowledged (section
+  6.3): `flight_done()` then empties the store and moves `fl_seq` past the
+  old flight's messages.  Until then `hs_begin` returns NULL.
 - The datagram being handed to the transport sits after the store; nothing
   is written to the store while it waits (`hs_begin` returns NULL, and the
   role tries again after `dtls_sent()`, as a TLS role waits for tx room).
@@ -351,9 +351,11 @@ written, from its first message) and cuts it into datagrams of at most
   `w_prev` for the others (§4.2.1: retransmissions use the original
   epoch).  Every record gets a new record number, so a retransmitted
   message goes in new records (§5.2).
-- The record numbers of the transmission are kept in `sent[]` (up to
-  `DTLS_SENT_MAX`, 10 — also the most records one transmission should
-  carry, §5.8.3) for matching ACKs.
+- The record numbers of the flight's transmissions are kept in `sent[]`
+  for matching ACKs — `DTLS_SENT_MAX`, 10, in all (also the most records
+  one transmission should carry, §5.8.3, which is not enforced:
+  REQ-DTLS-041).  A transmission whose records are not all in `sent[]`
+  (`pass_lost`) cannot be answered by an ACK of its own records.
 - When the last piece has been handed to the transport the retransmission
   timer starts.
 
@@ -369,7 +371,7 @@ flight plus one datagram.
 |---|---|
 | We write a flight | Its first transmission; `rto_ms` = `DTLS_RTO_INITIAL_MS` (1000); `retries` = 0 |
 | Timer expires | After `DTLS_MAX_RETRANSMITS` (6) retransmissions by the timer — 1 + 2 + 4 + 8 + 16 + 32 + 60 s, about two minutes — the connection fails: `ERROR`, `alert` = `DTLS_TIMEOUT`, `TLS_EVT_ERROR`, no alert sent.  Otherwise `rto_ms` doubles (at most `DTLS_RTO_MAX_MS`, 60 000) and the whole flight is sent again |
-| A whole message of the peer's next flight | Our flight is acknowledged implicitly (§7): the timer stops |
+| A fragment of the next message expected — any record of the peer's next flight | Our flight is acknowledged implicitly (§7.2): the timer stops |
 | An ACK covering every record of our last transmission | Acknowledged explicitly: the timer stops (for our KeyUpdate, the new keys take over — section 9) |
 | A duplicate of the peer's previous flight while ours is unacknowledged | The peer has not seen ours: send it again now (§5.8.1).  This does not count against the timer's retransmissions |
 
@@ -416,9 +418,12 @@ ACK: record_numbers<0..2^16-1>, each { uint64 epoch; uint64 sequence_number; }
 ```
 
 **Sending.**  `acks[]` lists the records of the peer's current flight that
-carried fragments we placed (never one we dropped, §7 MUST NOT), noted as
-the first fragment is placed — before the message it completes can start a
-flight of ours.  It is cleared when a handshake flight of ours begins: the
+carried fragments we placed, noted as the first fragment of a record is
+placed — before the message it completes can start a flight of ours.  A
+record none of whose fragments was placed is never listed (§7 MUST NOT);
+one whose first fragment was placed stays listed even if a later message in
+it then finds no room behind unread data, which can only be a
+NewSessionTicket after a shorter one (REQ-DTLS-051).  It is cleared when a handshake flight of ours begins: the
 peer's records after that belong to its next flight.  After the handshake,
 flights each way are independent (§5.8.4) and the list is not cleared; when
 full, its oldest entry makes way.  An ACK is owed:
@@ -434,7 +439,9 @@ full, its oldest entry makes way.  An ACK is owed:
 
 ACKs go in a record of the highest write epoch (§7), and only once we have
 write keys — a client that has not processed the ServerHello does not send
-an empty plaintext ACK.  An ACK is sent once, not retransmitted.
+an empty plaintext ACK.  An ACK lists as many records as its datagram
+holds, the newest ones (`DTLS_ACK_MAX`, 8, at most).  An ACK is sent once,
+not retransmitted.
 
 **Receiving.**  Only a protected ACK is believed.  Each record number that
 matches one in `sent[]` — the records of every transmission of the flight,
@@ -483,8 +490,10 @@ concern (§5.1 MAY), e.g. PSK-only links on a private network.
   and the RFC requires the old keys to be kept until a record under the new
   ones decrypts (REQ-DTLS-061).  The record is acknowledged; a request is
   answered with our own KeyUpdate (not requesting).
-- The epoch is 16 bits here; a KeyUpdate that would take either side past
-  65 535 ends the connection instead (the RFC forbids wrapping, §6.1).
+- The epoch is 16 bits here.  At epoch 65 535 a KeyUpdate of ours is not
+  sent, and the peer's request for one not answered (§8); a KeyUpdate from
+  the peer that would take its epoch past 65 535 ends the connection with
+  `internal_error` (the RFC forbids wrapping, §6.1).
 
 ---
 
@@ -551,16 +560,16 @@ Cortex-M0 `.text` (`make arm-size-tls`, `make arm-size-dtls`; `-Os -mthumb`,
 |---|---:|---:|
 | `tls_common.c` | 766 | 770 |
 | `tls_keys.c` | 1,086 | 1,086 |
-| `tls_server.c` | 3,118 | 3,546 |
-| `tls_client.c` | 3,490 | 3,658 |
+| `tls_server.c` | 3,126 | 3,554 |
+| `tls_client.c` | 3,544 | 3,724 |
 | `tls.c` (stream records) | 2,490 | 2,490 |
 | `dtls.c` (datagram records) | — | 5,861 |
-| **Server only** | **7,460** (TLS) | **11,263** (DTLS) |
-| **Client and server** | **10,950** (TLS) | **14,921** (DTLS) |
+| **Server only** | **7,468** (TLS) | **11,271** (DTLS) |
+| **Client and server** | **11,012** (TLS) | **14,995** (DTLS) |
 
-A device with both protocols and both roles carries all six objects: 17,411
+A device with both protocols and both roles carries all six objects: 17,485
 bytes.  The DTLS branches cost the roles 428 bytes (server: the cookie, the
-hello formats) and 168 (client).  The crypto backend is extra, as for TLS,
+hello formats) and 180 (client).  The crypto backend is extra, as for TLS,
 and adds only `aes_block`.  `make arm-check-links` checks that the DTLS
 objects reference nothing only `tls.c` defines, and the TLS-only objects
 nothing only `dtls.c` defines (REQ-DTLS-072).
@@ -575,6 +584,19 @@ nothing only `dtls.c` defines (REQ-DTLS-072).
 `dtls.c` has no `.data` or `.bss`, and no divide routine is linked.
 
 ## 13. Testing
+
+**Integration** (`itest_dtls`, 48 tests, CMake with `SMALLEST_TCP_TLS` and
+`SMALLEST_TCP_DTLS`): the server and the client through the API in
+`dtls.h`.  The peer is the tests' own (`tests/integration/tls_peer.c`),
+written from RFC 9147 on Mbed TLS's primitives: it builds and opens
+DTLSPlaintext and DTLSCiphertext records itself — the unified header,
+record number encryption, the additional data and nonce — cuts and
+reassembles handshake fragments, writes and reads ACKs, and runs the PSK
+handshake, with the `"dtls13"` labels, as client and as server.
+Certificate handshakes, loss, duplication and reordering run the stack's
+two roles against each other over a network of the test's.  The suite is
+linked without the stack's core: the test moves every datagram
+(REQ-DTLS-073).  Line coverage of `dtls.c` by this suite: 96 %.
 
 **Unit** (`test_dtls`, 57 tests, CMake with `SMALLEST_TCP_TLS` and
 `SMALLEST_TCP_DTLS`; plus `test_tls_crypto`'s AES block against FIPS-197
@@ -597,10 +619,9 @@ and `test_tls_keys`'s `"dtls13"` labels against `tests/tls/gen_dtls13.py`):
 - After the handshake: data both ways a datagram per record; data before
   the Finished not taken; KeyUpdate — acknowledged before use, its ACK
   lost, requested both ways, at the record limit, behind unread data,
-  waiting for an unanswered flight — and a late record of the old epoch;
-  close_notify; `dtls_release()`; a NewSessionTicket acknowledged.
-
-Every mechanism was checked by mutation: disabling it fails a test.
+  waiting for an unanswered flight, at the last epoch — and a late record
+  of the old epoch; close_notify; `dtls_release()`; a NewSessionTicket
+  acknowledged.
 
 **Blackbox and interop** (27 tests; Linux TAP and raw socket, macOS feth;
 CI job `blackbox-dtls`).  The peer is wolfSSL 5.9.4, built by

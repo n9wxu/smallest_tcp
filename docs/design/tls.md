@@ -8,7 +8,7 @@
 |---|---|
 | `include/tls.h` | The connection API: `tls_config_t`, `tls_conn_t`, `tls_init()`, `tls_accept()`, `tls_connect()`, records in and out, `tls_read()` / `tls_write()`, `tls_key_update()`, `tls_close()` |
 | `include/tls_keys.h`, `src/tls_keys.c` | Key schedule (RFC 8446 §7) and record protection (§5.2): pure functions over a `tls_crypto_t`, checked against RFC 8448 |
-| `src/tls_internal.h` | Private to the library: the `F_*` flags, the handshake steps `ST_*`, the `HS_*` results, the `rd_t` reader, `tls_next_extension()`, the role interface `tls_role_t`, the record-layer interface `tls_rl_t`, the handshake-message builders |
+| `src/tls_internal.h` | Private to the library: the `F_*` flags, the handshake steps `ST_*`, the `HS_*` results, the `rd_t` reader, `tls_next_extension()`, the role interface `tls_role_t`, the record-layer interface `tls_rl_t`, and the declarations of what `tls_common.c` defines |
 | `src/tls_common.c` | What the TLS record layer shares with DTLS's ([dtls.md](dtls.md)) and with the roles: handshake message framing, installing traffic keys, post-handshake messages, alerts received, `tls_fail()` |
 | `src/tls.c` | The stream record layer: records in and out, receive processing, the KeyUpdate we owe, the public API |
 | `src/tls_server.c` | `tls_accept()` and the server handshake (`tls_server_role`) |
@@ -17,9 +17,7 @@
 | `include/tls_crypto.h` | The crypto backend interface, `tls_crypto_t` |
 | `include/tls_crypto_mbedtls.h`, `src/tls_crypto_mbedtls.c`, `include/tls_mbedtls_user_config.h` | The Mbed TLS 3.6 backend and its build configuration |
 
-**Requirements:** [docs/requirements/tls.md](../requirements/tls.md) (REQ-TLS-001..043)  
-**Status:** implemented (Milestone 13)  
-**Last updated:** 2026-09-27
+**Requirements:** [docs/requirements/tls.md](../requirements/tls.md) (REQ-TLS-001..067)
 
 ---
 
@@ -40,14 +38,16 @@ only; Mbed TLS's own TLS code is not used).
 | Roles | Server (`tls_accept()`) and client (`tls_connect()`); a build links only the roles it calls (section 2) |
 | Extensions | server_name, supported_versions, supported_groups, signature_algorithms, key_share, cookie (the client echoes one), pre_shared_key, psk_key_exchange_modes, max_fragment_length (REQ-TLS-031) |
 | After the handshake | Application data, KeyUpdate both ways (and by itself after 2^24 records), close_notify; a client ignores NewSessionTicket |
+| Signatures offered | A client's signature_algorithms lists `ecdsa_secp256r1_sha256` and `rsa_pss_rsae_sha256`; not `rsa_pkcs1_sha256`, though the backend verifies certificates signed that way (REQ-TLS-063) |
 | Middlebox compatibility | The server answers a client that sent a session id with the dummy change_cipher_spec; both sides drop one received before the peer's Finished |
 
-Not implemented: other cipher suites (ChaCha20-Poly1305 is REQ-TLS-003, a
-SHOULD), client certificates (a client asked for one sends an empty
-Certificate), 0-RTT early data, issuing or storing session tickets (a client
-can still use a resumption PSK obtained some other way, `psk_resumption`),
-post-handshake authentication, record_size_limit (RFC 8449), certificate
-compression.
+Not implemented: other cipher suites (AES-256-GCM and ChaCha20-Poly1305 are
+REQ-TLS-003, a SHOULD), client certificates (a client asked for one sends an
+empty Certificate), 0-RTT early data, issuing or storing session tickets (a
+client can still use a resumption PSK obtained some other way,
+`psk_resumption`), post-handshake authentication, signature_algorithms_cert
+and a server's reading of server_name (REQ-TLS-064), record_size_limit
+(RFC 8449), certificate compression.
 
 ---
 
@@ -111,12 +111,12 @@ Cortex-M0 `.text` (`make arm-size-tls`, `-Os -mthumb`, `NET_DEBUG=0`,
 | `tls_common.c` | 766 |
 | `tls.c` | 2,490 |
 | `tls_keys.c` | 1,086 |
-| `tls_server.c` | 3,118 |
-| `tls_client.c` | 3,490 |
-| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,460** |
-| **Client and server** | **10,950** |
+| `tls_server.c` | 3,126 |
+| `tls_client.c` | 3,544 |
+| **Server only** (`tls_common.c` + `tls.c` + `tls_keys.c` + `tls_server.c`) | **7,468** |
+| **Client and server** | **11,012** |
 
-A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,832 bytes
+A client-only build is `tls_common.c` + `tls.c` + `tls_keys.c` + `tls_client.c`, 7,886 bytes
 by the same objects.  These are object sizes; the crypto backend is extra
 (section 3).  No object calls a library divide (`make arm-check-division`).
 
@@ -137,16 +137,13 @@ datagram layer.  Its operations are the few that differ — room for a
 handshake message, letting written messages go, the dummy
 change_cipher_spec, queueing an alert, installing traffic keys — so a
 TLS-only build does not link DTLS's record layer, nor a DTLS-only build
-this one ([dtls.md §3.1](dtls.md#31-the-record-layer-interface)).  The
-indirection, the key schedule's label-prefix parameter (section 11) and a
-HelloRetryRequest that may carry no group cost the TLS server 243 bytes of
-Cortex-M0 code.
+this one ([dtls.md §3.1](dtls.md#31-the-record-layer-interface)).
 
 ### 2.3 CMake targets
 
 | Target | Sources | Links |
 |---|---|---|
-| `smallest_tcp::tls` | `tls_common.c`, `tls.c`, `tls_keys.c`, `tls_server.c`, `tls_client.c` | nothing — bring a `tls_crypto_t` |
+| `smallest_tcp::tls` | `tls_common.c`, `tls.c`, `tls_keys.c`, `tls_server.c`, `tls_client.c`, and `dtls.c` with `SMALLEST_TCP_DTLS` | nothing — bring a `tls_crypto_t` |
 | `smallest_tcp::tls_tcp` | `tls_tcp.c` | `tls`, the core (needs `SMALLEST_TCP_TCP`) |
 | `smallest_tcp::https` | `http_tls.c` | `http`, `tls_tcp` ([http.md](http.md)) |
 | `smallest_tcp::tls_mbedtls` | `tls_crypto_mbedtls.c` | Mbed TLS (`SMALLEST_TCP_TLS`) |
@@ -243,7 +240,7 @@ if (tls_state(&tls) == TLS_STATE_CONNECTED) {
 |---|---|
 | `tls_init(tls, cfg, rx, rx_cap, tx, tx_cap)` | Zero the connection and attach the stream record layer, the configuration and buffers (each at least 256 bytes; above 65,534 the rest is unused).  Call it again to reuse the connection |
 | `tls_accept(tls)` | Server: wait for a ClientHello.  −1 unless the connection is `IDLE` and the configuration has a certificate chain with its key and scheme, a complete PSK, or both |
-| `tls_connect(tls, host)` | Client: queue the ClientHello.  `host` is checked against the certificate and sent as server_name (not for an address literal); NULL skips the name check; it must stay valid for the handshake.  −1 for a connection that is not `IDLE`, an incomplete PSK, a host name over 255 characters, or a ClientHello that does not fit in tx |
+| `tls_connect(tls, host)` | Client: queue the ClientHello.  `host` is checked against the certificate and sent as server_name (not for an address literal); NULL skips the name check; it must stay valid for the handshake.  −1 for a connection that is not `IDLE`, an incomplete PSK, a host name over 255 characters, a backend that gives no random bytes or key pair, or a ClientHello that does not fit in tx |
 | `tls_rx_space()` + `tls_rx_commit()` | Ciphertext in, written straight into rx (`tls_tcp_carry()` passes the space to `tcp_recv()`).  Returns 0 or the negated alert that ended the connection |
 | `tls_input()` | The same, copying from the caller's buffer; returns the bytes taken |
 | `tls_tx_pending()` + `tls_tx_done()` | Ciphertext out |
@@ -292,7 +289,7 @@ tx:  0              tx_sent                         rec_start               tx_l
 - **tx** holds records in the order they go out.  `tls_tx_pending()` returns
   the unsent part; `tls_tx_done()` advances `tx_sent`.  When everything has
   been taken tx is empty again at once; otherwise the space is reclaimed
-  (`tls_tx_compact()`) the next time a record is started.  A record
+  (`tx_compact()`) the next time a record is started.  A record
   is built in place at `rec_start`: content first, then the header and
   protection when it is closed.
 
@@ -305,7 +302,7 @@ adds only its 5-byte header.
 
 | Buffer | Must hold | Typical |
 |---|---|---|
-| rx | The largest record the peer sends, plus any partial handshake message before it.  A record larger than the space after the handshake bytes, or a message larger than rx, ends the connection with `record_overflow` | A peer may send records of 2^14 + 256 + 5 = 16,645 bytes; the demos use 16,645 + 512.  A client that asks for max_fragment_length 512 gets records of at most 512 bytes of content; with one ECDSA certificate its handshake fits in about 700 bytes, and the unit tests run such a client with an 800-byte rx |
+| rx | The largest record the peer sends, plus any partial handshake message before it.  A record larger than the space after the handshake bytes, or a message larger than rx, ends the connection with `record_overflow` | A peer may send records of 2^14 + 256 + 5 = 16,645 bytes; the demos use 16,645 + 512.  A client that asks for max_fragment_length 512 gets records of at most 512 bytes of content; with one ECDSA certificate its handshake fits in about 700 bytes, and the tests run such a client with an 800-byte rx |
 | tx | The largest message this side sends, reserved at its maximum size, plus the overhead of each record it is split into | Server: its Certificate (494 bytes with the 481-byte test certificate) + 22; a CertificateVerify reserves 72 signature bytes for ECDSA, 512 for RSA.  Client: its ClientHello — 125 bytes plus the host name with an x25519 share, 158 with P-256, more with a PSK identity and binder, and after a HelloRetryRequest the server's cookie.  The server tests send the whole flight through a 600-byte tx; the small-buffer client test uses a 256-byte tx |
 
 A connection whose handshake cannot make progress because tx is too small
@@ -333,7 +330,7 @@ process():
   repeat:
     stop unless HANDSHAKE or CONNECTED
     stop while application data is unread           (the reader goes first)
-    each whole handshake message in rx → on_handshake()
+    each whole handshake message in rx → tls_on_handshake()
     5 bytes of the next record header?  check it:
       content type 20..23                    else unexpected_message
       length ≤ 2^14 (2^14 + 256 for type 23)  else record_overflow
@@ -362,7 +359,7 @@ rx until `tls_read()` has taken all of it — later records wait behind it.  A
 zero-length application-data record is dropped; a protected
 change_cipher_spec is `unexpected_message`.
 
-**Handshake messages.**  Each whole message goes to `on_handshake()`: during
+**Handshake messages.**  Each whole message goes to `tls_on_handshake()`: during
 the handshake to the role's `on_message()`; once `CONNECTED`, a KeyUpdate
 changes the peer's keys (section 9), a client ignores NewSessionTicket, and
 anything else is `unexpected_message`.  The handler returns:
@@ -380,7 +377,8 @@ the next message is looked at.  Because messages are handled one at a time and
 records are opened one at a time, the keys a message installs are in place
 before the next record is opened.
 
-**Alerts** (`on_alert()`): the body must be two bytes (`decode_error`).
+**Alerts** (`on_alert()`, then `tls_alert_received()` in `tls_common.c`): the
+body must be two bytes (`decode_error`).
 close_notify moves to `CLOSED` and reports `TLS_EVT_CLOSED`; user_canceled is
 ignored (close_notify follows it); any other alert, whatever its level, moves
 to `ERROR`, wipes the keys, reports `TLS_EVT_ERROR`, and `tls_rx_commit()`
@@ -392,14 +390,14 @@ returns its negated code.
 
 ### 7.1 Building records
 
-- `tls_rec_room(t, type, need)` returns room for `need` content bytes.  If a
+- `rec_room(t, type, need)` returns room for `need` content bytes.  If a
   record of the same type is open and the bytes fit both it (within the
   fragment limit) and tx, they are appended to it — consecutive handshake
   messages share a record.  Otherwise the open record is closed, sent bytes
   are compacted away, and a new record is started with room reserved for the
   content and for the header and tag of every extra record the content will
   need.  NULL means tx has no room yet.
-- `tls_rec_close(t)` finishes the open record: if its content is longer than
+- `rec_close(t)` finishes the open record: if its content is longer than
   the fragment limit (`max_frag`, else 2^14) it moves the pieces, last first,
   to the places reserved for them, then writes each header and seals it
   (`tls_record_seal()` once our records are protected).
@@ -469,7 +467,9 @@ valid max_fragment_length request is granted there and then.  Then
 `on_client_hello()` decides, in this order:
 
 1. `supported_versions` must offer TLS 1.3 → else `protocol_version`;
-   `TLS_AES_128_GCM_SHA256` must be offered → else `handshake_failure`.
+   `TLS_AES_128_GCM_SHA256` must be offered → else `handshake_failure`;
+   supported_groups and key_share must come together, both or neither →
+   else `missing_extension` (RFC 8446 §9.2).
 2. The share (chosen while parsing): x25519 preferred over secp256r1, among
    the groups `tls_config_t.groups` allows; after a HelloRetryRequest only
    the group it asked for.
@@ -568,15 +568,17 @@ older: `protocol_version`), key_share for the group we sent a share of, and
 pre_shared_key selecting identity 0 if we offered one.  Anything else is
 `unsupported_extension` or `illegal_parameter`.  Without a key_share the
 server may only have chosen psk_ke, and only if we offered it
-(`missing_extension`).  The shared secret is computed into `rsec` (as on
+(`illegal_parameter` if it took the PSK, RFC 8446 §4.2.11; else
+`missing_extension`).  The shared secret is computed into `rsec` (as on
 the server, it never touches the stack, and the server's handshake traffic
 secret replaces it), `kx_priv` is wiped, and the Handshake Secret is
 derived — from the PSK's Early Secret if the server took the PSK, else from
 zeros.
 
-**EncryptedExtensions** may carry an empty server_name, the
-max_fragment_length we asked for (the same code, `illegal_parameter`
-otherwise; `max_frag` is set from it) and supported_groups; anything else is
+**EncryptedExtensions** may answer only what the ClientHello carried (RFC
+8446 §4.2): an empty server_name if we sent one, the max_fragment_length we
+asked for (the same code, `illegal_parameter` otherwise; `max_frag` is set
+from it) and supported_groups if we sent that; anything else is
 `unsupported_extension`.  With a PSK the next message is Finished.
 
 **Certificates.**  One CertificateRequest may come first (an empty context);
@@ -723,6 +725,20 @@ The Master Secret exists only on the stack for the moment it is used.
 ---
 
 ## 13. Testing
+
+**Integration (`itest_tls`, 63 tests, CMake with `SMALLEST_TCP_TLS`):** the
+server and the client through the API in `tls.h`, against a peer of the
+tests' own (`tests/integration/tls_peer.c`) written from RFC 8446 on
+Mbed TLS's SHA-256, AES-GCM, X25519 and ECDSA — its own HKDF labels, key
+schedule, hellos, Finished, CertificateVerify and record protection, none
+of the stack's TLS code.  It is a PSK client and server and a certificate
+server; certificate handshakes with the stack's server run the stack's two
+roles against each other.  Two tests carry the records over the stack's TCP
+on the scripted link with `tls_tcp_carry()`.  Every test names the
+requirements it verifies ([requirements](../requirements/tls.md)).  Line
+coverage of the TLS sources by this suite and `itest_dtls`: `tls.c` 97 %,
+`tls_common.c` 99 %, `tls_keys.c` 96 %, `tls_server.c` 96 %, `tls_client.c`
+94 %, `tls_tcp.c` 100 %.
 
 **Unit (219 tests, CMake with `SMALLEST_TCP_TLS`):**
 

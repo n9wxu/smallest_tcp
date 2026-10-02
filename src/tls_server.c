@@ -2,7 +2,8 @@
  * @file tls_server.c
  * @brief The TLS 1.3 server handshake (RFC 8446 §4): ClientHello in,
  *        ServerHello and the server's flight out, the client's Finished
- *        in.  REQ-TLS-001..030 (server side).
+ *        in.  REQ-TLS-018..022, and the server's side of REQ-TLS-001,
+ *        023..025, 031, 046, 050..052, 054, 061.
  */
 
 #include "tls_internal.h"
@@ -354,7 +355,8 @@ static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
 }
 
 /* RFC 8446 §4.1.1-4.1.4: pick the parameters, answer with ServerHello
- * (or a HelloRetryRequest), enter the handshake keys.  REQ-TLS-001 */
+ * (or a HelloRetryRequest), enter the handshake keys.  REQ-TLS-001, 052,
+ * 054, 061 */
 static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   const tls_config_t *cfg = t->cfg;
   const tls_crypto_t *c = cfg->crypto;

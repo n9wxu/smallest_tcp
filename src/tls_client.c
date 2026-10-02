@@ -2,7 +2,8 @@
  * @file tls_client.c
  * @brief The TLS 1.3 client handshake (RFC 8446 §4): ClientHello out; the
  *        server's hello, extensions, certificate and Finished in; our
- *        Finished out.  REQ-TLS-031..050.
+ *        Finished out.  REQ-TLS-010..017, and the client's side of
+ *        REQ-TLS-023..025, 031, 046, 049, 053, 060, 062, 067.
  */
 
 #include "tls_internal.h"
@@ -327,7 +328,8 @@ static void enter_handshake_keys(tls_conn_t *t, const uint8_t *shared) {
   t->step = ST_C_WAIT_EE;
 }
 
-/* RFC 8446 §4.1.3: the server's parameters; enter the handshake keys */
+/* RFC 8446 §4.1.3: the server's parameters; enter the handshake keys.
+ * REQ-TLS-001, 046, 053, 060 */
 static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   const tls_crypto_t *c = t->cfg->crypto;
   rd_t r = rd_body(m, mlen), v, exts, share = {NULL, 0, 0};
@@ -404,7 +406,7 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
 
 /* The server may answer here only what the ClientHello carried (RFC 8446
  * §4.2): server_name (empty), max_fragment_length (the code we asked
- * for) and supported_groups (its preference, for later) */
+ * for) and supported_groups (its preference, for later).  REQ-TLS-053 */
 static int on_encrypted_extensions(tls_conn_t *t, const uint8_t *m,
                                    size_t mlen) {
   rd_t r = rd_body(m, mlen), exts = rd_vec(&r, 2);
