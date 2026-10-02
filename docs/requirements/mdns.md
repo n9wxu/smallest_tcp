@@ -115,6 +115,7 @@ mDNS uses the DNS wire format (RFC 1035 §4) with the following constraints:
 | REQ-MDNS-031 | MUST | Set the AA bit and TTL in all answers | RFC 6762 §18 | TEST-MDNS-031 |
 | REQ-MDNS-061 | MUST | Silently ignore responses whose source UDP port is not 5353 | RFC 6762 §6 | TEST-MDNS-061 |
 | REQ-MDNS-062 | MUST | Accept responses only from the local link: sent to 224.0.0.251 / ff02::fb, or from an on-link source (IPv4: our subnet; IPv6: link-local or an on-link prefix); silently discard others | RFC 6762 §11 | TEST-MDNS-062 |
+| REQ-MDNS-080 | MUST | Accept a unicast response only as the answer to a query sent recently that asked for unicast responses — the QU questions of our probes: one that arrives while not probing is silently ignored | RFC 6762 §6 | itest_mdns_080_unicast_responses_only_to_our_probes |
 | REQ-MDNS-063 | MUST NOT | Multicast a record until at least one second after it was last multicast — except to answer a probe, which needs only 250 ms | RFC 6762 §6 | TEST-MDNS-063 |
 | REQ-MDNS-064 | MUST | Respond only with a positive, non-null answer, or a negative one for a record known not to exist | RFC 6762 §6 | TEST-MDNS-064 |
 | REQ-MDNS-065 | MUST | Answer a query for one of our unique names, for a type the name has no record of, with an NSEC record — an address type for which the interface has no valid address included | RFC 6762 §6, §6.1 | TEST-MDNS-065 |

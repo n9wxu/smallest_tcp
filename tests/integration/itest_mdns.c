@@ -856,6 +856,28 @@ TEST(itest_mdns_062_responses_only_from_the_local_link) {
   ASSERT_EQ(conflicts, 1);
 }
 
+/* REQ-MDNS-080 (RFC 6762 §6): a unicast response counts only as the
+ * answer to a recent query that asked for unicast responses — our probes'
+ * QU questions.  Once running, one sent to our own address is ignored: no
+ * conflict, no low TTL corrected; the same by multicast counts */
+TEST(itest_mdns_080_unicast_responses_only_to_our_probes) {
+  running(records, N_REC);
+  claim_a(PEER2_IP, OUR_IP, MDNS_PORT, FLAG_QR | FLAG_AA, HOST, RIVAL, 120);
+  ticks(1000, 250);
+  ASSERT_EQ(probes(), 0);
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
+  claim_a(PEER2_IP, OUR_IP, MDNS_PORT, FLAG_QR | FLAG_AA, HOST, OUR_IP, 0);
+  mdns_tick(&m, 150);
+  ASSERT_EQ(responses(), 0);
+  rival_a();
+  mdns_tick(&m, 250);
+  ASSERT_EQ(probes(), 1);
+
+  probing(records, N_REC); /* the first probe is out: its answer counts */
+  claim_a(PEER2_IP, OUR_IP, MDNS_PORT, FLAG_QR | FLAG_AA, HOST, RIVAL, 120);
+  ASSERT_EQ(conflicts, 1);
+}
+
 /* REQ-MDNS-070 (RFC 6762 §6): a question in a response is ignored */
 TEST(itest_mdns_070_questions_in_responses_ignored) {
   peer_dns_t r;
@@ -1465,6 +1487,7 @@ int main(void) {
   RUN_TEST(itest_mdns_045_nonzero_rcode_ignored);
   RUN_TEST(itest_mdns_061_responses_from_other_ports_ignored);
   RUN_TEST(itest_mdns_062_responses_only_from_the_local_link);
+  RUN_XFAIL(itest_mdns_080_unicast_responses_only_to_our_probes);
   RUN_TEST(itest_mdns_070_questions_in_responses_ignored);
   RUN_TEST(itest_mdns_052_responses_before_the_first_probe_ignored);
   RUN_TEST(itest_mdns_053_any_record_of_the_name_conflicts_while_probing);
