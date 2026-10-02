@@ -1831,7 +1831,7 @@ int main(void) {
   RUN_TEST(itest_tls_001_tls12_client_refused);
   RUN_TEST(itest_tls_037_alert_says_what_was_wrong);
   RUN_TEST(itest_tls_052_mandatory_extensions);
-  RUN_XFAIL(itest_tls_052_groups_and_key_share_together);
+  RUN_TEST(itest_tls_052_groups_and_key_share_together);
   RUN_TEST(itest_tls_061_hello_retry_request_sent);
   RUN_TEST(itest_tls_025_psk_from_the_configuration);
   RUN_TEST(itest_tls_046_session_id_echoed);

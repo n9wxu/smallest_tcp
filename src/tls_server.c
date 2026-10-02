@@ -376,6 +376,9 @@ static int on_client_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
     return tls_fail(t, TLS_ALERT_PROTOCOL_VERSION);
   if (!ch.our_suite)
     return tls_fail(t, TLS_ALERT_HANDSHAKE_FAILURE);
+  /* RFC 8446 §9.2: supported_groups and key_share come together */
+  if (ch.has_groups != ch.has_key_share)
+    return tls_fail(t, TLS_ALERT_MISSING_EXTENSION);
   if (ch.has_psk) {
     if (!ch.has_psk_modes)
       return tls_fail(t, TLS_ALERT_MISSING_EXTENSION);
