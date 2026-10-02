@@ -2,7 +2,7 @@
  * @file dhcpv6_client.c
  * @brief DHCPv6 client (RFC 8415): stateless and stateful.
  *
- * Implements REQ-DHCPv6-001..044.  Messages are built in net->tx.buf and
+ * Implements REQ-DHCPv6-001..056.  Messages are built in net->tx.buf and
  * sent to All_DHCP_Relay_Agents_and_Servers (ff02::1:2) from the
  * link-local address.  Retransmission per RFC 8415 §15 without division
  * (Cortex-M0): a tenth is (v × 205) >> 11.
@@ -482,11 +482,12 @@ void dhcpv6_client_input(net_t *net, dhcpv6_client_t *c, const uint8_t *src_ip,
 
 void dhcpv6_client_release(net_t *net, dhcpv6_client_t *c) {
   if (c->state >= DHCPV6_CLI_BOUND) {
-    /* One Release (RFC 8415 allows up to REL_MAX_RC = 5 transmissions) */
+    /* REQ-DHCPv6-049: the address leaves the interface before the Release
+     * goes (RFC 8415 §18.2.7).  One Release: REQ-DHCPv6-056 */
+    ipv6_addr_remove(net, c->addr);
     c->xid = net_random(net) & 0xFFFFFFu;
     c->elapsed_ms = 0;
     send_msg(net, c, DHCPV6_RELEASE);
-    ipv6_addr_remove(net, c->addr);
   }
   c->state = DHCPV6_CLI_IDLE;
 }
