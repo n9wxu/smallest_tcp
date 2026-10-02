@@ -801,6 +801,7 @@ TEST(test_prefers_x25519) {
   ASSERT_EQ(peer.group, TLS_GROUP_X25519);
 }
 
+/* REQ-TLS-069: what the server does not know, it ignores */
 TEST(test_skips_unknown_share) {
   tls_conn_t s;
   ch_opt_t o;

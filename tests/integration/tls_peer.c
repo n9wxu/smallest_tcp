@@ -397,12 +397,15 @@ size_t tp_client_hello(tp_t *p, const tp_ch_t *o, uint8_t *msg) {
   q[7] = o->compression;
   exts = q + 8;
   q = exts + 2;
+  e = q; /* GREASE (RFC 8701): an extension no server knows */
+  q = ext_end(e, ext_begin(q, 0x0A0A));
   for (i = 0; i < (o->no_versions ? 0 : o->twice ? 2 : 1); i++) {
     e = q;
     q = ext_begin(q, TP_EXT_SUPPORTED_VERSIONS);
-    *q++ = 2;
-    tp_put(q, 2, o->version ? o->version : version_13(p));
-    q = ext_end(e, q + 2);
+    *q++ = 4;
+    tp_put(q, 2, 0x7A7A); /* .. and a version no server knows */
+    tp_put(q + 2, 2, o->version ? o->version : version_13(p));
+    q = ext_end(e, q + 4);
   }
   if (o->share || o->groups_no_share || o->groups_only) {
     e = q;
@@ -449,6 +452,10 @@ size_t tp_client_hello(tp_t *p, const tp_ch_t *o, uint8_t *msg) {
     tp_put(q, 2, (uint32_t)o->cookie_len);
     memcpy(q + 2, o->cookie, o->cookie_len);
     q = ext_end(e, q + 2 + o->cookie_len);
+  }
+  if (o->early_data) {
+    e = q;
+    q = ext_end(e, ext_begin(q, 42));
   }
   if (!o->no_psk) {
     if (!o->no_modes) {

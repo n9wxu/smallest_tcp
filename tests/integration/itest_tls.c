@@ -534,8 +534,9 @@ static int both_connected(void) {
 
 /* ══ The server's handshake ═══════════════════════════════════════ */
 
-/* REQ-TLS-018, 019, 021, 023, 024, 002, 034: to a ClientHello offering the
- * pre-shared key alone (psk_ke), the server answers ServerHello —
+/* REQ-TLS-018, 019, 021, 023, 024, 002, 034, 069: to a ClientHello offering
+ * the pre-shared key alone (psk_ke) — among a cipher suite, an extension
+ * and a version it does not know — the server answers ServerHello —
  * supported_versions selecting TLS 1.3, TLS_AES_128_GCM_SHA256 out of the
  * suites offered, the key's identity — then EncryptedExtensions and
  * Finished (its MAC over the transcript so far): no Certificate, no
@@ -1016,7 +1017,7 @@ TEST(itest_tls_047_record_too_long_or_unknown) {
   ASSERT_TRUE(plain_alert_sent(10));
 }
 
-/* REQ-TLS-047, 057, 037: records that do not belong where they come.
+/* REQ-TLS-047, 057, 059, 037: records that do not belong where they come.
  * Each row: the bytes (or the protected content and its type), and the
  * alert — 0 for a record that is dropped without ending the connection */
 TEST(itest_tls_057_records_out_of_place) {
@@ -1096,6 +1097,34 @@ TEST(itest_tls_047_plaintext_too_long) {
   feed(huge, sizeof(huge)); /* a 4096-byte ClientHello begins */
   ASSERT_TRUE(failed_with(22));
   ASSERT_TRUE(plain_alert_sent(22));
+}
+
+/* REQ-TLS-059: an alert record with no content is unexpected_message (RFC
+ * 8446 §5.4), as an empty handshake record is */
+TEST(itest_tls_059_empty_alert_record) {
+  ASSERT_TRUE(connect_to_server(&srv_psk, &ch_psk_ke));
+  (void)feed_sealed(TP_ALERT, "", 0);
+  ASSERT_TRUE(failed_with(10));
+  ASSERT_TRUE(sealed_alert_sent(2, 10));
+}
+
+/* REQ-TLS-068: a server that takes no early data ignores the early_data
+ * extension — the handshake is the usual one, EncryptedExtensions empty —
+ * and, having allowed none, skips none: a record after the ClientHello
+ * that does not open under the handshake keys is bad_record_mac */
+TEST(itest_tls_068_early_data_not_accepted) {
+  static uint8_t rec[64];
+  tp_ch_t o = ch_psk_ke;
+  tp_keys_t early;
+  size_t n;
+  o.early_data = 1;
+  ASSERT_TRUE(connect_to_server(&srv_psk, &o));
+  ASSERT_TRUE(server_hello_from(&srv_psk, &o));
+  ASSERT_TRUE(server_flight(0, 0));
+  tp_traffic_keys(0, peer.early, &early); /* not the handshake keys */
+  n = tp_seal(&early, TP_APPDATA, (const uint8_t *)"early", 5, 0, rec);
+  feed(rec, n);
+  ASSERT_TRUE(failed_with(20));
 }
 
 /* REQ-TLS-059: a record that decrypts to nothing but zeros — no content
@@ -1488,16 +1517,18 @@ TEST(itest_tls_053_extension_not_offered_refused) {
   ASSERT_TRUE(plain_alert_sent(110));
 }
 
-/* The peer's EncryptedExtensions with the one extension @p type (empty)
- * and Finished, to a client of @p cfg started without a host name */
+/* The peer's EncryptedExtensions with the one extension @p type (empty;
+ * supported_groups and key_share with a group) and Finished, to a client
+ * of @p cfg started without a host name */
 static int encrypted_extension_to(const tls_config_t *cfg, int type) {
   static const uint8_t groups[4] = {0, 2, 0, 0x1D};
   uint8_t m[64];
   size_t n;
   CHECK(client_hello_from(cfg, NULL));
   CHECK(answer_hello(&sh_psk_ke));
-  n = tp_encrypted_extensions(&peer, type, groups,
-                              type == TP_EXT_SUPPORTED_GROUPS ? 4 : 0, m);
+  n = tp_encrypted_extensions(
+      &peer, type, groups,
+      type == TP_EXT_SUPPORTED_GROUPS || type == TP_EXT_KEY_SHARE ? 4 : 0, m);
   n += tp_finished(&peer, peer.s_hs, m + n);
   (void)feed_sealed(TP_HANDSHAKE, m, n);
   return 1;
@@ -1518,6 +1549,38 @@ TEST(itest_tls_053_encrypted_extension_not_offered_refused) {
   ASSERT_TRUE(sealed_alert_sent(2, 110));
   ASSERT_TRUE(encrypted_extension_to(&ke_only, TP_EXT_SUPPORTED_GROUPS));
   ASSERT_TRUE(failed_with(110));
+}
+
+/* REQ-TLS-053: an extension the client knows, in a message it is not
+ * specified for, is illegal_parameter (RFC 8446 §4.2, §4.3.1) — a
+ * server_name in the ServerHello though the client sent one, a
+ * supported_groups in a HelloRetryRequest, a key_share in
+ * EncryptedExtensions */
+TEST(itest_tls_053_extension_in_the_wrong_message) {
+  static const uint8_t cookie[3] = {1, 2, 3};
+  static uint8_t m[512];
+  tp_sh_t o = sh_psk_ke;
+  size_t n;
+  o.stray = TP_EXT_SERVER_NAME + 1;
+  ASSERT_TRUE(client_hello_from(&cli_psk, HOST));
+  ASSERT_TRUE(answer_hello(&o));
+  ASSERT_TRUE(failed_with(47));
+  ASSERT_TRUE(plain_alert_sent(47));
+
+  memset(&o, 0, sizeof(o));
+  o.hrr = 1;
+  o.cookie = cookie;
+  o.cookie_len = sizeof(cookie);
+  o.stray = TP_EXT_SUPPORTED_GROUPS + 1;
+  ASSERT_TRUE(client_hello_from(&cli_psk, NULL));
+  tp_add(&peer, hello_msg, hello_len);
+  n = tp_server_hello(&peer, &o, m);
+  feed_plain(m, n);
+  ASSERT_TRUE(failed_with(47));
+
+  ASSERT_TRUE(encrypted_extension_to(&cli_psk, TP_EXT_KEY_SHARE));
+  ASSERT_TRUE(failed_with(47));
+  ASSERT_TRUE(sealed_alert_sent(2, 47));
 }
 
 /* REQ-TLS-060: a ServerHello that takes the PSK without a key_share, to a
@@ -2417,6 +2480,8 @@ int main(void) {
   RUN_TEST(itest_tls_047_record_too_long_or_unknown);
   RUN_TEST(itest_tls_057_records_out_of_place);
   RUN_TEST(itest_tls_047_plaintext_too_long);
+  RUN_XFAIL(itest_tls_059_empty_alert_record);
+  RUN_TEST(itest_tls_068_early_data_not_accepted);
   RUN_TEST(itest_tls_059_padding_and_no_content_type);
   RUN_TEST(itest_tls_035_close_notify);
   RUN_TEST(itest_tls_036_fatal_alert_received);
@@ -2435,6 +2500,7 @@ int main(void) {
   RUN_TEST(itest_tls_024_no_certificate_after_a_psk);
   RUN_TEST(itest_tls_053_extension_not_offered_refused);
   RUN_TEST(itest_tls_053_encrypted_extension_not_offered_refused);
+  RUN_XFAIL(itest_tls_053_extension_in_the_wrong_message);
   RUN_TEST(itest_tls_060_psk_server_hello_consistent);
   RUN_TEST(itest_tls_037_server_hello_refusals);
   RUN_TEST(itest_tls_014_certificate_from_the_peer);

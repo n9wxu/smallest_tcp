@@ -134,7 +134,9 @@ void tp_transcript_hash(const tp_t *p, uint8_t out[32]);
 /** After a HelloRetryRequest: ClientHello1 gives way to message_hash */
 void tp_message_hash(tp_t *p);
 
-/** What a ClientHello of the peer carries */
+/** What a ClientHello of the peer carries, besides what every one does:
+ *  a cipher suite, an extension and a version that no server knows (they
+ *  must be ignored), then TLS_AES_128_GCM_SHA256 and the real version */
 typedef struct {
   const uint8_t *session_id; /* TLS compatibility mode */
   size_t session_id_len;
@@ -156,6 +158,7 @@ typedef struct {
   int truncated;       /* the message ends before its extensions do */
   int zero_share;      /* the x25519 share is 32 zero bytes */
   int groups_only;     /* supported_groups without a key_share extension */
+  int early_data;      /* the early_data extension */
   int twice;           /* supported_versions a second time */
 } tp_ch_t;
 
