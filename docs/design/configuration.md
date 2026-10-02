@@ -1,8 +1,8 @@
 # Configuration — Design
 
-**Files:** `include/net_config.h`; tunables in `ipv4.h`, `ndp.h`,
-`dns_wire.h`, `http.h`, `dhcpv4_client.h`, `dhcpv6_client.h`, `tftp.h`,
-`tls.h`, `dtls.h`
+**Files:** `include/net_config.h`; tunables in `ipv4.h`, `icmpv6.h`,
+`ndp.h`, `dns_wire.h`, `http.h`, `dhcpv4_client.h`, `dhcpv6_client.h`,
+`tftp.h`, `tls.h`, `dtls.h`
 
 ## 1. Overview
 
@@ -71,9 +71,9 @@ offsets and corrupt each other's memory.
 | Setting | Changes |
 |---|---|
 | `NET_USE_IPV4` | `net_t` (the IPv4 address, mask, gateway and its MAC, `mcast_groups`, the IPv4 port table), `tcp_conn_t` (`remote_ip`), `http_request_t` (`remote_ip`), and which functions exist |
-| `NET_USE_IPV6` | `net_t` (the `ip6` block, `mcast6_groups`, the IPv6 port table), `tcp_conn_t`, `http_request_t`, `http_conn_t`, and which functions exist |
-| `NET_USE_UDP`, `NET_USE_TCP` | `net_t` (port tables, connection table) |
-| `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS` | `net_t` (group arrays) |
+| `NET_USE_IPV6` | `net_t` (the `ip6` block, `mcast6_groups`, the IPv6 port table and error handler), `tcp_conn_t`, `http_request_t`, `http_conn_t`, and which functions exist |
+| `NET_USE_UDP`, `NET_USE_TCP` | `net_t` (port tables and error handlers, connection table and the TCP clock) |
+| `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS` | `net_t` (group arrays; IGMP's operations and timers) |
 | `NET_ARP_RATE_SLOTS` | `net_t` (`arp_recent[]`) |
 | `NET_IPV6_ADDRS` | `net_t` (`ip6.addr[]`) |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client_t` |
@@ -105,7 +105,7 @@ to scattered `-D` flags: one file, included by every translation unit.
 | `NET_DEFAULT_GATEWAY` | 10.0.0.1 | `net->gateway_ipv4`. |
 | `NET_DEFAULT_MTU` | 1500 | `net->mtu`, the link MTU: no datagram sent is longer (RFC 1122 §3.3.3).  The application may lower it at run time. |
 | `NET_ARP_GATEWAY_TIMEOUT_MS` | 300000 | How long a gateway MAC learned by ARP stays valid without a new reply (RFC 1122 §2.3.2.1). |
-| `NET_ARP_RATE_SLOTS` | 2 | ARP targets remembered so that none is requested more than once a second (RFC 1122 §2.3.2.1); `net_t` holds them. |
+| `NET_ARP_RATE_SLOTS` | 2 | ARP targets remembered so that none is requested more than once a second (RFC 1122 §2.3.2.1); at least 1; `net_t` holds them. |
 | `NET_DEFAULT_MAC` | 02:00:00:de:ad:01 | Used when `net_init()` is given a NULL MAC.  A locally administered address for development; production devices pass their own. |
 | `NET_DEFAULT_TCP_RTO_INIT_MS` | 1000 | Initial retransmission timeout and first zero-window probe interval. |
 | `NET_DEFAULT_TCP_RTO_MAX_MS` | 60000 | Ceiling for the doubling retransmission and probe intervals. |
@@ -119,11 +119,13 @@ it is a helper, not a setting.
 | Macro | Header | Default | Effect |
 |---|---|---|---|
 | `NET_DEFAULT_TTL` | `ipv4.h` | 64 | TTL of IPv4 datagrams sent through `ipv4_build()` / `udp_send()`. |
+| `ICMPV6_ERROR_BURST` | `icmpv6.h` | 10 | ICMPv6 errors that may be sent at once: the size of the token bucket that limits their rate (RFC 4443 §2.4(f)). |
+| `ICMPV6_ERROR_INTERVAL_MS` | `icmpv6.h` | 100 | Time for the bucket to gain one token, so the sustained rate of ICMPv6 errors is one per interval; at most 65535. |
 | `NDP_MAX_RTR_SOLICITATIONS` | `ndp.h` | 3 | Router Solicitations sent at start-up if no Router Advertisement arrives. |
 | `DNS_COMPRESS_MAX` | `dns_wire.h` | 16 | Label offsets a DNS writer remembers as compression targets. |
 | `HTTP_HDR_MAX` | `http.h` | 224 | Largest response header block, formatted on the C stack. |
 | `HTTP_REQUEST_TIMEOUT_MS` | `http.h` | 10000 | Time a connection slot may take to receive a complete request. |
-| `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and close. |
+| `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and finish closing. |
 | `DHCPV6_MAX_DUID` | `dhcpv6_client.h` | 20 | Largest server DUID kept (layout-affecting). |
 | `DHCPV4_START_DELAY_MAX_MS` | `dhcpv4_client.h` | 10000 | The first DISCOVER waits a random 1 s up to this (RFC 2131 §4.4.1); 0 sends it at once, else 1000..65535. |
 | `DHCPV4_PROBE_WAIT_MS` | `dhcpv4_client.h` | 1000 | How long the client waits after its ARP probe of an ACK's address before using it (RFC 2131 §4.4.1). |
@@ -134,8 +136,10 @@ Other protocol constants are plain `#define`s — fixed by their RFCs or by the
 implementation, and not meant to be overridden: for example
 `TFTP_TIMEOUT_MS` (the first timeout) and `TFTP_MAX_RETRIES` (`tftp.h`), the mDNS probe and
 announce timings and `MDNS_MAX_RECORDS` (the width of its record bitmasks,
-`mdns.h`), the DHCPv4 retransmission back-off (`dhcpv4_client.c`), and
-`TCP_MAX_RETRANSMITS` (`tcp.c`).
+`mdns.h`), the DHCPv4 retransmission back-off (`dhcpv4_client.c`), the DHCPv6
+timeouts of RFC 8415 (`dhcpv6_client.c`), and `TCP_MAX_RETRANSMITS`
+(`tcp.c`), the default of the limit a connection sets with
+`tcp_set_max_retransmits()`.
 
 `TLS_USE_DTLS` (`tls.h`, default 1; CMake `SMALLEST_TCP_DTLS`) builds the
 shared TLS handshake for DTLS 1.3 too; 0 leaves DTLS's formats and cookie
@@ -173,10 +177,13 @@ layer can be left out, not both: an IPv6-only build (`NET_USE_IPV4` 0, CMake
 UDP and TCP keep only their IPv6 halves, and mDNS answers over IPv6 with
 AAAA records only (`mdns_init()` refuses an A record).  The DHCPv4 client
 and server and TFTP run only over IPv4 and are not built; DHCPv6, mDNS, HTTP
-and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,105 bytes, 3.0 KB
-less than the dual stack ([size-comparison.md](size-comparison.md)).  Those calls are
-references, so **linking IPv4 pulls in `udp.o` and `tcp.o`** unless the build
-compiles with `-DNET_USE_UDP=0` or `-DNET_USE_TCP=0`.  A transport that is
+and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,453 bytes, 3.0 KB
+less than the dual stack ([size-comparison.md](size-comparison.md)).
+
+The dispatch calls are references, so **linking IPv4 or IPv6 pulls in `udp.o`
+and `tcp.o`** unless the build compiles with `-DNET_USE_UDP=0` or
+`-DNET_USE_TCP=0`; so are the calls with which `icmp.c` and `icmpv6.c` hand
+the errors they receive to the transports, made under the same settings.  A transport that is
 switched off is not dispatched to, its fields leave `net_t`, and its header
 does not compile — so its source files must also be left out of the build.
 The ARM size benchmark does this (`make arm-size` builds with
