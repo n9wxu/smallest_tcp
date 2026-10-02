@@ -1,6 +1,7 @@
 /**
  * @file tftp.h
- * @brief TFTP client — RFC 1350 with optional blksize option (RFC 2348).
+ * @brief TFTP client — RFC 1350 read requests, octet or netascii, with the
+ *        optional blksize option (RFC 2348).
  *
  * Integrated like every protocol module (docs/integrating-modules.md):
  * tftp_client_init(), a UDP handler on the local port calling
@@ -75,7 +76,9 @@ extern "C" {
  *
  * @param block_num  1-based block number.
  * @param data       Pointer to the block's payload bytes.
- * @param len        Number of data bytes (0 ≤ len ≤ blksize).
+ * @param len        Number of data bytes (0 ≤ len ≤ blksize); 0 only in
+ *                   octet mode, for the empty block that ends a file of
+ *                   a whole number of blocks.
  * @param ctx        Application context pointer.
  */
 typedef void (*tftp_data_fn_t)(uint16_t block_num, const uint8_t *data,
@@ -88,7 +91,10 @@ typedef void (*tftp_data_fn_t)(uint16_t block_num, const uint8_t *data,
  * @param err_code  TFTP error code (TFTP_ERR_*) when ok==0: the server's,
  *                  or TFTP_ERR_OPTION_NEGOTIATION if the client refused
  *                  the server's OACK; 0 on timeout.
- * @param msg       The server's error message, "Bad blksize" or "Timeout".
+ * @param msg       "" when ok; else the server's error message ("" if it
+ *                  is not NUL-terminated within the packet), "Bad
+ *                  blksize" or "Option not requested" for an OACK
+ *                  refused, or "Timeout".  Valid during the call only.
  * @param ctx       Application context pointer.
  */
 typedef void (*tftp_done_fn_t)(uint8_t ok, uint16_t err_code, const char *msg,
@@ -152,10 +158,17 @@ net_err_t tftp_client_set_mode(tftp_client_t *c, uint8_t mode);
  * @param c           Client state (must have been init'd).
  * @param server_ip   TFTP server IPv4 address (host byte order).
  * @param server_mac  Pre-resolved server MAC address (6 bytes).
- * @param filename    NUL-terminated filename to request.
+ * @param filename    NUL-terminated filename to request; one longer than
+ *                    TFTP_MAX_FILENAME - 1 characters is cut to that.
  * @param blksize_opt 0 = use RFC 1350 default (512 bytes);
- *                    1 = ask for the largest block net->rx.buf holds.
- * @return NET_OK, or a net_err_t code on failure.
+ *                    1 = ask for the largest block net->rx.buf holds
+ *                    (at most 1468, one Ethernet frame).
+ * @return NET_ERR_INVALID_PARAM, and nothing changed, while a transfer
+ *         is running.  Otherwise the transfer is started and the result
+ *         is that of sending the RRQ: NET_OK, or an error (e.g.
+ *         NET_ERR_BUF_TOO_SMALL if it does not fit net->tx.buf) — the
+ *         retransmission timer then sends it again, and on_done reports
+ *         a timeout if no answer ever comes.
  */
 net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
                           const uint8_t *server_mac, const char *filename,
@@ -164,7 +177,8 @@ net_err_t tftp_client_get(net_t *net, tftp_client_t *c, uint32_t server_ip,
 /**
  * Feed an incoming UDP payload to the client.
  *
- * Call from the application's UDP port handler for local_port.
+ * Call from the application's UDP port handler for local_port.  Ignored
+ * unless a transfer is running.
  *
  * @param net       Network context.
  * @param c         Client state.
@@ -180,7 +194,10 @@ void tftp_client_input(net_t *net, tftp_client_t *c, uint32_t src_ip,
                        const uint8_t *data, uint16_t len);
 
 /**
- * Drive retransmit timers.  Call with elapsed milliseconds each main loop.
+ * Drive the retransmission timer.  Call with elapsed milliseconds each
+ * main loop: resends the RRQ or the last ACK when the timeout runs out,
+ * and ends the transfer (on_done, "Timeout") after TFTP_MAX_RETRIES
+ * retransmissions without progress.
  */
 void tftp_client_tick(net_t *net, tftp_client_t *c, uint32_t ms);
 

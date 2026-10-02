@@ -3,8 +3,7 @@
 **Protocol:** RFC 1350 (TFTP revision 2), RFC 2347 (option extension), RFC 2348 (blksize option), RFC 1123 §4.2 (host requirements)  
 **Files:** `include/tftp.h`, `src/tftp.c`; `net_text.h` / `net_text.c` for the ASCII helpers  
 **Requirements:** [tftp.md](../requirements/tftp.md)  
-**Status:** Implemented (read requests over IPv4)  
-**Last updated:** 2026-10-01
+**Status:** Implemented (read requests over IPv4)
 
 ---
 
@@ -21,6 +20,7 @@ straight to flash, so the stack never holds more than one block.
 | blksize option (RFC 2348), sized to the RX buffer | ✅ |
 | Server transfer ID (port) tracking, ERROR 5 to a stray datagram's source | ✅ |
 | Duplicate blocks re-acknowledged, block-number wrap | ✅ |
+| Malformed packets dropped: truncated DATA and ERROR, DATA longer than a block, an OACK with an unterminated string | ✅ |
 | Retransmission of RRQ and last ACK with an adaptive timeout (RFC 1123), give-up after 5 | ✅ |
 | Write request (WRQ) | — |
 | tsize and timeout options (RFC 2349), windowsize (RFC 7440) | — |
@@ -58,9 +58,9 @@ tftp_client_get(&net, &tftp, server_ip, server_mac, "firmware.bin", 1);
 /* main loop: net_poll(), net_tick(), tftp_client_tick(&net, &tftp, elapsed_ms) */
 ```
 
-`tftp_client_t` is 184 bytes on a 32-bit target, 128 of them the copy of
-the file name (`TFTP_MAX_FILENAME`, longer names are truncated).  There
-is no other state and no allocation.
+`tftp_client_t` is 188 bytes on a 32-bit target, 128 of them the copy of
+the file name (`TFTP_MAX_FILENAME`; a longer name is cut to 127
+characters).  There is no other state and no allocation.
 
 The server's MAC is passed in, already resolved (REQ-TFTP-035; see
 [arp-resolution.md §3](arp-resolution.md#3-resolving-a-mac-for-an-active-open)):
@@ -88,7 +88,7 @@ Client (local_port)                         Server
   ACK n                       ──►                          on_done(ok = 1)
 ```
 
-With the blksize option (RFC 2347 §4, RFC 2348):
+With the blksize option (RFC 2347, RFC 2348):
 
 ```
   RRQ "file" "octet" "blksize" "<N>"  ──► port 69
@@ -120,9 +120,10 @@ server that refuses the transfer answers with ERROR, which ends it:
 
 An ERROR (or DATA) shorter than 4 bytes, too short for its code (or block
 number), is dropped before it counts for anything (`truncated()`) — it
-does not fix the server's transfer ID or restart the timer.  It used to
-end the transfer with error code 0; the coding rules' "reject, don't
-repair" says a malformed packet is dropped.
+does not fix the server's transfer ID or restart the timer.  Taking it
+for ERROR 0 would repair a malformed packet, and the coding rules say
+"reject, don't repair"
+([coding-rules.md §3](coding-rules.md#3-parsing-received-data)).
 
 `on_done` receives the server's message only if its NUL lies within the
 datagram (`error_message()`, REQ-TFTP-017); otherwise it receives `""`.
@@ -146,7 +147,9 @@ IDLE ── tftp_client_get() ──► REQUESTING ── OACK (sends ACK 0) ─
 ```
 
 `finish()` enters DONE or ERROR, stops the timer and calls `on_done`.
-Input and ticks are ignored outside REQUESTING and RECEIVING.
+Input and ticks are ignored outside REQUESTING and RECEIVING: once the
+last block is acknowledged the client answers nothing more, so it does
+not dally to repeat a lost final ACK (RFC 1350 §6, REQ-TFTP-043).
 `tftp_client_get()` refuses (`NET_ERR_INVALID_PARAM`) while a transfer is
 running and restarts from IDLE, DONE or ERROR.
 
@@ -158,11 +161,9 @@ running and restarts from IDLE, DONE or ERROR.
 the largest block the **RX** buffer holds: `net->rx.capacity` minus the
 Ethernet, IPv4, UDP and 4-byte TFTP DATA headers (46 bytes), clamped to
 8 … 1468.  1468 is the largest DATA payload in one 1500-byte Ethernet
-frame; 8 is the RFC 2348 minimum.  It used to be derived from the TX
-capacity, a latent bug: DATA blocks arrive in the RX buffer, and a
-device with a large TX and a small RX buffer asked for blocks it then
-could not receive (`net_poll()` truncates a frame that does not fit, and
-IPv4 drops it).
+frame; 8 is the RFC 2348 minimum.  The RX buffer decides, not the TX
+buffer: DATA blocks arrive in the RX buffer, and a block that does not
+fit it is lost (`net_poll()` truncates the frame, and IPv4 drops it).
 
 The option is sent only when the size differs from 512, so a 558-byte RX
 buffer sends a plain RRQ.  A smaller RX buffer makes the client ask for
@@ -175,27 +176,28 @@ hold a 512-byte block, 558 bytes.
 Cortex-M0 has no divide instruction, and `%` or `/` would link a software
 division routine.
 
-**OACK.**  `oack_input()` first sets the block size to 512.  An OACK
+**OACK.**  `oack_input()` starts from a block size of 512.  An OACK
 lists only the options the server accepted (RFC 2347), so one without
 `blksize` declines it, and the server sends 512-byte blocks.  Keeping
 the requested size instead would make the first 512-byte block look
 short: the transfer would end after it, truncated but reported as a
 success.
 
-It then walks the name/value pairs (`next_string()` stops at the first
-unterminated string).  An option named `blksize` — compared in full and
-case-insensitively with `net_equal_nocase()`; the old parser looked only
-at the first two letters — sets the block size if
-`acceptable_blksize()`: at least 8, and no more than the size requested.
-`parse_decimal()` takes a value only if it is all digits: anything else
-— "512abc", an empty string, a leading space — reads as 0 and is refused;
-it used to read the digits in front and ignore the rest, so "512abc" was
-512.  Digits past 65464 stop the reading, so a long string cannot
-overflow, and read as 0 too.  Any other option is refused with ERROR 8
-"Option not requested": RFC 2347 lets a server acknowledge only the
-options the client requested, and this one requests blksize alone.  Such
-options used to be ignored.  The client then enters
-RECEIVING and sends ACK 0.
+It then walks the name/value pairs to the end of the datagram
+(`next_string()` returns NULL for a string without its NUL).  An OACK
+whose last name or value is unterminated, or whose last name has no
+value, is malformed: it is dropped whole — no block size set, no ACK 0,
+the state unchanged — like every malformed packet.  An option named
+`blksize` — compared in full and case-insensitively with
+`net_equal_nocase()` — sets the block size if `acceptable_blksize()`: at
+least 8, and no more than the size requested.  `parse_decimal()` takes a
+value only if it is all digits: anything else — "512abc", an empty
+string, a leading space — reads as 0 and is refused.  Digits past 65464
+stop the reading, so a long string cannot overflow, and read as 0 too.
+Any other option is refused with ERROR 8 "Option not requested":
+RFC 2347 lets a server acknowledge only the options the client
+requested, and this one requests blksize alone.  With every pair taken,
+the client sets the block size, enters RECEIVING and sends ACK 0.
 
 Any other `blksize` — larger, below 8, empty or not a number (which
 reads as 0), or one the RRQ did not ask for — is refused by
@@ -205,13 +207,12 @@ as 0, so every `blksize` is refused: RFC 2347 lets the server
 acknowledge only the options the client requested.  A refusal is
 ERROR 8 "Bad blksize" to the server, as RFC 2347 prescribes for an OACK
 the client does not accept, and
-`on_done(0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize")`.  RFC 2348 §2
+`on_done(0, TFTP_ERR_OPTION_NEGOTIATION, "Bad blksize")`.  RFC 2348
 lets the server only lower the size; a larger block might not fit the RX
 buffer, which is what the size requested was chosen for.  Ignoring a bad
-value and keeping the requested size, as the client once did for one
-below 8, is worse than refusing it: the server sends blocks of the size
-it announced, and the first one shorter than the client expects ends the
-transfer as if it were the last.
+value and keeping the requested size is worse than refusing it: the
+server sends blocks of the size it announced, and the first one shorter
+than the client expects ends the transfer as if it were the last.
 
 **Repeated OACK.**  If ACK 0 is lost, the server sends its OACK again.
 In RECEIVING, an OACK that arrives while `next_block` is still 1 — no
@@ -223,10 +224,12 @@ so it is not measured (§8, Karn's rule).  Once DATA 1 has arrived, an
 OACK is ignored.
 
 **Fallback.**  DATA in REQUESTING means the server ignored the option:
-the block size returns to 512 and the block is processed as usual.
+the block size returns to 512 and the block is processed as usual
+(REQ-TFTP-031).
 
 The block size is what decides the last block: a DATA payload shorter
-than it ends the transfer.
+than it ends the transfer.  A DATA payload longer than it is not a block
+and is dropped (§7).
 
 ---
 
@@ -243,9 +246,9 @@ unknown until it answers from a new port:
   `server_tid` (REQ-TFTP-006).
 - A datagram from port 0 is dropped outright.  Port 0 says no reply is
   wanted (RFC 768), so it cannot be a transfer ID — and `server_tid` uses 0
-  for "none yet": a server answering from port 0 used to be taken for one
-  that had not answered, its ACKs going to port 69 and any later port
-  becoming its TID.  It gets no ERROR 5 either, having asked for no reply.
+  for "none yet", so a TID of 0 would look like a server that had not
+  answered: its ACKs would go to port 69 and any later port would become
+  its TID.  It gets no ERROR 5 either, having asked for no reply.
 - Any other datagram — another IP, another port, or, before the server
   has answered, an opcode that cannot be its answer — is a stray
   (`from_server_tid()` is false).  `reject_stray()` sends ERROR 5
@@ -265,13 +268,19 @@ unknown until it answers from a new port:
 
 `data_input()` handles DATA of at least 4 bytes:
 
+- **More than a block** (REQ-TFTP-041): a payload longer than the block
+  size in force — 512 while the RRQ is unanswered, then the OACK's — is
+  dropped: not delivered, not acknowledged, the state unchanged.
+  `on_data` therefore never sees more than `blksize` bytes, which an
+  application may have sized a sector buffer by.
 - **The expected block** (`next_block`, starting at 1): `on_data` is
   called with the payload (a pointer into `net->rx.buf`, valid during the
   call), then the ACK is sent — after the callback, so the application
   may use `net->tx.buf` inside it.  A payload shorter than the block
   size ends the transfer with `on_done(1, 0, "")`; a file whose size is a
   multiple of the block size ends with an empty block, and `on_data` is
-  called with `len` 0 for it.
+  called with `len` 0 for it (in octet mode; netascii delivers no empty
+  piece).
 - **The previous block**: the server did not get our ACK and sent the
   block again; the ACK is repeated and nothing is delivered twice
   (REQ-TFTP-013).
@@ -301,12 +310,11 @@ recognised and the last ACK resent is 65535.
 
 RRQ, ACK and ERROR are built in place at `UDP_PAYLOAD_OFFSET` in
 `net->tx.buf` and sent with `udp_send_inplace()` (IP TTL
-`NET_DEFAULT_TTL`); they used to be built in stack buffers of up to 256
-bytes and copied.
+`NET_DEFAULT_TTL`), with no buffer of their own on the stack.
 
 | Message | Function | Size | TX buffer needed |
 |---|---|---|---|
-| RRQ | `send_rrq()` | 2 + name + 1 + 6 [+ 8 + digits + 1] | at most 191 bytes (127-char name, blksize option) |
+| RRQ | `send_rrq()` | 2 + name + 1 + mode + 1 [+ 8 + digits + 1] | at most 194 bytes (127-char name, `netascii`, blksize option) |
 | ACK | `send_ack()` | 4 | 46 bytes |
 | ERROR | `put_error()`, sent by `reject_stray()` and `refuse_oack()` | 5 + text (a constant: "Unknown transfer ID", "Bad blksize", "Option not requested") | at most 67 bytes |
 
@@ -322,8 +330,7 @@ count (`made_progress()`): an OACK the client takes, or the DATA block it
 expects next.  Nothing else from the server does — a duplicate block
 (answered with its ACK again), a repeated OACK, an opcode the client
 ignores — so a server that keeps resending what it has sent, never
-getting our ACK, is given up on like a silent one.  Every datagram from
-the server's transfer ID used to restart it.
+getting our ACK, is given up on like a silent one.
 When it runs out, REQUESTING resends the RRQ and RECEIVING resends the
 last ACK (`next_block − 1`, which is ACK 0 after an OACK); after
 `TFTP_MAX_RETRIES` (5) retransmissions without an answer the transfer
@@ -363,10 +370,10 @@ On a LAN the timeout falls to 1 s after the first round trip, so a lost
 block costs a second, not three.  A server slower than 3 s draws one
 retransmitted RRQ, then a timeout above its round trip: 4 s round trips
 give 12 s, then less as RTTVAR settles.  A silent server is given up on
-after 3 + 6 + 12 + 16 + 16 + 16 = 69 s (5 retransmissions), where a
-fixed 3 s gave up after 18 s; TFTP_RTO_MAX_MS lowers that.  The timeout
-used to be fixed at 3 s: slower than needed on a LAN, and on a path
-whose round trip exceeds 3 s every block was sent twice.
+after 3 + 6 + 12 + 16 + 16 + 16 = 69 s (5 retransmissions); a smaller
+`TFTP_RTO_MAX_MS` lowers that.  A fixed 3 s timeout would be slower
+than needed on a LAN, and on a path whose round trip exceeds 3 s it
+would send every block twice.
 
 ---
 
@@ -374,7 +381,9 @@ whose round trip exceeds 3 s every block was sent twice.
 
 | Item | Notes |
 |---|---|
-| Fixed local port for every transfer | RFC 1350 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
+| Fixed local port for every transfer (REQ-TFTP-042) | RFC 1350 §4 asks for a random TID per transfer; a late datagram from a previous transfer's server port can be taken as the next transfer's first answer |
+| No dallying after the final ACK (REQ-TFTP-043) | RFC 1350 §6 encourages the receiver to stay a while and repeat the final ACK if the last block comes again; the client is DONE on sending it and answers nothing more.  The file is complete either way; a server that missed the ACK repeats the last block until it gives up |
+| A file name of more than 127 characters is cut | `tftp_client_get()` copies at most `TFTP_MAX_FILENAME` − 1 characters and requests that name |
 | No tsize, timeout or windowsize options; no WRQ | Scope (§1).  Without WRQ the client never sends DATA, so RFC 1123 §4.2.3.1's Sorcerer's Apprentice fix (REQ-TFTP-040: never resend DATA on a duplicate ACK) has nothing to apply to |
 | IPv4 only | `tftp_client_input()` and the send path take IPv4 addresses |
 
@@ -382,24 +391,22 @@ whose round trip exceeds 3 s every block was sent twice.
 
 ## 10. Tests
 
-`tests/integration/itest_tftp.c` (black box, through the API and the
-wire): the timeout doubling on each retransmission, falling to 1 s for a
-fast server, growing past a slow server's round trip (REQ-TFTP-039).
-
-`tests/unit/test_tftp.c` (28 tests): RRQ format and default block size,
-DATA 1 → ACK 1 to the server's port, full block not last, short block
-ends the transfer, duplicate block re-acknowledged, ERROR aborts with
-its message and an unterminated message is reported as `""`, a
-truncated ERROR is dropped, ERROR 5
-to a stray port or host and none for a stray ERROR, a datagram from
-port 0 dropped, OACK sets the block
-size and draws ACK 0, a repeated OACK draws ACK 0 again until DATA 1,
-an OACK blksize above the one requested, below 8 or not requested at
-all, or not a number ("512abc"), and an option never requested, draw
-ERROR 8 and end the transfer, an OACK without blksize means
-512-byte blocks, fallback when the server ignores the option, blksize
-option in the RRQ, RRQ and ACK retransmission, give-up after the maximum
-retries, timer restart on the block expected and on nothing else.
+`tests/integration/itest_tftp.c` (black box, through `tftp_client_*` and
+a server on the scripted wire) verifies every implemented row of
+[tftp.md](../requirements/tftp.md): the RRQ byte for byte, to port 69 at
+the server's MAC, and one too long for the TX buffer; netascii with a CR
+at a block boundary; DATA 1 fixing the server's port and every ACK going
+there; a short or empty last block; only the next block taken, across
+the wrap of the block number; a duplicate block acknowledged and not
+delivered; DATA longer than a block dropped; ERROR with each code of
+RFC 1350, an unterminated message, truncated packets; port 0; ERROR 5 to
+a stray port or host, none for a stray ERROR; the timeout doubling to
+its ceiling, falling to 1 s for a fast server, growing past a slow
+server's round trip, restarted by progress alone; the give-up after 5
+retransmissions; the blksize asked for by RX buffer size; an OACK
+acknowledged with ACK 0, repeated, refused (larger, below 8, not a
+number, not requested, another option), without blksize, malformed; the
+fallback when the server ignores the option.
 
 `demo/tftp_client` fetches a file from a real server (e.g. dnsmasq with
 `--enable-tftp`) with blksize negotiation.
