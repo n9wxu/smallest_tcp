@@ -1149,8 +1149,8 @@ TEST(test_scripted_psk_refusals) {
   ASSERT_EQ(script_refused(&o, TLS_ALERT_UNSUPPORTED_EXTENSION), 0);
   memset(&o, 0, sizeof(o));
   o.psk = 1;
-  o.psk_ke = 1; /* the client offered psk_dhe_ke only */
-  ASSERT_EQ(script_refused_as(&cli_psk, &o, TLS_ALERT_MISSING_EXTENSION), 0);
+  o.psk_ke = 1; /* the client offered psk_dhe_ke only (RFC 8446 §4.2.11) */
+  ASSERT_EQ(script_refused_as(&cli_psk, &o, TLS_ALERT_ILLEGAL_PARAMETER), 0);
   memset(&o, 0, sizeof(o));
   o.psk = 1;
   o.psk_cert = 1; /* no certificates in a PSK handshake */

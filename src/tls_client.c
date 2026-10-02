@@ -382,9 +382,10 @@ static int on_server_hello(tls_conn_t *t, const uint8_t *m, size_t mlen) {
   }
   if (!tls13) /* a TLS 1.2 (or older) server */
     return tls_fail(t, TLS_ALERT_PROTOCOL_VERSION);
-  /* without a share: only the PSK alone, if psk_ke was offered */
+  /* without a share: only the PSK alone, if psk_ke was offered (§4.2.11) */
   if (!share.p && !(psk && (t->cfg->psk_modes & TLS_PSK_KE)))
-    return tls_fail(t, TLS_ALERT_MISSING_EXTENSION);
+    return tls_fail(t, psk ? TLS_ALERT_ILLEGAL_PARAMETER
+                           : TLS_ALERT_MISSING_EXTENSION);
   /* The shared secret goes in rsec, which the handshake traffic secret
    * replaces: nothing on the stack, and tls_fail() wipes it */
   if (share.p && c->kx_shared(c->ctx, t->group, t->kx_priv, share.p, share.n,

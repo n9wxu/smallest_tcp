@@ -1858,7 +1858,7 @@ int main(void) {
   RUN_TEST(itest_tls_024_no_certificate_after_a_psk);
   RUN_TEST(itest_tls_053_extension_not_offered_refused);
   RUN_TEST(itest_tls_053_encrypted_extension_not_offered_refused);
-  RUN_XFAIL(itest_tls_060_psk_server_hello_consistent);
+  RUN_TEST(itest_tls_060_psk_server_hello_consistent);
   RUN_TEST(itest_tls_046_session_id_echo_checked);
   RUN_TEST(itest_tls_049_hello_retry_request_answered);
   RUN_TEST(itest_tls_049_hello_retry_request_must_change_something);
