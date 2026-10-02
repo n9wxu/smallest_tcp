@@ -22,8 +22,9 @@ recipe.
 4. **Start it** with its start function, when its preconditions hold (an
    address for mDNS, a usable link-local address for DHCPv6).
 5. **Drive it** from the main loop: `net_poll()` delivers frames (and so
-   calls the handlers), `net_tick()` runs the stack's timers, and the
-   application calls each module's `*_tick()` with the same elapsed time
+   calls the handlers), `net_tick()` runs the stack's own timers — ARP,
+   IPv4 reassembly and IGMP, TCP, IPv6 — and the application calls each
+   module's `*_tick()` with the same elapsed time
    ([timer-model.md](design/timer-model.md)).
 
 The handler is glue and nothing more:
@@ -70,14 +71,18 @@ Notes per module:
   (`ipv6_addr_state(&net, 0) == NET_IP6_PREFERRED`) and a Router
   Advertisement has told you which mode: `DHCPV6_MODE_STATEFUL` if
   `net.ip6.ra_flags & NDP_RA_MANAGED`, `DHCPV6_MODE_STATELESS` for
-  `NDP_RA_OTHER`.  The client installs a leased address itself with
-  `ipv6_addr_add()` (Duplicate Address Detection included).
+  `NDP_RA_OTHER`.  Its first message goes after a random delay of up to
+  1 s.  The client installs a leased address itself with `ipv6_addr_add()`
+  (Duplicate Address Detection included).
 - **TFTP client.**  The server's MAC must be known before `tftp_client_get()`
   ([arp-resolution.md §3](design/arp-resolution.md#3-resolving-a-mac-for-an-active-open)).
   The file arrives one block at a time through `on_data`; `blksize_opt` 1
   asks for the largest block `net->rx.buf` can hold.
 - **mDNS.**  Needs `NET_MAX_MCAST_GROUPS ≥ 1` (and a slot of
-  `NET_MAX_MCAST6_GROUPS` for IPv6).  Start it once the IPv4 address is known;
+  `NET_MAX_MCAST6_GROUPS` for IPv6).  `mdns_start()` joins 224.0.0.251 with
+  `igmp_join()`, which installs IGMP in the IP layer — `net_tick()` runs its
+  timers from then on — and `ff02::fb` with `ipv6_mcast_join()`, which MLD
+  reports.  Start it once the IPv4 address is known;
   call `mdns_start()` again after a conflict (with a new name in the record
   table) or an address change, and `mdns_readdress6()` when an IPv6 address
   appears or goes (once running, it announces over IPv6 only).  `mdns_stop()` sends the goodbye.
@@ -106,7 +111,44 @@ connection keeps no address: where its datagrams go is the application's.
 CMake target: `smallest_tcp::tls` built with `SMALLEST_TCP_DTLS`, and a
 crypto backend.  See [dtls.md](design/dtls.md) and `demo/dtls_echo`.
 
-## 3. Rules for handlers and callbacks
+## 3. What the core offers a module
+
+Two things in the core are installed by a call, and cost nothing — no
+code linked, no time in `net_tick()` — in a program that does not make it:
+
+- **Reassembly of IPv4 fragments.**  `ipv4_set_reassembly(&net, buf, size)`
+  gives IPv4 a buffer (sized with `IPV4_REASSEMBLY_BUFFER(emtu_r)`) and
+  installs reassembly's input and its 60 s timer; without it fragments are
+  dropped.
+- **IGMP.**  `igmp_join(&net, group)` joins a group, sends the report and
+  installs IGMP's input and timers.
+
+**Errors from the network.**  An ICMP or ICMPv6 error about a packet the
+device sent goes to the transport that sent it.  A TCP connection handles
+it itself: a hard error aborts it, a soft one is reported
+(`TCP_EVT_SOFT_ERROR`, `tcp_last_error()`), Fragmentation Needed or Packet
+Too Big lowers its segment size.  For UDP the application registers one
+handler per address family, which gets the ports, the destination, the
+type and code and the quoted packet:
+
+```c
+static void udp_error(net_t *n, const udp_icmp_error_t *err) {
+  (void)n;
+  if (err->local_port == 6969 && err->type == ICMP_TYPE_DEST_UNREACH)
+    server_gone = 1; /* acted on in the main loop */
+}
+
+/* after net_init() */
+udp_set_error_handler(&net, udp_error);
+```
+
+`udp6_set_error_handler()` takes a handler of `const udp6_icmp_error_t *`
+the same way.  The errors the device itself sends need nothing from the
+application; those over IPv6 are limited to `ICMPV6_ERROR_BURST` at once
+and one more every `ICMPV6_ERROR_INTERVAL_MS`
+([configuration.md §4](design/configuration.md#4-settings)).
+
+## 4. Rules for handlers and callbacks
 
 Handlers and module callbacks (`on_event`, `on_data`, `on_conflict`, option
 handlers) run inside `net_poll()` or a tick:
@@ -120,7 +162,7 @@ handlers) run inside `net_poll()` or a tick:
 - Everything runs in one thread; the stack is not reentrant
   ([timer-model.md §5](design/timer-model.md#5-concurrency)).
 
-## 4. A minimal main loop
+## 5. A minimal main loop
 
 A DHCPv4 client and an mDNS responder on a bare-metal board.  The `board_*`
 functions stand for the platform: a MAC driver, a millisecond counter, an
@@ -266,7 +308,7 @@ The hosted demos do the same through `demo/common/demo_loop.h`
 (`demo_net_open()`, `demo_run()` with per-demo tick and service hooks); each
 demo's `main.c` is a working example of one or more modules.
 
-## 5. Randomness
+## 6. Randomness
 
 `net_init()` seeds the stack's one generator from the MAC address, which is
 unique per device but public.  TCP initial sequence numbers, DHCPv4 and
