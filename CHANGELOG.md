@@ -10,27 +10,74 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+The review of IPv6 — IPv6, ICMPv6, Neighbor Discovery, SLAAC, MLD and
+DHCPv6: every requirement row against its RFC, the code and the tests
+that verify it.
+
+### Added
+
+- ICMPv6 errors about UDP datagrams reach the application:
+  `udp6_set_error_handler()` with `udp6_icmp_error_t` (ports, destination,
+  type, code, the MTU of a Packet Too Big, the whole quote).
+- `icmpv6_tick()`, which `ipv6_tick()` runs, and the settings
+  `ICMPV6_ERROR_BURST` (10) and `ICMPV6_ERROR_INTERVAL_MS` (100) of the
+  rate limit on ICMPv6 errors.
+- Black-box integration suites for IPv6 (`itest_ipv6`, `itest_ndp`,
+  `itest_mld`, `itest_dhcpv6`) on an IPv6 peer codec in the scripted link
+  (`tests/integration/wire.h`).
+
+### Changed
+
+- `net_t` grows by a pointer with UDP over IPv6 (`udp6_error_handler`):
+  268 bytes dual stack on Cortex-M0.
+- `icmpv6_send_error()` returns `NET_ERR_BUSY` for an error the rate limit
+  holds back.
+- `scripts/trace.py --strict` fails for a MUST row that no test cites and
+  that does not say why none can verify it (`not observable`,
+  `not implemented`).
+
+### Fixed
+
+- ICMPv6: errors received reach UDP and TCP, errors of unknown type
+  included (RFC 4443 §2.4(a)); a Packet Too Big with an MTU below 1280 is
+  discarded (RFC 8201 §4).  Errors sent are rate-limited (RFC 4443
+  §2.4(f)).  `icmpv6.c` compiles with neither UDP nor TCP.
+- IPv6: a Routing header with segments left draws Parameter Problem,
+  code 0 (RFC 8200 §4.4); nothing is sent to `::` — `udp6_send()`,
+  `tcp6_connect()` and `ndp_send_ns()` refuse it.
+- MLD: the groups are reported again from the link-local address once it
+  is valid (RFC 3810 §5.2.13); routers discard the reports sent from `::`
+  before that.
+- DHCPv6: the start delay is at most 1 s, and a refreshing
+  Information-request waits a random delay too; an IA_NA with T1 > T2 is
+  discarded; SOL_MAX_RT is taken from an Advertise that refuses the client
+  as well; the released address leaves the interface before the Release
+  is sent.
+
 ## [0.1.9] - 2026-10-02
 
-### Changes
+The review of TLS and DTLS.
 
-- docs, ci: the tls/dtls review's changes in the shared files
-- docs: dtls: which ACKs answer a flight
-- tests: dtls: test_dtls_030_ignored names its requirements itself
-- docs: tls, dtls: the two alert fixes, sizes measured again
-- tls: unexpected_message for an alert record with no content
-- tls: illegal_parameter for an extension in the wrong message
-- tests: tls: misplaced extensions, an empty alert, early data, unknowns
-- docs: tls, dtls: the design documents describe the code as it is
-- tests: dtls: malformed fragments and ACKs, the ACK that fits, the rest
-- dtls: any record of the peer's next flight answers ours
-- tests: dtls: integration tests against a peer written from RFC 9147
-- tests: tls: certificates from the peer, small buffers, the rest of the API
-- tls: illegal_parameter for a PSK ServerHello without its key_share
-- tls: the client refuses EncryptedExtensions it did not ask for
-- tls: a ClientHello with supported_groups and no key_share is refused
-- tests: tls: integration tests against a peer written from the RFC
-- tests: tls, dtls: requirement citations that trace.py reads
+### Added
+
+- Black-box integration suites for TLS and DTLS (`itest_tls`,
+  `itest_dtls`) against a peer written from the RFCs
+  (`tests/integration/tls_peer.c`).
+
+### Changed
+
+- The coverage figure is of the stack: the Mbed TLS backend
+  (`tls_crypto_mbedtls.c`) is left out of it.
+
+### Fixed
+
+- TLS: a ClientHello with `supported_groups` and no `key_share` is
+  refused; the client refuses extensions in EncryptedExtensions it did not
+  offer; the alerts for a PSK ServerHello without its key share, for an
+  extension in the wrong message and for an empty alert record are the
+  ones RFC 8446 names.
+- DTLS: any record of the peer's next flight, not only a whole message,
+  stops the retransmission of ours (RFC 9147 §7.2).
 
 ## [0.1.8] - 2026-10-02
 
