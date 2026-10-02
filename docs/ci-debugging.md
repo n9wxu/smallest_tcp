@@ -23,8 +23,8 @@ CMake is the only host build; the `Makefile` is used only by `arm-size`.
 | `blackbox-validate` | The same suites against the Linux kernel as reference SUT (§1) |
 | `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls`, `blackbox-dtls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks (DTLS against wolfSSL, built by `tests/blackbox/build_wolfssl.sh` and cached); the IPv6 suite also against an IPv6-only build |
 | `fetchcontent` | Builds and runs `examples/fetchcontent` against the checkout |
-| `traceability` | `scripts/trace.py --strict --markdown`: every integration test cites the requirements it verifies, every cited ID exists; the summary is the requirements coverage — per requirement document, the MUST rows verified by a black-box test, by any test, and by none ([test-plan.md §0](test-plan.md#0-policy-and-the-integration-tests)) |
-| `coverage` | Builds with `-DSMALLEST_TCP_COVERAGE=ON`, runs the integration tests (`ctest -L integration`) and reports, with gcovr, the lines and branches of `src/` they reach — what the API reaches; the HTML report is an artifact |
+| `traceability` | `scripts/trace.py --strict --markdown`: every integration test cites the requirements it verifies, every cited ID exists, every test a requirement row names exists and cites that row, and every MUST row is cited by a test or says why none can verify it (§3.12); the summary is the requirements coverage — per requirement document, the MUST rows verified by a black-box test and by any test, those not observable or not implemented, and those left with none ([test-plan.md §0](test-plan.md#0-policy-and-the-integration-tests)) |
+| `coverage` | Builds with `-DSMALLEST_TCP_COVERAGE=ON`, runs the integration tests (`ctest -L integration`) and reports, with gcovr, the lines and branches of `src/` they reach — what the API reaches.  The MAC drivers (`src/driver/`) and the Mbed TLS backend (`src/tls_crypto_mbedtls.c`) are left out.  The HTML report is the artifact `coverage-integration` |
 | `release-check` | `scripts/release.py check`: the version in `net_version.h` parses, `CHANGELOG.md` has its `## [Unreleased]` section, and a trial stamp of the next version works; CMake and the compiled library report the version ([release-process.md](release-process.md)) |
 
 `fuzz.yml` runs the TCP fuzz suite nightly.  `release.yml` runs when this
@@ -355,11 +355,21 @@ The same job's no-TCP and no-UDP builds catch the equivalent for
 
 ### 3.12 `traceability` fails
 
-`scripts/trace.py --strict` prints a `problem:` line for each integration
-test that cites no requirement and each test that cites an ID no document
-under `docs/requirements/` defines.  Add the REQ IDs the test verifies to
-the comment above it, or correct the ID.  Reproduce with
-`python3 scripts/trace.py --strict`.
+`scripts/trace.py --strict` prints a `problem:` line for each break in the
+trace and exits 1:
+
+| Problem | Fix |
+|---|---|
+| An integration test `cites no requirement` | Add the REQ IDs the test verifies to the comment above it |
+| A test `cites REQ-…, which no document defines` | Correct the ID, or add the row to its document under `docs/requirements/` |
+| A row `names <test>, which is no test` | The Test ID column of the row names a test that was renamed or removed: name the tests that verify the row |
+| A row `names <test>, which does not cite it` | Add the row's ID to that test's comment (for a unit or blackbox test, anywhere in its file) — if the test does verify the row |
+| A row `has a placeholder for a test` | Replace `TEST-XXX-NNN` in the Test ID column with the names of real tests |
+| A MUST row `is verified by no test and does not say why` | Write a test that cites it; or, if no test can verify it, say so in its Test ID column: `— (not observable: <why>)` or `— (not implemented)` |
+
+Reproduce with `python3 scripts/trace.py --strict`;
+`python3 scripts/trace.py --untested <doc>` lists the MUST rows of one
+document that are left with no test.
 
 ---
 
