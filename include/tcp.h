@@ -192,9 +192,11 @@ net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port);
  * SYN the driver does not take is resent by the retransmission timer, like
  * any lost segment.
  * @param remote_mac  The peer's or the gateway's MAC, already resolved.
- * @return NET_OK, or NET_ERR_INVALID_PARAM — also for a @p remote_ip that
+ * @return NET_OK; NET_ERR_INVALID_PARAM — also for a @p remote_ip that
  *         is no single host (a broadcast, a group, 0.0.0.0, 127/8;
- *         RFC 9293 MUST-46) and while the host has no address.
+ *         RFC 9293 MUST-46) and while the host has no address;
+ *         NET_ERR_BUSY if @p conn is in use — neither CLOSED nor LISTEN
+ *         (RFC 9293 §3.10.1): tcp_conn_init() frees it.
  */
 net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
                       const uint8_t *remote_mac, uint16_t remote_port,
@@ -205,7 +207,8 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
 /**
  * Active open over IPv6, from the address ipv6_src_for() picks; otherwise
  * as tcp_connect().
- * @return NET_OK, or NET_ERR_INVALID_PARAM (also: no usable source).
+ * @return NET_OK; NET_ERR_INVALID_PARAM (also: no usable source);
+ *         NET_ERR_BUSY.
  */
 net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
                        const uint8_t *remote_mac, uint16_t remote_port,
@@ -214,8 +217,8 @@ net_err_t tcp6_connect(net_t *net, tcp_conn_t *conn, const uint8_t *remote_ip,
 /**
  * As tcp6_connect(), from @p local_ip, the OPEN call's optional local
  * address (RFC 9293 MUST-43): one of ours, usable (ipv6_is_ours()).
- * @return NET_OK, or NET_ERR_INVALID_PARAM — also for a @p local_ip that
- *         is not ours.
+ * @return NET_OK; NET_ERR_INVALID_PARAM — also for a @p local_ip that
+ *         is not ours; NET_ERR_BUSY.
  */
 net_err_t tcp6_connect_from(net_t *net, tcp_conn_t *conn,
                             const uint8_t *local_ip, const uint8_t *remote_ip,

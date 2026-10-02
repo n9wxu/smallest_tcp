@@ -1130,11 +1130,16 @@ net_err_t tcp_conn_init(tcp_conn_t *conn, const tcp_txbuf_ops_t *tx_ops,
   return NET_OK;
 }
 
+/* REQ-TCP-013, 168: an OPEN is for a connection not in use (§3.10.1) */
+static int in_use(const tcp_conn_t *conn) {
+  return conn->state != TCP_CLOSED && conn->state != TCP_LISTEN;
+}
+
 /* REQ-TCP-168: a connection in use is not turned into a listener */
 net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port) {
   if (!conn || local_port == 0)
     return NET_ERR_INVALID_PARAM;
-  if (conn->state != TCP_CLOSED && conn->state != TCP_LISTEN)
+  if (in_use(conn))
     return NET_ERR_BUSY;
   listen_on(conn, local_port);
   return NET_OK;
@@ -1169,6 +1174,8 @@ net_err_t tcp_connect(net_t *net, tcp_conn_t *conn, uint32_t remote_ip,
   if (!net || !conn || !remote_mac || remote_port == 0 || local_port == 0 ||
       !ipv4_is_host(net, remote_ip) || net->ipv4_addr == 0)
     return NET_ERR_INVALID_PARAM;
+  if (in_use(conn))
+    return NET_ERR_BUSY;
   conn->remote_ip = remote_ip;
   conn->local_ip = net->ipv4_addr;
 #if NET_USE_IPV6
@@ -1198,6 +1205,8 @@ net_err_t tcp6_connect_from(net_t *net, tcp_conn_t *conn, const uint8_t *src,
       local_port == 0 || ipv6_is_multicast(remote_ip) ||
       ipv6_is_unspecified(remote_ip) || !ipv6_is_ours(net, src))
     return NET_ERR_INVALID_PARAM;
+  if (in_use(conn))
+    return NET_ERR_BUSY;
   conn->ip_ver = 6;
   conn->local_slot = (uint8_t)ipv6_addr_slot(net, src);
 #if NET_USE_IPV4

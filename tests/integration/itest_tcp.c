@@ -2609,7 +2609,7 @@ int main(void) {
   RUN_TEST(itest_tcp_006_passive_close);
   RUN_TEST(itest_tcp_007_simultaneous_close);
   RUN_TEST(itest_tcp_011_conn_init_validates);
-  RUN_XFAIL(itest_tcp_013_connect_on_a_live_connection);
+  RUN_TEST(itest_tcp_013_connect_on_a_live_connection);
   RUN_TEST(itest_tcp_014_send_and_receive);
   RUN_TEST(itest_tcp_018_bad_checksum_dropped);
   RUN_TEST(itest_tcp_021_bad_data_offset_dropped);
