@@ -513,14 +513,23 @@ static void send_reset_reply(net_t *net, const tcp_ep_t *to,
   frame_send(net, to, hdr, TCP_HDR_SIZE);
 }
 
-static int is_peer(const tcp_conn_t *c, const tcp_ep_t *from) {
+/* The segment's addresses are the connection's: the peer's, and ours it
+ * was sent to */
+static int is_peer(const net_t *net, const tcp_conn_t *c,
+                   const tcp_ep_t *from) {
   if (conn_is_ipv6(c) != BY_FAMILY(from, 0, 1))
     return 0; /* the other family */
-  return BY_FAMILY(from, c->remote_ip == from->ip4,
-                   memcmp(c->remote_ip6, from->ip6, 16) == 0);
+#if !NET_USE_IPV6
+  (void)net;
+#endif
+  return BY_FAMILY(
+      from, c->remote_ip == from->ip4 && c->local_ip == from->local_ip4,
+      memcmp(c->remote_ip6, from->ip6, 16) == 0 &&
+          memcmp(net->ip6.addr[c->local_slot].addr, from->local6, 16) == 0);
 }
 
-/* REQ-TCP-023, 148, 149: the connection, else a listener on the port */
+/* REQ-TCP-023, 148, 149: the connection — both addresses and both ports —
+ * else a listener on the port */
 static tcp_conn_t *find_conn(const net_t *net, const tcp_ep_t *from,
                              const tcp_seg_t *s) {
   tcp_conn_t *listener = NULL;
@@ -533,7 +542,7 @@ static tcp_conn_t *find_conn(const net_t *net, const tcp_ep_t *from,
       if (!listener)
         listener = c;
     } else if (c->state != TCP_CLOSED && c->remote_port == s->src_port &&
-               is_peer(c, from)) {
+               is_peer(net, c, from)) {
       return c;
     }
   }
