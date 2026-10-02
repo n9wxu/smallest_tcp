@@ -665,3 +665,285 @@ const peer_rr_t *peer_dns_find(const peer_dns_msg_t *m, int section,
   }
   return NULL;
 }
+
+/* ── IPv6 ── */
+
+const uint8_t peer6_ll[16] = {0xFE, 0x80, 0, 0, 0, 0, 0, 0,
+                              0,    0,    0, 0, 0, 0, 0, 0x99};
+const uint8_t router6_ll[16] = {0xFE, 0x80, 0, 0, 0, 0, 0, 0,
+                                0,    0,    0, 0, 0, 0, 0, 1};
+const uint8_t router6_mac[6] = {0x02, 0x52, 0x4F, 0x55, 0x54, 0x01};
+const uint8_t prefix6[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 1, 0, 0,
+                             0,    0,    0,    0,    0, 0, 0, 0};
+const uint8_t offlink6[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 9, 0, 0,
+                              0,    0,    0,    0,    0, 0, 0, 9};
+const uint8_t all_nodes6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
+                                0,    0,    0, 0, 0, 0, 0, 1};
+const uint8_t all_routers6[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0,
+                                  0,    0,    0, 0, 0, 0, 0, 2};
+
+peer_ip6_t peer_ip6(const uint8_t *src, const uint8_t *dst, uint8_t nh) {
+  peer_ip6_t ip;
+  memset(&ip, 0, sizeof(ip));
+  ip.src = src;
+  ip.dst = dst;
+  ip.nh = nh;
+  ip.hop_limit = 64;
+  return ip;
+}
+
+uint16_t peer_ipv6_frame(uint8_t *frame, const uint8_t dst_mac[6],
+                         const uint8_t src_mac[6], const peer_ip6_t *ip,
+                         const void *payload, uint16_t len) {
+  uint8_t *h = frame + 14;
+  memcpy(frame, dst_mac, 6);
+  memcpy(frame + 6, src_mac, 6);
+  peer_put16(frame + 12, 0x86DD);
+  peer_put32(h,
+             0x60000000u | (uint32_t)ip->tclass << 20 | (ip->flow & 0xFFFFFu));
+  peer_put16(h + 4, (uint16_t)(ip->ext_len + len));
+  h[6] = ip->nh;
+  h[7] = ip->hop_limit;
+  memcpy(h + 8, ip->src, 16);
+  memcpy(h + 24, ip->dst, 16);
+  if (ip->ext_len)
+    memcpy(h + 40, ip->ext, ip->ext_len);
+  if (len)
+    memcpy(h + 40 + ip->ext_len, payload, len);
+  return (uint16_t)(14u + 40u + ip->ext_len + len);
+}
+
+void peer_mcast6_mac(const uint8_t *group, uint8_t mac[6]) {
+  mac[0] = 0x33;
+  mac[1] = 0x33;
+  memcpy(mac + 2, group + 12, 4);
+}
+
+void peer_solicited_node(const uint8_t *addr, uint8_t group[16]) {
+  memset(group, 0, 16);
+  group[0] = 0xFF;
+  group[1] = 0x02;
+  group[11] = 0x01;
+  group[12] = 0xFF;
+  memcpy(group + 13, addr + 13, 3);
+}
+
+void peer_link_local(const uint8_t mac[6], uint8_t addr[16]) {
+  memset(addr, 0, 16);
+  addr[0] = 0xFE;
+  addr[1] = 0x80;
+  addr[8] = (uint8_t)(mac[0] ^ 0x02);
+  addr[9] = mac[1];
+  addr[10] = mac[2];
+  addr[11] = 0xFF;
+  addr[12] = 0xFE;
+  memcpy(addr + 13, mac + 3, 3);
+}
+
+uint16_t peer_cksum6(const uint8_t *src, const uint8_t *dst, uint8_t nh,
+                     const uint8_t *data, uint16_t len) {
+  uint8_t ph[40];
+  memcpy(ph, src, 16);
+  memcpy(ph + 16, dst, 16);
+  peer_put32(ph + 32, len);
+  peer_put32(ph + 36, nh);
+  return fold(sum16(sum16(0, ph, 40), data, len));
+}
+
+uint16_t peer_icmp6(uint8_t *out, const peer_ip6_t *ip, uint8_t type,
+                    uint8_t code, const uint8_t rest[4], const void *body,
+                    uint16_t len) {
+  out[0] = type;
+  out[1] = code;
+  peer_put16(out + 2, 0);
+  if (rest)
+    memcpy(out + 4, rest, 4);
+  else
+    memset(out + 4, 0, 4);
+  if (len)
+    memcpy(out + 8, body, len);
+  peer_put16(out + 2,
+             peer_cksum6(ip->src, ip->dst, 58, out, (uint16_t)(8u + len)));
+  return (uint16_t)(8u + len);
+}
+
+uint16_t peer_icmp6_frame(uint8_t *frame, const uint8_t dst_mac[6],
+                          const peer_ip6_t *ip, uint8_t type, uint8_t code,
+                          const uint8_t rest[4], const void *body,
+                          uint16_t len) {
+  static uint8_t msg[WIRE_FRAME_MAX];
+  uint16_t n = peer_icmp6(msg, ip, type, code, rest, body, len);
+  return peer_ipv6_frame(frame, dst_mac, peer_mac, ip, msg, n);
+}
+
+uint16_t peer_nd_lla(uint8_t *out, uint8_t type, const uint8_t mac[6]) {
+  out[0] = type;
+  out[1] = 1;
+  memcpy(out + 2, mac, 6);
+  return 8;
+}
+
+uint16_t peer_nd_prefix(uint8_t *out, const uint8_t prefix[16],
+                        uint8_t prefix_len, uint8_t flags, uint32_t valid_s,
+                        uint32_t preferred_s) {
+  memset(out, 0, 32);
+  out[0] = 3;
+  out[1] = 4;
+  out[2] = prefix_len;
+  out[3] = flags;
+  peer_put32(out + 4, valid_s);
+  peer_put32(out + 8, preferred_s);
+  memcpy(out + 16, prefix, 16);
+  return 32;
+}
+
+uint16_t peer_udp6(uint8_t *out, const peer_ip6_t *ip, uint16_t sport,
+                   uint16_t dport, const void *data, uint16_t len) {
+  uint16_t ulen = (uint16_t)(8u + len);
+  uint16_t ck;
+  peer_put16(out, sport);
+  peer_put16(out + 2, dport);
+  peer_put16(out + 4, ulen);
+  peer_put16(out + 6, 0);
+  if (len)
+    memcpy(out + 8, data, len);
+  ck = peer_cksum6(ip->src, ip->dst, 17, out, ulen);
+  peer_put16(out + 6, ck ? ck : 0xFFFF);
+  return ulen;
+}
+
+uint16_t peer_tcp6(uint8_t *out, const peer_ip6_t *ip,
+                   const peer_tcp_seg_t *seg) {
+  uint8_t hlen = seg->mss ? 24 : 20;
+  uint16_t total = (uint16_t)(hlen + seg->len);
+  memset(out, 0, hlen);
+  peer_put16(out, seg->sport);
+  peer_put16(out + 2, seg->dport);
+  peer_put32(out + 4, seg->seq);
+  peer_put32(out + 8, seg->ack);
+  out[12] = (uint8_t)((hlen / 4u) << 4);
+  out[13] = seg->flags;
+  peer_put16(out + 14, seg->window);
+  if (seg->mss) {
+    out[20] = 2;
+    out[21] = 4;
+    peer_put16(out + 22, seg->mss);
+  }
+  if (seg->len)
+    memcpy(out + hlen, seg->data, seg->len);
+  peer_put16(out + 16, peer_cksum6(ip->src, ip->dst, 6, out, total));
+  return total;
+}
+
+int peer_parse_ipv6(const wire_frame_t *f, peer_ip6_t *ip) {
+  const uint8_t *h = f->data + 14;
+  uint32_t off = 40, end;
+  uint8_t nh;
+  memset(ip, 0, sizeof(*ip));
+  if (f->len < 54 || peer_get16(f->data + 12) != 0x86DD || (h[0] >> 4) != 6)
+    return 0;
+  ip->tclass = (uint8_t)(peer_get32(h) >> 20);
+  ip->flow = peer_get32(h) & 0xFFFFFu;
+  ip->plen = peer_get16(h + 4);
+  ip->nh = h[6];
+  ip->hop_limit = h[7];
+  ip->src = h + 8;
+  ip->dst = h + 24;
+  end = 40u + ip->plen;
+  if (14u + end > f->len)
+    return 0;
+  for (nh = ip->nh; nh == 0 || nh == 43 || nh == 60;) {
+    if (off + 2 > end)
+      return 0;
+    nh = h[off];
+    off += (h[off + 1] + 1u) * 8u;
+    if (off > end)
+      return 0;
+  }
+  ip->ext = h + 40;
+  ip->ext_len = (uint16_t)(off - 40u);
+  ip->proto = nh;
+  ip->payload = h + off;
+  ip->payload_len = (uint16_t)(end - off);
+  return 1;
+}
+
+int peer_parse_icmp6(const peer_ip6_t *ip, peer_icmp_t *icmp) {
+  const uint8_t *m = ip->payload;
+  memset(icmp, 0, sizeof(*icmp));
+  if (ip->proto != 58 || ip->payload_len < 8)
+    return 0;
+  icmp->type = m[0];
+  icmp->code = m[1];
+  icmp->cksum_ok = peer_cksum6(ip->src, ip->dst, 58, m, ip->payload_len) == 0;
+  icmp->rest = m + 4;
+  icmp->data = m + 8;
+  icmp->data_len = (uint16_t)(ip->payload_len - 8u);
+  return 1;
+}
+
+int peer_parse_udp6(const peer_ip6_t *ip, peer_udp_t *udp) {
+  const uint8_t *u = ip->payload;
+  memset(udp, 0, sizeof(*udp));
+  if (ip->proto != 17 || ip->payload_len < 8)
+    return 0;
+  udp->sport = peer_get16(u);
+  udp->dport = peer_get16(u + 2);
+  udp->len = peer_get16(u + 4);
+  udp->cksum = peer_get16(u + 6);
+  if (udp->len < 8 || udp->len > ip->payload_len)
+    return 0;
+  udp->cksum_ok =
+      udp->cksum != 0 && peer_cksum6(ip->src, ip->dst, 17, u, udp->len) == 0;
+  udp->data = u + 8;
+  udp->data_len = (uint16_t)(udp->len - 8u);
+  return 1;
+}
+
+int peer_parse_tcp6(const peer_ip6_t *ip, peer_tcp_t *tcp) {
+  peer_ip_t as4;
+  memset(&as4, 0, sizeof(as4));
+  as4.proto = ip->proto;
+  as4.payload = ip->payload;
+  as4.payload_len = ip->payload_len;
+  if (!peer_parse_tcp(&as4, tcp))
+    return 0;
+  tcp->cksum_ok =
+      peer_cksum6(ip->src, ip->dst, 6, ip->payload, ip->payload_len) == 0;
+  return 1;
+}
+
+const uint8_t *peer_nd_option(const uint8_t *opts, uint16_t len, uint8_t type) {
+  while (len >= 2) {
+    uint16_t olen = (uint16_t)(opts[1] * 8u);
+    if (olen == 0 || olen > len)
+      return NULL;
+    if (opts[0] == type)
+      return opts;
+    opts += olen;
+    len = (uint16_t)(len - olen);
+  }
+  return NULL;
+}
+
+int wire_find_icmp6(const itest_t *t, uint16_t from, uint8_t type,
+                    peer_ip6_t *ip, peer_icmp_t *icmp) {
+  uint16_t i;
+  for (i = from; wire_sent(t, i); i++) {
+    if (peer_parse_ipv6(wire_sent(t, i), ip) && peer_parse_icmp6(ip, icmp) &&
+        icmp->type == type)
+      return i;
+  }
+  return -1;
+}
+
+int wire_count_icmp6(const itest_t *t, uint8_t type) {
+  peer_ip6_t ip;
+  peer_icmp_t icmp;
+  int n = 0, i = 0;
+  while ((i = wire_find_icmp6(t, (uint16_t)i, type, &ip, &icmp)) >= 0) {
+    n++;
+    i++;
+  }
+  return n;
+}

@@ -299,4 +299,115 @@ uint32_t peer_get32(const uint8_t *p);
 void peer_put16(uint8_t *p, uint16_t v);
 void peer_put32(uint8_t *p, uint32_t v);
 
+/* ── IPv6: Ethernet + IPv6 frames, ICMPv6 (Neighbor Discovery, MLD), UDP
+ *    and TCP over IPv6, the peer's own codec and checksum ── */
+
+/** The peer's link-local address (fe80::99), a router's link-local
+ *  address (fe80::1) and MAC, the prefix it advertises (2001:db8:1::/64),
+ *  a host beyond it (2001:db8:9::9), and the well-known groups */
+extern const uint8_t peer6_ll[16];
+extern const uint8_t router6_ll[16];
+extern const uint8_t router6_mac[6];
+extern const uint8_t prefix6[16];
+extern const uint8_t offlink6[16];
+extern const uint8_t all_nodes6[16];
+extern const uint8_t all_routers6[16];
+
+/** An IPv6 header as the peer writes it or reads it. */
+typedef struct {
+  const uint8_t *src, *dst; /* 16 bytes each */
+  uint8_t nh;               /* the fixed header's Next Header */
+  uint8_t hop_limit;
+  uint8_t tclass;
+  uint32_t flow; /* 20 bits */
+  /** Extension headers between the fixed header and the payload, their
+   *  Next Header fields filled in; NULL for none */
+  const uint8_t *ext;
+  uint16_t ext_len;
+  /* filled in by peer_parse_ipv6() */
+  uint16_t plen;          /* the Payload Length field */
+  uint8_t proto;          /* the upper-layer protocol, after the chain */
+  const uint8_t *payload; /* the upper-layer message */
+  uint16_t payload_len;
+} peer_ip6_t;
+
+/** A header from @p src to @p dst carrying @p nh: Hop Limit 64, traffic
+ *  class and flow label 0, no extension headers. */
+peer_ip6_t peer_ip6(const uint8_t *src, const uint8_t *dst, uint8_t nh);
+
+/**
+ * Ethernet + IPv6 header + the extension headers + @p len bytes of
+ * @p payload.  @return The frame length.
+ */
+uint16_t peer_ipv6_frame(uint8_t *frame, const uint8_t dst_mac[6],
+                         const uint8_t src_mac[6], const peer_ip6_t *ip,
+                         const void *payload, uint16_t len);
+
+/** The Ethernet address of an IPv6 group: 33:33 + its low 32 bits. */
+void peer_mcast6_mac(const uint8_t *group, uint8_t mac[6]);
+
+/** The solicited-node group of @p addr: ff02::1:ff + its low 24 bits. */
+void peer_solicited_node(const uint8_t *addr, uint8_t group[16]);
+
+/** fe80::/64 + the Modified EUI-64 identifier of @p mac. */
+void peer_link_local(const uint8_t mac[6], uint8_t addr[16]);
+
+/** The upper-layer checksum over the IPv6 pseudo-header (RFC 8200 §8.1):
+ *  the value to store with the field zero, 0 over a valid message. */
+uint16_t peer_cksum6(const uint8_t *src, const uint8_t *dst, uint8_t nh,
+                     const uint8_t *data, uint16_t len);
+
+/** An ICMPv6 message for @p ip (whose addresses the checksum covers):
+ *  type, code, the 4 bytes after the checksum, the body; @return its
+ *  length. */
+uint16_t peer_icmp6(uint8_t *out, const peer_ip6_t *ip, uint8_t type,
+                    uint8_t code, const uint8_t rest[4], const void *body,
+                    uint16_t len);
+
+/** A whole ICMPv6 frame from peer_mac to @p dst_mac. */
+uint16_t peer_icmp6_frame(uint8_t *frame, const uint8_t dst_mac[6],
+                          const peer_ip6_t *ip, uint8_t type, uint8_t code,
+                          const uint8_t rest[4], const void *body,
+                          uint16_t len);
+
+/** A Neighbor Discovery link-layer address option (type 1 source, 2
+ *  target) for @p mac; @return 8. */
+uint16_t peer_nd_lla(uint8_t *out, uint8_t type, const uint8_t mac[6]);
+
+/** A Prefix Information option; @return 32. */
+uint16_t peer_nd_prefix(uint8_t *out, const uint8_t prefix[16],
+                        uint8_t prefix_len, uint8_t flags, uint32_t valid_s,
+                        uint32_t preferred_s);
+
+/** A UDP datagram (checksummed over @p ip) to put in an IPv6 frame;
+ *  @return its length (8 + @p len). */
+uint16_t peer_udp6(uint8_t *out, const peer_ip6_t *ip, uint16_t sport,
+                   uint16_t dport, const void *data, uint16_t len);
+
+/** A TCP segment (checksummed over @p ip); @return its length. */
+uint16_t peer_tcp6(uint8_t *out, const peer_ip6_t *ip,
+                   const peer_tcp_seg_t *seg);
+
+/** Parse a frame as Ethernet + IPv6, walking Hop-by-Hop, Routing and
+ *  Destination Options headers: 1 if it is one. */
+int peer_parse_ipv6(const wire_frame_t *f, peer_ip6_t *ip);
+
+/** A parsed ICMPv6 message (cksum_ok over the pseudo-header) */
+int peer_parse_icmp6(const peer_ip6_t *ip, peer_icmp_t *icmp);
+int peer_parse_udp6(const peer_ip6_t *ip, peer_udp_t *udp);
+int peer_parse_tcp6(const peer_ip6_t *ip, peer_tcp_t *tcp);
+
+/** The Neighbor Discovery option of @p type in the @p len bytes of
+ *  options at @p opts, or NULL (also if an option is malformed). */
+const uint8_t *peer_nd_option(const uint8_t *opts, uint16_t len, uint8_t type);
+
+/** The first frame sent (from @p from on) that is ICMPv6 of @p type,
+ *  parsed: its index, or -1. */
+int wire_find_icmp6(const itest_t *t, uint16_t from, uint8_t type,
+                    peer_ip6_t *ip, peer_icmp_t *icmp);
+
+/** How many frames sent since the last wire_clear() are ICMPv6 of
+ *  @p type. */
+int wire_count_icmp6(const itest_t *t, uint8_t type);
+
 #endif /* WIRE_H */
