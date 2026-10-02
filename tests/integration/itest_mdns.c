@@ -1887,10 +1887,12 @@ TEST(itest_mdns_020_callback_renames_and_starts_again) {
  * is over, while the announcements are still going out, it is */
 TEST(itest_mdns_021_answers_only_once_probing_is_over) {
   peer_dns_msg_t r;
+  uint8_t inst[64];
   probing(records, N_REC);
   query(HOST, T_A, 0);
   query(HOST, T_HINFO, 0);
   query(SVC, T_PTR, 0);
+  query_knowing(SVC, T_PTR, C_IN, inst, peer_dns_name(inst, INST), 100);
   ticks(700, 250);
   ASSERT_EQ(answers(), 0);
   mdns_tick(&m, 50);
@@ -2152,6 +2154,57 @@ TEST(itest_mdns_041_malformed_messages_ignored) {
   peer_put16(q.buf + 6, 1);
   deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, q.buf, q.len);
   ASSERT_NOT_NULL(answered(&r, HOST, T_A));
+}
+
+/* REQ-MDNS-041: names that cannot be read — half a compression pointer,
+ * a pointer past the message, a label type other than 00 and 11, a label
+ * that runs past the end, more than 255 bytes — and records cut short
+ * draw no reply and no conflict */
+TEST(itest_mdns_041_malformed_names_ignored) {
+  static const uint8_t half_pointer[] = {0, 0, 0, 0, 0, 1,   0,
+                                         0, 0, 0, 0, 0, 0xC0};
+  static const uint8_t far_pointer[] = {0, 0, 0, 0,    0,    1, 0, 0, 0,
+                                        0, 0, 0, 0xC0, 0xFF, 0, 1, 0, 1};
+  static const uint8_t label_type[] = {0, 0, 0,    0,   0, 1, 0, 0, 0, 0,
+                                       0, 0, 0x41, 'a', 0, 0, 1, 0, 1};
+  static const uint8_t long_label[] = {0, 0, 0, 0, 0, 1,    0,
+                                       0, 0, 0, 0, 0, 0x3F, 'a'};
+  static uint8_t long_name[12 + 4 * 64 + 1 + 4];
+  peer_dns_t r;
+  peer_dns_msg_t a;
+  uint8_t addr[4];
+  unsigned i;
+  long_name[5] = 1;
+  for (i = 0; i < 4; i++) {
+    long_name[12 + i * 64] = 63;
+    memset(long_name + 13 + i * 64, 'a', 63);
+  }
+  long_name[sizeof(long_name) - 3] = 1; /* type A, class IN */
+  long_name[sizeof(long_name) - 1] = 1;
+  running(records, N_REC);
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, half_pointer, sizeof(half_pointer));
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, far_pointer, sizeof(far_pointer));
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, label_type, sizeof(label_type));
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, long_label, sizeof(long_label));
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, long_name, sizeof(long_name));
+  mdns_tick(&m, 200);
+  ASSERT_EQ(t.wire.tx_count, 0);
+
+  /* a response whose record says more rdata than there is, or stops in
+   * its header: nothing in it counts */
+  probing(records, N_REC);
+  peer_dns_begin(&r, 0, FLAG_QR | FLAG_AA);
+  peer_put32(addr, RIVAL);
+  peer_dns_rr(&r, 0, HOST, T_A, C_IN | C_TOP, 120, addr, 4);
+  peer_dns_end(&r);
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, r.buf, (uint16_t)(r.len - 1));
+  deliver(PEER_IP, MDNS_GROUP, MDNS_PORT, r.buf, (uint16_t)(r.len - 6));
+  ASSERT_EQ(conflicts, 0);
+  ticks(2000, 250);
+  ASSERT_EQ(mdns_state(&m), MDNS_STATE_RUNNING);
+  later();
+  query(HOST, T_A, 0);
+  ASSERT_NOT_NULL(answered(&a, HOST, T_A));
 }
 
 /* Three names whose TXT records do not fit one small packet together */
@@ -2679,6 +2732,7 @@ int main(void) {
   RUN_TEST(itest_mdns_032_goodbye_only_for_what_was_announced);
   RUN_TEST(itest_mdns_041_legacy_unicast_query_answered);
   RUN_TEST(itest_mdns_041_malformed_messages_ignored);
+  RUN_TEST(itest_mdns_041_malformed_names_ignored);
   RUN_TEST(itest_mdns_042_records_split_across_packets);
   RUN_TEST(itest_mdns_043_names_compressed);
   RUN_TEST(itest_mdns_056_other_hosts_records_never_used);

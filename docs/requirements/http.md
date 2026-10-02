@@ -27,7 +27,7 @@ This stack implements a minimal HTTP/1.0 server. It accepts HTTP/1.0 and HTTP/1.
 | REQ-HTTP-008 | MUST | Detect end of headers: empty line (CRLF CRLF) | RFC 9112 §5 | itest_http_008_end_of_the_header_section, test_http_009_trickled_request |
 | REQ-HTTP-009 | SHOULD | Extract Content-Length header (for POST body) | RFC 9110 §8.6 | itest_http_007_field_lines |
 | REQ-HTTP-010 | MUST | Respond 400 (Bad Request) to an HTTP/1.1 request without a Host header, and to any request with more than one Host header line | RFC 9112 §3.2 | itest_http_010_one_host_line, test_http_003_http11_client_gets_http10, test_http_013_bad_requests |
-| REQ-HTTP-011 | MUST | Tolerate missing Host header for HTTP/1.0 requests | RFC 9112 §3.3 | itest_http_002_get |
+| REQ-HTTP-011 | MUST | Tolerate missing Host header for HTTP/1.0 requests | RFC 9112 §3.2 | itest_http_002_get |
 | REQ-HTTP-012 | SHOULD | Handle requests with unknown/unsupported headers by ignoring them | RFC 9110 §5.1 | itest_http_007_field_lines |
 | REQ-HTTP-044 | MUST | Reject with 400 (Bad Request) a request with a bare CR (one not followed by LF) or a NUL in its request line or in a field value, rather than hand either to the application (an LF always ends the line) | RFC 9112 §2.2, RFC 9110 §5.5 | itest_http_044_bare_cr_and_nul_rejected |
 | REQ-HTTP-045 | MUST | Respond 400 (Bad Request) to any request whose Host field value is invalid — not `uri-host [ ":" port ]`; an empty value is valid | RFC 9112 §3.2, RFC 9110 §7.2 | itest_http_045_invalid_host_value |

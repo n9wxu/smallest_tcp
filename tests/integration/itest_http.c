@@ -1264,9 +1264,10 @@ TEST(itest_http_065_early_close_frees_the_slot) {
 }
 
 /* REQ-HTTP-065: a slot is held no longer than the timeouts allow — a TCP
- * handshake never completed, a request never completed, a response never
- * acknowledged: the connection is reset and the slot listens again.  A
- * listener with no client is not timed */
+ * handshake never completed (by the server's timer, or by TCP's own
+ * giving up), a request never completed, a response never acknowledged:
+ * the connection is reset and the slot listens again.  A listener with
+ * no client is not timed */
 TEST(itest_http_065_timeouts_free_the_slot) {
   static peer_client_t other;
   static const char get[] = "GET / HTTP/1.0\r\n\r\n";
@@ -1288,6 +1289,17 @@ TEST(itest_http_065_timeouts_free_the_slot) {
   http_server_tick(&srv, HTTP_REQUEST_TIMEOUT_MS - 1);
   ASSERT_TRUE(!peer_connect(&t, &other, next_port++, PORT)); /* still held */
   http_server_tick(&srv, 1);
+  ASSERT_TRUE(next_exchange(get));
+  ASSERT_TRUE(status_is(200));
+
+  /* a SYN and nothing more, and TCP itself gives the handshake up */
+  memset(&cl, 0, sizeof(cl));
+  cl.sport = next_port++;
+  cl.dport = PORT;
+  cl.snd_nxt = 7000;
+  segment(TCPF_SYN, NULL, 0);
+  itest_advance(&t, 600000, 1000);
+  itest_poll(&t);
   ASSERT_TRUE(next_exchange(get));
   ASSERT_TRUE(status_is(200));
 

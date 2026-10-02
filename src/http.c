@@ -941,7 +941,9 @@ void http_server_poll(http_server_t *s) {
     switch (c->state) {
     case S_LISTEN:
       if (!tcp_open(c)) {
-        if (st == TCP_CLOSED) /* e.g. RST during the handshake */
+        /* TCP returns a failed handshake to LISTEN itself; a slot found
+         * closed all the same is armed again */
+        if (st == TCP_CLOSED)
           slot_listen(s, c);
         break;
       }

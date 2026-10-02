@@ -370,7 +370,7 @@ state instead of using callbacks.
 
 | State | Meaning | Leaves when |
 |---|---|---|
-| `S_LISTEN` | TCP listening or in its handshake | TCP reaches ESTABLISHED (or CLOSE-WAIT): the transport's `accepted()` runs, the request timer starts, and the slot goes straight on to `S_RECV` in the same poll.  A handshake that ends in CLOSED (e.g. a RST) re-arms the listener |
+| `S_LISTEN` | TCP listening or in its handshake | TCP reaches ESTABLISHED (or CLOSE-WAIT): the transport's `accepted()` runs, the request timer starts, and the slot goes straight on to `S_RECV` in the same poll.  A handshake that fails (a RST, no ACK) goes back to LISTEN in TCP itself ([tcp.md](tcp.md)); a slot found CLOSED all the same is armed again |
 | `S_RECV` | Reading the request into the request buffer | A complete request (or an error) is answered: `S_SEND`.  If the client can send no more before the request is complete: the stream is ended (`S_FINISHING`) without an answer |
 | `S_SEND` | Streaming the response; anything more the client sends is read and discarded | All of it is written and `delivered()`: `end_stream()` |
 | `S_FINISHING` | `end_stream()` has called the transport's `finish()` (TLS: close_notify); still discarding input | `close_when_delivered()`: once `delivered()`, `tcp_close()` sends our FIN → `S_CLOSING` |

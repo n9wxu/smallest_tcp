@@ -164,7 +164,7 @@ RFC 6762 §8.1 requires the probe (MUST) and gives its number and timing in pros
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
 | REQ-MDNS-040 | MUST | Respond correctly to the queries of the mDNS implementations of macOS and iOS (mDNSResponder), Linux (Avahi) and Android: QU and QM questions, several questions in a message, known answers.  `tests/blackbox/mdns_interop.sh` (Avahi, in CI) and `mdns_interop_macos.sh` (mDNSResponder) run the real resolvers against the responder; nothing runs against iOS or Android | Interoperability | itest_dnssd_026_browse_and_resolve_as_resolvers_ask |
-| REQ-MDNS-041 | MUST | Answer legacy unicast queries (source port ≠ 5353) by unicast to the querier's port, repeating its ID and question, with TTL ≤ 10 s; never crash on unexpected IDs or malformed messages | RFC 6762 §6.7 | itest_mdns_041_legacy_unicast_query_answered, itest_mdns_041_malformed_messages_ignored, itest_mdns6_028_unicast_and_legacy_answers_over_ipv6, test_mdns_014_legacy_unicast |
+| REQ-MDNS-041 | MUST | Answer legacy unicast queries (source port ≠ 5353) by unicast to the querier's port, repeating its ID and question, with TTL ≤ 10 s; never crash on unexpected IDs or malformed messages | RFC 6762 §6.7 | itest_mdns_041_legacy_unicast_query_answered, itest_mdns_041_malformed_messages_ignored, itest_mdns_041_malformed_names_ignored, itest_mdns6_028_unicast_and_legacy_answers_over_ipv6, test_mdns_014_legacy_unicast |
 
 ### Buffer and Size
 
