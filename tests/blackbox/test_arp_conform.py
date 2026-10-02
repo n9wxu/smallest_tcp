@@ -22,7 +22,7 @@ from helpers import (
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEST-ARP-001  ARP who-has for SUT IP → reply received
+# ARP who-has for SUT IP → reply received
 # REQ-ARP-001
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -36,7 +36,7 @@ def test_arp_001_who_has_gets_reply(ctx):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEST-ARP-002  Reply hwsrc and sender IP are correct
+# Reply hwsrc and sender IP are correct
 # REQ-ARP-001, REQ-ARP-002
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -58,12 +58,12 @@ def test_arp_002_reply_fields_correct(ctx):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEST-ARP-003  who-has for unrelated IP → silence
-# REQ-ARP-003
+# who-has for unrelated IP → silence
+# REQ-ARP-004
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_arp_003_who_has_wrong_ip_is_silent(ctx):
-    """REQ-ARP-003: SUT MUST NOT reply to who-has for an IP it does not own."""
+    """REQ-ARP-004: SUT MUST NOT reply to who-has for an IP it does not own."""
     foreign_ip = "10.0.0.99"   # not the SUT's IP
     req = build_arp(ctx, op="who-has", target_ip=foreign_ip)
 
@@ -77,18 +77,20 @@ def test_arp_003_who_has_wrong_ip_is_silent(ctx):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEST-ARP-004  ARP request causes SUT to learn our MAC (verified via ping)
-# REQ-ARP-005
+# After an ARP exchange, a ping is answered at our MAC
+# REQ-ARP-029
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_arp_004_request_populates_cache(ctx):
     """
-    REQ-ARP-005: SUT MUST cache the sender's IP→MAC from every ARP request it
-    receives.  Verified by: send ARP who-has → SUT learns our IP→MAC → send
-    ICMP ping → SUT's reply arrives on our MAC (not dropped).
+    REQ-ARP-029: the SUT's replies reach the host that asked, whether it
+    keeps an ARP cache (and learned our MAC from the who-has) or, as this
+    stack does, answers at the MAC the request's frame came from.  Verified
+    by: send ARP who-has → send ICMP ping → the SUT's reply arrives at our
+    MAC.
     """
     from helpers import build_icmp_echo, send_recv_icmp
-    # Re-send ARP who-has so SUT (re-)learns our MAC
+    # An ARP who-has first: a SUT with a cache (re-)learns our MAC from it
     req = build_arp(ctx, op="who-has", target_ip=ctx.sut_ip)
     send_pkt(ctx, req)
     time.sleep(0.05)
@@ -96,12 +98,12 @@ def test_arp_004_request_populates_cache(ctx):
     ping = build_icmp_echo(ctx, id=0xAA, seq=1, data=b"cache")
     replies = send_recv_icmp(ctx, ping)
     assert replies, (
-        "No ICMP reply after ARP cache update — SUT may not have learned our MAC"
+        "No ICMP reply after an ARP exchange — the SUT does not reach our MAC"
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEST-ARP-005  Repeated who-has → consistent MAC
+# Repeated who-has → consistent MAC
 # REQ-ARP-001
 # ══════════════════════════════════════════════════════════════════════════════
 

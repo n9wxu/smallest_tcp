@@ -1,6 +1,6 @@
 /**
  * @file arp.c
- * @brief ARP (RFC 826).  REQ-ARP-001..037.
+ * @brief ARP (RFC 826).  REQ-ARP-001..041.
  *
  * No ARP cache: the gateway's MAC is kept in net_t, other peers' MACs in
  * the connections that use them.
@@ -53,7 +53,7 @@ static int probe_conflict(const net_t *net, const uint8_t *pkt) {
           !net_mac_equal(pkt + ARP_OFF_SHA, net->mac));
 }
 
-/* REQ-ARP-001..013 */
+/* REQ-ARP-001..014, 034..037 */
 void arp_input(net_t *net, const eth_frame_t *eth) {
   const uint8_t *pkt = eth->payload;
   if (!arp_is_ethernet_ipv4(pkt, eth->payload_len))

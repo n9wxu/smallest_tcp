@@ -1,7 +1,7 @@
 # Address Resolution — Design
 
 **Files:** `include/arp.h`, `src/arp.c`; IPv6 in `src/ndp.c`, `src/ipv6.c`
-**Last updated:** 2026-09-27
+**Requirements:** [arp.md](../requirements/arp.md)
 
 ## 1. No cache
 
@@ -10,7 +10,7 @@ addresses live where they are used:
 
 | Where | Holds | Filled by |
 |---|---|---|
-| `net_t.gateway_mac`, `gateway_mac_valid` | The IPv4 gateway's MAC | `arp_input()`, from an ARP *reply* whose sender IP is `net->gateway_ipv4` |
+| `net_t.gateway_mac`, `gateway_mac_valid`, `gateway_mac_s` | The IPv4 gateway's MAC, and the seconds it stays valid | `arp_input()`, from an ARP *reply* whose sender IP is `net->gateway_ipv4` |
 | `net_t.ip6.router.mac` | The IPv6 default router's MAC | Router Advertisements (Source Link-Layer Address option, else the frame's source) |
 | `tcp_conn_t.remote_mac`, `mac_valid` | The peer's (or next hop's) MAC for the connection's life | The SYN that opened a passive connection, or the `remote_mac` argument of `tcp_connect()` / `tcp6_connect()` |
 | `tftp_client_t.server_mac` | The TFTP server's MAC | The `server_mac` argument of `tftp_client_get()` |
@@ -33,7 +33,7 @@ traffic is replies — which need no resolution at all (§2).
 The stack provides the pieces; the application sequences them.
 
 ```c
-uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip); /* dst_ip if on-link, a broadcast or a group, else gateway */
+uint32_t arp_next_hop(const net_t *net, uint32_t dst_ip); /* dst_ip if on-link, the limited broadcast or a group, else gateway */
 net_err_t arp_request(net_t *net, uint32_t target_ip);    /* broadcast a request */
 ```
 
@@ -44,7 +44,7 @@ link, at the broadcast MAC or the group's (RFC 1122 §3.3.1.1, RFC 1112 §6.2;
 REQ-ARP-041).  Because the only MAC the stack
 learns from ARP is the gateway's, a peer on the local subnet is resolved by
 pointing the gateway at it for the duration — this is what the `tls_client`
-demo does:
+and `dtls_client` demos do:
 
 ```c
 uint32_t hop = arp_next_hop(&net, server);
@@ -57,6 +57,10 @@ while (!net.gateway_mac_valid && !timed_out()) {
 }
 tcp_connect(&net, &conn, server, net.gateway_mac, port, local_port);
 ```
+
+`arp_request()` returns `NET_OK`, `NET_ERR_BUSY` when the rate limit below
+holds the request back, `NET_ERR_BUF_TOO_SMALL` for a TX buffer of less than
+42 bytes, or `net_transmit()`'s error.
 
 This changes where all off-link traffic goes while it is in effect; a device
 that also needs its real gateway must restore `gateway_ipv4` and resolve it
@@ -72,24 +76,23 @@ or `DHCPV4_EVT_RENEWED` while `gateway_mac_valid` is 0 — and the
 gateway's reply fills in `gateway_mac` (REQ-DHCPv4-049).  A renewal that
 keeps the gateway keeps its MAC.
 
-**Retries and time-outs are the application's** (the demo retries every
-500 ms).  The stack keeps two ARP timers of its own, run by `arp_tick()` from
-`net_tick()`:
+**Retries and time-outs are the application's** (the demos retry every
+500 ms and give up when their own time-out passes).  The stack keeps two ARP
+timers of its own, run by `arp_tick()` from `net_tick()`:
 
 - **No flooding** (REQ-ARP-039, RFC 1122 §2.3.2.1): `arp_request()` remembers
-  the targets it asked for in the last second (`NET_ARP_RATE_SLOTS`, default
-  2) and refuses, with `NET_ERR_BUSY` and nothing sent, to ask for one of
-  them again — or for any target while every slot is in use.  A demo
-  retrying every 500 ms therefore sends a request a second.
+  the targets it asked for in the last second (`net_t.arp_recent[]`,
+  `NET_ARP_RATE_SLOTS` of them, default 2) and refuses, with `NET_ERR_BUSY`
+  and nothing sent, to ask for one of them again — or for any target while
+  every slot is in use.  A demo retrying every 500 ms therefore sends a
+  request a second.
 - **Out-of-date entries flushed** (REQ-ARP-038): a gateway MAC learned from
-  an ARP reply is valid for `NET_ARP_GATEWAY_TIMEOUT_MS` (5 minutes by
-  default, configurable), and each reply from the gateway starts the time
+  an ARP reply is valid for `NET_ARP_GATEWAY_TIMEOUT_MS` (300 000 ms — 5
+  minutes — by default, configurable), counted down in whole seconds in
+  `net_t.gateway_mac_s`, and each reply from the gateway starts the time
   again; then `gateway_mac_valid` drops to 0 and the application resolves it
   afresh.  A MAC the application sets by hand (`gateway_mac_s` 0) does not
-  expire.  The former
-`NET_DEFAULT_ARP_RETRY_MS` / `NET_DEFAULT_ARP_MAX_RETRIES` settings and the
-`arp_retry_ms` / `arp_max_retries` fields in `net_t` never had any code
-behind them and have been removed.
+  expire.
 
 ### Gateway-only mode
 
@@ -105,9 +108,10 @@ in RAM.
   the requester's MAC.  The requester's mapping is not remembered.  Before
   an address is configured (0.0.0.0, waiting for DHCP) nothing is answered.
 - **Reply from the gateway** (`SPA == net->gateway_ipv4`): store its MAC and
-  set `gateway_mac_valid`.  Without a gateway (0.0.0.0) no reply is one.  Any such reply is accepted, solicited or not, so
-  a gratuitous ARP reply from the gateway updates it; so would a spoofed one
-  (ARP has no authentication).
+  set `gateway_mac_valid`.  Without a gateway (0.0.0.0) no reply is one.
+  Any such reply is accepted, solicited or not, so a gratuitous ARP reply
+  from the gateway updates it; so would a spoofed one (ARP has no
+  authentication).
 - **An address being probed** (`net->arp_probe_ip`, set by the DHCPv4
   client while it checks the address of an ACK — [dhcpv4.md
   §3.5](dhcpv4.md#35-receiving)): any ARP packet whose sender IP is that

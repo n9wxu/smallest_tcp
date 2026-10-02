@@ -37,9 +37,12 @@
  */
 void arp_input(net_t *net, const eth_frame_t *eth);
 
-/** Broadcast a request for @p target_ip (host byte order).
- *  @return NET_ERR_BUSY, sending nothing, if that target was requested in
- *  the last second (or NET_ARP_RATE_SLOTS others were). */
+/** Broadcast a request for @p target_ip (host byte order); the answer, if
+ *  @p target_ip is net->gateway_ipv4, arrives in net->gateway_mac.
+ *  @return NET_OK; NET_ERR_BUSY, sending nothing, if that target was
+ *  requested in the last second (or NET_ARP_RATE_SLOTS others were);
+ *  NET_ERR_BUF_TOO_SMALL for a TX buffer of less than 42 bytes; else
+ *  net_transmit()'s error. */
 net_err_t arp_request(net_t *net, uint32_t target_ip);
 
 /** Age the gateway's MAC and the request rate limit; net_tick() calls it. */

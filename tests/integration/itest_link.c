@@ -12,6 +12,10 @@
 #if NET_USE_IPV6
 #include "ipv6.h"
 #endif
+#if NET_USE_TCP
+#include "tcp.h"
+#include "tcp_buf.h"
+#endif
 
 static itest_t t;
 static int delivered;
@@ -139,9 +143,9 @@ TEST(itest_eth_011_header_sent) {
   ASSERT_EQ(peer_get16(f->data + 12), 0x0806);
 }
 
-/* REQ-ETH-018: the payload is the frame less its 14-byte header: an ARP
- * request one byte short is no ARP packet; padded to the 60-byte minimum
- * frame it is one */
+/* REQ-ETH-018, REQ-ARP-007: the payload is the frame less its 14-byte
+ * header: an ARP request one byte short is no ARP packet; padded to the
+ * 60-byte minimum frame it is one */
 TEST(itest_eth_018_payload_is_the_rest_of_the_frame) {
   uint8_t f[128];
   uint16_t n;
@@ -385,25 +389,200 @@ TEST(itest_arp_004_unconfigured_answers_nothing) {
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
-/* REQ-ARP-011, 012, REQ-DHCPv4-049: the gateway's reply is learned; with
- * no gateway, a reply from 0.0.0.0 is no gateway's */
+/* REQ-ARP-004, 005, 006, 007: a request for another host's address, or one
+ * that is not Ethernet/IPv4 ARP (hardware type, protocol type, address
+ * lengths), is dropped without an answer */
+TEST(itest_arp_005_only_ethernet_ipv4_requests_for_us) {
+  static const struct {
+    uint8_t offset, value;
+  } wrong[] = {
+      {14 + 1, 6},    /* hardware type 6: IEEE 802 */
+      {14 + 0, 1},    /* hardware type 0x0101 */
+      {14 + 2, 0x86}, /* protocol type 0x8600 */
+      {14 + 3, 0x06}, /* protocol type 0x0806 */
+      {14 + 4, 8},    /* hardware address length 8 */
+      {14 + 5, 16},   /* protocol address length 16 */
+  };
+  uint8_t f[64];
+  uint16_t n, i;
+  up();
+  itest_receive(&t, f,
+                peer_arp_frame(f, broadcast_mac, 1, peer_mac, PEER_IP, zero_mac,
+                               PEER2_IP));
+  ASSERT_EQ(t.wire.tx_count, 0);
+  for (i = 0; i < sizeof(wrong) / sizeof(wrong[0]); i++) {
+    n = arp_request_frame(f);
+    f[wrong[i].offset] = wrong[i].value;
+    itest_receive(&t, f, n);
+    ASSERT_EQ(t.wire.tx_count, 0);
+  }
+  itest_receive(&t, f, arp_request_frame(f));
+  ASSERT_EQ(t.wire.tx_count, 1);
+}
+
+static const uint8_t gw_mac[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
+#define GW_IP 0x0A0000FEu
+
+/* REQ-ARP-010, 011, 012, 013, 027, 037, REQ-DHCPv4-049, REQ-IPv4-076
+ * (deviation: one gateway): a reply from the address being resolved —
+ * net_t.gateway_ipv4 — puts its MAC in net_t.gateway_mac and marks it
+ * valid; a reply from any other address, or from 0.0.0.0 with no gateway,
+ * is dropped */
 TEST(itest_arp_011_gateway_learned_only_from_the_gateway) {
   uint8_t f[64];
-  static const uint8_t gw[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x01};
   itest_up(&t, 1514, 1514);
   t.net.gateway_ipv4 = 0;
   t.net.gateway_mac_valid = 0;
   itest_receive(
       &t, f,
-      peer_arp_frame(f, t.net.mac, 2, gw, 0, t.net.mac, t.net.ipv4_addr));
+      peer_arp_frame(f, t.net.mac, 2, gw_mac, 0, t.net.mac, t.net.ipv4_addr));
   ASSERT_FALSE(t.net.gateway_mac_valid);
-  t.net.gateway_ipv4 = 0x0A0000FEu;
+  t.net.gateway_ipv4 = GW_IP;
   itest_receive(&t, f,
-                peer_arp_frame(f, t.net.mac, 2, gw, 0x0A0000FEu, t.net.mac,
+                peer_arp_frame(f, t.net.mac, 2, other_mac, PEER2_IP, t.net.mac,
+                               t.net.ipv4_addr));
+  ASSERT_FALSE(t.net.gateway_mac_valid);
+  itest_receive(&t, f,
+                peer_arp_frame(f, t.net.mac, 2, gw_mac, GW_IP, t.net.mac,
                                t.net.ipv4_addr));
   ASSERT_TRUE(t.net.gateway_mac_valid);
-  ASSERT_MEM_EQ(t.net.gateway_mac, gw, 6);
+  ASSERT_MEM_EQ(t.net.gateway_mac, gw_mac, 6);
+  itest_receive(&t, f,
+                peer_arp_frame(f, t.net.mac, 2, other_mac, PEER2_IP, t.net.mac,
+                               t.net.ipv4_addr));
+  ASSERT_MEM_EQ(t.net.gateway_mac, gw_mac, 6);
+  ASSERT_EQ(t.wire.tx_count, 0);
 }
+
+/* REQ-ARP-014, 034, 035, 036: only a reply teaches a MAC.  A request from
+ * the gateway's address — for ours, or gratuitous — is answered if it asks
+ * for us and teaches nothing; the gateway's gratuitous reply is learned;
+ * another host's gratuitous ARP is dropped */
+TEST(itest_arp_036_requests_teach_nothing) {
+  uint8_t f[64];
+  up();
+  t.net.gateway_ipv4 = GW_IP;
+  t.net.gateway_mac_valid = 0;
+  itest_receive(&t, f,
+                peer_arp_frame(f, broadcast_mac, 1, gw_mac, GW_IP, zero_mac,
+                               t.net.ipv4_addr));
+  ASSERT_EQ(t.wire.tx_count, 1); /* answered */
+  ASSERT_FALSE(t.net.gateway_mac_valid);
+  itest_receive(
+      &t, f,
+      peer_arp_frame(f, broadcast_mac, 1, gw_mac, GW_IP, zero_mac, GW_IP));
+  ASSERT_FALSE(t.net.gateway_mac_valid);
+  itest_receive(&t, f,
+                peer_arp_frame(f, broadcast_mac, 2, other_mac, PEER2_IP,
+                               broadcast_mac, PEER2_IP));
+  ASSERT_FALSE(t.net.gateway_mac_valid);
+  itest_receive(
+      &t, f,
+      peer_arp_frame(f, broadcast_mac, 2, gw_mac, GW_IP, broadcast_mac, GW_IP));
+  ASSERT_TRUE(t.net.gateway_mac_valid);
+  ASSERT_MEM_EQ(t.net.gateway_mac, gw_mac, 6);
+  ASSERT_EQ(t.wire.tx_count, 1);
+}
+
+/* REQ-ARP-016, 017, 019, 020, 025, 026, 033, REQ-ARP-015 (deviation: the
+ * application asks): arp_request() broadcasts a request for the address it
+ * is given — the destination if on-link, else the gateway (arp_next_hop())
+ * — from our MAC and address; for our own address it is a gratuitous ARP */
+TEST(itest_arp_016_request_sent) {
+  peer_arp_t a;
+  up();
+  t.net.gateway_ipv4 = GW_IP;
+  ASSERT_EQ(arp_request(&t.net, arp_next_hop(&t.net, PEER2_IP)), NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, broadcast_mac, 6);
+  ASSERT_EQ(wire_sent(&t, 0)->len, 14 + 28);
+  ASSERT_TRUE(peer_parse_arp(wire_sent(&t, 0), &a));
+  ASSERT_EQ(a.op, 1);
+  ASSERT_MEM_EQ(a.sha, t.net.mac, 6);
+  ASSERT_EQ(a.spa, t.net.ipv4_addr);
+  ASSERT_MEM_EQ(a.tha, zero_mac, 6);
+  ASSERT_EQ(a.tpa, PEER2_IP);
+  ASSERT_EQ(arp_request(&t.net, arp_next_hop(&t.net, REMOTE_IP)), NET_OK);
+  ASSERT_TRUE(peer_parse_arp(wire_sent(&t, 1), &a));
+  ASSERT_EQ(a.tpa, GW_IP);
+  itest_advance(&t, 1000, 100);
+  ASSERT_EQ(arp_request(&t.net, t.net.ipv4_addr), NET_OK);
+  ASSERT_TRUE(peer_parse_arp(wire_sent(&t, 2), &a));
+  ASSERT_MEM_EQ(wire_sent(&t, 2)->data, broadcast_mac, 6);
+  ASSERT_EQ(a.spa, t.net.ipv4_addr);
+  ASSERT_EQ(a.tpa, t.net.ipv4_addr);
+}
+
+/* An Echo Request of @p len data bytes from @p src at @p src_mac */
+static void echo_request_from(uint32_t src, const uint8_t *src_mac) {
+  static const uint8_t rest[4] = {0, 1, 0, 1};
+  uint8_t msg[64], f[128];
+  peer_ip_t ip = peer_ip(src, t.net.ipv4_addr, 1);
+  uint16_t n = peer_icmp(msg, 8, 0, rest, "ping", 4);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, src_mac, &ip, msg, n));
+}
+
+/* REQ-ARP-029: there is no ARP cache to consult or fill: a host never
+ * heard from is answered at once, at the MAC its frame came from, with no
+ * ARP request first — and the next host likewise */
+TEST(itest_arp_029_replies_need_no_resolution) {
+  peer_ip_t ip;
+  up();
+  t.net.gateway_mac_valid = 0;
+  echo_request_from(PEER2_IP, other_mac);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, other_mac, 6);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 0), &ip));
+  ASSERT_EQ(ip.dst, PEER2_IP);
+  echo_request_from(REMOTE_IP, gw_mac); /* off-link, through a router */
+  ASSERT_EQ(t.wire.tx_count, 2);
+  ASSERT_MEM_EQ(wire_sent(&t, 1)->data, gw_mac, 6);
+  ASSERT_TRUE(peer_parse_ipv4(wire_sent(&t, 1), &ip));
+  ASSERT_EQ(ip.dst, REMOTE_IP);
+  ASSERT_FALSE(t.net.gateway_mac_valid); /* nothing learned on the way */
+}
+
+#if NET_USE_TCP
+/* REQ-ARP-030: a connection keeps its peer's MAC: the SYN,ACK goes to the
+ * MAC the SYN came from, and so does its retransmission a second later,
+ * with no frame of the peer's at hand and no ARP request */
+TEST(itest_arp_030_connection_keeps_its_peers_mac) {
+  static tcp_conn_t conn;
+  static tcp_conn_t *table[1] = {&conn};
+  static tcp_saw_tx_ctx_t tx_ctx;
+  static tcp_saw_rx_ctx_t rx_ctx;
+  static uint8_t tx_mem[256], rx_mem[256];
+  uint8_t f[128];
+  peer_tcp_seg_t syn;
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  up();
+  t.net.gateway_mac_valid = 0;
+  tcp_saw_tx_init(&tx_ctx, tx_mem, sizeof(tx_mem));
+  tcp_saw_rx_init(&rx_ctx, rx_mem, sizeof(rx_mem));
+  tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
+                NULL);
+  tcp_set_connections(&t.net, table, 1);
+  ASSERT_EQ(tcp_listen(&conn, 80), NET_OK);
+  memset(&syn, 0, sizeof(syn));
+  syn.sport = 40000;
+  syn.dport = 80;
+  syn.seq = 1000;
+  syn.flags = TCPF_SYN;
+  syn.window = 4096;
+  syn.mss = 1460;
+  itest_receive(&t, f, peer_tcp_frame(f, &t.net, PEER_IP, &syn));
+  ASSERT_EQ(wire_find_tcp(&t, 0, &ip, &tcp), 0);
+  ASSERT_EQ(tcp.flags, TCPF_SYN | TCPF_ACK);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, peer_mac, 6);
+  wire_clear(&t);
+  itest_advance(&t, 1500, 100);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_EQ(wire_find_tcp(&t, 0, &ip, &tcp), 0);
+  ASSERT_EQ(tcp.flags, TCPF_SYN | TCPF_ACK);
+  ASSERT_MEM_EQ(wire_sent(&t, 0)->data, peer_mac, 6);
+}
+#endif
 
 /* The gateway's ARP reply, received */
 static void gateway_replies(const uint8_t mac[6]) {
@@ -429,7 +608,8 @@ TEST(itest_arp_038_gateway_mac_expires) {
   ASSERT_FALSE(t.net.gateway_mac_valid);
 }
 
-/* REQ-ARP-039: no more than one request a second for the same address */
+/* REQ-ARP-039, 022: no more than one request a second for the same
+ * address */
 TEST(itest_arp_039_no_flooding) {
   up();
   arp_request(&t.net, PEER_IP);
@@ -537,7 +717,14 @@ int main(void) {
   RUN_TEST(itest_eth_025_own_frames_not_delivered);
   RUN_TEST(itest_arp_001_request_for_our_address_answered);
   RUN_TEST(itest_arp_004_unconfigured_answers_nothing);
+  RUN_TEST(itest_arp_005_only_ethernet_ipv4_requests_for_us);
   RUN_TEST(itest_arp_011_gateway_learned_only_from_the_gateway);
+  RUN_TEST(itest_arp_036_requests_teach_nothing);
+  RUN_TEST(itest_arp_016_request_sent);
+  RUN_TEST(itest_arp_029_replies_need_no_resolution);
+#if NET_USE_TCP
+  RUN_TEST(itest_arp_030_connection_keeps_its_peers_mac);
+#endif
   RUN_TEST(itest_arp_038_gateway_mac_expires);
   RUN_TEST(itest_arp_039_no_flooding);
   RUN_TEST(itest_arp_041_broadcast_and_multicast_next_hop);
