@@ -486,7 +486,8 @@ TEST(itest_udp_038_port_unreachable_reported) {
 }
 
 /* REQ-UDP-038, REQ-ICMPv4-042: an error about a datagram that was not ours
- * (another source), or that quotes TCP, reaches no UDP handler */
+ * (another source), that quotes TCP, or whose quote stops short of the UDP
+ * ports, reaches no UDP handler */
 TEST(itest_udp_038_only_our_datagrams_errors) {
   uint8_t msg[128], f[192], quoted[28];
   peer_ip_t ip = peer_ip(PEER_IP, t.net.ipv4_addr, 1);
@@ -502,6 +503,9 @@ TEST(itest_udp_038_only_our_datagrams_errors) {
   memcpy(quoted, wire_sent(&t, 0)->data + 14, 28);
   quoted[9] = 6; /* TCP */
   n = peer_icmp(msg, 3, 3, NULL, quoted, 28);
+  itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
+  memcpy(quoted, wire_sent(&t, 0)->data + 14, 28);
+  n = peer_icmp(msg, 3, 3, NULL, quoted, 22); /* half the ports */
   itest_receive(&t, f, peer_ipv4_frame(f, t.net.mac, peer_mac, &ip, msg, n));
   ASSERT_EQ(errors, 0);
 }
