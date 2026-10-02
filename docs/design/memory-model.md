@@ -38,11 +38,12 @@ One `net_t` per network interface (`include/net.h`):
 | `igmp_ops`, `igmp_delay_ms[]`, `igmp_v1_ms` | IGMP, once `igmp_join()` installs it: its input and timer, each group's report delay after a query, and the IGMPv1-querier state (RFC 2236; [mdns.md §10](mdns.md#10-multicast-igmp-and-mld)) | `NET_USE_IPV4` and `NET_MAX_MCAST_GROUPS > 0` |
 | `reasm`, `reasm_cap`, `reasm_ops` | The application's reassembly buffer, the data it holds, and reassembly's input and timer — all set by `ipv4_set_reassembly()` | `NET_USE_IPV4` |
 | `arp_probe_ip`, `arp_probe_conflict` | An address being checked before use, and whether `arp_input()` saw it in use (RFC 5227; the DHCPv4 client's, [dhcpv4.md §3.1](dhcpv4.md#31-state-machine)) | `NET_USE_IPV4` |
-| `ip6` | Address slots with DAD state and lifetimes, hop limit, RA flags, default router, router-solicitation and lifetime timers, MLD timers | `NET_USE_IPV6` |
+| `ip6` | Address slots with DAD state and lifetimes, hop limit, RA flags, default router, router-solicitation and lifetime timers, MLD timers, and the token bucket of the ICMPv6 errors sent (`error_tokens`, `error_refill_ms`; `ICMPV6_ERROR_BURST`, `ICMPV6_ERROR_INTERVAL_MS`) | `NET_USE_IPV6` |
 | `mcast6_groups[][16]` | Joined IPv6 groups (`::` = free slot) | `NET_USE_IPV6` and `NET_MAX_MCAST6_GROUPS > 0` |
 | `udp_ports`, `udp_port_count` | The UDP port table | `NET_USE_UDP` and `NET_USE_IPV4` |
 | `udp_rx_dst`, `udp_error_handler` | The destination address of the datagram being handled (`udp_rx_dst_ip()`), and where ICMP errors about UDP go (`udp_set_error_handler()`) | `NET_USE_UDP` and `NET_USE_IPV4` |
 | `udp6_ports`, `udp6_port_count` | The UDP-over-IPv6 port table | `NET_USE_UDP` and `NET_USE_IPV6` |
+| `udp6_error_handler` | Where ICMPv6 errors about UDP go (`udp6_set_error_handler()`) | `NET_USE_UDP` and `NET_USE_IPV6` |
 | `tcp_conns`, `tcp_conn_count` | The TCP connection table (pointers) | `NET_USE_TCP` |
 | `tcp_clock` | 4 µs ticks, advanced by `tcp_tick()`, for initial sequence numbers ([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)) | `NET_USE_TCP` |
 
@@ -52,8 +53,8 @@ Size on Cortex-M0 (`arm-none-eabi-gcc -mcpu=cortex-m0`):
 |---|---|
 | IPv4, UDP only, no multicast (the `make arm-size` build) | 116 bytes |
 | IPv4, UDP + TCP, one multicast group (the defaults of `net_config.h`) | 144 bytes |
-| Dual stack, the other settings default (`NET_USE_IPV6=1`; the CMake default) | 264 bytes |
-| IPv6 only (`NET_USE_IPV4=0`, `NET_USE_IPV6=1`) | 176 bytes |
+| Dual stack, the other settings default (`NET_USE_IPV6=1`; the CMake default) | 268 bytes |
+| IPv6 only (`NET_USE_IPV4=0`, `NET_USE_IPV6=1`) | 180 bytes |
 
 Because the configuration changes this layout, the library and the
 application must be built with the same settings
