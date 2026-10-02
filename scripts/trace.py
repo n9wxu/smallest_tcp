@@ -9,7 +9,8 @@ tests/integration/*.c, tests/unit/*.c and tests/blackbox/*.py.  A citation
 may list several numbers of one prefix — "REQ-TCP-046, 047",
 "REQ-UDP-002/005", "REQ-TCP-046..049".
 
-Prints, per requirement document, how many MUST rows (MUST, MUST NOT) are
+Prints, per requirement document, how many MUST rows (MUST, MUST NOT,
+SHALL, SHALL NOT, REQUIRED) are
 cited by a black-box test (integration or blackbox suite) or by any test;
 how many no test can verify — the Test ID column says "not observable" or
 "not implemented"; and how many are left with none.  --untested DOC lists

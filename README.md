@@ -502,7 +502,7 @@ include(FetchContent)
 FetchContent_Declare(
     smallest_tcp
     GIT_REPOSITORY https://github.com/n9wxu/smallest_tcp.git
-    GIT_TAG        v0.1.4   # a release: see CHANGELOG.md
+    GIT_TAG        vX.Y.Z   # the release you choose: see CHANGELOG.md
 )
 FetchContent_MakeAvailable(smallest_tcp)
 

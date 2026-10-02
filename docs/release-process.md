@@ -122,7 +122,7 @@ Pin the tag, not `main`:
 FetchContent_Declare(
     smallest_tcp
     GIT_REPOSITORY https://github.com/n9wxu/smallest_tcp.git
-    GIT_TAG        v0.1.0
+    GIT_TAG        vX.Y.Z   # the release you choose
 )
 ```
 

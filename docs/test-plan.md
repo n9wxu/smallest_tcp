@@ -631,7 +631,7 @@ address, `fe80::100`.  Skipped when the option is not given.
 | test_ipv6_017 | interop | The host's UDP socket gets its echo over IPv6 (offloaded checksums on the raw link) |
 | test_ipv6_018 | RFC 9293 / 8200 §8 | SYN-ACK over IPv6: link-local source, MSS 1440, valid checksum |
 | test_ipv6_019 | RFC 9293 | Data echoed on an IPv6 connection |
-| test_ipv6_020 | RFC 9293 | SYN to a closed port → RST+ACK over IPv6 |
+| test_ipv6_020 | REQ-TCP-072 | SYN to a closed port → RST+ACK over IPv6 |
 | test_ipv6_021 | interop | The host's TCP stack connects over IPv6 and gets its echo |
 | test_ipv6_022 | REQ-NDP-034..037 | Router Solicitation to ff02::2 from the link-local address with SLLA |
 | test_ipv6_023 | REQ-SLAAC-014..018, REQ-NDP-045 | RA with an autonomous /64 → DAD → global address answers (echo from an off-link peer) |

@@ -733,7 +733,7 @@ The Master Secret exists only on the stack for the moment it is used.
 
 ## 13. Testing
 
-**Integration (`itest_tls`, 66 tests, CMake with `SMALLEST_TCP_TLS`):** the
+**Integration (`itest_tls`, CMake with `SMALLEST_TCP_TLS`):** the
 server and the client through the API in `tls.h`, against a peer of the
 tests' own (`tests/integration/tls_peer.c`) written from RFC 8446 on
 Mbed TLS's SHA-256, AES-GCM, X25519 and ECDSA — its own HKDF labels, key
@@ -747,14 +747,14 @@ coverage of the TLS sources by this suite and `itest_dtls`: `tls.c` 97 %,
 `tls_common.c` 99 %, `tls_keys.c` 96 %, `tls_server.c` 96 %, `tls_client.c`
 94 %, `tls_tcp.c` 100 %.
 
-**Unit (219 tests, CMake with `SMALLEST_TCP_TLS`):**
+**Unit (CMake with `SMALLEST_TCP_TLS`):**
 
-| Suite | Tests | |
-|---|---:|---|
-| `test_tls_crypto` | 23 | The backend: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-GCM, the AES block (FIPS-197), X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, chains (alerts, IP names, other anchors), random |
-| `test_tls_keys` | 36 | Key schedule and records against RFC 8448 §3 (every secret, key, IV, both Finished, all eight protected records byte for byte), §4 (resumption PSK binder, PSK + DHE schedule), §5 (HelloRetryRequest transcript); malformed records; DTLS 1.3's `"dtls13"` labels and `"sn"` key (`tests/tls/gen_dtls13.py`, an independent HKDF) |
-| `test_tls_server` | 107 | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts, a backend failing the key exchange after writing part of its output |
-| `test_tls_client` | 53 | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()`) and against a scripted server that gets each message wrong on purpose |
+| Suite | |
+|---|---|
+| `test_tls_crypto` | The backend: SHA-256, HMAC (RFC 4231), HKDF (RFC 5869), AES-GCM, the AES block (FIPS-197), X25519 (RFC 7748), P-256, ECDSA, RSA-PSS, chains (alerts, IP names, other anchors), random |
+| `test_tls_keys` | Key schedule and records against RFC 8448 §3 (every secret, key, IV, both Finished, all eight protected records byte for byte), §4 (resumption PSK binder, PSK + DHE schedule), §5 (HelloRetryRequest transcript); malformed records; DTLS 1.3's `"dtls13"` labels and `"sn"` key (`tests/tls/gen_dtls13.py`, an independent HKDF) |
+| `test_tls_server` | A scripted client checks every message.  With the RFC 8448 server's randomness, our ServerHello to the RFC's ClientHello is the RFC's byte for byte (§3 and the PSK case of §4).  Refusals for every malformed or unacceptable ClientHello, PSK selection, HRR, max_fragment_length (splitting, a tx canary), the flight through a 600-byte tx, KeyUpdate, alerts, a backend failing the key exchange after writing part of its output |
+| `test_tls_client` | The client against our server over memory (both certificate types, byte at a time, small buffers, trust and name failures, PSK, HRR, max_fragment_length with an 800-byte rx, KeyUpdate, keys wiped after close_notify both ways and by `tls_release()`) and against a scripted server that gets each message wrong on purpose |
 
 `tests/tls/gen_rfc8448.py` extracts the RFC 8448 traces into
 `tests/unit/tls_rfc8448.h`, checking every value's stated length;
@@ -763,14 +763,14 @@ coverage of the TLS sources by this suite and `itest_dtls`: `tls.c` 97 %,
 `tests/tls/gen_test_certs.sh` makes the test certificates in `tests/tls`
 (for testing only).
 
-**Blackbox (55 tests; TAP and the raw-socket driver on Linux, feth on
+**Blackbox (TAP and the raw-socket driver on Linux, feth on
 macOS; CI job `blackbox-tls`):**
 
-| Suite | Tests | Peers |
-|---|---:|---|
-| `test_tls_conform.py` | 29 | Python ssl and openssl s_client against `tls_echo_demo`: handshake, 40 kB and 16 kB-record echoes, close_notify, refusals (TLS 1.2, group, suite, signature), KeyUpdate, a tampered record, a ClientHello in 7-byte segments, coalesced records, HRR, max_fragment_length, PSK (openssl, Python 3.13+), IPv6 |
-| `test_tls_client_conform.py` | 17 | Python ssl and openssl s_server against `tls_client_demo`: SNI, 30 kB echo, RSA-PSS, name and trust failures, a TLS 1.2 server, client-certificate requests, HRR, max_fragment_length, KeyUpdate, PSK (psk_dhe_ke, psk_ke, certificate-less servers) |
-| `test_https_conform.py` | 9 | Python and curl against `https_demo` |
+| Suite | Peers |
+|---|---|
+| `test_tls_conform.py` | Python ssl and openssl s_client against `tls_echo_demo`: handshake, 40 kB and 16 kB-record echoes, close_notify, refusals (TLS 1.2, group, suite, signature), KeyUpdate, a tampered record, a ClientHello in 7-byte segments, coalesced records, HRR, max_fragment_length, PSK (openssl, Python 3.13+), IPv6 |
+| `test_tls_client_conform.py` | Python ssl and openssl s_server against `tls_client_demo`: SNI, 30 kB echo, RSA-PSS, name and trust failures, a TLS 1.2 server, client-certificate requests, HRR, max_fragment_length, KeyUpdate, PSK (psk_dhe_ke, psk_ke, certificate-less servers) |
+| `test_https_conform.py` | Python and curl against `https_demo` |
 
 The CI job runs them with Ubuntu's OpenSSL, Python and curl; the suites
 accept the wording of OpenSSL 3.0 and later.

@@ -443,7 +443,7 @@ def test_ipv6_019_tcp_echo(sut):
 
 
 def test_ipv6_020_tcp_closed_port_rst(sut):
-    """A SYN to a closed port draws RST+ACK over IPv6."""
+    """REQ-TCP-072: a SYN to a closed port draws RST+ACK over IPv6."""
     sut.start()
     syn = (sut.eth() / IPv6(src=OUR_LL, dst=sut.sut_ll) /
            TCP(sport=41020, dport=4444, flags="S", seq=5000))

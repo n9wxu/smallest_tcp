@@ -295,8 +295,9 @@ void tcp_icmp_error(net_t *net, uint8_t type, uint8_t code, uint16_t mtu,
 void tcp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
 
 /** From icmpv6_input(): an ICMPv6 error quoting a segment we sent —
- *  @p quote is the quoted IPv6 header and data, @p param the message's
- *  4-byte field (a Packet Too Big's MTU).  Packet Too Big lowers the
+ *  @p quote is the quoted IPv6 header and data, @p param a Packet Too
+ *  Big's MTU (at least 1280: icmpv6_input() discards a smaller one), else
+ *  0.  Packet Too Big lowers the
  *  connection's segment size (RFC 8201); Port Unreachable aborts it; the
  *  rest is reported (TCP_EVT_SOFT_ERROR). */
 void tcp6_icmp_error(net_t *net, uint8_t type, uint8_t code, uint32_t param,

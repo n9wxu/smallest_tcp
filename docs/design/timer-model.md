@@ -26,7 +26,7 @@ void net_tick(net_t *net, uint32_t elapsed_ms) {
   tcp_tick(net, elapsed_ms);   /* every connection in net->tcp_conns */
 #endif
 #if NET_USE_IPV6
-  ipv6_tick(net, elapsed_ms);  /* lifetimes, MLD, NDP */
+  ipv6_tick(net, elapsed_ms);  /* lifetimes, ICMPv6 rate limit, MLD, NDP */
 #endif
 }
 ```
@@ -50,7 +50,7 @@ has.
 | `arp_tick()` | `net_tick()` |
 | `ipv4_tick()` → reassembly's and IGMP's ticks | `net_tick()` |
 | `tcp_tick()` | `net_tick()` |
-| `ipv6_tick()` → `mld_tick()`, `ndp_tick()` | `net_tick()` |
+| `ipv6_tick()` → `icmpv6_tick()`, `mld_tick()`, `ndp_tick()` | `net_tick()` |
 | `dhcpv4_client_tick(net, c, ms)` | the application |
 | `dhcpv6_client_tick(net, c, ms)` | the application |
 | `tftp_client_tick(net, c, ms)` | the application |

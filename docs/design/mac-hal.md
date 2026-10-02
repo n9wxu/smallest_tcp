@@ -316,4 +316,4 @@ region, with each layer peeking only its own header and checksums accumulated
 over chunked `peek()` reads.  That needs a different handler interface than
 the payload pointer handlers are given; the trade-offs are in the decision
 record in
-[udp.md §10](udp.md#101-decision-record-payload-pointers-not-frame-offsets).
+[udp.md §10](udp.md#101-payload-pointers-not-frame-offsets).

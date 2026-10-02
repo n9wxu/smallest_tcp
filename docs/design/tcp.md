@@ -963,14 +963,14 @@ single-stack build reduces to its own family's.
 
 ## 9. Tests and files
 
-- **Integration (black box):** `tests/integration/itest_tcp.c` (89 tests):
+- **Integration (black box):** `tests/integration/itest_tcp.c`:
   the stack on a scripted link, driven through the `tcp_*` API and checked on
   the wire — opens and closes, every step of §3.10.7, RST generation,
   options and segment sizes, both windows, probing, the retransmission
   schedule, ICMP errors, the buffer interface, IPv6.  Each names the
   requirements it verifies; the Test ID column of
   [the requirements](../requirements/tcp.md) names the tests of each row.
-- **Unit:** `tests/unit/test_tcp.c` (63 tests, calling `tcp_input()` and
+- **Unit:** `tests/unit/test_tcp.c` (calling `tcp_input()` and
   reading `tcp_conn_t`), `tests/unit/test_tcp6.c` (19: IPv6, dual-stack
   listeners, source address, MSS within the Ethernet MTU),
   `tests/unit/test_tcp_buf.c` (22: the stop-and-wait buffers through their

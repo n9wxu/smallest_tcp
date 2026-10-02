@@ -586,7 +586,7 @@ nothing only `dtls.c` defines (REQ-DTLS-072).
 
 ## 13. Testing
 
-**Integration** (`itest_dtls`, 48 tests, CMake with `SMALLEST_TCP_TLS` and
+**Integration** (`itest_dtls`, CMake with `SMALLEST_TCP_TLS` and
 `SMALLEST_TCP_DTLS`): the server and the client through the API in
 `dtls.h`.  The peer is the tests' own (`tests/integration/tls_peer.c`),
 written from RFC 9147 on Mbed TLS's primitives: it builds and opens
@@ -599,7 +599,7 @@ two roles against each other over a network of the test's.  The suite is
 linked without the stack's core: the test moves every datagram
 (REQ-DTLS-073).  Line coverage of `dtls.c` by this suite: 96 %.
 
-**Unit** (`test_dtls`, 57 tests, CMake with `SMALLEST_TCP_TLS` and
+**Unit** (`test_dtls`, CMake with `SMALLEST_TCP_TLS` and
 `SMALLEST_TCP_DTLS`; plus `test_tls_crypto`'s AES block against FIPS-197
 and `test_tls_keys`'s `"dtls13"` labels against `tests/tls/gen_dtls13.py`):
 
@@ -624,11 +624,11 @@ and `test_tls_keys`'s `"dtls13"` labels against `tests/tls/gen_dtls13.py`):
   of the old epoch; close_notify; `dtls_release()`; a NewSessionTicket
   acknowledged.
 
-**Blackbox and interop** (27 tests; Linux TAP and raw socket, macOS feth;
+**Blackbox and interop** (Linux TAP and raw socket, macOS feth;
 CI job `blackbox-dtls`).  The peer is wolfSSL 5.9.4, built by
 `tests/blackbox/build_wolfssl.sh` from its pinned release:
 
-| Suite | Tests | |
-|---|---:|---|
-| `test_dtls_conform.py` | 19 | wolfSSL's client against `dtls_echo_demo`: P-256, x25519, a HelloRetryRequest for the group, KeyUpdate from the client, PSK (psk_dhe_ke, psk_ke), three clients at once, the server's flight in 300-byte fragments, no cookie; hand-built datagrams: the cookie HelloRetryRequest, the same answer to a repeated ClientHello, a wrong cookie, a legacy_cookie and DTLS 1.2 refused with their alerts, silence towards four kinds of garbage |
-| `test_dtls_client_conform.py` | 8 | `dtls_client_demo` against wolfSSL's server: 3000 bytes echoed, the server's cookie, KeyUpdate from either side, 300-byte datagrams, PSK, a wrong name and an untrusted chain refused |
+| Suite | |
+|---|---|
+| `test_dtls_conform.py` | wolfSSL's client against `dtls_echo_demo`: P-256, x25519, a HelloRetryRequest for the group, KeyUpdate from the client, PSK (psk_dhe_ke, psk_ke), three clients at once, the server's flight in 300-byte fragments, no cookie; hand-built datagrams: the cookie HelloRetryRequest, the same answer to a repeated ClientHello, a wrong cookie, a legacy_cookie and DTLS 1.2 refused with their alerts, silence towards four kinds of garbage |
+| `test_dtls_client_conform.py` | `dtls_client_demo` against wolfSSL's server: 3000 bytes echoed, the server's cookie, KeyUpdate from either side, 300-byte datagrams, PSK, a wrong name and an untrusted chain refused |
