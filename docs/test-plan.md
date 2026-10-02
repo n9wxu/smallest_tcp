@@ -28,10 +28,18 @@ what it must do, and break when it is refactored.  New tests are written
 this way; an existing unit test is rewritten at the API level, and the old
 one removed, when its area is worked on.
 
-**Every test traces to requirements.**  Each test names the REQ IDs it
-verifies; `scripts/trace.py --strict` (CI job `traceability`) fails if an
-integration test names none or a test names an ID no requirement document
-defines.
+**Every test traces to requirements, and every MUST to a test.**  Each
+test names the REQ IDs it verifies, and each requirement row names, in its
+Test ID column, the tests that verify it.  `scripts/trace.py --strict` (CI
+job `traceability`) fails if
+
+- an integration test cites no row, or any test cites an ID that no
+  requirement document defines;
+- a row names a test that does not exist or that does not cite the row, or
+  holds a placeholder where a test name belongs;
+- a MUST row is cited by no test and its Test ID column does not say why
+  none can verify it: `not observable` (neither the API nor the wire shows
+  it) or `not implemented` (the component it belongs to is not there).
 
 **An error found outside the tests becomes a test first.**  A bug found by
 an audit, a review, interop or in the field gets a failing integration (or
@@ -44,8 +52,8 @@ run red if it starts passing, until the fix makes it `RUN_TEST`.
 measures, both produced by CI on every push:
 
 - *Requirements coverage*: of the MUST rows of each requirement document,
-  how many a black-box test verifies, how many any test verifies, and how
-  many none does.
+  how many a black-box test verifies, how many any test verifies, how many
+  no test can verify (and why), and how many are left with none.
 - *Code coverage*: the lines and branches of `src/` that the black-box
   integration tests reach, through the API alone.  Code they never reach is
   code no application can reach either: dead, or a test missing.
@@ -57,61 +65,71 @@ measures, both produced by CI on every push:
 comment above each integration test, and anywhere in a unit test file or a
 blackbox suite.  Per document it counts the MUST rows (MUST, MUST NOT,
 SHALL, SHALL NOT, REQUIRED) cited by a black-box test (an integration test
-or a blackbox suite), by any test, and by none.
+or a blackbox suite) and by any test; of those no test cites, the ones
+whose Test ID column says *not observable* or *not implemented*; and the
+ones left with none.
 
 ```sh
 python3 scripts/trace.py                   # the table, as text
 python3 scripts/trace.py --markdown        # the table below
-python3 scripts/trace.py --untested tcp    # also: the MUST rows of tcp.md no test cites
-python3 scripts/trace.py --strict          # exit 1 on a test citing nothing or an unknown ID
+python3 scripts/trace.py --untested tcp    # also: the MUST rows of tcp.md left with none
+python3 scripts/trace.py --strict          # exit 1 on a broken trace (the rules above)
 ```
 
 The CI job `traceability` runs `--strict --markdown` and puts the table in
-its summary, so every commit has its own.  The table here is a snapshot of
-the tree this section was last regenerated from:
+its summary, so every commit has its own.  The table here is a snapshot:
 
 <!-- snapshot: python3 scripts/trace.py --markdown -->
-| Requirements | MUST rows | Black-box test | Any test | None |
-|---|---:|---:|---:|---:|
-| arp | 30 | 13 | 13 | 17 |
-| checksum | 21 | 1 | 6 | 15 |
-| dhcpv4 | 90 | 45 | 90 | 0 |
-| dhcpv6 | 38 | 27 | 30 | 8 |
-| dns | 28 | 0 | 0 | 28 |
-| dns-sd | 29 | 15 | 23 | 6 |
-| dtls | 46 | 14 | 27 | 19 |
-| ethernet | 23 | 3 | 6 | 17 |
-| http | 51 | 41 | 50 | 1 |
-| icmpv4 | 42 | 32 | 32 | 10 |
-| icmpv6 | 36 | 9 | 9 | 27 |
-| igmp | 13 | 13 | 13 | 0 |
-| ipv4 | 73 | 41 | 41 | 32 |
-| ipv6 | 43 | 5 | 5 | 38 |
-| mdns | 73 | 59 | 70 | 3 |
-| ndp | 59 | 13 | 13 | 46 |
-| slaac | 33 | 11 | 12 | 21 |
-| tcp | 155 | 76 | 129 | 26 |
-| tftp | 32 | 4 | 27 | 5 |
-| tls | 40 | 20 | 24 | 16 |
-| udp | 41 | 20 | 21 | 20 |
-| **Total** | **996** | **462** | **641** | **355** |
+| Requirements | MUST rows | Black-box test | Any test | Not observable | Not implemented | None |
+|---|---:|---:|---:|---:|---:|---:|
+| arp | 25 | 25 | 25 | 0 | 0 | 0 |
+| checksum | 20 | 19 | 19 | 0 | 1 | 0 |
+| dhcpv4 | 90 | 88 | 88 | 2 | 0 | 0 |
+| dhcpv6 | 49 | 49 | 49 | 0 | 0 | 0 |
+| dns | 28 | 0 | 0 | 0 | 28 | 0 |
+| dns-sd | 25 | 25 | 25 | 0 | 0 | 0 |
+| dtls | 47 | 45 | 46 | 1 | 0 | 0 |
+| ethernet | 22 | 22 | 22 | 0 | 0 | 0 |
+| http | 51 | 51 | 51 | 0 | 0 | 0 |
+| icmpv4 | 38 | 38 | 38 | 0 | 0 | 0 |
+| icmpv6 | 38 | 38 | 38 | 0 | 0 | 0 |
+| igmp | 13 | 13 | 13 | 0 | 0 | 0 |
+| ipv4 | 71 | 71 | 71 | 0 | 0 | 0 |
+| ipv6 | 50 | 50 | 50 | 0 | 0 | 0 |
+| mdns | 67 | 66 | 66 | 0 | 1 | 0 |
+| ndp | 57 | 56 | 56 | 1 | 0 | 0 |
+| slaac | 30 | 30 | 30 | 0 | 0 | 0 |
+| tcp | 151 | 145 | 145 | 6 | 0 | 0 |
+| tftp | 33 | 33 | 33 | 0 | 0 | 0 |
+| tls | 65 | 64 | 64 | 1 | 0 | 0 |
+| udp | 38 | 38 | 38 | 0 | 0 | 0 |
+| **Total** | **1008** | **966** | **967** | **11** | **30** | **0** |
 <!-- end snapshot -->
 
 Reading it: a row counts as verified when a test cites its ID, so the table
 is as good as the citations — a test cites a row only if it would fail were
-the row not met.  `dns` is the DNS stub resolver, which is not implemented
-(§5); its rows have no tests.  A MUST the design leaves out on purpose is
-marked **deviation** in its row and still counts as a MUST row here.
+the row not met.  The two columns before the last are the MUST rows no test
+cites because none can verify them, each saying why in its Test ID column.
+*Not observable*: neither the API nor the wire shows it — that no memory is
+allocated, what a build links, what would follow from an option the stack
+never negotiates.  *Not implemented*: the row belongs to a component that
+is not there — all of `dns`, the DNS stub resolver (§5), the mDNS querier's
+cache and checksum offload.  *None* is what is left, and `--strict` keeps
+it at zero: a MUST row is cited by a test or says why none can verify it.
+A MUST the design leaves out on purpose is marked **deviation** in its row
+and still counts as a MUST row here.
 
 ### Code coverage
 
 The CI job `coverage` builds the stack and the tests instrumented
 (`-DSMALLEST_TCP_COVERAGE=ON`: `--coverage -O0`), runs the integration
 tests alone and reports with [gcovr](https://gcovr.com) the lines and
-branches of `src/` they reach; the MAC drivers (`src/driver/`) are left
-out, since the scripted link stands in for them.  The job's summary has
-the table of every commit, and its HTML report (which lines, which
-branches) is the artifact `coverage-integration`.  Locally:
+branches of `src/` they reach.  The MAC drivers (`src/driver/`) are left
+out, since the scripted link stands in for them, and so is the Mbed TLS
+backend (`src/tls_crypto_mbedtls.c`), which adapts a library and is not
+stack code.  The job's summary has the table of every commit, and its HTML
+report (which lines, which branches) is the artifact
+`coverage-integration`.  Locally:
 
 ```sh
 pip install gcovr                          # in a venv on macOS
@@ -130,60 +148,57 @@ The same with all of `ctest` in place of `ctest -L integration` gives the
 coverage of the unit tests too; the blackbox suites run the demos, which
 are not instrumented in CI.
 
-A snapshot of the tree this section was last regenerated from, measured
-with Apple clang and `llvm-cov` (GCC, which the CI job uses, counts lines
-and branches a little differently):
+A snapshot, measured with Apple clang and `llvm-cov` (GCC, which the CI
+job uses, counts lines and branches a little differently):
 
 <!-- snapshot: the gcovr command above, on macOS -->
 | Metric        | Coverage |
 |---------------|----------|
-| **Lines**     | 5700/8228 (69.3%) |
-| **Functions** | 611/766 (79.8%) |
-| **Branches**  | 2799/5128 (54.6%) |
+| **Lines**     | 7881/8125 (97.0%) |
+| **Functions** | 749/754 (99.3%) |
+| **Branches**  | 4499/5117 (87.9%) |
 
 | File                   | Lines | Functions | Branches |
 |------------------------|-------|-----------|----------|
-| **`src/arp.c`** | 80/83 (96.4%) | 7/7 (100.0%) | 48/60 (80.0%) |
-| **`src/dhcpv4_client.c`** | 283/300 (94.3%) | 38/38 (100.0%) | 111/144 (77.1%) |
-| **`src/dhcpv4_server.c`** | 156/169 (92.3%) | 16/16 (100.0%) | 88/113 (77.9%) |
-| **`src/dhcpv4_wire.h`** | 76/78 (97.4%) | 10/10 (100.0%) | 33/44 (75.0%) |
-| **`src/dhcpv6_client.c`** | 0/319 (0.0%) | 0/21 (0.0%) | 0/196 (0.0%) |
-| **`src/dns_wire.c`** | 228/275 (82.9%) | 25/27 (92.6%) | 103/150 (68.7%) |
-| **`src/dtls.c`** | 0/715 (0.0%) | 0/58 (0.0%) | 0/465 (0.0%) |
-| **`src/eth.c`** | 39/45 (86.7%) | 4/4 (100.0%) | 17/24 (70.8%) |
-| **`src/http.c`** | 643/686 (93.7%) | 53/53 (100.0%) | 469/586 (80.0%) |
+| **`src/arp.c`** | 81/83 (97.6%) | 7/7 (100.0%) | 55/60 (91.7%) |
+| **`src/dhcpv4_client.c`** | 297/300 (99.0%) | 38/38 (100.0%) | 137/144 (95.1%) |
+| **`src/dhcpv4_server.c`** | 168/169 (99.4%) | 16/16 (100.0%) | 111/113 (98.2%) |
+| **`src/dhcpv4_wire.h`** | 77/78 (98.7%) | 10/10 (100.0%) | 36/44 (81.8%) |
+| **`src/dhcpv6_client.c`** | 318/321 (99.1%) | 22/22 (100.0%) | 173/198 (87.4%) |
+| **`src/dns_wire.c`** | 243/275 (88.4%) | 26/27 (96.3%) | 120/150 (80.0%) |
+| **`src/dtls.c`** | 690/715 (96.5%) | 57/58 (98.3%) | 404/465 (86.9%) |
+| **`src/eth.c`** | 44/45 (97.8%) | 4/4 (100.0%) | 23/24 (95.8%) |
+| **`src/http.c`** | 682/686 (99.4%) | 53/53 (100.0%) | 523/586 (89.2%) |
 | **`src/http_tls.c`** | 31/32 (96.9%) | 9/10 (90.0%) | 3/6 (50.0%) |
-| **`src/icmp.c`** | 82/88 (93.2%) | 9/9 (100.0%) | 40/58 (69.0%) |
-| **`src/icmpv6.c`** | 11/81 (13.6%) | 1/7 (14.3%) | 1/48 (2.1%) |
+| **`src/icmp.c`** | 85/90 (94.4%) | 9/9 (100.0%) | 47/60 (78.3%) |
+| **`src/icmpv6.c`** | 116/123 (94.3%) | 9/9 (100.0%) | 62/73 (84.9%) |
 | **`src/igmp.c`** | 88/94 (93.6%) | 9/9 (100.0%) | 45/57 (78.9%) |
-| **`src/ipv4.c`** | 274/294 (93.2%) | 28/29 (96.6%) | 155/195 (79.5%) |
-| **`src/ipv6.c`** | 188/252 (74.6%) | 23/25 (92.0%) | 82/162 (50.6%) |
-| **`src/mdns.c`** | 1009/1100 (91.7%) | 86/86 (100.0%) | 642/818 (78.5%) |
-| **`src/mld.c`** | 75/127 (59.1%) | 9/13 (69.2%) | 31/82 (37.8%) |
-| **`src/ndp.c`** | 66/209 (31.6%) | 7/18 (38.9%) | 20/125 (16.0%) |
-| **`src/net.c`** | 111/116 (95.7%) | 13/13 (100.0%) | 25/40 (62.5%) |
+| **`src/ipv4.c`** | 278/294 (94.6%) | 28/29 (96.6%) | 163/195 (83.6%) |
+| **`src/ipv6.c`** | 256/260 (98.5%) | 25/25 (100.0%) | 155/165 (93.9%) |
+| **`src/mdns.c`** | 1091/1104 (98.8%) | 86/86 (100.0%) | 739/822 (89.9%) |
+| **`src/mld.c`** | 123/127 (96.9%) | 13/13 (100.0%) | 76/82 (92.7%) |
+| **`src/ndp.c`** | 208/211 (98.6%) | 18/18 (100.0%) | 118/125 (94.4%) |
+| **`src/net.c`** | 112/116 (96.6%) | 13/13 (100.0%) | 26/40 (65.0%) |
 | **`src/net_cksum.c`** | 39/44 (88.6%) | 8/9 (88.9%) | 10/10 (100.0%) |
 | **`src/net_text.c`** | 12/12 (100.0%) | 1/1 (100.0%) | 10/10 (100.0%) |
-| **`src/tcp.c`** | 729/831 (87.7%) | 92/96 (95.8%) | 346/503 (68.8%) |
-| **`src/tcp_buf_saw.c`** | 82/84 (97.6%) | 14/14 (100.0%) | 22/26 (84.6%) |
-| **`src/tftp.c`** | 176/274 (64.2%) | 19/28 (67.9%) | 75/164 (45.7%) |
-| **`src/tls.c`** | 240/356 (67.4%) | 27/33 (81.8%) | 118/224 (52.7%) |
-| **`src/tls_client.c`** | 254/458 (55.5%) | 20/28 (71.4%) | 78/278 (28.1%) |
-| **`src/tls_common.c`** | 48/102 (47.1%) | 12/18 (66.7%) | 16/42 (38.1%) |
-| **`src/tls_crypto_mbedtls.c`** | 137/231 (59.3%) | 15/23 (65.2%) | 22/85 (25.9%) |
-| **`src/tls_internal.h`** | 32/38 (84.2%) | 7/7 (100.0%) | 5/8 (62.5%) |
-| **`src/tls_keys.c`** | 98/122 (80.3%) | 12/14 (85.7%) | 25/38 (65.8%) |
-| **`src/tls_server.c`** | 275/457 (60.2%) | 17/21 (81.0%) | 110/293 (37.5%) |
+| **`src/tcp.c`** | 829/863 (96.1%) | 101/101 (100.0%) | 443/519 (85.4%) |
+| **`src/tcp_buf_saw.c`** | 83/84 (98.8%) | 14/14 (100.0%) | 24/26 (92.3%) |
+| **`src/tftp.c`** | 277/281 (98.6%) | 28/28 (100.0%) | 151/168 (89.9%) |
+| **`src/tls.c`** | 347/357 (97.2%) | 33/33 (100.0%) | 202/224 (90.2%) |
+| **`src/tls_client.c`** | 441/467 (94.4%) | 29/29 (100.0%) | 240/290 (82.8%) |
+| **`src/tls_common.c`** | 101/102 (99.0%) | 18/18 (100.0%) | 40/42 (95.2%) |
+| **`src/tls_internal.h`** | 35/38 (92.1%) | 7/7 (100.0%) | 7/8 (87.5%) |
+| **`src/tls_keys.c`** | 117/122 (95.9%) | 14/14 (100.0%) | 33/38 (86.8%) |
+| **`src/tls_server.c`** | 442/459 (96.3%) | 21/21 (100.0%) | 257/295 (87.1%) |
 | **`src/tls_tcp.c`** | 20/20 (100.0%) | 5/5 (100.0%) | 9/12 (75.0%) |
-| **`src/udp.c`** | 118/136 (86.8%) | 15/16 (93.8%) | 40/62 (64.5%) |
+| **`src/udp.c`** | 150/153 (98.0%) | 18/18 (100.0%) | 57/66 (86.4%) |
 <!-- end snapshot -->
 
-Reading it: the IPv4 side — ARP, IPv4, ICMP, IGMP, UDP, TCP, DHCPv4, mDNS,
-HTTP — is where the integration tests are.  The DHCPv6 client and DTLS
-have none, and IPv6, ICMPv6, NDP and MLD are reached only as far as mDNS
-and TCP over IPv6 take them; TLS is reached through the HTTPS tests alone.
-Those modules are verified by their unit tests and blackbox suites (§1,
-§2), which this measure leaves out on purpose.
+Reading it: every protocol module has an integration suite, so each file's
+figure is what its black-box tests reach through the API and the wire.
+The files under 90 % of lines are in §5, with what is not reached.  The
+unit tests and blackbox suites (§1, §2) reach more, which this measure
+leaves out on purpose.
 
 ### The scripted link (`tests/integration/wire.h`)
 
@@ -192,11 +207,12 @@ Those modules are verified by their unit tests and blackbox suites (§1,
 (`wire_sent()`).  `itest_up()` initialises a `net_t` on it with frame buffers
 of a chosen size; `itest_advance()` runs `net_tick()`; an `itest_t.service`
 hook runs the application's own polling (`http_server_poll()`) after each
-frame.  The peer side — Ethernet, IPv4 with options and fragments, UDP,
-ICMP, TCP, ARP, DNS — is encoded and decoded by the harness's own code with
-its own checksum, never the stack's, so the stack is checked against the
-RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
-(connect, send, acknowledge and collect, close).
+frame.  The peer side — Ethernet, IPv4 with options and fragments, IPv6
+with extension headers, UDP and TCP over both, ICMP, ICMPv6 (Neighbor
+Discovery and MLD with it), ARP, DNS — is encoded and decoded by the
+harness's own code with its own checksum, never the stack's, so the stack
+is checked against the RFCs and not against itself.  `peer_client_t` is a
+TCP client on the wire (connect, send, acknowledge and collect, close).
 
 | Suite | Verifies |
 |---|---|
@@ -210,12 +226,18 @@ RFCs and not against itself.  `peer_client_t` is a TCP client on the wire
 | `itest_tftp` | Every implemented TFTP row: the request, blocks and ACKs, transfer IDs, blksize negotiation, errors, the adaptive retransmission timeout, netascii |
 | `itest_mdns` | The responder's rows on the wire: probing, conflicts and tiebreaking, announcing, answers and additionals, NSEC, rate limiting, known answers, unicast and legacy unicast, names and TXT strings, goodbyes, withdrawing records, malformed names; DNS-SD browsing and resolving as resolvers ask |
 | `itest_mdns6` | mDNS over IPv6 (dual stack): ff02::fb, AAAA records and NSEC, answers on the query's family, addresses appearing and going |
+| `itest_ipv6` | IPv6 and ICMPv6: the header checked and built, destinations and sources accepted and refused, extension headers walked (a Routing header with segments left refused, fragments dropped), source address selection, nothing sent to `::`, upper-layer checksums; echo, Port Unreachable and Parameter Problem, what no error is sent about, the rate limit of the errors sent, errors received reaching UDP's error handler and the TCP connection (Packet Too Big lowering its segment size) |
+| `itest_ndp` | Neighbor Discovery and SLAAC: messages validated (hop limit 255, code, checksum, options), solicitations answered and sent, Duplicate Address Detection both ways, Router Solicitations, the default router and its lifetime, the hop limit and the M and O flags of Router Advertisements, Redirects ignored, no neighbour cache; global addresses formed from prefixes, their lifetimes and the two-hour rule, the next hop |
+| `itest_mld` | MLDv2 reports at start-up and for `ipv6_mcast_join()` / `ipv6_mcast_leave()`, from the link-local address once it is valid, the solicited-node group of each address, general and group queries answered after their delay, queries validated, MLDv1 queriers |
+| `itest_dhcpv6` | The DHCPv6 client against a server the test plays: Information-Request and its refresh, Solicit / Advertise / Request / Reply, the leased address probed, Renew at T1, Rebind at T2, expiry, Release, retransmission and its caps, the start delay, Elapsed Time, replies validated, option handlers, SOL_MAX_RT |
 | `itest_tls` | TLS 1.3 server and client through `tls.h`, against a peer written from RFC 8446 on Mbed TLS primitives (`tls_peer.c`, none of the stack's TLS code): handshakes with PSK and certificates, HelloRetryRequest, extensions (missing, duplicate, unsolicited, misplaced), alerts, record limits, KeyUpdate, close_notify, small buffers, calls out of place; over the stack's TCP with `tls_tcp_carry()` |
 | `itest_dtls` | DTLS 1.3 server and client through `dtls.h`, against the same peer written from RFC 9147: epochs and record numbers, the replay window, flights, fragments and reassembly, retransmission, ACKs, the cookie exchange, KeyUpdate; the stack's two roles over a lossy, duplicating, reordering network.  Linked without the core, as REQ-DTLS-073 requires |
 
-The suites on the scripted link are built over IPv4 (`itest_mdns6` dual
-stack); `itest_tls` and `itest_dtls` need `SMALLEST_TCP_TLS`, and
-`itest_dtls` runs in an IPv6-only build too.
+The suites on the scripted link are built with IPv4 compiled in (the
+harness's IPv4 codec is part of `wire.c`), and `itest_mdns6`, `itest_ipv6`,
+`itest_ndp`, `itest_mld` and `itest_dhcpv6` in a dual-stack build;
+`itest_tls` and `itest_dtls` need `SMALLEST_TCP_TLS`, and `itest_dtls`,
+which uses no link, runs in an IPv6-only build too.
 
 ---
 
@@ -231,9 +253,17 @@ their build has.  `test_rawsock` has portable tests, socket tests that run
 on Linux, and live tests on a veth pair that run only as root (CI runs
 them with `sudo` in `cmake-linux`; an unprivileged `ctest` skips them).
 
-CTest also checks that a configuration which cannot work fails to build:
-mDNS without a multicast group slot (for either family), TFTP or the
-DHCPv4 client without IPv4, and a build with neither IPv4 nor IPv6.
+CTest also compiles single sources in configurations that must be refused,
+or must be accepted:
+
+| CTest name | Checks |
+|---|---|
+| `mdns_needs_ipv4_group_slot`, `mdns_needs_ipv6_group_slot` | `mdns.c` refuses to compile without a multicast group slot for a family it runs over |
+| `tftp_needs_ipv4`, `dhcpv4_client_needs_ipv4` | The protocols that run only over IPv4 refuse an IPv6-only configuration |
+| `network_layer_needed` | A configuration with neither IPv4 nor IPv6 is refused |
+| `byte_order_set_by_hand` | `NET_LITTLE_ENDIAN` is accepted where the compiler does not predefine `__BYTE_ORDER__` |
+| `byte_order_set_twice` | `NET_LITTLE_ENDIAN` together with `NET_BIG_ENDIAN` is refused |
+| `icmpv6_without_transports` | `icmpv6.c` compiles without a warning when neither UDP nor TCP is compiled in |
 
 | Suite | File | Protocols Covered |
 |---|---|---|
@@ -370,7 +400,7 @@ Test harness (Scapy, our_ip=10.0.0.100)
 |---|---|
 | `tests/blackbox/conftest.py` | pytest fixtures, CLI options, ARP pre-flight, port allocator, the fixtures that launch SUTs, `sut_settle` autouse fixture |
 | `tests/blackbox/helpers.py` | `TcpConn`, `tcp_connect()`, `send_recv()`, `silence()`, `start_sniffer()`, ARP/ICMP/UDP/IPv4 frame builders |
-| `tests/blackbox/test_arp_conform.py` | ARP conformance (REQ-ARP-001..005) |
+| `tests/blackbox/test_arp_conform.py` | ARP conformance (REQ-ARP-001..029) |
 | `tests/blackbox/test_ipv4_conform.py` | IPv4 conformance (REQ-IPv4-002..044) |
 | `tests/blackbox/test_icmp_conform.py` | ICMPv4 conformance (REQ-ICMPv4-001..034) |
 | `tests/blackbox/test_udp_conform.py` | UDP conformance (REQ-UDP-001..021) |
@@ -447,11 +477,11 @@ The tables below name each test and the requirements it verifies.
 | Test | REQ(s) | Description |
 |---|---|---|
 | test_tcp_000 | — | ARP pre-flight (SUT reachable) |
-| test_tcp_002 | REQ-TCP-035 | SYN-ACK.ACK = our SYN.SEQ + 1 |
-| test_tcp_003 | REQ-TCP-054 | Full 3-way handshake completes |
-| test_tcp_005 | REQ-TCP-059,071 | Active close: SUT ACKs our FIN |
-| test_tcp_006 | REQ-TCP-068,069 | Passive close: FIN seq accounting |
-| test_tcp_014 | REQ-TCP-055,064-066 | Echo data, seq/ack accounting |
+| test_tcp_002 | REQ-TCP-002,032,034,035 | SYN-ACK.ACK = our SYN.SEQ + 1 |
+| test_tcp_003 | REQ-TCP-002,003,054 | Full 3-way handshake completes |
+| test_tcp_005 | REQ-TCP-005,059,071 | Active close: SUT ACKs our FIN |
+| test_tcp_006 | REQ-TCP-006,068,069 | Passive close: FIN seq accounting |
+| test_tcp_014 | REQ-TCP-014,055,064..066 | Echo data, seq/ack accounting |
 | test_tcp_018 | REQ-TCP-018,140 | Bad checksum → silent drop |
 | test_tcp_031 | REQ-TCP-031,073 | ACK to LISTEN → RST (correct SEQ) |
 | test_tcp_041 | REQ-TCP-041,042 | Out-of-window → ACK, no data |
@@ -463,7 +493,7 @@ The tables below name each test and the requirements it verifies.
 | test_tcp_078 | REQ-TCP-078,081 | SUT honors peer MSS |
 | test_tcp_082 | REQ-TCP-082,083 | Window > 0 in SYN-ACK |
 | test_tcp_085 | REQ-TCP-085,086,087 | Zero-window persist: probe sent, window reopened |
-| test_tcp_090 | REQ-TCP-095,096 | SYN-ACK retransmit on RTO |
+| test_tcp_090 | REQ-TCP-090,095,096 | SYN-ACK retransmit on RTO |
 | test_tcp_097 | REQ-TCP-097,098 | No spurious retransmit after ACK |
 | test_tcp_153 | REQ-TCP-153 | ISS different across connections |
 
@@ -514,6 +544,22 @@ The tables below name each test and the requirements it verifies.
 | test_udp_006 | REQ-UDP-008 | Zero UDP checksum (disabled) accepted and echoed |
 | test_udp_007 | REQ-UDP-002, 005 | UDP Length < 8 → silent drop |
 
+### Blackbox DHCPv4 Conformance Coverage
+
+Run with `--dhcp-sut-bin ./build/demo/dhcp_echo_demo`; each test starts a
+fresh SUT and plays the server.
+
+| Test | REQ(s) | Description |
+|---|---|---|
+| test_sut_sends_discover | REQ-DHCPv4-002, 008, 011..013, 015..017 | A well-formed DHCPDISCOVER, broadcast at start-up |
+| test_discover_ciaddr_is_zero | REQ-DHCPv4-010 | ciaddr 0.0.0.0 in the DISCOVER |
+| test_offer_triggers_request | REQ-DHCPv4-003, 009, 023, 024 | OFFER → DHCPREQUEST with the transaction's xid and the offered address |
+| test_request_contains_server_id | REQ-DHCPv4-023 | The REQUEST carries the Server Identifier |
+| test_ack_binds_ip | REQ-DHCPv4-004, 029 | After the ACK the leased address answers ARP |
+| test_nak_triggers_rediscover | REQ-DHCPv4-037 | NAK → discovery starts again |
+| test_discover_retransmit | REQ-DHCPv4-009, 045 | DISCOVER retransmitted when no server answers |
+| test_wrong_xid_offer_ignored | REQ-DHCPv4-018 | An OFFER with another xid draws no REQUEST |
+
 ### Blackbox mDNS + DNS-SD Conformance Coverage
 
 Run with `--mdns-sut-bin ./build/demo/mdns_demo`; each test starts a fresh SUT
@@ -522,7 +568,7 @@ Skipped when the option is not given.
 
 | Test | REQ | Checks |
 |---|---|---|
-| test_mdns_001 | REQ-MDNS-009,014,026 | A query → SUT IP, TTL 120, cache-flush |
+| test_mdns_001 | REQ-MDNS-009,014,026,078 | A query → SUT IP, TTL 120, cache-flush |
 | test_mdns_002 | REQ-DNSSD-001,007,016 | PTR answer + SRV/TXT/A additionals |
 | test_mdns_003 | REQ-DNSSD-002,008 | SRV port 80 → host, A additional |
 | test_mdns_004 | REQ-MDNS-004,031 | QR=1, AA=1 on every response |
@@ -535,14 +581,14 @@ Skipped when the option is not given.
 | test_mdns_011 | REQ-MDNS-021..023 | 2 announcements 0.8–1.5 s apart after probing |
 | test_mdns_012 | REQ-MDNS-019,020 | Conflict while probing → rename, old name never announced |
 | test_mdns_013 | REQ-MDNS-002 | IGMPv2 report for 224.0.0.251 (TTL 1) |
-| test_mdns_014 | REQ-MDNS-041 | Legacy unicast: ID + question echoed, TTL ≤ 10 |
+| test_mdns_014 | REQ-MDNS-041,076 | Legacy unicast: ID + question echoed, TTL ≤ 10 |
 | test_mdns_015 | REQ-MDNS-028 | QU → unicast reply |
-| test_mdns_016 | REQ-MDNS-030 | Foreign / unknown names ignored |
+| test_mdns_016 | REQ-MDNS-030,064 | Foreign / unknown names ignored |
 | test_mdns_017 | REQ-DNSSD-003,011,013 | TXT key=value strings |
-| test_mdns_018 | REQ-MDNS-026 | ANY → SRV + TXT |
-| test_mdns_019 | RFC 6762 §6.1 | A type our host lacks (HINFO) → NSEC listing the types we have |
-| test_mdns_020 | RFC 6762 §6.2, §20 | AAAA query to ff02::fb → answer over IPv6 (Hop Limit 255) with the link-local address, A as additional |
-| test_mdns_021 | RFC 6762 §8.3, §8.4 | Records announced over IPv6 (AAAA and A) once the link-local address is usable |
+| test_mdns_018 | REQ-MDNS-026,072 | ANY → SRV + TXT |
+| test_mdns_019 | REQ-MDNS-065,067 | A type our host lacks (HINFO) → NSEC listing the types we have (RFC 6762 §6.1) |
+| test_mdns_020 | REQ-MDNS-013,038,039 | AAAA query to ff02::fb → answer over IPv6 (Hop Limit 255) with the link-local address, A as additional |
+| test_mdns_021 | REQ-MDNS-039,059 | Records announced over IPv6 (AAAA and A) once the link-local address is usable |
 
 `tests/blackbox/mdns_interop.sh` then checks REQ-MDNS-040 / REQ-DNSSD-027 with
 Avahi (`avahi-resolve`, `avahi-browse`) in the `blackbox-mdns` CI job.
@@ -575,10 +621,10 @@ address, `fe80::100`.  Skipped when the option is not given.
 | test_ipv6_017 | interop | The host's UDP socket gets its echo over IPv6 (offloaded checksums on the raw link) |
 | test_ipv6_018 | RFC 9293 / 8200 §8 | SYN-ACK over IPv6: link-local source, MSS 1440, valid checksum |
 | test_ipv6_019 | RFC 9293 | Data echoed on an IPv6 connection |
-| test_ipv6_020 | REQ-TCP-072 | SYN to a closed port → RST+ACK over IPv6 |
+| test_ipv6_020 | RFC 9293 | SYN to a closed port → RST+ACK over IPv6 |
 | test_ipv6_021 | interop | The host's TCP stack connects over IPv6 and gets its echo |
 | test_ipv6_022 | REQ-NDP-034..037 | Router Solicitation to ff02::2 from the link-local address with SLLA |
-| test_ipv6_023 | REQ-SLAAC-014..018 | RA with an autonomous /64 → DAD → global address answers (echo from an off-link peer) |
+| test_ipv6_023 | REQ-SLAAC-014..018, REQ-NDP-045 | RA with an autonomous /64 → DAD → global address answers (echo from an off-link peer) |
 | test_ipv6_024 | REQ-NDP-042 | RA Cur Hop Limit used on replies |
 | test_ipv6_025 | interop | The host (prefix on its interface) pings the SLAAC address and connects to it (Linux) |
 | test_ipv6_026 | REQ-DHCPv6-011..032 | RA with M → Solicit (DUID-LL, IA_NA) → Advertise → Request (Server ID, address) → Reply → DAD → the leased address answers |
@@ -593,28 +639,28 @@ module and the client is the test host's TCP stack (no RST-drop iptables rule).
 
 | Test | REQ | Checks |
 |---|---|---|
-| test_http_001 | REQ-HTTP-002, 016, 019..022, 029 | GET / → 200, headers, body, server closes |
+| test_http_001 | REQ-HTTP-002, 016, 019..022, 029, 035 | GET / → 200, headers, body, server closes |
 | test_http_002 | REQ-HTTP-004, 023 | HEAD → same Content-Length, no body |
 | test_http_003 | REQ-HTTP-006, 010 | HTTP/1.1 + Host works; answered as HTTP/1.0 |
-| test_http_004 | RFC 9112 §3.2.2 | Absolute-form target |
+| test_http_004 | REQ-HTTP-047 | Absolute-form target (RFC 9112 §3.2.2) |
 | test_http_005 | REQ-HTTP-003, 032, 036 | POST body echoed |
 | test_http_006 | REQ-HTTP-032 | Headers and body in separate segments |
-| test_http_007 | REQ-HTTP-037 | Generated JSON, query passed through |
-| test_http_008 | — | 8000-byte body streamed intact |
-| test_http_009 | — | Request trickled one byte per segment |
+| test_http_007 | REQ-HTTP-014, 015, 037 | Generated JSON, query passed through |
+| test_http_008 | REQ-HTTP-020, 022 | 8000-byte body streamed intact |
+| test_http_009 | REQ-HTTP-008, 061 | Request trickled one byte per segment |
 | test_http_010 | REQ-HTTP-025 | 404 |
 | test_http_011 | REQ-HTTP-024 | 405 + Allow |
 | test_http_012 | REQ-HTTP-024 | 501 for PUT / DELETE |
-| test_http_013 | REQ-HTTP-026, 010 | 400: malformed line, 1.1 without Host, header without ':' |
-| test_http_014 | — | 505 for HTTP/2.0 |
+| test_http_013 | REQ-HTTP-007, 010, 026 | 400: malformed line, 1.1 without Host, header without ':' |
+| test_http_014 | REQ-HTTP-006 | 505 for HTTP/2.0 |
 | test_http_015 | REQ-HTTP-039, 041 | 414 |
 | test_http_016 | REQ-HTTP-040 | 431 |
 | test_http_017 | REQ-HTTP-033, 034 | 413 |
-| test_http_018 | — | Transfer-Encoding → 501 |
+| test_http_018 | REQ-HTTP-043, 046 | Transfer-Encoding → 501 |
 | test_http_019 | REQ-HTTP-028, 029 | 30 back-to-back requests (no TIME_WAIT stall) |
-| test_http_020 | — | Two concurrent connections |
-| test_http_021 | — | Idle client reset after the 10 s request timeout (`sut_specific`) |
-| test_http_022 | RFC 9110 over IPv6 | The status page fetched from the demo's link-local address (Linux; skipped without host IPv6) |
+| test_http_020 | REQ-HTTP-028 | Two concurrent connections |
+| test_http_021 | REQ-HTTP-065 | Idle client reset after the 10 s request timeout (`sut_specific`) |
+| test_http_022 | REQ-HTTP-002 | Over IPv6: the status page fetched from the demo's link-local address (Linux; skipped without host IPv6) |
 
 ### Blackbox TLS 1.3 and HTTPS Coverage
 
@@ -664,8 +710,8 @@ programs run in their own source tree, which they insist on.
 | `cmake-linux` | ci.yml | ubuntu-latest | ctest (dual stack, TLS): unit and integration tests | push/PR |
 | `cmake-macos` | ci.yml | macos-latest | ctest (dual stack, TLS): unit and integration tests | push/PR |
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
-| `traceability` | ci.yml | ubuntu-latest | `scripts/trace.py --strict --markdown`: every integration test cites a requirement, every cited ID exists; the summary is the requirements coverage (§0) | push/PR |
-| `coverage` | ci.yml | ubuntu-latest | An instrumented build (`-DSMALLEST_TCP_COVERAGE=ON`), `ctest -L integration`, gcovr: line and branch coverage of `src/` by the integration tests (§0); the HTML report is an artifact | push/PR |
+| `traceability` | ci.yml | ubuntu-latest | `scripts/trace.py --strict --markdown`: every integration test cites a requirement, every cited ID exists, every test a row names exists and cites it, every MUST row is cited by a test or says why none can verify it; the summary is the requirements coverage (§0) | push/PR |
+| `coverage` | ci.yml | ubuntu-latest | An instrumented build (`-DSMALLEST_TCP_COVERAGE=ON`), `ctest -L integration`, gcovr: line and branch coverage of `src/` (without the MAC drivers and the Mbed TLS backend) by the integration tests (§0); the HTML report is an artifact | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
 | `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 suite against dual-stack `tcp_echo_demo`, then DHCPv6 interop with dnsmasq (TAP, raw socket); and against an IPv6-only `tcp_echo_demo` (TAP) | push/PR |
@@ -783,19 +829,18 @@ The `fuzz.yml` workflow's `fuzz-tcp-hw` job then:
 
 | # | Requirement(s) | Description | Priority |
 |---|---|---|---|
-| 1 | MUST rows no test cites (§0) | Above all IPv6, NDP, ICMPv6, SLAAC, IPv4, ARP, Ethernet and the checksum: `scripts/trace.py --untested <doc>` lists them | High |
-| 2 | — | No integration tests for IPv6, ICMPv6, NDP, MLD, the DHCPv6 client, TLS (but through HTTPS) and DTLS: the code coverage of those files (§0) comes from unit tests and blackbox suites only | High |
-| 3 | REQ-DNS-* | The DNS stub resolver is not implemented; its requirements have no tests | Medium |
-| 4 | Hardware fixture | Procure BOM, set up self-hosted runner; the STM32F4 port has not run on a board (§4) | Medium |
-| 5 | REQ-TCP-004/007 | Simultaneous open and close: verified by unit tests only, no black-box test | Low |
-| 6 | REQ-TCP-113/114/117/122-124 | Window Scale, Timestamps, SACK options: not implemented (MAY) | Low |
-| 7 | REQ-TCP-130/132-134 | TCP_NODELAY, Keep-alive: not implemented (MAY) | Low |
-| 8 | REQ-TCP-155 | RST rate limiting (SHOULD): not implemented, no test | Low |
-| 9 | REQ-TLS-003 | TLS_CHACHA20_POLY1305_SHA256 (SHOULD): not implemented | Low |
-| 10 | TLS | Client certificates, session tickets / 0-RTT, record_size_limit (RFC 8449): not implemented | Low |
-| 11 | REQ-DTLS-058 | DTLS: after a partial ACK, resend only what it leaves out (SHOULD); the timer resends the whole flight | Low |
-| 12 | DTLS | Connection IDs (RFC 9146), backing off to smaller records when the PMTU is unknown, buffering out-of-order handshake messages (all optional); no fuzz suite for DTLS | Low |
-| 13 | Fuzz | The fuzz suite covers TCP only | Low |
+| 1 | REQ-DNS-* | The DNS stub resolver is not implemented; its rows are the bulk of the *not implemented* column (§0) | Medium |
+| 2 | Hardware fixture | Procure BOM, set up self-hosted runner; the STM32F4 port has not run on a board (§4) | Medium |
+| 3 | Code coverage (§0) | `src/dns_wire.c`: the integration tests do not reach `dns_name_decode()` — no module calls it; it is the resolver's — nor the refusal of a received name that runs past the end of the message, uses a reserved label type or is longer than 255 bytes, a name that overflows the writer part-way, and the tiebreak comparison of record data that starts with a name (PTR, NSEC) or holds one after a preference (MX).  `test_dns_wire` covers them | Low |
+| 4 | Code coverage (§0) | `src/net_cksum.c`: `net_cksum_update()`, the incremental update of RFC 1624, has no caller in the stack and is not reached; `test_checksum` verifies it | Low |
+| 5 | REQ-TCP-113/114/117/118/122 | Window Scale, Timestamps, SACK options: not implemented (MAY) | Low |
+| 6 | REQ-TCP-132 | Keep-alive: not implemented (MAY) | Low |
+| 7 | REQ-TCP-154/155 | Challenge ACKs and their throttling, RST rate limiting (SHOULD): not implemented | Low |
+| 8 | REQ-TLS-003 | TLS_AES_256_GCM_SHA384 and TLS_CHACHA20_POLY1305_SHA256 (SHOULD): not implemented | Low |
+| 9 | TLS | Client certificates, session tickets / 0-RTT, record_size_limit (RFC 8449): not implemented | Low |
+| 10 | REQ-DTLS-058 | DTLS: after a partial ACK, resend only what it leaves out (SHOULD); the timer resends the whole flight | Low |
+| 11 | DTLS | Connection IDs (RFC 9146), backing off to smaller records when the PMTU is unknown, buffering out-of-order handshake messages (all optional); no fuzz suite for DTLS | Low |
+| 12 | Fuzz | The fuzz suite covers TCP only | Low |
 
 ---
 
