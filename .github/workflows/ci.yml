@@ -808,6 +808,8 @@ jobs:
   # Line and branch coverage of src/ by the integration tests alone: they
   # drive the stack only through its API and the wire, so code they never
   # reach is code no application reaches either — dead, or a missing test.
+  # Built with TLS (the default), so the HTTPS integration tests run and
+  # the TLS files count.  docs/test-plan.md §0 has the same commands.
   coverage:
     name: Coverage — the stack through its API (integration tests)
     runs-on: ubuntu-latest
@@ -817,7 +819,7 @@ jobs:
         run: pip install --quiet gcovr
       - name: Build with coverage
         run: |
-          cmake -S . -B build-cov -DSMALLEST_TCP_COVERAGE=ON -DSMALLEST_TCP_TLS=OFF
+          cmake -S . -B build-cov -DSMALLEST_TCP_COVERAGE=ON
           cmake --build build-cov
       - name: Integration tests
         run: ctest --test-dir build-cov -L integration --output-on-failure
