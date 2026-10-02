@@ -7,7 +7,7 @@
  * Usage (mirrors dhcpv4_client.h):
  *   1. Declare a dhcpv6_client_t and call dhcpv6_client_init().
  *   2. Register a udp6 port-546 handler that calls dhcpv6_client_input().
- *   3. Once the link-local address is preferred, call dhcpv6_client_start()
+ *   3. Once the link-local address is usable, call dhcpv6_client_start()
  *      — stateful if the Router Advertisement had M set
  *      (net->ip6.ra_flags & NDP_RA_MANAGED), stateless for O
  *      (NDP_RA_OTHER).

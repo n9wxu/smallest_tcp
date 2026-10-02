@@ -138,7 +138,7 @@ static void setup_cap(uint16_t tx_cap, int start_ipv6) {
 
 static void setup(void) { setup_cap(sizeof(tx_buf), 1); }
 
-/** A global address in slot 1, as SLAAC will add (stage 4). */
+/** A global address in slot 1, as SLAAC adds one. */
 static void add_global(void) {
   memcpy(net.ip6.addr[1].addr, our_global, 16);
   net.ip6.addr[1].state = NET_IP6_PREFERRED;

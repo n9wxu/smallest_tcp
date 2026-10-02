@@ -1,6 +1,6 @@
 /**
  * @file icmpv6.c
- * @brief ICMPv6 (RFC 4443).  REQ-ICMPv6-001..041.
+ * @brief ICMPv6 (RFC 4443).  REQ-ICMPv6-001..043.
  */
 
 #include "icmpv6.h"

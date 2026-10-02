@@ -2,7 +2,7 @@
  * @file ndp.c
  * @brief Neighbor Discovery (RFC 4861): answering Neighbor Solicitations,
  *        router discovery, Duplicate Address Detection and SLAAC
- *        (RFC 4862).  REQ-NDP-001..053, REQ-SLAAC-004..028.
+ *        (RFC 4862).  REQ-NDP-001..076, REQ-SLAAC-004..039.
  */
 
 #include "ndp.h"

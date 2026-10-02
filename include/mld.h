@@ -7,6 +7,7 @@
  * of each configured address and the groups joined with ipv6_mcast_join()
  * — so switches that snoop MLD forward them.  All-nodes is never reported
  * (RFC 3810 §6).  Driven by ipv6_tick(); queries arrive via icmpv6_input().
+ * See docs/design/ipv6.md §9.
  */
 
 #ifndef MLD_H

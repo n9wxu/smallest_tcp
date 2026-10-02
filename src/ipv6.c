@@ -1,7 +1,7 @@
 /**
  * @file ipv6.c
  * @brief IPv6 (RFC 8200, RFC 4291, RFC 6724): packets, and the addresses
- *        of the interface.  REQ-IPv6-001..047.
+ *        of the interface.  REQ-IPv6-001..048, 055.
  */
 
 #include "ipv6.h"

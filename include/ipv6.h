@@ -158,7 +158,9 @@ uint16_t ipv6_cksum(const uint8_t *src, const uint8_t *dst, uint8_t next_header,
 
 /**
  * Form the link-local address from the MAC and start Duplicate Address
- * Detection on it.  IPv6 stays silent until this is called.
+ * Detection on it.  IPv6 stays silent until this is called.  It resets
+ * all of net->ip6: global addresses are added after it (the joined groups
+ * are kept).
  */
 void ipv6_start(net_t *net);
 
@@ -185,8 +187,9 @@ int ipv6_is_ours(const net_t *net, const uint8_t *addr);
  */
 const uint8_t *ipv6_src_for(const net_t *net, const uint8_t *dst);
 
-/** True if @p mac is all-nodes or the solicited-node group of one of our
- *  configured (incl. tentative) addresses. */
+/** True, once IPv6 is started, if @p mac is the Ethernet address of
+ *  all-nodes, of the solicited-node group of one of our configured (incl.
+ *  tentative) addresses, or of a joined group. */
 int ipv6_mac_accepted(const net_t *net, const uint8_t *mac);
 
 /**
@@ -209,13 +212,15 @@ net_err_t ipv6_addr_add(net_t *net, const uint8_t *addr, uint32_t valid_s,
  */
 net_err_t ipv6_mcast_join(net_t *net, const uint8_t *group);
 
-/** Stop listening to a group (MLD reports the leave). */
+/** Stop listening to a group (MLD reports the leave); no-op if it was
+ *  not joined. */
 void ipv6_mcast_leave(net_t *net, const uint8_t *group);
 
 /** True if @p group was joined with ipv6_mcast_join(). */
 int ipv6_mcast_is_member(const net_t *net, const uint8_t *group);
 
-/** Remove one of our global addresses (no-op if absent). */
+/** Remove one of our global addresses (no-op if absent, and for the
+ *  link-local address). */
 void ipv6_addr_remove(net_t *net, const uint8_t *addr);
 
 /**

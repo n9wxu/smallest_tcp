@@ -58,9 +58,13 @@
 void ndp_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
 
 /**
- * Send a Neighbor Solicitation for @p target.
+ * Send a Neighbor Solicitation for @p target, to its solicited-node group.
+ * The answer is not recorded: there is no neighbour cache.
  * @param dad  1: Duplicate Address Detection probe (source ::, no Source
- *             Link-Layer Address option); 0: address resolution.
+ *             Link-Layer Address option); 0: address resolution, from the
+ *             address ipv6_src_for() picks, with our MAC.
+ * @return NET_OK; NET_ERR_INVALID_PARAM if no address of ours can be the
+ *         source; NET_ERR_BUF_TOO_SMALL.
  */
 net_err_t ndp_send_ns(net_t *net, const uint8_t *target, int dad);
 
@@ -69,7 +73,7 @@ void ndp_dad_start(net_t *net, uint8_t slot, uint16_t delay_ms);
 
 /** Advance Router Solicitation and DAD timers by @p elapsed_ms (called
  *  by ipv6_tick()).  Solicitations start once the link-local address is
- *  preferred and stop at the first Router Advertisement. */
+ *  usable and stop at the first Router Advertisement. */
 void ndp_tick(net_t *net, uint32_t elapsed_ms);
 
 #endif /* NDP_H */

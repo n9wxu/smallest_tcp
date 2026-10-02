@@ -3,8 +3,9 @@
  * @brief Multicast Listener Discovery for hosts: MLDv2 (RFC 3810) with
  *        MLDv1 (RFC 2710) compatibility.
  *
- * Reports go out with a Hop-by-Hop Router Alert, Hop Limit 1, from the
- * link-local address (from :: before it is usable, RFC 3810 §5.2.13).
+ * REQ-IPv6-049..054.  Reports go out with a Hop-by-Hop Router Alert, Hop
+ * Limit 1, from the link-local address (from :: before it is usable,
+ * RFC 3810 §5.2.13).
  * Simplifications: a group-specific query is answered with a report of
  * all our groups; a leave is sent once (joins are repeated once).
  */
