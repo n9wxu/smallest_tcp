@@ -98,7 +98,7 @@ to scattered `-D` flags: one file, included by every translation unit.
 | `NET_IPV6_ADDRS` | 2 | IPv6 address slots: `[0]` link-local, the rest global (SLAAC, DHCPv6, static). |
 | `NET_IPV6_DAD_TRANSMITS` | 1 | Neighbor Solicitations per Duplicate Address Detection run (RFC 4862 `DupAddrDetectTransmits`). |
 | `NET_IPV6_DEFAULT_HOP_LIMIT` | 64 | Hop limit until a Router Advertisement supplies one. |
-| `NET_8BIT_TARGET` | 0 | Consulted by `net_endian.h` only when the compiler does not predefine `__BYTE_ORDER__`: 1 selects big-endian, making `net_htons()` and friends no-ops.  Field access never depends on it ([byte-order.md](byte-order.md)). |
+| `NET_8BIT_TARGET` | 0 | Consulted by `net_endian.h` only when the compiler does not predefine `__BYTE_ORDER__` and the application defines neither `NET_BIG_ENDIAN` nor `NET_LITTLE_ENDIAN` (which take precedence; defining both is an error): 1 selects big-endian, making `net_htons()` and friends no-ops.  Field access never depends on it ([byte-order.md](byte-order.md)). |
 | `NET_DEBUG` | 0 | 1 makes `NET_LOG()` print to `stderr` (hosted builds only).  CMake: `SMALLEST_TCP_DEBUG`. |
 | `NET_DEFAULT_IPV4_ADDR` | 10.0.0.2 | Copied into `net->ipv4_addr` by `net_init()`.  Set 0 for a device that waits for DHCP. |
 | `NET_DEFAULT_SUBNET_MASK` | 255.255.255.0 | `net->subnet_mask`. |

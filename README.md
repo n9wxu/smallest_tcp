@@ -85,7 +85,7 @@ Everything compiles with `-Wall -Wextra -Werror -pedantic`.  CI runs the unit an
 | Byte order | `net_endian.h` | — | Portable wire read/write + host/network conversion |
 | Checksum | `net_cksum.h` / `net_cksum.c` | [checksum](docs/requirements/checksum.md) | RFC 1071 Internet checksum — incremental (pieces of any length), one-shot, verify |
 | Ethernet | `eth.h` / `eth.c` | [ethernet](docs/requirements/ethernet.md) | Ethernet II parse/build, protocol dispatch; our own frames looped back dropped |
-| ARP | `arp.h` / `arp.c` | [arp](docs/requirements/arp.md) | Fast-path reply, gateway MAC learning (expiring after 5 minutes), next-hop routing, requests rate-limited |
+| ARP | `arp.h` / `arp.c` | [arp](docs/requirements/arp.md) | Requests for our address answered, gateway MAC learning (expiring after 5 minutes), next-hop choice, requests rate-limited; no cache |
 | IPv4 | `ipv4.h` / `ipv4.c` | [ipv4](docs/requirements/ipv4.md) | Parse/build/send, protocol dispatch, every broadcast form of our network, sources that name no host refused, source routes dropped, reassembly in an application buffer, the MTU (`net_t.mtu`, MMS_S/MMS_R), ICMP Protocol Unreachable |
 | ICMPv4 | `icmp.h` / `icmp.c` | [icmpv4](docs/requirements/icmpv4.md) | Echo reply (ping, truncated to fit), destination unreachable, Time Exceeded on reassembly timeout, errors received passed to UDP and TCP, checksum validation |
 | UDP | `udp.h` / `udp.c` | [udp](docs/requirements/udp.md) | Parse/send (the MTU at most), port table dispatch, pseudo-header checksum, ICMP Port Unreachable; the destination address and ICMP errors to the application, TTL and TOS per datagram |

@@ -10,6 +10,28 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+A review of every requirement row against its RFC, the code and the tests
+that verify it.
+
+### Changed
+
+- Requirement rows: levels and wording follow the RFC text; what the
+  design leaves out is a **deviation** row; the Test ID column names the
+  tests that verify each row, and every test cites its rows.
+- The documents describe the stack as it is, in the present tense; this
+  file keeps the history.
+- Test counts are no longer reported: requirements coverage
+  (`scripts/trace.py`) and code coverage (the CI job `coverage`, now built
+  with TLS) are.
+
+### Fixed
+
+- ICMP: an error whose quote is not a whole IPv4 header is discarded, not
+  passed to UDP or TCP.
+- `net_endian.h`: `NET_BIG_ENDIAN` or `NET_LITTLE_ENDIAN` defined by the
+  application is honoured, as the error message for an unknown byte order
+  says.
+
 ## [0.1.5] - 2026-10-02
 
 ### Changes
