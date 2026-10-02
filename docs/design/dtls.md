@@ -372,7 +372,7 @@ flight plus one datagram.
 | We write a flight | Its first transmission; `rto_ms` = `DTLS_RTO_INITIAL_MS` (1000); `retries` = 0 |
 | Timer expires | After `DTLS_MAX_RETRANSMITS` (6) retransmissions by the timer — 1 + 2 + 4 + 8 + 16 + 32 + 60 s, about two minutes — the connection fails: `ERROR`, `alert` = `DTLS_TIMEOUT`, `TLS_EVT_ERROR`, no alert sent.  Otherwise `rto_ms` doubles (at most `DTLS_RTO_MAX_MS`, 60 000) and the whole flight is sent again |
 | A fragment of the next message expected — any record of the peer's next flight | Our flight is acknowledged implicitly (§7.2): the timer stops |
-| An ACK covering every record of our last transmission | Acknowledged explicitly: the timer stops (for our KeyUpdate, the new keys take over — section 9) |
+| ACKs that between them name every record of one of the flight's transmissions | Acknowledged explicitly: the timer stops (for our KeyUpdate, the new keys take over — section 9) |
 | A duplicate of the peer's previous flight while ours is unacknowledged | The peer has not seen ours: send it again now (§5.8.1).  This does not count against the timer's retransmissions |
 
 `dtls_tick(d, elapsed_ms)` runs the timer; the application calls it from
@@ -423,10 +423,11 @@ placed — before the message it completes can start a flight of ours.  A
 record none of whose fragments was placed is never listed (§7 MUST NOT);
 one whose first fragment was placed stays listed even if a later message in
 it then finds no room behind unread data, which can only be a
-NewSessionTicket after a shorter one (REQ-DTLS-051).  It is cleared when a handshake flight of ours begins: the
-peer's records after that belong to its next flight.  After the handshake,
-flights each way are independent (§5.8.4) and the list is not cleared; when
-full, its oldest entry makes way.  An ACK is owed:
+NewSessionTicket after a shorter one (REQ-DTLS-051).  The list is cleared
+when a handshake flight of ours begins: the peer's records after that
+belong to its next flight.  After the handshake, flights each way are
+independent (§5.8.4) and the list is not cleared; when full, its oldest
+entry makes way.  An ACK is owed:
 
 - by a server when the client's last flight is complete (its Finished) —
   mandatory, since nothing else answers that flight;
@@ -447,9 +448,9 @@ not retransmitted.
 matches one in `sent[]` — the records of every transmission of the flight,
 each with its transmission's number — is marked (§7.2: a record named in
 any ACK is acknowledged); when every record of some transmission is marked,
-the flight is acknowledged.  A partial ACK changes
-nothing: the timer will resend the whole flight (§7.2 SHOULD resend only
-the rest — not implemented, a flight is a few datagrams).
+the flight is acknowledged.  A partial ACK changes nothing: the timer
+resends the whole flight (§7.2 SHOULD resend only the rest — not
+implemented, a flight is a few datagrams).
 
 ---
 
