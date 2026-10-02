@@ -112,7 +112,7 @@ ICMPv6 Types are divided into:
 |---|---|---|---|---|
 | REQ-ICMPv6-039 | MUST | Silently discard ICMPv6 informational messages with unknown Type | RFC 4443 §2.4(b) | itest_icmpv6_039_unknown_informational_dropped |
 | REQ-ICMPv6-040 | MUST | Pass ICMPv6 error messages of unknown type to the upper-layer protocol that sent the quoted packet | RFC 4443 §2.4(a) | itest_icmpv6_011_errors_reach_tcp |
-| REQ-ICMPv6-043 | SHOULD | Act on an error only if the packet it quotes is one we sent: its source an address of ours and, for TCP, the addresses and ports of a connection and a sequence number in flight | RFC 4443 §5.2, RFC 5927 §4.1 | itest_icmpv6_043_only_errors_about_our_segments |
+| REQ-ICMPv6-043 | SHOULD | Act on an error only if the packet it quotes is one we sent: its source an address of ours and, for TCP, the addresses and ports of a connection and a sequence number in flight | RFC 4443 §5.2, RFC 5927 §4.1 | itest_icmpv6_043_only_errors_about_our_segments, itest_icmpv6_011_errors_reach_the_udp_application |
 | REQ-ICMPv6-041 | MUST | Parse ICMPv6 messages in-place (zero-copy): the quote an error handler gets points into the RX frame buffer | Architecture | itest_icmpv6_011_errors_reach_the_udp_application |
 
 ## Notes

@@ -104,7 +104,7 @@ Fixed header: 40 bytes (always). Extension headers follow if needed.
 |---|---|---|---|---|
 | REQ-IPv6-035 | MUST | Support a link-local address (fe80::/64 + interface identifier) | RFC 4291 §2.5.6, §2.8 | itest_ipv6_035_link_local_from_the_mac |
 | REQ-IPv6-036 | MUST | Generate the link-local address from the MAC in Modified EUI-64 format | RFC 4291 §2.5.1, Appendix A, RFC 2464 §4, §5 | itest_ipv6_035_link_local_from_the_mac |
-| REQ-IPv6-037 | SHOULD | Support global unicast addresses (from SLAAC, DHCPv6, or `ipv6_addr_add()`): `NET_IPV6_ADDRS` − 1 of them, one by default | RFC 4291 §2.5.4 | itest_ipv6_006_destinations_accepted |
+| REQ-IPv6-037 | SHOULD | Support global unicast addresses (from SLAAC, DHCPv6, or `ipv6_addr_add()`): `NET_IPV6_ADDRS` − 1 of them, one by default | RFC 4291 §2.5.4 | itest_ipv6_006_destinations_accepted, itest_ipv6_037_global_addresses_added_and_removed |
 | REQ-IPv6-038 | MUST | Support all-nodes multicast (ff02::1) — joined implicitly | RFC 4291 §2.7.1, §2.8 | itest_ipv6_006_destinations_accepted, itest_ipv6_038_link_layer_groups |
 | REQ-IPv6-039 | MUST | Support the solicited-node multicast address (ff02::1:ffXX:XXXX) of each unicast address | RFC 4291 §2.7.1, §2.8 | itest_ipv6_038_link_layer_groups |
 | REQ-IPv6-040 | MUST | Map an IPv6 multicast address to the Ethernet multicast MAC 33:33 + its low 32 bits | RFC 2464 §7 | itest_ipv6_038_link_layer_groups |

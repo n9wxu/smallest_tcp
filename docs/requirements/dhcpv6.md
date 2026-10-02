@@ -97,8 +97,8 @@ Offset  Size  Field
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-DHCPv6-027 | MUST | Discard a Reply whose transaction-id is not that of the message it answers | RFC 8415 §16.10 | itest_dhcpv6_019_replies_validated |
-| REQ-DHCPv6-028 | MUST | Take the assigned address from the IA Address (option 5) within the IA_NA | RFC 8415 §18.2.10.1 | itest_dhcpv6_011_address_assigned |
+| REQ-DHCPv6-027 | MUST | Discard a Reply whose transaction-id is not that of the message it answers | RFC 8415 §16.10 | itest_dhcpv6_019_replies_validated, itest_dhcpv6_027_reply_when_bound_ignored |
+| REQ-DHCPv6-028 | MUST | Take the assigned address from the IA Address (option 5) within the IA_NA | RFC 8415 §18.2.10.1 | itest_dhcpv6_011_address_assigned, itest_dhcpv6_028_reply_without_a_lease |
 | REQ-DHCPv6-029 | MUST | Take the Preferred Lifetime and Valid Lifetime of the IA Address as the address's lifetimes, counted from the Reply — the first, and each Reply to a Renew or Rebind | RFC 8415 §18.2.10.1, §21.6 | itest_dhcpv6_029_reply_to_renew_extends, itest_dhcpv6_029_preferred_lifetime |
 | REQ-DHCPv6-030 | MUST | Take T1 (renewal time) and T2 (rebind time) from the IA_NA; where the server left them 0: 0.5 and 0.8125 of the preferred lifetime | RFC 8415 §18.2.10.1, §14.2, §21.4 | itest_dhcpv6_036_renew_at_t1, itest_dhcpv6_030_t1_t2_left_to_the_client |
 | REQ-DHCPv6-047 | MUST | Discard an IA_NA whose T1 is greater than its T2 (both greater than 0), and process the message as if it had none | RFC 8415 §21.4 | itest_dhcpv6_047_t1_above_t2_discarded |
@@ -132,7 +132,7 @@ Offset  Size  Field
 | REQ-DHCPv6-039 | MUST | Retransmit an unanswered message: RT doubles each time (RT = 2·RTprev + RAND·RTprev) up to MRT (RT = MRT + RAND·MRT), and a message with a retry limit (Request: REQ_MAX_RC = 10) is given up after it | RFC 8415 §15 | itest_dhcpv6_039_retransmission, itest_dhcpv6_040_request_backoff_capped |
 | REQ-DHCPv6-040 | MUST | IRT and MRT by message type: Solicit 1 s / SOL_MAX_RT (3600 s), Request 1 s / 30 s, Renew 10 s / 600 s, Rebind 10 s / 600 s, Information-request 1 s / INF_MAX_RT (3600 s) | RFC 8415 §7.6, §18.2 | itest_dhcpv6_039_retransmission, itest_dhcpv6_040_request_backoff_capped |
 | REQ-DHCPv6-041 | MUST | RAND is random, between -0.1 and +0.1 | RFC 8415 §15 | itest_dhcpv6_039_retransmission |
-| REQ-DHCPv6-050 | MUST | Each retransmission carries the Elapsed Time since the first transmission of the exchange, in hundredths of a second (0 in the first; 0xFFFF from 655.35 s on) | RFC 8415 §15, §21.9 | itest_dhcpv6_039_retransmission |
+| REQ-DHCPv6-050 | MUST | Each retransmission carries the Elapsed Time since the first transmission of the exchange, in hundredths of a second (0 in the first; 0xFFFF from 655.35 s on) | RFC 8415 §15, §21.9 | itest_dhcpv6_039_retransmission, itest_dhcpv6_050_elapsed_time_of_each_exchange |
 | REQ-DHCPv6-051 | MUST | The first Solicit's RT is strictly greater than IRT: RAND greater than 0 | RFC 8415 §18.2.1 | itest_dhcpv6_051_first_solicit_rt_above_irt |
 
 ### Option Parsing

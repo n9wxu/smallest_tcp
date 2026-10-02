@@ -1003,6 +1003,8 @@ TEST(itest_slaac_014_global_address_formed) {
  * valid lifetime 0, or the link-local prefix, forms no address */
 TEST(itest_slaac_015_prefixes_not_used) {
   static const uint8_t link_local_prefix[16] = {0xFE, 0x80};
+  static const uint8_t link_local_subnet[16] = {0xFE, 0x80, 0, 0, 0, 0, 0, 1};
+  uint8_t body[48], rest[4] = {0, 0, 0x07, 0x08};
   ra_t r;
   up();
   r = ra_default();
@@ -1028,25 +1030,46 @@ TEST(itest_slaac_015_prefixes_not_used) {
   r = ra_default();
   r.prefix = 1;
   r.prefix_addr = link_local_prefix;
+  r.preferred = 0; /* nor does it touch the link-local address */
   ra_send(&r, &nd_ok);
+  ASSERT_EQ(ipv6_addr_state(&t.net, 0), NET_IP6_PREFERRED);
+  r.prefix_addr = link_local_subnet;
+  r.preferred = 14400;
+  ra_send(&r, &nd_ok);
+  /* an option of another type, though laid out like a prefix */
+  memset(body, 0, sizeof(body));
+  peer_nd_lla(body + 8, 1, router6_mac);
+  peer_nd_prefix(body + 16, prefix6, 64, PI_L | PI_A, 86400, 14400);
+  body[16] = 200;
+  nd_deliver(router6_ll, all_nodes6, NULL, T_RA, rest, body, 48, &nd_ok);
   itest_advance(&t, 3000, 100);
   ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_NONE);
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
 /* REQ-SLAAC-008, 018: a global address found to be a duplicate is not
- * used, and later advertisements of the prefix do not revive it */
+ * used, and later advertisements of the prefix neither revive it nor
+ * keep it: when its valid lifetime has run out, the next advertisement
+ * forms the address anew, and it is probed again */
 TEST(itest_slaac_018_duplicate_global_address) {
   up();
-  ra_prefix(86400, 14400);
+  ra_prefix(100, 100);
   itest_advance(&t, 100, 100);
   na(peer6_ll, all_nodes6, global, NA_O, &nd_ok);
   ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_DUPLICATE);
-  ra_prefix(86400, 14400);
-  itest_advance(&t, 3000, 100);
+  seconds(50);
+  ra_prefix(100, 100);
   ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_DUPLICATE);
   ASSERT_FALSE(answers_echo(offlink6, global));
   ASSERT_TRUE(answers_echo(peer6_ll, ll)); /* the link-local one works on */
+  seconds(51);
+  ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_NONE);
+  wire_clear(&t);
+  ra_prefix(100, 100);
+  ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_TENTATIVE);
+  itest_advance(&t, 1100, 100);
+  ASSERT_EQ(wire_count_icmp6(&t, T_NS), 1);
+  ASSERT_TRUE(answers_echo(offlink6, global));
 }
 
 /* REQ-SLAAC-019, 020, 022, 023: the address is preferred for the
@@ -1166,6 +1189,8 @@ TEST(itest_slaac_030_next_hop) {
   memcpy(neighbour, prefix6, 16);
   neighbour[15] = 0x77;
   ASSERT_TRUE(ipv6_on_link(&t.net, neighbour));
+  neighbour[7] ^= 0x01; /* the next /64 */
+  ASSERT_FALSE(ipv6_on_link(&t.net, neighbour));
   ASSERT_FALSE(ipv6_on_link(&t.net, offlink6));
   ASSERT_MEM_EQ(ipv6_router_mac(&t.net), router6_mac, 6);
 }

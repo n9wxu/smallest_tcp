@@ -324,6 +324,85 @@ TEST(itest_mld_052_general_query_answered) {
   ASSERT_TRUE(early > 0); /* random, not the maximum each time */
 }
 
+/* REQ-IPv6-052: MLDv2's Maximum Response Code above 32767 is a
+ * floating-point value — 0x8000 is 32.768 s — and the answer comes within
+ * it, at a random time */
+TEST(itest_mld_052_maximum_response_code_decoded) {
+  uint8_t seed;
+  int late = 0;
+  for (seed = 0; seed < 8; seed++) {
+    uint32_t ms = 0;
+    up();
+    net_random_seed(&t.net, &seed, 1);
+    query(router6_ll, 1, NULL, 0x8000, 1, 0);
+    while (t.wire.tx_count == 0 && ms < 40000) {
+      itest_advance(&t, 8, 8);
+      ms += 8;
+    }
+    ASSERT_TRUE(ms <= 32768);
+    late += ms > 1000;
+  }
+  ASSERT_TRUE(late > 0);
+}
+
+/* REQ-IPv6-052: a second query does not put off the answer already due */
+TEST(itest_mld_052_pending_answer_stands) {
+  uint8_t seed;
+  for (seed = 0; seed < 8; seed++) {
+    up();
+    net_random_seed(&t.net, &seed, 1);
+    query(router6_ll, 1, NULL, 100, 1, 0);
+    query(router6_ll, 1, NULL, 60000, 1, 0);
+    itest_advance(&t, 100, 1);
+    ASSERT_EQ(wire_count_icmp6(&t, T_V2_REPORT), 1);
+  }
+}
+
+/* REQ-IPv6-049: the solicited-node group of a duplicate address is not
+ * reported; with no group at all, nothing is */
+TEST(itest_mld_049_duplicate_address_not_reported) {
+  static uint8_t msg[64], f[160];
+  uint8_t other[16], other_sn[16], body[24], rest[4] = {0x20, 0, 0, 0};
+  uint8_t mac[6];
+  peer_ip6_t ip, na_ip = peer_ip6(peer6_ll, all_nodes6, 58);
+  peer_icmp_t icmp;
+  uint16_t len;
+  na_ip.hop_limit = 255;
+  peer_mcast6_mac(all_nodes6, mac);
+  up();
+  memcpy(other, prefix6, 16);
+  other[13] = 0x12;
+  other[14] = 0x34;
+  other[15] = 0x56;
+  peer_solicited_node(other, other_sn);
+  ipv6_addr_add(&t.net, other, 0xFFFFFFFFu, 0xFFFFFFFFu);
+  itest_advance(&t, 100, 100);
+  memcpy(body, other, 16); /* another node has it */
+  peer_nd_lla(body + 16, 2, peer_mac);
+  len = peer_icmp6(msg, &na_ip, 136, 0, rest, body, 24);
+  itest_receive(&t, f, peer_ipv6_frame(f, mac, peer_mac, &na_ip, msg, len));
+  ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_DUPLICATE);
+  itest_advance(&t, 3000, 100);
+  wire_clear(&t);
+  query(router6_ll, 1, NULL, 100, 1, 0);
+  itest_advance(&t, 200, 10);
+  ASSERT_TRUE(mld_sent(T_V2_REPORT, 0, &ip, &icmp));
+  ASSERT_EQ(records(&icmp, REC_MODE_IS_EXCLUDE), 1);
+  ASSERT_TRUE(reports(&icmp, sn));
+  ASSERT_FALSE(reports(&icmp, other_sn));
+
+  starting(); /* the link-local address itself a duplicate: no group left */
+  memcpy(body, ll, 16);
+  len = peer_icmp6(msg, &na_ip, 136, 0, rest, body, 24);
+  itest_receive(&t, f, peer_ipv6_frame(f, mac, peer_mac, &na_ip, msg, len));
+  ASSERT_EQ(ipv6_addr_state(&t.net, 0), NET_IP6_DUPLICATE);
+  itest_advance(&t, 3000, 100);
+  wire_clear(&t);
+  query(router6_ll, 1, NULL, 100, 1, 0);
+  itest_advance(&t, 200, 10);
+  ASSERT_EQ(t.wire.tx_count, 0);
+}
+
 /* REQ-IPv6-052: a query is dropped unless it comes from a link-local
  * address with Hop Limit 1 and is 24 or at least 28 octets long */
 TEST(itest_mld_052_queries_validated) {
@@ -433,6 +512,9 @@ int main(void) {
   RUN_TEST(itest_mld_055_leave_reported);
   RUN_TEST(itest_mld_049_solicited_node_group_of_each_address);
   RUN_TEST(itest_mld_052_general_query_answered);
+  RUN_TEST(itest_mld_052_maximum_response_code_decoded);
+  RUN_TEST(itest_mld_052_pending_answer_stands);
+  RUN_TEST(itest_mld_049_duplicate_address_not_reported);
   RUN_TEST(itest_mld_052_queries_validated);
   RUN_TEST(itest_mld_052_group_query);
   RUN_TEST(itest_mld_053_mldv1_querier);

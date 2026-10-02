@@ -396,6 +396,7 @@ TEST(itest_dhcpv6_007_reply_configures) {
  * client's, is discarded */
 TEST(itest_dhcpv6_019_replies_validated) {
   static const uint8_t other_duid[10] = {0, 3, 0, 1, 2, 0x4F, 0x54, 0x48, 0, 9};
+  uint8_t other_type[10];
   sent_msg_t m;
   up();
   dhcpv6_client_start(&t.net, &cli, DHCPV6_MODE_STATELESS);
@@ -414,6 +415,13 @@ TEST(itest_dhcpv6_019_replies_validated) {
   m_send();
   m_begin(M_REPLY, m.xid);
   m_opt(O_CLIENTID, other_duid, 10);
+  m_opt(O_SERVERID, server_duid, 14);
+  m_opt(O_DNS, dns_servers, 32);
+  m_send();
+  memcpy(other_type, our_duid, 10); /* our MAC in a DUID of another type */
+  other_type[1] = 4;
+  m_begin(M_REPLY, m.xid);
+  m_opt(O_CLIENTID, other_type, 10);
   m_opt(O_SERVERID, server_duid, 14);
   m_opt(O_DNS, dns_servers, 32);
   m_send();
@@ -541,6 +549,8 @@ TEST(itest_dhcpv6_040_request_backoff_capped) {
     ASSERT_EQ(m.type, M_REQUEST);
     ASSERT_EQ(m.xid, req.xid);
     ASSERT_TRUE(rt <= 33000);
+    if (k == 2) /* IRT: REQ_TIMEOUT, 1 s */
+      ASSERT_TRUE(rt >= 900 && rt <= 1100);
     if (k >= 8)
       ASSERT_TRUE(rt >= 27000);
   }
@@ -682,6 +692,12 @@ TEST(itest_dhcpv6_022_first_advertise_taken) {
   m_opt(7, "\xFF", 1); /* Preference 255 */
   m_ia_na(100, 160, lease2, 200, 300);
   m_send();
+  m_begin(M_ADVERTISE, req.xid); /* nor does an Advertise stand for a Reply */
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
+  ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_REQUEST);
+  ASSERT_EQ(events[DHCPV6_EVT_BOUND], 0);
   ASSERT_EQ(dhcp_count(), 1);
   ASSERT_NOT_NULL(sid = msg_option(&req, O_SERVERID, &l));
   ASSERT_MEM_EQ(sid, server_duid, 14);
@@ -718,7 +734,7 @@ TEST(itest_dhcpv6_021_advertise_offers) {
   peer_put16(ia + 12, O_IAADDR);
   peer_put16(ia + 14, 24);
   memcpy(ia + 16, lease, 16);
-  peer_put32(ia + 32, 200);
+  peer_put32(ia + 32, 0);
   peer_put32(ia + 36, 0);
   advertise_ia(&sol, ia, 40); /* valid lifetime 0 */
   peer_put32(ia + 32, 301);
@@ -764,15 +780,95 @@ TEST(itest_dhcpv6_021_advertise_offers) {
   ASSERT_MEM_EQ(addr, lease2, 16);
 }
 
+/* REQ-DHCPv6-050: the Elapsed Time is the exchange's: a Request that
+ * follows a Solicit sent twice starts at 0 again */
+TEST(itest_dhcpv6_050_elapsed_time_of_each_exchange) {
+  sent_msg_t sol, again, req;
+  up();
+  sol = soliciting();
+  ASSERT_TRUE(run_until_sent(3000, 10, &again) >= 0);
+  ASSERT_EQ(again.type, M_SOLICIT);
+  ASSERT_TRUE(elapsed(&again) >= 100);
+  wire_clear(&t);
+  m_begin(M_ADVERTISE, sol.xid);
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
+  ASSERT_TRUE(dhcp_sent(0, &req));
+  ASSERT_EQ(req.type, M_REQUEST);
+  ASSERT_EQ(elapsed(&req), 0);
+}
+
+/* REQ-DHCPv6-028: a Reply to the Request that brings no usable lease
+ * sends the client back to soliciting */
+TEST(itest_dhcpv6_028_reply_without_a_lease) {
+  static const uint8_t no_addrs[2] = {0, STATUS_NO_ADDRS};
+  uint8_t ia[18];
+  sent_msg_t sol, req, m;
+  up();
+  sol = soliciting();
+  m_begin(M_ADVERTISE, sol.xid);
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
+  ASSERT_TRUE(dhcp_sent(0, &req));
+  wire_clear(&t);
+  memcpy(ia, t.net.mac + 2, 4);
+  memset(ia + 4, 0, 8);
+  peer_put16(ia + 12, O_STATUS);
+  peer_put16(ia + 14, 2);
+  memcpy(ia + 16, no_addrs, 2);
+  m_begin(M_REPLY, req.xid);
+  m_ids(server_duid);
+  m_opt(O_IA_NA, ia, 18);
+  m_send();
+  ASSERT_EQ(events[DHCPV6_EVT_BOUND], 0);
+  ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_SOLICIT);
+  ASSERT_TRUE(dhcp_sent(0, &m));
+  ASSERT_EQ(m.type, M_SOLICIT);
+  ASSERT_TRUE(m.xid != sol.xid);
+}
+
+/* REQ-DHCPv6-027: a bound client expects no Reply: one that arrives —
+ * the Reply it has already used, sent again — changes nothing */
+TEST(itest_dhcpv6_027_reply_when_bound_ignored) {
+  sent_msg_t sol, req;
+  up();
+  sol = soliciting();
+  m_begin(M_ADVERTISE, sol.xid);
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
+  ASSERT_TRUE(dhcp_sent(0, &req));
+  m_begin(M_REPLY, req.xid);
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
+  ASSERT_EQ(events[DHCPV6_EVT_BOUND], 1);
+  run(50000, 100);
+  wire_clear(&t);
+  m_begin(M_REPLY, req.xid);
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
+  ASSERT_EQ(events[DHCPV6_EVT_BOUND], 1);
+  ASSERT_EQ(events[DHCPV6_EVT_RENEWED], 0);
+  run(49900, 100); /* T1 still counts from the first Reply */
+  ASSERT_EQ(dhcp_count(), 0);
+  run(100, 100);
+  ASSERT_EQ(dhcp_count(), 1);
+}
+
 /* ── The lease: renewal, rebinding, expiry, release ── */
 
 /* REQ-DHCPv6-030, 036: at T1 after the Reply — not before — the client
  * sends a Renew: a new transaction ID, the server's identifier, the
  * leased address in the IA_NA */
 TEST(itest_dhcpv6_036_renew_at_t1) {
-  sent_msg_t m;
+  sent_msg_t m, again;
   const uint8_t *sid, *addr;
   uint16_t l;
+  long rt;
   up();
   bound(100, 160, 200, 300);
   run(99900, 100);
@@ -790,6 +886,17 @@ TEST(itest_dhcpv6_036_renew_at_t1) {
   ASSERT_NOT_NULL(addr);
   ASSERT_MEM_EQ(addr, lease, 16);
   ASSERT_TRUE(requests(&m, O_SOL_MAX_RT));
+  m_begin(M_REPLY, m.xid); /* a Reply for another address renews nothing */
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease2, 200, 300);
+  m_send();
+  ASSERT_EQ(events[DHCPV6_EVT_RENEWED], 0);
+  ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_RENEW);
+  wire_clear(&t);
+  rt = run_until_sent(30000, 10, &again); /* REN_TIMEOUT: 10 s */
+  ASSERT_TRUE(rt >= 9000 && rt <= 11000);
+  ASSERT_EQ(again.type, M_RENEW);
+  ASSERT_EQ(again.xid, m.xid);
 }
 
 /* REQ-DHCPv6-029, 036: the Reply to the Renew extends the lease —
@@ -837,9 +944,10 @@ TEST(itest_dhcpv6_029_preferred_lifetime) {
  * Rebind — no Server Identifier — and takes the Reply of any server,
  * whose identifier its later messages carry */
 TEST(itest_dhcpv6_037_rebind_at_t2) {
-  sent_msg_t renew, m;
+  sent_msg_t renew, m, again;
   const uint8_t *sid, *addr;
   uint16_t l;
+  long rt;
   int k, n;
   up();
   bound(100, 160, 200, 300);
@@ -863,6 +971,11 @@ TEST(itest_dhcpv6_037_rebind_at_t2) {
   ASSERT_NULL(msg_option(&m, O_SERVERID, &l));
   ASSERT_TRUE(ia_na(&m, &addr));
   ASSERT_MEM_EQ(addr, lease, 16);
+  wire_clear(&t);
+  rt = run_until_sent(30000, 10, &again); /* REB_TIMEOUT: 10 s */
+  ASSERT_TRUE(rt >= 9000 && rt <= 11000);
+  ASSERT_EQ(again.type, M_REBIND);
+  ASSERT_EQ(again.xid, m.xid);
   m_begin(M_REPLY, m.xid);
   m_ids(server2_duid);
   m_ia_na(100, 160, lease, 200, 300);
@@ -941,10 +1054,24 @@ TEST(itest_dhcpv6_049_release) {
   ASSERT_TRUE(ia_na(&m, &addr));
   ASSERT_NOT_NULL(addr);
   ASSERT_MEM_EQ(addr, lease, 16);
+  ASSERT_NULL(msg_option(&m, O_ORO, &l)); /* it asks for nothing */
+  ASSERT_EQ(ipv6_addr_slot(&t.net, lease), -1);
+  ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_IDLE);
+  m_begin(M_REPLY, m.xid); /* an idle client takes no lease */
+  m_ids(server_duid);
+  m_ia_na(100, 160, lease, 200, 300);
+  m_send();
   ASSERT_EQ(ipv6_addr_slot(&t.net, lease), -1);
   ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_IDLE);
   wire_clear(&t);
   run(400000, 100); /* one Release: not sent again; nothing renewed */
+  ASSERT_EQ(dhcp_count(), 0);
+
+  up(); /* with no lease there is nothing to release */
+  soliciting();
+  dhcpv6_client_release(&t.net, &cli);
+  ASSERT_EQ(dhcpv6_client_state(&cli), DHCPV6_CLI_IDLE);
+  run(10000, 100);
   ASSERT_EQ(dhcp_count(), 0);
 }
 
@@ -1026,16 +1153,25 @@ TEST(itest_dhcpv6_053_sol_max_rt_out_of_range_ignored) {
   m_ids(server_duid);
   m_opt32(O_SOL_MAX_RT, 59);
   m_send();
-  m_begin(M_ADVERTISE, sol.xid);
-  m_ids(server_duid);
-  m_opt32(O_SOL_MAX_RT, 86401);
-  m_send();
   for (k = 0; k < 8; k++) { /* 1, 2, 4 ... 128 s: beyond 59 s */
     wire_clear(&t);
     rt = run_until_sent(400000, 100, &m);
     ASSERT_TRUE(rt > 0);
   }
   ASSERT_TRUE(rt > 100000);
+
+  up();
+  sol = soliciting();
+  m_begin(M_ADVERTISE, sol.xid);
+  m_ids(server_duid);
+  m_opt32(O_SOL_MAX_RT, 86401);
+  m_send();
+  for (k = 0; k < 13; k++) { /* ... 4096 s: beyond the default hour */
+    wire_clear(&t);
+    rt = run_until_sent(8000000, 1000, &m);
+    ASSERT_TRUE(rt > 0);
+  }
+  ASSERT_TRUE(rt >= 3240000 && rt <= 3961000);
 }
 
 /* REQ-DHCPv6-055: when the Information Refresh Time has run out, the
@@ -1080,6 +1216,9 @@ int main(void) {
   RUN_TEST(itest_dhcpv6_032_leased_address_probed);
   RUN_TEST(itest_dhcpv6_022_first_advertise_taken);
   RUN_TEST(itest_dhcpv6_021_advertise_offers);
+  RUN_TEST(itest_dhcpv6_050_elapsed_time_of_each_exchange);
+  RUN_TEST(itest_dhcpv6_028_reply_without_a_lease);
+  RUN_TEST(itest_dhcpv6_027_reply_when_bound_ignored);
   RUN_TEST(itest_dhcpv6_036_renew_at_t1);
   RUN_TEST(itest_dhcpv6_029_reply_to_renew_extends);
   RUN_TEST(itest_dhcpv6_029_preferred_lifetime);

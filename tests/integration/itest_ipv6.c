@@ -669,8 +669,9 @@ TEST(itest_ipv6_041_deprecated_source_as_last_resort) {
   peer_ip6_t ip;
   up();
   ipv6_addr_add(&t.net, global, NET_IP6_INFINITE, 0);
-  itest_advance(&t, 3000, 100);
-  ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_DEPRECATED);
+  while (ipv6_addr_state(&t.net, 1) == NET_IP6_TENTATIVE)
+    itest_advance(&t, 1, 1);
+  ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_DEPRECATED); /* from DAD on */
   wire_clear(&t);
   ASSERT_EQ(
       udp6_send(&t.net, offlink6, peer_mac, 1, 2, (const uint8_t *)"x", 1),
@@ -728,6 +729,44 @@ TEST(itest_ipv6_035_link_local_from_the_mac) {
   echo(peer6_ll, expect, "eui", 3);
   ASSERT_TRUE(sent(T_ECHO_REPLY, &ip, &icmp));
   ASSERT_MEM_EQ(ip.src, expect, 16);
+}
+
+/* REQ-IPv6-037: ipv6_addr_add() configures a global address — a unicast
+ * one, once, while a slot is free — and ipv6_addr_remove() takes it away;
+ * the link-local address cannot be removed */
+TEST(itest_ipv6_037_global_addresses_added_and_removed) {
+  static const uint8_t unspec[16] = {0};
+  static const uint8_t second[16] = {0x20, 0x01, 0x0D, 0xB8, 0, 5, 0, 0,
+                                     0,    0,    0,    0,    0, 0, 0, 5};
+  up();
+  ASSERT_EQ(
+      ipv6_addr_add(&t.net, all_nodes6, NET_IP6_INFINITE, NET_IP6_INFINITE),
+      NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(ipv6_addr_add(&t.net, unspec, NET_IP6_INFINITE, NET_IP6_INFINITE),
+            NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(ipv6_addr_state(&t.net, 1), NET_IP6_NONE);
+  ASSERT_EQ(ipv6_addr_add(&t.net, global, NET_IP6_INFINITE, NET_IP6_INFINITE),
+            NET_OK);
+  ASSERT_EQ(ipv6_addr_slot(&t.net, global), 1);
+  itest_advance(&t, 3000, 100);
+  ASSERT_TRUE(ipv6_is_ours(&t.net, global));
+  wire_clear(&t);
+  ASSERT_EQ(ipv6_addr_add(&t.net, global, NET_IP6_INFINITE, NET_IP6_INFINITE),
+            NET_OK); /* already there: not probed again */
+  itest_advance(&t, 3000, 100);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_TRUE(ipv6_is_ours(&t.net, global));
+  if (NET_IPV6_ADDRS == 2)
+    ASSERT_EQ(ipv6_addr_add(&t.net, second, NET_IP6_INFINITE, NET_IP6_INFINITE),
+              NET_ERR_BUF_TOO_SMALL);
+  ipv6_addr_remove(&t.net, global);
+  ASSERT_EQ(ipv6_addr_slot(&t.net, global), -1);
+  echo(offlink6, global, "x", 1);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ipv6_addr_remove(&t.net, ll);
+  ASSERT_TRUE(ipv6_is_ours(&t.net, ll));
+  echo(peer6_ll, ll, "x", 1);
+  ASSERT_EQ(wire_count_icmp6(&t, T_ECHO_REPLY), 1);
 }
 
 /* REQ-IPv6-038, 039, 040: frames to the all-nodes MAC and our
@@ -861,6 +900,23 @@ TEST(itest_icmpv6_016_port_unreachable) {
   ASSERT_MEM_EQ(icmp.data, f + 14, 1280 - 48);
 }
 
+/* REQ-ICMPv6-016, REQ-IPv6-030: the error comes from the address the
+ * datagram was sent to, whatever the address a new packet to that peer
+ * would come from */
+TEST(itest_icmpv6_016_error_from_the_address_addressed) {
+  peer_ip6_t ip;
+  peer_icmp_t icmp;
+  up_global();
+  datagram(peer6_ll, global, CLOSED_PORT, "x", 1);
+  ASSERT_TRUE(sent(T_DEST_UNREACH, &ip, &icmp));
+  ASSERT_MEM_EQ(ip.src, global, 16);
+  ASSERT_MEM_EQ(ip.dst, peer6_ll, 16);
+  wire_clear(&t);
+  datagram(offlink6, ll, CLOSED_PORT, "x", 1);
+  ASSERT_TRUE(sent(T_DEST_UNREACH, &ip, &icmp));
+  ASSERT_MEM_EQ(ip.src, ll, 16);
+}
+
 /* REQ-ICMPv6-017, 032: the quote is cut to what the TX buffer holds */
 TEST(itest_icmpv6_017_quote_fits_the_tx_buffer) {
   static uint8_t data[600];
@@ -942,6 +998,7 @@ TEST(itest_icmpv6_029_no_error_about_group_packets) {
   deliver(broadcast_mac, &ip, seg, n);
   ip = peer_ip6(peer6_ll, all_nodes6, 253);
   deliver(NULL, &ip, seg, 8);
+  deliver(t.net.mac, &ip, seg, 8); /* a group, though the frame is to us */
   ASSERT_EQ(t.wire.tx_count, 0);
 }
 
@@ -1185,10 +1242,11 @@ static void error_about_datagram(uint8_t type, uint8_t code,
                 peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, n));
 }
 
-/* REQ-ICMPv6-011, 019, 020, 022, 025, 040, 041: an error about a UDP
+/* REQ-ICMPv6-011, 019, 020, 022, 025, 040, 041, 043: an error about a UDP
  * datagram we sent reaches the application's handler, with the datagram's
  * ports and destination, the error's type and code, the MTU of a Packet
- * Too Big, and the quote — in place, in the RX buffer */
+ * Too Big, and the quote — in place, in the RX buffer; an error quoting a
+ * datagram from another address does not */
 TEST(itest_icmpv6_011_errors_reach_the_udp_application) {
   static const uint8_t mtu_1300[4] = {0, 0, 0x05, 0x14};
   static const uint8_t mtu_1000[4] = {0, 0, 0x03, 0xE8};
@@ -1226,6 +1284,18 @@ TEST(itest_icmpv6_011_errors_reach_the_udp_application) {
   error_about_datagram(200, 0, NULL);           /* informational */
   ASSERT_EQ(udp_errors, 6);
   ASSERT_EQ(t.wire.tx_count, 1); /* and no error answers an error */
+  {
+    static uint8_t msg[128], quote[53], frame[256];
+    peer_ip6_t ip = peer_ip6(router6_ll, global, NH_ICMPV6);
+    uint16_t len;
+    memcpy(quote, wire_sent(&t, 0)->data + 14, 53);
+    quote[8 + 15] ^= 0x01; /* not our address */
+    len = peer_icmp6(msg, &ip, T_DEST_UNREACH, 0, NULL, quote, 53);
+    itest_receive(
+        &t, frame,
+        peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, len));
+    ASSERT_EQ(udp_errors, 6);
+  }
 }
 
 int main(void) {
@@ -1254,11 +1324,13 @@ int main(void) {
   RUN_TEST(itest_ipv6_041_deprecated_source_as_last_resort);
   RUN_TEST(itest_ipv6_032_never_fragmented);
   RUN_TEST(itest_ipv6_035_link_local_from_the_mac);
+  RUN_TEST(itest_ipv6_037_global_addresses_added_and_removed);
   RUN_TEST(itest_ipv6_038_link_layer_groups);
   RUN_TEST(itest_icmpv6_002_bad_checksum_dropped);
   RUN_TEST(itest_icmpv6_004_echo_reply);
   RUN_TEST(itest_icmpv6_009_group_echo_answered_from_unicast);
   RUN_TEST(itest_icmpv6_016_port_unreachable);
+  RUN_TEST(itest_icmpv6_016_error_from_the_address_addressed);
   RUN_TEST(itest_icmpv6_017_quote_fits_the_tx_buffer);
   RUN_TEST(itest_icmpv6_021_no_router_errors);
   RUN_TEST(itest_icmpv6_028_no_error_about_errors);
