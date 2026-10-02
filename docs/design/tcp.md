@@ -963,7 +963,7 @@ single-stack build reduces to its own family's.
 
 ## 9. Tests and files
 
-- **Integration (black box):** `tests/integration/itest_tcp.c` (85 tests):
+- **Integration (black box):** `tests/integration/itest_tcp.c` (89 tests):
   the stack on a scripted link, driven through the `tcp_*` API and checked on
   the wire — opens and closes, every step of §3.10.7, RST generation,
   options and segment sizes, both windows, probing, the retransmission

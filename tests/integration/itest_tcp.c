@@ -1359,6 +1359,64 @@ TEST(itest_tcp_023_matched_by_addresses_and_ports) {
   ASSERT_EQ(ev_error + ev_reset + ev2_error, 0);
 }
 
+/* REQ-TCP-023, 148, 171: a segment sent to another address than the
+ * connection's local one is not the connection's — after the host is
+ * renumbered, the old peer's segment to the new address finds no
+ * connection */
+TEST(itest_tcp_023_local_address_ipv4) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = established();
+  t.net.ipv4_addr = 0x0A000009u;
+  segment(RPORT, 1001, iss + 1, TCPF_ACK); /* to 10.0.0.9 */
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_RST);
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(ip.src, 0x0A000009u);
+}
+
+/* REQ-TCP-015, 005 (RFC 9293 §3.10.4): a CLOSE with data still unsent —
+ * the FIN waits behind it, and goes with the last of it */
+TEST(itest_tcp_015_close_sends_the_data_first) {
+  static const uint8_t mss_100[4] = {2, 4, 0, 100};
+  static uint8_t out[250];
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  tcp_listen(&conn, LPORT);
+  segment_opts(1000, 0, TCPF_SYN, 4096, 0, mss_100, 4, NULL, 0);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  iss = tcp.seq;
+  segment(RPORT, 1001, iss + 1, TCPF_ACK);
+  wire_clear(&t);
+  ASSERT_EQ(tcp_send(&t.net, &conn, out, sizeof(out)), (int)sizeof(out));
+  ASSERT_EQ(tcp_close(&t.net, &conn), NET_OK);
+  ASSERT_EQ(tcp_status(&conn), TCP_FIN_WAIT_1);
+  ASSERT_EQ(t.wire.tx_count, 1); /* the first 100 octets, no FIN */
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.flags & TCPF_FIN, 0);
+  ASSERT_EQ(tcp.data_len, 100);
+  segment(RPORT, 1001, iss + 101, TCPF_ACK);
+  ASSERT_EQ(t.wire.tx_count, 2);
+  ASSERT_TRUE(nth_segment(1, &ip, &tcp));
+  ASSERT_EQ(tcp.flags & TCPF_FIN, 0);
+  segment(RPORT, 1001, iss + 201, TCPF_ACK);
+  ASSERT_EQ(t.wire.tx_count, 4); /* the last 50, then the FIN */
+  ASSERT_TRUE(nth_segment(2, &ip, &tcp));
+  ASSERT_EQ(tcp.data_len, 50);
+  ASSERT_TRUE(nth_segment(3, &ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_FIN | TCPF_ACK);
+  ASSERT_EQ(tcp.seq, iss + 251);
+  segment(RPORT, 1001, iss + 251, TCPF_ACK); /* the data, not the FIN */
+  ASSERT_EQ(tcp_status(&conn), TCP_FIN_WAIT_1);
+  segment(RPORT, 1001, iss + 252, TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_FIN_WAIT_2);
+}
+
 /* REQ-TCP-026, 027: sequence numbers are compared modulo 2^32 — data
  * across the wrap is in order, and what lies before it is old */
 TEST(itest_tcp_026_sequence_numbers_wrap) {
@@ -1555,6 +1613,9 @@ TEST(itest_tcp_043_zero_window_acceptability) {
   ASSERT_TRUE(last_segment(&ip, &tcp));
   ASSERT_EQ(tcp.ack, 1513u);
   ASSERT_EQ(tcp.window, 0);
+  segment(RPORT, 1513, iss + 1, TCPF_FIN | TCPF_ACK); /* a FIN has length */
+  ASSERT_EQ(t.wire.tx_count, 3);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
   ASSERT_EQ(tcp_recv(&conn, fill, sizeof(fill)), 512);
   ASSERT_EQ(tcp_recv(&conn, buf, sizeof(buf)), 0);
 }
@@ -2024,10 +2085,10 @@ TEST(itest_tcp_088_receiver_silly_window_avoidance) {
   wire_clear(&t);
   tcp_window_update(&t.net, &conn); /* 100 more: too little to say */
   ASSERT_EQ(t.wire.tx_count, 0);
-  peer_data(1301, iss + 1, in, 212);
+  peer_data(1301, iss + 1, in, 250); /* 38 octets beyond the window */
   ASSERT_TRUE(last_segment(&ip, &tcp));
-  ASSERT_EQ(tcp.ack, 1513u);
-  ASSERT_EQ(tcp.window, 0); /* the edge stays at 1513 */
+  ASSERT_EQ(tcp.ack, 1513u); /* not taken, though the buffer has room */
+  ASSERT_EQ(tcp.window, 0);  /* the edge stays at 1513 */
   ASSERT_EQ(tcp_recv(&conn, out, 200), 200);
   wire_clear(&t);
   tcp_window_update(&t.net, &conn); /* 300 free now */
@@ -2603,9 +2664,9 @@ static void icmp6_about_sent(int n, uint8_t type, uint8_t code,
 }
 
 /* REQ-TCP-135, REQ-ICMPv6-018, 019, 020 (RFC 8201): over IPv6 a Packet Too
- * Big about a segment in flight lowers the segment size to the path MTU,
- * and the data goes again in pieces; one about a segment never sent
- * changes nothing */
+ * Big about a segment in flight lowers the segment size to the path MTU —
+ * to IPv6's minimum MTU at the least — and the data goes again in pieces;
+ * one about a segment acknowledged since changes nothing */
 TEST(itest_tcp_135_packet_too_big_ipv6) {
   static uint8_t out[1400];
   const uint8_t *ip6;
@@ -2617,18 +2678,25 @@ TEST(itest_tcp_135_packet_too_big_ipv6) {
     out[i] = (uint8_t)i;
   tcp_listen(&conn, LPORT);
   segment6(ll6, RPORT, 1000, 0, TCPF_SYN, 1440, 0);
-  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  ASSERT_TRUE(sent6(0, &ip6, &tcp)); /* our SYN,ACK */
   iss = tcp.seq;
   segment6(ll6, RPORT, 1001, iss + 1, TCPF_ACK, 0, 0);
-  wire_clear(&t);
   ASSERT_EQ(tcp_send(&t.net, &conn, out, sizeof(out)), (int)sizeof(out));
-  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  ASSERT_TRUE(sent6(1, &ip6, &tcp));
   ASSERT_EQ(tcp.data_len, 1400);
-  icmp6_about_sent(0, 2, 0, 1280);
-  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
-  wire_clear(&t);
+  icmp6_about_sent(0, 2, 0, 1280); /* about the SYN,ACK: not in flight */
   itest_advance(&t, 1000, 100);
-  ASSERT_TRUE(sent6(0, &ip6, &tcp));
+  ASSERT_TRUE(sent6(2, &ip6, &tcp));
+  ASSERT_EQ(tcp.data_len, 1400);
+  icmp6_about_sent(2, 2, 0, 1300);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  itest_advance(&t, 2000, 100);
+  ASSERT_TRUE(sent6(3, &ip6, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 1300 - 40 - 20);
+  icmp6_about_sent(3, 2, 0, 600); /* below the minimum MTU: 1280 it is */
+  itest_advance(&t, 4000, 100);
+  ASSERT_TRUE(sent6(4, &ip6, &tcp));
   ASSERT_EQ(tcp.seq, iss + 1);
   ASSERT_EQ(tcp.data_len, 1280 - 40 - 20);
   wire_clear(&t);
@@ -2722,6 +2790,8 @@ int main(void) {
   RUN_TEST(itest_tcp_018_bad_checksum_dropped);
   RUN_TEST(itest_tcp_021_bad_data_offset_dropped);
   RUN_TEST(itest_tcp_023_matched_by_addresses_and_ports);
+  RUN_TEST(itest_tcp_023_local_address_ipv4);
+  RUN_TEST(itest_tcp_015_close_sends_the_data_first);
   RUN_TEST(itest_tcp_026_sequence_numbers_wrap);
   RUN_TEST(itest_tcp_028_iss_clock_driven);
   RUN_TEST(itest_tcp_030_listen_rst_and_ack);

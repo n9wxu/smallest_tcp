@@ -74,7 +74,7 @@ instead.
 | REQ-TCP-012 | MUST | `tcp_listen()` — put connection in LISTEN state on specified port | RFC 9293 §3.9.1.1, §3.10.1 | itest_tcp_002_passive_open, itest_tcp_011_conn_init_validates |
 | REQ-TCP-013 | MUST | `tcp_connect()` — initiate active open to specified IP:port; on a connection in use — neither CLOSED nor LISTEN — it is refused ("connection already exists": `NET_ERR_BUSY`) | RFC 9293 §3.9.1.1, §3.10.1 | itest_tcp_003_active_open, itest_tcp_013_connect_on_a_live_connection, itest_tcp_011_conn_init_validates |
 | REQ-TCP-014 | MUST | `tcp_send()` — queue data for transmission, in ESTABLISHED and CLOSE-WAIT; before the connection is open it is refused, not queued | RFC 9293 §3.9.1.2, §3.10.2 | itest_tcp_014_send_and_receive, test_tcp_014_data_echo_seq_ack |
-| REQ-TCP-015 | MUST | `tcp_close()` — initiate graceful close | RFC 9293 §3.9.1.4, §3.10.4 | itest_tcp_015_close_in_listen, itest_tcp_015_close_in_syn_sent, itest_tcp_015_close_in_syn_received, itest_tcp_005_active_close, itest_tcp_006_passive_close |
+| REQ-TCP-015 | MUST | `tcp_close()` — initiate graceful close | RFC 9293 §3.9.1.4, §3.10.4 | itest_tcp_015_close_in_listen, itest_tcp_015_close_in_syn_sent, itest_tcp_015_close_in_syn_received, itest_tcp_015_close_sends_the_data_first, itest_tcp_005_active_close, itest_tcp_006_passive_close |
 | REQ-TCP-016 | MUST | `tcp_abort()` — send RST where the peer holds the connection open, and close at once | RFC 9293 §3.9.1.6, §3.10.5 | itest_tcp_016_abort_before_open_sends_nothing, itest_tcp_016_abort_in_syn_received_sends_rst |
 | REQ-TCP-017 | MUST | `tcp_status()` — return current connection state | RFC 9293 §3.9.1.5, §3.10.6 | itest_tcp_011_conn_init_validates |
 
@@ -87,7 +87,7 @@ instead.
 | REQ-TCP-020 | MUST | IPv6 pseudo-header: src IP (16) + dst IP (16) + TCP length (4) + zeros (3) + next header 6 (1) | RFC 8200 §8.1 | itest_tcp_020_ipv6_checksum_and_default_mss |
 | REQ-TCP-021 | MUST | Verify Data Offset ≥ 5 (minimum 20-byte header) | RFC 9293 §3.1 | itest_tcp_021_bad_data_offset_dropped |
 | REQ-TCP-022 | MUST | Verify Data Offset × 4 ≤ segment length | RFC 9293 §3.1 | itest_tcp_021_bad_data_offset_dropped |
-| REQ-TCP-023 | MUST | Match incoming segments to connections by (local IP, local port, remote IP, remote port) | RFC 9293 §3.4.1, §3.10.7 | itest_tcp_023_matched_by_addresses_and_ports, itest_tcp_023_local_address_ipv6 |
+| REQ-TCP-023 | MUST | Match incoming segments to connections by (local IP, local port, remote IP, remote port) | RFC 9293 §3.4.1, §3.10.7 | itest_tcp_023_matched_by_addresses_and_ports, itest_tcp_023_local_address_ipv4, itest_tcp_023_local_address_ipv6 |
 
 ### Sequence Number Handling (RFC 9293 §3.4)
 
@@ -350,7 +350,7 @@ variables, are not implemented.
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-TCP-148 | MUST | Match segments to connections using full 4-tuple: (local IP, local port, remote IP, remote port) | RFC 9293 §3.4.1 | itest_tcp_023_matched_by_addresses_and_ports, itest_tcp_023_local_address_ipv6 |
+| REQ-TCP-148 | MUST | Match segments to connections using full 4-tuple: (local IP, local port, remote IP, remote port) | RFC 9293 §3.4.1 | itest_tcp_023_matched_by_addresses_and_ports, itest_tcp_023_local_address_ipv4, itest_tcp_023_local_address_ipv6 |
 | REQ-TCP-149 | MUST | LISTEN connections match on (local IP [any], local port, remote IP [any], remote port [any]) | RFC 9293 §3.9.1.1 | itest_tcp_023_matched_by_addresses_and_ports |
 | REQ-TCP-150 | MUST | Application provides array/list of connections for the stack to scan | Architecture | itest_tcp_023_matched_by_addresses_and_ports |
 
