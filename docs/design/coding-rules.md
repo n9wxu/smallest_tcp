@@ -1,7 +1,6 @@
 # Coding Rules
 
 **Applies to:** everything under `src/` and `include/`
-**Last updated:** 2026-09-27
 
 These rules keep the stack portable to 8- and 32-bit microcontrollers,
 small, and safe against hostile input.  Each has a reason; the reason is
@@ -97,9 +96,8 @@ Mbed TLS crypto backend is excluded; it is not stack code.
 
 ## 5. Comments
 
-The refactoring that introduced these rules removed much explanatory prose
-from the code, because long comments had been standing in for clear
-structure.  The rules:
+Long comments in code tend to stand in for clear structure, and drift from
+what the code does.  The rules:
 
 - **Prefer structure to comments.**  A well-named function or variable, or
   a condition extracted into a predicate (`sent_to_many()`,

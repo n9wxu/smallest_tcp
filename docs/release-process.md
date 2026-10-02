@@ -1,6 +1,5 @@
 # Release Process
 
-**Status:** in use from v0.1.0; every green push to `main` released from v0.1.1
 **Files:** `include/net_version.h`, `CHANGELOG.md`, `scripts/release.py`,
 `.github/workflows/release.yml`, the `release-check` job of
 `.github/workflows/ci.yml`
@@ -22,18 +21,19 @@ smallest_tcp follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 | MINOR | You, in `include/net_version.h` | New features; while MAJOR is 0, also API changes, which the CHANGELOG entry spells out under **Changed** |
 | MAJOR | You | API changes once 1.0 is released |
 
-The version is written once, in `include/net_version.h`:
+The version is written once, in `include/net_version.h` — for 0.1.4:
 
 ```c
 #define NET_VERSION_MAJOR 0
 #define NET_VERSION_MINOR 1
-#define NET_VERSION_PATCH 0
+#define NET_VERSION_PATCH 4
 ```
 
 Everything else reads it.  `CMakeLists.txt` parses the three numbers into
 `project(VERSION)` and prints `-- smallest_tcp X.Y.Z` when it configures.
 `scripts/release.py version` prints them for the workflows.  Code gets
-`NET_VERSION_STRING` (`"0.1.0"`) and `NET_VERSION` (`0x000100`, for `#if`).
+`NET_VERSION_STRING` (`"0.1.4"`) and `NET_VERSION` (`0x000104`, for
+`#if`).
 Between releases, `main` states the last released version; the release
 commit raises it.
 
@@ -65,7 +65,8 @@ becomes the release notes on GitHub, where relative links break.
    the unit and integration tests on Linux and macOS, the IPv4-only and
    IPv6-only builds, the Cortex-M0 size and link checks, the board
    firmware, every blackbox suite over both Linux drivers, FetchContent,
-   and `release-check`, which runs `scripts/release.py check` — the version
+   the traceability check and the coverage report, and `release-check`,
+   which runs `scripts/release.py check` — the version
    parses, `[Unreleased]` exists, and a trial stamp of the next version
    works — and confirms that CMake and the compiled library report the
    version.

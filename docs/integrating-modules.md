@@ -1,7 +1,5 @@
 # Integrating Protocol Modules
 
-**Last updated:** 2026-09-27
-
 The application protocols — DHCPv4 client and server, DHCPv6 client, TFTP
 client, mDNS responder, HTTP server — are optional libraries.  The core
 stack never calls them: it cannot see them, because the application owns
@@ -57,14 +55,17 @@ replies are built in `net->tx.buf`, a separate buffer.
 
 Notes per module:
 
-- **DHCPv4 client.**  Messages need a TX buffer of at least 342 bytes.  Set
-  `net.ipv4_addr = 0` (or build with `NET_DEFAULT_IPV4_ADDR` 0) before
-  starting.  The client writes the lease into `net_t` (`ipv4_addr`,
-  `subnet_mask`, `gateway_ipv4`) and clears it on expiry; options beyond
-  those reach the application through the option-handler table.  Call
-  `dhcpv4_client_release()` on shutdown.
+- **DHCPv4 client.**  `dhcpv4_client_init()` refuses frame buffers smaller
+  than 342 bytes (TX) and 590 bytes (RX).  `dhcpv4_client_start()` clears
+  `net.ipv4_addr`, `subnet_mask` and `gateway_ipv4`; the client writes the
+  lease into them once bound and clears them again on expiry; options beyond
+  those reach the application through the option-handler table.  The first
+  DISCOVER goes after a random delay of 1 to 10 s
+  (`DHCPV4_START_DELAY_MAX_MS`).  Call `dhcpv4_client_release()` on
+  shutdown.
 - **DHCPv4 server.**  Stateless, single client: it always offers
-  `cfg->offered_ip` and sends from `cfg->server_ip`.  No timers.
+  `cfg->offered_ip` and sends from `cfg->server_ip`, which must be
+  `net.ipv4_addr` when `dhcpv4_server_init()` is called.  No timers.
 - **DHCPv6 client.**  Start it once the link-local address is PREFERRED
   (`ipv6_addr_state(&net, 0) == NET_IP6_PREFERRED`) and a Router
   Advertisement has told you which mode: `DHCPV6_MODE_STATEFUL` if
@@ -187,14 +188,13 @@ int main(void) {
     return 1;
   board_entropy(entropy, sizeof entropy);
   net_random_seed(&net, entropy, sizeof entropy);
-  net.ipv4_addr = 0; /* no address until DHCP binds */
   udp_set_ports(&net, udp_ports, sizeof udp_ports / sizeof udp_ports[0]);
 
   /* 2. The modules: init, then start */
   if (dhcpv4_client_init(&dhcp, &net, on_dhcp, NULL, NULL) != NET_OK ||
       mdns_init(&mdns, &net, records, 1, NULL, NULL) != NET_OK)
     return 1;
-  dhcpv4_client_start(&net, &dhcp);
+  dhcpv4_client_start(&net, &dhcp); /* no address until the lease */
 
   /* 3. The main loop */
   last = board_millis();
