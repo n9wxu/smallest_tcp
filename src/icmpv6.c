@@ -9,6 +9,10 @@
 #include "net_endian.h"
 #include <string.h>
 
+#if NET_USE_UDP
+#include "udp.h"
+#endif
+
 #if NET_USE_TCP
 #include "tcp.h"
 #endif
@@ -127,24 +131,49 @@ static void echo_reply(net_t *net, const ipv6_hdr_t *ip,
   icmpv6_send(net, src, ip->src, eth->src_mac, len, net->ip6.hop_limit);
 }
 
-#if NET_USE_TCP
-/* REQ-ICMPv6-011, 018..020, 022, 025: an error quoting a TCP segment goes
- * to TCP, with the packet quoted and the message's 4-byte field (a Packet
- * Too Big's MTU); TCP finds the connection, or none.  An error about any
- * other protocol is dropped */
+/* REQ-ICMPv6-011..015, 018..020, 022, 025, 040, 042, 043: an error
+ * quoting a packet we sent goes to the transport the quoted header names
+ * — the stack sends no extension headers, so the transport header follows
+ * the IPv6 header — with the whole quote.  A Packet Too Big below the
+ * minimum MTU is discarded (RFC 8201 §4). */
 static void error_input(net_t *net, const ipv6_hdr_t *ip) {
   const uint8_t *msg = ip->payload;
   const uint8_t *quote = msg + ICMPV6_HDR_SIZE;
-  if (ip->payload_len < ICMPV6_HDR_SIZE + IPV6_HDR_SIZE ||
-      (quote[IPV6_OFF_VTF] >> 4) != 6 || quote[IPV6_OFF_NH] != IPV6_NH_TCP)
-    return;
-  tcp6_icmp_error(net, msg[ICMPV6_OFF_TYPE], msg[ICMPV6_OFF_CODE],
-                  net_read32be(msg + ICMPV6_OFF_BODY), quote,
-                  (uint16_t)(ip->payload_len - ICMPV6_HDR_SIZE));
-}
-#endif
+  uint16_t quote_len;
+  uint32_t mtu = 0;
 
-/* REQ-ICMPv6-002, 011, 018, 022, 025, 034..039 */
+  if (ip->payload_len < ICMPV6_HDR_SIZE + IPV6_HDR_SIZE)
+    return;
+  quote_len = (uint16_t)(ip->payload_len - ICMPV6_HDR_SIZE);
+  if ((quote[IPV6_OFF_VTF] >> 4) != 6 ||
+      !ipv6_is_ours(net, quote + IPV6_OFF_SRC))
+    return;
+  if (msg[ICMPV6_OFF_TYPE] == ICMPV6_PKT_TOO_BIG) {
+    mtu = net_read32be(msg + ICMPV6_OFF_BODY);
+    if (mtu < IPV6_MIN_MTU)
+      return;
+  }
+  switch (quote[IPV6_OFF_NH]) {
+#if NET_USE_UDP
+  case IPV6_NH_UDP:
+    udp6_icmp_error(net, msg[ICMPV6_OFF_TYPE], msg[ICMPV6_OFF_CODE], mtu, quote,
+                    quote_len);
+    break;
+#endif
+#if NET_USE_TCP
+  case IPV6_NH_TCP:
+    tcp6_icmp_error(net, msg[ICMPV6_OFF_TYPE], msg[ICMPV6_OFF_CODE], mtu, quote,
+                    quote_len);
+    break;
+#endif
+  default:
+    (void)mtu;
+    break;
+  }
+}
+
+/* REQ-ICMPv6-002, 034..039: errors go up (error_input()); informational
+ * messages of unknown type are dropped */
 void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   const uint8_t *msg = ip->payload;
 
@@ -172,15 +201,9 @@ void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   case MLD_V2_REPORT:
     mld_input(net, ip);
     break;
-#if NET_USE_TCP
-  case ICMPV6_DEST_UNREACH:
-  case ICMPV6_PKT_TOO_BIG:
-  case ICMPV6_TIME_EXCEEDED:
-  case ICMPV6_PARAM_PROBLEM:
-    error_input(net, ip);
-    break;
-#endif
-  default: /* other errors and unknown informational messages are dropped */
+  default:
+    if (msg[ICMPV6_OFF_TYPE] < 128)
+      error_input(net, ip);
     break;
   }
 }

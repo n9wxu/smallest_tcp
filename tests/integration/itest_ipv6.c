@@ -1106,6 +1106,128 @@ TEST(itest_icmpv6_018_packet_too_big_lowers_the_segment_size) {
   ASSERT_MEM_EQ(tcp.data, big, 1220);
 }
 
+/* REQ-ICMPv6-042: a Packet Too Big whose MTU is below the IPv6 minimum
+ * (1280) is discarded: the segment size stays */
+TEST(itest_icmpv6_042_packet_too_big_below_the_minimum_ignored) {
+  static uint8_t big[1400];
+  static const uint8_t mtu_1279[4] = {0, 0, 0x04, 0xFF};
+  peer_ip6_t ip;
+  peer_tcp_t tcp;
+  tcp6_established();
+  tcp_send(&t.net, &conn, big, sizeof(big));
+  error_about_segment(T_TOO_BIG, 0, mtu_1279);
+  wire_clear(&t);
+  itest_advance(&t, 3000, 100);
+  ASSERT_TRUE(sent_segment(&ip, &tcp) != NULL);
+  ASSERT_EQ(tcp.data_len, 1400);
+}
+
+/* REQ-ICMPv6-043: an error is acted on only if it quotes a segment of
+ * ours that is in flight: not one from another address, to another port,
+ * or with a sequence number we have not sent */
+TEST(itest_icmpv6_043_only_errors_about_our_segments) {
+  static uint8_t msg[128], quote[60], frame[256];
+  peer_ip6_t ip, eip;
+  peer_tcp_t tcp;
+  const wire_frame_t *f;
+  uint8_t k;
+  tcp6_established();
+  tcp_send(&t.net, &conn, (const uint8_t *)"data", 4);
+  ASSERT_TRUE((f = sent_segment(&ip, &tcp)) != NULL);
+  eip = peer_ip6(router6_ll, global, NH_ICMPV6);
+  for (k = 0; k < 4; k++) {
+    uint16_t n;
+    memcpy(quote, f->data + 14, 60);
+    if (k == 0)
+      quote[8 + 15] ^= 0x01; /* another source address */
+    else if (k == 1)
+      quote[40 + 3] ^= 0x01; /* another destination port */
+    else if (k == 2)
+      peer_put32(quote + 40 + 4, tcp.seq + 100000u); /* never sent */
+    else
+      quote[0] = 0x40; /* no IPv6 packet */
+    n = peer_icmp6(msg, &eip, T_DEST_UNREACH, 4, NULL, quote, 60);
+    itest_receive(&t, frame,
+                  peer_ipv6_frame(frame, t.net.mac, router6_mac, &eip, msg, n));
+  }
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  ASSERT_EQ(ev_soft + ev_error, 0);
+  error_about_segment(T_DEST_UNREACH, 4, NULL); /* the segment itself */
+  ASSERT_EQ(tcp_status(&conn), TCP_CLOSED);
+}
+
+/* ── ... to the UDP application ── */
+
+static int udp_errors;
+static udp6_icmp_error_t udp_err;
+static uint8_t udp_err_dst[16], udp_err_quote[128];
+
+static void on_udp6_error(net_t *net, const udp6_icmp_error_t *e) {
+  (void)net;
+  udp_errors++;
+  udp_err = *e;
+  memcpy(udp_err_dst, e->dst_ip, 16);
+  memcpy(udp_err_quote, e->quote,
+         e->quote_len < sizeof(udp_err_quote) ? e->quote_len
+                                              : sizeof(udp_err_quote));
+}
+
+/* An ICMPv6 error from the router quoting the first frame sent since
+ * wire_clear() */
+static void error_about_datagram(uint8_t type, uint8_t code,
+                                 const uint8_t rest[4]) {
+  static uint8_t msg[256], frame[512];
+  const wire_frame_t *f = wire_sent(&t, 0);
+  peer_ip6_t ip = peer_ip6(router6_ll, global, NH_ICMPV6);
+  uint16_t n = peer_icmp6(msg, &ip, type, code, rest, f->data + 14,
+                          (uint16_t)(f->len - 14));
+  itest_receive(&t, frame,
+                peer_ipv6_frame(frame, t.net.mac, router6_mac, &ip, msg, n));
+}
+
+/* REQ-ICMPv6-011, 019, 020, 022, 025, 040, 041: an error about a UDP
+ * datagram we sent reaches the application's handler, with the datagram's
+ * ports and destination, the error's type and code, the MTU of a Packet
+ * Too Big, and the quote — in place, in the RX buffer */
+TEST(itest_icmpv6_011_errors_reach_the_udp_application) {
+  static const uint8_t mtu_1300[4] = {0, 0, 0x05, 0x14};
+  static const uint8_t mtu_1000[4] = {0, 0, 0x03, 0xE8};
+  up_global();
+  udp6_set_error_handler(&t.net, on_udp6_error);
+  udp_errors = 0;
+  ASSERT_EQ(udp6_send(&t.net, offlink6, router6_mac, 4321, PEER_PORT,
+                      (const uint8_t *)"hello", 5),
+            NET_OK);
+  error_about_datagram(T_DEST_UNREACH, 0, NULL);
+  ASSERT_EQ(udp_errors, 1);
+  ASSERT_EQ(udp_err.local_port, 4321);
+  ASSERT_EQ(udp_err.dst_port, PEER_PORT);
+  ASSERT_MEM_EQ(udp_err_dst, offlink6, 16);
+  ASSERT_EQ(udp_err.type, T_DEST_UNREACH);
+  ASSERT_EQ(udp_err.code, 0);
+  ASSERT_EQ(udp_err.mtu, 0);
+  ASSERT_EQ(udp_err.quote_len, 40 + 8 + 5);
+  ASSERT_MEM_EQ(udp_err_quote, wire_sent(&t, 0)->data + 14, 40 + 8 + 5);
+  ASSERT_TRUE(udp_err.quote >= t.net.rx.buf &&
+              udp_err.quote < t.net.rx.buf + t.net.rx.capacity);
+  error_about_datagram(T_DEST_UNREACH, 4, NULL);
+  ASSERT_EQ(udp_err.code, 4);
+  error_about_datagram(T_TOO_BIG, 0, mtu_1300);
+  ASSERT_EQ(udp_err.type, T_TOO_BIG);
+  ASSERT_EQ(udp_err.mtu, 1300);
+  error_about_datagram(T_TIME_EXCEEDED, 0, NULL);
+  ASSERT_EQ(udp_err.type, T_TIME_EXCEEDED);
+  error_about_datagram(T_PARAM_PROBLEM, 1, NULL);
+  ASSERT_EQ(udp_err.type, T_PARAM_PROBLEM);
+  error_about_datagram(100, 7, NULL);
+  ASSERT_EQ(udp_err.type, 100);
+  ASSERT_EQ(udp_errors, 6);
+  error_about_datagram(T_TOO_BIG, 0, mtu_1000); /* REQ-ICMPv6-042 */
+  error_about_datagram(200, 0, NULL);           /* informational */
+  ASSERT_EQ(udp_errors, 6);
+  ASSERT_EQ(t.wire.tx_count, 1); /* and no error answers an error */
+}
+
 int main(void) {
   fprintf(stderr, "=== itest_ipv6 ===\n");
   RUN_TEST(itest_ipv6_001_version_checked);
@@ -1144,8 +1266,11 @@ int main(void) {
   RUN_TEST(itest_icmpv6_033_errors_rate_limited);
   RUN_TEST(itest_icmpv6_039_unknown_informational_dropped);
   RUN_TEST(itest_icmpv6_015_port_unreachable_reaches_tcp);
-  RUN_XFAIL(itest_icmpv6_011_errors_reach_tcp);
+  RUN_TEST(itest_icmpv6_011_errors_reach_tcp);
   RUN_TEST(itest_icmpv6_018_packet_too_big_lowers_the_segment_size);
+  RUN_TEST(itest_icmpv6_042_packet_too_big_below_the_minimum_ignored);
+  RUN_TEST(itest_icmpv6_043_only_errors_about_our_segments);
+  RUN_TEST(itest_icmpv6_011_errors_reach_the_udp_application);
   ITEST_REPORT();
   return test_failures;
 }

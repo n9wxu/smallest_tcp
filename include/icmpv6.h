@@ -49,8 +49,9 @@
 #define ICMPV6_ERROR_INTERVAL_MS 100
 #endif
 
-/** Answer echo requests; hand Neighbor Discovery to ndp_input() and MLD
- *  to mld_input(). */
+/** Answer echo requests; hand Neighbor Discovery to ndp_input(), MLD to
+ *  mld_input(), and an error about a packet of ours to the transport that
+ *  sent it: udp6_icmp_error(), tcp6_icmp_error(). */
 void icmpv6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
 
 /**

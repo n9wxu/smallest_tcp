@@ -2663,10 +2663,11 @@ static void icmp6_about_sent(int n, uint8_t type, uint8_t code,
   itest_receive(&t, f, (uint16_t)(54u + len));
 }
 
-/* REQ-TCP-135, REQ-ICMPv6-018, 019, 020 (RFC 8201): over IPv6 a Packet Too
- * Big about a segment in flight lowers the segment size to the path MTU —
- * to IPv6's minimum MTU at the least — and the data goes again in pieces;
- * one about a segment acknowledged since changes nothing */
+/* REQ-TCP-135, REQ-ICMPv6-018, 019, 020, 042 (RFC 8201): over IPv6 a
+ * Packet Too Big about a segment in flight lowers the segment size to the
+ * path MTU, and the data goes again in pieces; one about a segment
+ * acknowledged since, or with an MTU below IPv6's minimum, changes
+ * nothing */
 TEST(itest_tcp_135_packet_too_big_ipv6) {
   static uint8_t out[1400];
   const uint8_t *ip6;
@@ -2694,17 +2695,17 @@ TEST(itest_tcp_135_packet_too_big_ipv6) {
   ASSERT_TRUE(sent6(3, &ip6, &tcp));
   ASSERT_EQ(tcp.seq, iss + 1);
   ASSERT_EQ(tcp.data_len, 1300 - 40 - 20);
-  icmp6_about_sent(3, 2, 0, 600); /* below the minimum MTU: 1280 it is */
+  icmp6_about_sent(3, 2, 0, 600); /* below the minimum MTU: discarded */
   itest_advance(&t, 4000, 100);
   ASSERT_TRUE(sent6(4, &ip6, &tcp));
   ASSERT_EQ(tcp.seq, iss + 1);
-  ASSERT_EQ(tcp.data_len, 1280 - 40 - 20);
+  ASSERT_EQ(tcp.data_len, 1300 - 40 - 20);
   wire_clear(&t);
-  segment6(ll6, RPORT, 1001, iss + 1 + 1220, TCPF_ACK, 0, 0);
+  segment6(ll6, RPORT, 1001, iss + 1 + 1240, TCPF_ACK, 0, 0);
   ASSERT_TRUE(sent6(0, &ip6, &tcp));
-  ASSERT_EQ(tcp.seq, iss + 1 + 1220);
-  ASSERT_EQ(tcp.data_len, 180);
-  ASSERT_MEM_EQ(tcp.data, out + 1220, 180);
+  ASSERT_EQ(tcp.seq, iss + 1 + 1240);
+  ASSERT_EQ(tcp.data_len, 160);
+  ASSERT_MEM_EQ(tcp.data, out + 1240, 160);
 }
 
 /* REQ-TCP-135, 136, 137, REQ-ICMPv6-011, 015: over IPv6 too, a hard

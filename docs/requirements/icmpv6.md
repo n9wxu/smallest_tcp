@@ -51,7 +51,7 @@ ICMPv6 Types are divided into:
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-ICMPv6-011 | MUST | Pass a received Destination Unreachable to the upper-layer protocol that sent the quoted packet: TCP (`tcp6_icmp_error()`) or the UDP application's error handler (`udp6_set_error_handler()`) | RFC 4443 §3.1, §2.4(d) | itest_icmpv6_011_errors_reach_tcp, itest_icmpv6_015_port_unreachable_reaches_tcp |
+| REQ-ICMPv6-011 | MUST | Pass a received Destination Unreachable to the upper-layer protocol that sent the quoted packet: TCP (`tcp6_icmp_error()`) or the UDP application's error handler (`udp6_set_error_handler()`) | RFC 4443 §3.1, §2.4(d) | itest_icmpv6_011_errors_reach_tcp, itest_icmpv6_015_port_unreachable_reaches_tcp, itest_icmpv6_011_errors_reach_the_udp_application |
 | REQ-ICMPv6-012 | MUST | Code 0: No route to destination — passed up (a soft error for TCP) | RFC 4443 §3.1 | itest_icmpv6_011_errors_reach_tcp |
 | REQ-ICMPv6-013 | MUST | Code 1: Communication with destination administratively prohibited — passed up (a soft error for TCP) | RFC 4443 §3.1 | itest_icmpv6_011_errors_reach_tcp |
 | REQ-ICMPv6-014 | MUST | Code 3: Address unreachable — passed up (a soft error for TCP) | RFC 4443 §3.1 | itest_icmpv6_011_errors_reach_tcp |
@@ -66,6 +66,7 @@ ICMPv6 Types are divided into:
 | REQ-ICMPv6-018 | MUST | Process received Packet Too Big messages: pass them to the upper-layer protocol that sent the quoted packet | RFC 4443 §3.2 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size |
 | REQ-ICMPv6-019 | MUST | Take the MTU field (bytes 4-7) as the path's MTU | RFC 4443 §3.2, RFC 8201 §4 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size |
 | REQ-ICMPv6-020 | MUST | Pass the MTU to the upper layer: TCP lowers the connection's segment size to MTU − 60; a UDP application's error handler gets it | RFC 4443 §3.2, RFC 8201 §5.2 | itest_icmpv6_018_packet_too_big_lowers_the_segment_size |
+| REQ-ICMPv6-042 | MUST | Discard a Packet Too Big whose MTU is below the IPv6 minimum link MTU (1280) | RFC 8201 §4 | itest_icmpv6_042_packet_too_big_below_the_minimum_ignored, itest_icmpv6_011_errors_reach_the_udp_application |
 | REQ-ICMPv6-021 | MUST NOT | MUST NOT generate Packet Too Big (only routers generate this) | RFC 4443 §3.2 | itest_icmpv6_021_no_router_errors |
 
 ### Time Exceeded (Type 3)
@@ -111,7 +112,8 @@ ICMPv6 Types are divided into:
 |---|---|---|---|---|
 | REQ-ICMPv6-039 | MUST | Silently discard ICMPv6 informational messages with unknown Type | RFC 4443 §2.4(b) | itest_icmpv6_039_unknown_informational_dropped |
 | REQ-ICMPv6-040 | MUST | Pass ICMPv6 error messages of unknown type to the upper-layer protocol that sent the quoted packet | RFC 4443 §2.4(a) | itest_icmpv6_011_errors_reach_tcp |
-| REQ-ICMPv6-041 | MUST | Parse ICMPv6 messages in-place (zero-copy) | Architecture | — (not observable: nothing an echo reply or an error shows tells where the message was parsed) |
+| REQ-ICMPv6-043 | SHOULD | Act on an error only if the packet it quotes is one we sent: its source an address of ours and, for TCP, the addresses and ports of a connection and a sequence number in flight | RFC 4443 §5.2, RFC 5927 §4.1 | itest_icmpv6_043_only_errors_about_our_segments |
+| REQ-ICMPv6-041 | MUST | Parse ICMPv6 messages in-place (zero-copy): the quote an error handler gets points into the RX frame buffer | Architecture | itest_icmpv6_011_errors_reach_the_udp_application |
 
 ## Notes
 

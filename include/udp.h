@@ -144,6 +144,30 @@ static inline void udp6_set_ports(net_t *net, const udp6_port_entry_t *ports,
 /** As udp_input(); a zero checksum is invalid over IPv6 (RFC 8200 §8.1). */
 void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
 
+/** An ICMPv6 error about a datagram we sent (RFC 4443 §2.4(d)) */
+typedef struct {
+  uint16_t local_port;   /**< The datagram's source port: ours */
+  const uint8_t *dst_ip; /**< Where it was going (16 bytes, in the quote) */
+  uint16_t dst_port;
+  uint8_t type; /**< ICMPV6_DEST_UNREACH, _PKT_TOO_BIG, _TIME_EXCEEDED,
+                     _PARAM_PROBLEM, or an error type unknown to the stack */
+  uint8_t code;
+  uint32_t mtu;         /**< Packet Too Big: the path's MTU, else 0 */
+  const uint8_t *quote; /**< The IPv6 header and data the error quotes,
+                             unchanged (valid in the handler only) */
+  uint16_t quote_len;
+} udp6_icmp_error_t;
+
+typedef void (*udp6_error_handler_t)(net_t *net, const udp6_icmp_error_t *err);
+
+/** Where ICMPv6 errors about UDP datagrams go; NULL: nowhere. */
+void udp6_set_error_handler(net_t *net, udp6_error_handler_t handler);
+
+/** From icmpv6_input(): an error quoting a UDP datagram of ours.
+ *  @p quote is the quoted IPv6 header and data, @p quote_len bytes. */
+void udp6_icmp_error(net_t *net, uint8_t type, uint8_t code, uint32_t mtu,
+                     const uint8_t *quote, uint16_t quote_len);
+
 #define UDP6_PAYLOAD_OFFSET (ETH_HDR_SIZE + IPV6_HDR_SIZE + UDP_HDR_SIZE)
 
 /**

@@ -192,6 +192,29 @@ void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
                     eth);
 }
 
+void udp6_set_error_handler(net_t *net, udp6_error_handler_t handler) {
+  net->udp6_error_handler = (void (*)(void))handler;
+}
+
+/* REQ-ICMPv6-011, 020: the quoted UDP header's ports, the whole quote, to
+ * the application */
+void udp6_icmp_error(net_t *net, uint8_t type, uint8_t code, uint32_t mtu,
+                     const uint8_t *quote, uint16_t quote_len) {
+  udp6_icmp_error_t e;
+  const uint8_t *udp = quote + IPV6_HDR_SIZE;
+  if (!net->udp6_error_handler || quote_len < IPV6_HDR_SIZE + 4u)
+    return;
+  e.local_port = net_read16be(udp + UDP_OFF_SPORT);
+  e.dst_port = net_read16be(udp + UDP_OFF_DPORT);
+  e.dst_ip = quote + IPV6_OFF_DST;
+  e.type = type;
+  e.code = code;
+  e.mtu = mtu;
+  e.quote = quote;
+  e.quote_len = quote_len;
+  ((udp6_error_handler_t)net->udp6_error_handler)(net, &e);
+}
+
 net_err_t udp6_send(net_t *net, const uint8_t *dst_ip, const uint8_t *dst_mac,
                     uint16_t src_port, uint16_t dst_port, const uint8_t *data,
                     uint16_t data_len) {
