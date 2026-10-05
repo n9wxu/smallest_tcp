@@ -23,7 +23,16 @@ RECV_TIMEOUT = 3
 SNIFFER_START_TIMEOUT = 5
 
 
-def start_sniffer(iface, **kwargs):
+def _stop_sniffer(sniffer):
+    """Timer callback: end a capture that has run its time."""
+    try:
+        if sniffer.running:
+            sniffer.stop(join=False)
+    except Exception:  # it finished meanwhile (its count was reached)
+        pass
+
+
+def start_sniffer(iface, timeout=None, **kwargs):
     """
     Start an AsyncSniffer and return only once its capture socket is open.
 
@@ -32,6 +41,12 @@ def start_sniffer(iface, **kwargs):
     is captured.  This replaces the old `sniffer.start(); time.sleep(0.02)`
     pattern, which lost fast replies whenever the socket took longer than
     the sleep to open (seen as test_arp_001 flakes on loaded CI runners).
+
+    timeout: seconds after which the capture ends, if its count has not
+    ended it first; join() then returns and .results holds what was seen.
+    The capture is stopped from a timer here: Scapy 2.8 no longer takes
+    `timeout` in AsyncSniffer (ValueError), and earlier versions accept
+    being stopped this way too.
     """
     ready = threading.Event()
     sniffer = AsyncSniffer(iface=iface, started_callback=ready.set, **kwargs)
@@ -40,6 +55,10 @@ def start_sniffer(iface, **kwargs):
         raise RuntimeError(
             f"sniffer on {iface} did not start within {SNIFFER_START_TIMEOUT} s"
             f" ({getattr(sniffer, 'exception', None)!r})")
+    if timeout is not None:
+        timer = threading.Timer(timeout, _stop_sniffer, [sniffer])
+        timer.daemon = True
+        timer.start()
     return sniffer
 
 

@@ -70,6 +70,9 @@ of the mDNS responder.
   [issue 1](https://github.com/n9wxu/smallest_tcp/issues/1)).
   `mdns_input()` and `mdns_input6()` are to be called from the port's UDP
   handler, as the bundled integration does.
+- The blackbox suites run with Scapy 2.8, which no longer takes `timeout`
+  in `AsyncSniffer`: the harness ends a timed capture itself
+  (`tests/blackbox/helpers.py`).
 
 ## [0.1.10] - 2026-10-02
 
