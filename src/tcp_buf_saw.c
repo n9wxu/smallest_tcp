@@ -58,9 +58,14 @@ static void saw_tx_mark_retransmit(void *ctx) {
 }
 
 const tcp_txbuf_ops_t tcp_saw_tx_ops = {
-    saw_tx_write,           saw_tx_next_segment, saw_tx_ack,
-    saw_tx_in_flight,       saw_tx_queued,       saw_tx_writable,
+    saw_tx_write,
+    saw_tx_next_segment,
+    saw_tx_ack,
+    saw_tx_in_flight,
+    saw_tx_queued,
+    saw_tx_writable,
     saw_tx_mark_retransmit,
+    NULL, /* contiguous: no copy_segment */
 };
 
 void tcp_saw_tx_init(tcp_saw_tx_ctx_t *ctx, uint8_t *buf, uint16_t size) {

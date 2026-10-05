@@ -4,6 +4,7 @@
  *        to 224.0.0.251 (and unicast), the mdns_* API, and what it sends.
  */
 
+#include "eth.h"
 #include "itest.h"
 #include "mdns.h"
 #include "udp.h"
@@ -887,6 +888,34 @@ TEST(itest_mdns_062_responses_only_from_the_local_link) {
   }
 }
 
+/* REQ-MDNS-062, REQ-ETH-026: a driver may hand eth_input() a frame in
+ * memory of its own instead of net->rx.buf.  A response sent to the group
+ * is one sent to the group there too: from off the link it conflicts while
+ * probing, and once running it sends the name back to probing */
+TEST(itest_mdns_062_group_response_in_the_drivers_own_buffer) {
+  static uint8_t own[1600];
+  uint8_t seg[1520], rd[4];
+  peer_ip_t ip = peer_ip(REMOTE_IP, MDNS_GROUP, 17);
+  peer_dns_t r;
+  uint16_t n;
+  peer_dns_begin(&r, 0, FLAG_QR | FLAG_AA);
+  peer_put32(rd, RIVAL);
+  peer_dns_rr(&r, 0, HOST, T_A, C_IN | C_TOP, 120, rd, 4);
+  peer_dns_end(&r);
+  ip.ttl = 255;
+  n = peer_udp(seg, &ip, MDNS_PORT, MDNS_PORT, r.buf, r.len);
+  n = peer_ipv4_frame(own, group_mac, peer_mac, &ip, seg, n);
+
+  probing(records, N_REC);
+  eth_input(&t.net, own, n);
+  ASSERT_EQ(conflicts, 1);
+
+  running(records, N_REC);
+  eth_input(&t.net, own, n);
+  mdns_tick(&m, 250);
+  ASSERT_EQ(probes(), 1);
+}
+
 /* REQ-MDNS-080 (RFC 6762 §6): a unicast response counts only as the
  * answer to a recent query that asked for unicast responses — our probes'
  * QU questions.  Once running, one sent to our own address is ignored: no
@@ -1037,6 +1066,48 @@ TEST(itest_mdns_055_simultaneous_probe_won_or_tied) {
   ASSERT_EQ(probes(), 2);
   ticks(250, 10);
   ASSERT_EQ(answers(), 1);
+  ASSERT_EQ(conflicts, 0);
+}
+
+/* Another host's probe for our host name proposing two A records, in
+ * this order */
+static void probe_two_a(uint32_t first, uint32_t second) {
+  peer_dns_t q;
+  uint8_t rd[4];
+  peer_dns_begin(&q, 0, 0);
+  peer_dns_question(&q, HOST, T_ANY, C_IN | C_TOP);
+  peer_put32(rd, first);
+  peer_dns_rr(&q, 1, HOST, T_A, C_IN, 120, rd, 4);
+  peer_put32(rd, second);
+  peer_dns_rr(&q, 1, HOST, T_A, C_IN, 120, rd, 4);
+  multicast(&q);
+}
+
+/* REQ-MDNS-055 (RFC 6762 §8.2.1): the sets are compared sorted, whatever
+ * the order of the records in the probe, and pairwise — a set that runs
+ * out first is the earlier, and loses */
+TEST(itest_mdns_055_sets_sorted_and_the_one_that_runs_out_loses) {
+  peer_dns_t q;
+  /* 10.0.0.200 first, but sorted 10.0.0.1 leads: earlier than ours */
+  probing(records, N_REC);
+  probe_two_a(0x0A0000C8u, 0x0A000001u);
+  ticks(500, 10);
+  ASSERT_EQ(probes(), 2);
+  /* ours and one more: ours run out first — we wait a second */
+  probing(records, N_REC);
+  probe_two_a(0x0A0000C8u, OUR_IP);
+  ticks(990, 10);
+  ASSERT_EQ(probes(), 0);
+  ticks(260, 10);
+  ASSERT_TRUE(probes() >= 1);
+  /* our TXT without our SRV: its set runs out first — ignored */
+  probing(records, N_REC);
+  peer_dns_begin(&q, 0, 0);
+  peer_dns_question(&q, INST, T_ANY, C_IN | C_TOP);
+  peer_dns_rr(&q, 1, INST, T_TXT, C_IN, 4500, "\x09txtvers=1", 10);
+  multicast(&q);
+  ticks(500, 10);
+  ASSERT_EQ(probes(), 2);
   ASSERT_EQ(conflicts, 0);
 }
 
@@ -2688,6 +2759,7 @@ int main(void) {
   RUN_TEST(itest_mdns_045_nonzero_rcode_ignored);
   RUN_TEST(itest_mdns_061_responses_from_other_ports_ignored);
   RUN_TEST(itest_mdns_062_responses_only_from_the_local_link);
+  RUN_TEST(itest_mdns_062_group_response_in_the_drivers_own_buffer);
   RUN_TEST(itest_mdns_080_unicast_responses_only_to_our_probes);
   RUN_TEST(itest_mdns_070_questions_in_responses_ignored);
   RUN_TEST(itest_mdns_052_responses_before_the_first_probe_ignored);
@@ -2695,6 +2767,7 @@ int main(void) {
   RUN_TEST(itest_mdns_054_fifteen_conflicts_slow_probing_down);
   RUN_TEST(itest_mdns_055_simultaneous_probe_lost_waits_a_second);
   RUN_TEST(itest_mdns_055_simultaneous_probe_won_or_tied);
+  RUN_TEST(itest_mdns_055_sets_sorted_and_the_one_that_runs_out_loses);
   RUN_TEST(itest_mdns_057_conflict_while_running_probes_again);
   RUN_TEST(itest_mdns_057_conflict_while_running_undefended_keeps_name);
   RUN_TEST(itest_mdns_058_no_periodic_announcements);

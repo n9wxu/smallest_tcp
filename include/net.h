@@ -148,6 +148,7 @@ typedef struct {
 #endif
 #if NET_USE_IPV6
   const struct udp6_port_entry_s *udp6_ports;
+  const uint8_t *udp6_rx_dst; /**< In a handler: udp6_rx_dst_ip() */
   /** udp6_set_error_handler()'s udp6_error_handler_t (udp.h), kept as the
    *  generic function pointer type and converted back to be called */
   void (*udp6_error_handler)(void);

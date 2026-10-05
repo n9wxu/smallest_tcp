@@ -6,6 +6,7 @@
 #ifndef NET_TEXT_H
 #define NET_TEXT_H
 
+#include "net_config.h"
 #include <stdint.h>
 
 static inline char net_tolower(char c) {

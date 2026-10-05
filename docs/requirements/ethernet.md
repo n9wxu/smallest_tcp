@@ -67,6 +67,7 @@ Minimum frame: 64 bytes (with FCS) = 60 bytes (without FCS). Maximum frame: 1518
 |---|---|---|---|---|
 | REQ-ETH-019 | MUST | Parse headers in-place — do not copy frame data | Architecture | itest_eth_019_parsed_in_the_rx_buffer, test_eth_parse_zero_copy |
 | REQ-ETH-020 | MUST | Build headers in-place in application buffer | Architecture | itest_eth_020_built_in_the_tx_buffer |
+| REQ-ETH-026 | MUST | Take a received frame from wherever the driver has it: `eth_input()` may be given a frame in the platform's own memory instead of `net->rx.buf`, and nothing the stack or its protocol modules decide about that frame is read from `net->rx.buf` | Architecture | itest_mdns_062_group_response_in_the_drivers_own_buffer, itest_mdns6_062_group_response_in_the_drivers_own_buffer |
 
 ## Notes
 

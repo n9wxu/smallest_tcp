@@ -10,6 +10,67 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+What the first run on hardware found — 0.1.10 on an RP2040 as a USB
+CDC-ECM network gadget
+([issue 6](https://github.com/n9wxu/smallest_tcp/issues/6)) — and the size
+of the mDNS responder.
+
+### Added
+
+- `NET_API_PREFIX` (CMake: `SMALLEST_TCP_API_PREFIX`): a prefix for every
+  external name of the stack, so that it links beside a project's own
+  `net_init()` or another stack's `tcp_write()` — `include/net_rename.h`,
+  kept whole by `scripts/api_rename.py` and two tests
+  ([issue 3](https://github.com/n9wxu/smallest_tcp/issues/3)).
+- `copy_segment()`, an optional operation of `tcp_txbuf_ops_t`: a TX
+  buffer whose data is not one contiguous run — a ring — copies a whole
+  segment into the frame instead of sending a short one at every wrap
+  (REQ-TCP-185,
+  [issue 4](https://github.com/n9wxu/smallest_tcp/issues/4)).  The member
+  is new at the end of the table: a table initialised positionally still
+  compiles, with a missing-initializer warning under `-Wextra`.
+- `udp6_rx_dst_ip()`: the destination address of the IPv6 datagram a
+  handler is given, as `udp_rx_dst_ip()` gives it over IPv4 (REQ-UDP-040).
+- `MDNS_TIEBREAK` (`mdns.h`, default 1): 0 builds the mDNS responder
+  without simultaneous-probe tiebreaking (RFC 6762 §8.2), 0.9 KB less on
+  Cortex-M0, for a link where no other host can probe for the device's
+  names at the same moment — a USB network gadget's.  A name claimed twice
+  is then settled by conflict detection: the host that announces first
+  keeps it, and two that announce together probe again after a random
+  delay of up to 1.25 s (REQ-MDNS-081, a recorded deviation from
+  REQ-MDNS-055).
+- `itest_mdns_no_tiebreak`: that build as two whole stacks claiming one
+  name on a shared link.
+
+### Changed
+
+- TCP: a SYN, data or a FIN the driver was too busy to take
+  (`NET_ERR_BUSY`) goes at the next tick instead of a retransmission
+  timeout later, without counting as a retransmission (REQ-TCP-184,
+  [issue 2](https://github.com/n9wxu/smallest_tcp/issues/2)).
+  `tcp_conn_t` has a new member, `unsent`; its size is unchanged in an
+  IPv4-only build and 4 bytes more in a dual-stack one.
+- TCP: the acknowledgment of a segment that lies wholly before the window
+  is taken before the segment is dropped, so a simultaneous close reaches
+  TIME-WAIT on the peer's retransmitted FIN (REQ-TCP-183,
+  [issue 5](https://github.com/n9wxu/smallest_tcp/issues/5)).
+- `udp_rx_dst_ip()` is 0 outside a UDP handler; it kept the last
+  datagram's destination before.
+- mDNS: the tiebreak compares the two record sets with less code (`mdns.c`
+  268 B smaller on Cortex-M0).  A record that a probe lists twice now
+  counts once, as an RRSet has no duplicates (RFC 2181 §5).
+
+### Fixed
+
+- mDNS: a response sent to 224.0.0.251 or ff02::fb counted as unicast when
+  the driver handed `eth_input()` a frame in its own memory, as
+  `mac-hal.md` allows: conflicts and stale records were then noticed only
+  while probing.  The responder now asks UDP for the datagram's
+  destination instead of reading `net->rx.buf` (REQ-ETH-026,
+  [issue 1](https://github.com/n9wxu/smallest_tcp/issues/1)).
+  `mdns_input()` and `mdns_input6()` are to be called from the port's UDP
+  handler, as the bundled integration does.
+
 ## [0.1.10] - 2026-10-02
 
 The review of IPv6 — IPv6, ICMPv6, Neighbor Discovery, SLAAC, MLD and

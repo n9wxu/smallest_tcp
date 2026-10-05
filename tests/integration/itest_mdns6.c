@@ -6,6 +6,7 @@
  *        built and parsed here, with the harness's checksum.
  */
 
+#include "eth.h"
 #include "ipv6.h"
 #include "itest.h"
 #include "mdns.h"
@@ -287,6 +288,21 @@ TEST(itest_mdns6_062_ipv6_responses_only_from_the_link) {
   probing();
   rival(&r);
   deliver6(peer_ll, our_ll, &r);
+  ASSERT_EQ(conflicts, 1);
+}
+
+/* REQ-MDNS-062, REQ-ETH-026: over IPv6 too, a response to ff02::fb in a
+ * frame the driver hands to eth_input() from memory of its own is one
+ * sent to the group: it counts though its source is off the link */
+TEST(itest_mdns6_062_group_response_in_the_drivers_own_buffer) {
+  static uint8_t own[1600];
+  peer_dns_t r;
+  uint16_t n;
+  probing();
+  rival(&r);
+  peer_dns_end(&r);
+  n = frame6(own, group6_mac, remote6, mdns_group6, r.buf, r.len);
+  eth_input(&t.net, own, n);
   ASSERT_EQ(conflicts, 1);
 }
 
@@ -640,6 +656,7 @@ int main(void) {
   fprintf(stderr, "=== itest_mdns6 ===\n");
   RUN_TEST(itest_mdns6_059_lost_address_reannounced);
   RUN_TEST(itest_mdns6_062_ipv6_responses_only_from_the_link);
+  RUN_TEST(itest_mdns6_062_group_response_in_the_drivers_own_buffer);
   RUN_TEST(itest_mdns6_065_nsec_for_aaaa_without_an_address);
   RUN_TEST(itest_mdns6_074_aaaa_only_for_usable_addresses);
   RUN_TEST(itest_mdns6_038_both_groups_probed_and_announced);

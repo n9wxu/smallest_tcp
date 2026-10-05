@@ -39,10 +39,10 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 | Metric | smallest_tcp | lwIP | Ratio |
 |--------|-------------|------|-------|
-| **Flash (code + rodata)** | **4,102 B** | 10,089 B | **2.5× smaller** |
+| **Flash (code + rodata)** | **4,110 B** | 10,089 B | **2.5× smaller** |
 | **RAM (static state)** | **720 B** | 2,619 B | **3.6× smaller** |
-| Stack-only code (objects) | **4,874 B** | 10,087 B | **2.1× smaller** |
-| Stack-only code, without reassembly | **4,066 B** | 10,087 B (none) | **2.5× smaller** |
+| Stack-only code (objects) | **4,882 B** | 10,087 B | **2.1× smaller** |
+| Stack-only code, without reassembly | **4,074 B** | 10,087 B (none) | **2.5× smaller** |
 | Stack-internal RAM | **0 B** | ~2,619 B | — |
 | Source modules | 7 | 16 | — |
 
@@ -54,7 +54,7 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 
 ## Per-Module Breakdown
 
-### smallest_tcp — 7 modules, 4,874 bytes code
+### smallest_tcp — 7 modules, 4,882 bytes code
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
@@ -64,11 +64,11 @@ lwIP configured for the smallest possible UDP-only build (`bench/lwip/lwipopts.h
 | `arp.c` | 620 | 0 | 0 | ARP request/reply, the gateway's MAC and its expiry, request rate limit, address probe |
 | `ipv4.c` | 1,760 | 0 | 0 | IPv4 parse/build (TTL and TOS per packet), options, source and destination checks, protocol dispatch, Protocol Unreachable, MMS_R/MMS_S; reassembly (792 B, not linked here) |
 | `icmp.c` | 568 | 0 | 0 | ICMP echo reply, Destination Unreachable, Time Exceeded, errors received passed to UDP |
-| `udp.c` | 818 | 0 | 0 | UDP parse/send (copying + in-place, TTL and TOS per datagram), port dispatch, destination address and ICMP errors to the application |
-| **Total** | **4,874** | **0** | **0** | |
+| `udp.c` | 826 | 0 | 0 | UDP parse/send (copying + in-place, TTL and TOS per datagram), port dispatch, destination address and ICMP errors to the application |
+| **Total** | **4,882** | **0** | **0** | |
 
 The benchmark's own `size_measure.c` (216 B) and the stub MAC driver (44 B) make up the rest
-of the 5,134 B of objects; the linked ELF is 4,102 B, since `--gc-sections` drops what the
+of the 5,142 B of objects; the linked ELF is 4,110 B, since `--gc-sections` drops what the
 benchmark never calls — reassembly above all.
 
 ### lwIP 2.2.1 — 16 modules, 10,087 bytes code
@@ -118,10 +118,10 @@ Comparing just the protocol-equivalent modules:
 | ARP | 620 B | 1,644 B | 2.7× |
 | IPv4 | 1,760 B (968 B without reassembly) | 922 B | 0.5× (1.0×) |
 | ICMP | 568 B (552 B without reassembly) | 504 B | 0.9× |
-| UDP | 818 B | 1,280 B | 1.6× |
+| UDP | 826 B | 1,280 B | 1.5× |
 | Checksum | 194 B | 532 B | 2.7× |
 | Ethernet | 242 B | 264 B | 1.1× |
-| **Subtotal** | **4,202 B (3,394 B without reassembly)** | **5,146 B** | **1.2× (1.5×)** |
+| **Subtotal** | **4,210 B (3,402 B without reassembly)** | **5,146 B** | **1.2× (1.5×)** |
 
 Protocol for protocol, the difference is smaller than for the whole stack.
 smallest_tcp's ARP, UDP and checksum are well under lwIP's, because of:
@@ -144,15 +144,15 @@ alongside the UDP echo server.
 
 | Metric | UDP only | UDP + TCP | Delta |
 |--------|---------:|----------:|------:|
-| **Flash (code + rodata)** | 4,102 B | **8,622 B** | +4,520 B |
+| **Flash (code + rodata)** | 4,110 B | **8,932 B** | +4,822 B |
 | **RAM (static state)** | 720 B | **1,116 B** | +396 B |
-| Stack-only code (objects) | 4,874 B | 9,700 B | +4,826 B |
+| Stack-only code (objects) | 4,882 B | 10,012 B | +5,130 B |
 | Stack-internal RAM | 0 B | 0 B | 0 |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `tcp.c` | 4,372 | 0 | 0 | Full state machine, in-order delivery, retransmit (data + FIN; R1 and R2), persist timer, MSS/window and the Path MTU from ICMP, window updates, FIN queued behind unsent data, RFC 6528 initial sequence numbers, CLOSE and ABORT in every state, a passive open listening again, ICMP errors, TOS |
-| `tcp_buf_saw.c` | 416 | 0 | 0 | Stop-and-wait TX/RX buffers |
+| `tcp.c` | 4,672 | 0 | 0 | Full state machine, in-order delivery, retransmit (data + FIN; R1 and R2), persist timer, MSS/window and the Path MTU from ICMP, window updates, FIN queued behind unsent data, RFC 6528 initial sequence numbers, CLOSE and ABORT in every state, a passive open listening again, ICMP errors, TOS |
+| `tcp_buf_saw.c` | 420 | 0 | 0 | Stop-and-wait TX/RX buffers |
 | `ipv4.c` | 1,770 | 0 | 0 | (+10 B for TCP dispatch) |
 | `icmp.c` | 588 | 0 | 0 | (+20 B: ICMP errors to TCP) |
 | `net.c` | 680 | 0 | 0 | (+8 B: `net_tick()` runs `tcp_tick()`) |
@@ -176,18 +176,18 @@ a host name and one DNS-SD service (A, PTR, SRV, TXT), with one multicast group
 
 | Metric | UDP only | UDP + mDNS | Delta |
 |--------|---------:|-----------:|------:|
-| **Flash (code + rodata)** | 4,102 B | **14,444 B** | +10,342 B |
+| **Flash (code + rodata)** | 4,110 B | **14,156 B** | +10,046 B |
 | **RAM (static state)** | 720 B | **832 B** | +112 B |
-| Stack-only code (objects) | 4,874 B | 15,125 B | +10,251 B |
+| Stack-only code (objects) | 4,882 B | 14,833 B | +9,951 B |
 | Stack-internal RAM | 0 B | 0 B | 0 |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
-| `mdns.c` | 7,853 | 0 | 0 | Probe/announce/answer state machine, DNS-SD additionals, NSEC negative answers, known-answer suppression (truncated queries too), conflicts and tiebreaking, rate limiting, legacy unicast, goodbye, withdrawing records, the size check of the table |
+| `mdns.c` | 7,553 | 0 | 0 | Probe/announce/answer state machine, DNS-SD additionals, NSEC negative answers, known-answer suppression (truncated queries too), conflicts and tiebreaking, rate limiting, legacy unicast, goodbye, withdrawing records, the size check of the table |
 | `dns_wire.c` | 1,616 | 0 | 0 | RFC 1035 names with compression, bounds-checked readers |
 | `igmp.c` | 536 | 0 | 0 | IGMPv2 host: reports, leaves and query answers with Router Alert, IGMPv1 routers |
 | `ipv4.c` | 1,974 | 0 | 0 | (+214 B: multicast group table and acceptance, IGMP dispatch and timer) |
-| `eth.c`, `icmp.c`, `udp.c` | 1,660 | 0 | 0 | (+32 B: joined-group MAC filter, no ICMP errors for multicast) |
+| `eth.c`, `icmp.c`, `udp.c` | 1,668 | 0 | 0 | (+32 B: joined-group MAC filter, no ICMP errors for multicast) |
 
 The 112 B of extra RAM is the application-owned `mdns_t` (96 B) and `net_t`'s
 multicast part (16 B: the one group slot, IGMP's operations, its report
@@ -197,6 +197,12 @@ needed.  The random probe/response delays use `net_random_below()`, which
 scales a random number instead of dividing — on Cortex-M0 (no divide
 instruction) `%` would link libgcc's `__udivsi3`.
 
+Simultaneous-probe tiebreaking is 928 B of this.  A build for a link where
+it has no work — a USB network gadget's — can leave it out with
+`-DMDNS_TIEBREAK=0` ([mdns.md §5](mdns.md)): 13,228 B of flash, `mdns.c`
+6,983 B, and `dns_rdata_compare()` no longer linked from `dns_wire.c`
+(`make arm-size-mdns ARM_MDNS_FLAGS="-DNET_USE_TCP=0 -DBENCH_MDNS -DMDNS_TIEBREAK=0"`).
+
 ## Adding an HTTP server
 
 `make arm-size-http` builds the UDP benchmark plus the HTTP server (and TCP) with
@@ -205,19 +211,19 @@ serving a static page.
 
 | Metric | UDP only | UDP + HTTP | Delta |
 |--------|---------:|-----------:|------:|
-| **Flash (code + rodata)** | 4,102 B | **14,998 B** | +10,896 B |
+| **Flash (code + rodata)** | 4,110 B | **15,310 B** | +11,200 B |
 | **RAM (static state)** | 720 B | **1,760 B** | +1,040 B |
-| Stack-only code (objects) | 4,874 B | 15,730 B | +10,856 B |
+| Stack-only code (objects) | 4,882 B | 16,042 B | +11,160 B |
 | Stack-internal RAM | 0 B | 0 B | 0 |
 
 | Module | .text | .data | .bss | Function |
 |--------|------:|------:|-----:|----------|
 | `http.c` | 5,922 | 0 | 0 | Request parser, header formatter, routes, streaming, conditional requests, `Expect`, Date, slot recycling, timeouts, the TCP transport |
 | `net_text.c` | 108 | 0 | 0 | Decimal formatting without division (`net_u32_to_dec()`) |
-| `tcp.c` + `tcp_buf_saw.c` | 4,788 | 0 | 0 | As in "Adding TCP" |
+| `tcp.c` + `tcp_buf_saw.c` | 5,092 | 0 | 0 | As in "Adding TCP" |
 
-HTTP costs about 6.4 KB of flash on top of TCP (14,998 B against the TCP
-echo's 8,622 B).  The extra RAM is all application owned: the three 256 B
+HTTP costs about 6.4 KB of flash on top of TCP (15,310 B against the TCP
+echo's 8,932 B).  The extra RAM is all application owned: the three 256 B
 buffers, the 220-byte `http_conn_t` (which embeds the `tcp_conn_t`), the
 36-byte `http_server_t`, the one-entry connection table and the larger
 `net_t`.  The response header is formatted on the stack (`HTTP_HDR_MAX`,
@@ -234,9 +240,9 @@ discovery, SLAAC with lifetimes) and MLDv2/v1.  No multicast groups to join
 
 | Metric | UDP (IPv4) | UDP, dual stack | Delta |
 |--------|-----------:|----------------:|------:|
-| **Flash (code + rodata)** | 4,102 B | **9,465 B** | +5,363 B |
-| **RAM (static state)** | 720 B | **828 B** | +108 B |
-| Stack-only code (objects) | 4,874 B | 10,243 B | +5,369 B |
+| **Flash (code + rodata)** | 4,110 B | **9,497 B** | +5,387 B |
+| **RAM (static state)** | 720 B | **832 B** | +112 B |
+| Stack-only code (objects) | 4,882 B | 10,283 B | +5,401 B |
 
 | Module | .text | Function |
 |--------|------:|----------|
@@ -244,12 +250,13 @@ discovery, SLAAC with lifetimes) and MLDv2/v1.  No multicast groups to join
 | `ndp.c` | 1,467 | NS/NA, DAD, Router Solicitation/Advertisement, SLAAC |
 | `mld.c` | 985 | MLDv2 reports and query answers, MLDv1 fallback |
 | `icmpv6.c` | 764 | Checksum, echo, error messages and their rate limit, errors received passed to UDP |
-| `udp.c` (IPv6 part) | +604 | `udp6_input`, `udp6_send[_inplace]`, `udp6_icmp_error`, `udp6_set_error_handler` |
+| `udp.c` (IPv6 part) | +636 | `udp6_input`, `udp6_rx_dst_ip`, `udp6_send[_inplace]`, `udp6_icmp_error`, `udp6_set_error_handler` |
 | `eth.c`, `net.c` | +44 | IPv6 dispatch, `ipv6_tick()` from `net_tick()` |
 
 The RAM is `net_t`'s IPv6 part: two address slots with their lifetimes,
 the default router, the MLD and router-solicitation timers, the ICMPv6 error
-bucket, and the IPv6 port table and error handler pointers.  No divide routine is linked (lifetimes count seconds by
+bucket, and the IPv6 port table and error handler pointers and the
+destination of the datagram a handler is given.  No divide routine is linked (lifetimes count seconds by
 subtraction).
 
 ## IPv6 only
@@ -260,15 +267,15 @@ subtraction).
 
 | Metric | UDP, dual stack | UDP, IPv6 only | Delta |
 |--------|----------------:|---------------:|------:|
-| **Flash (code + rodata)** | 9,465 B | **6,453 B** | −3,012 B |
-| **RAM (static state)** | 828 B | **756 B** | −72 B |
-| Stack-only code (objects) | 10,243 B | 6,367 B | −3,876 B |
+| **Flash (code + rodata)** | 9,497 B | **6,465 B** | −3,032 B |
+| **RAM (static state)** | 832 B | **760 B** | −72 B |
+| Stack-only code (objects) | 10,283 B | 6,387 B | −3,896 B |
 
 The IPv6 modules are nearly the same objects as in the dual stack (`ipv6.c`
 and `ndp.c` are 6 B smaller each); what goes is `arp.c` (620 B),
 `ipv4.c` (1,760 B, reassembly included), `icmp.c` (568 B), UDP over IPv4
-(832 B) and the IPv4 branches of `eth.c` and `net.c` (84 B).  The RAM saved
-is `net_t`'s IPv4 part: 152 bytes instead of 224.
+(852 B) and the IPv4 branches of `eth.c` and `net.c` (84 B).  The RAM saved
+is `net_t`'s IPv4 part: 156 bytes instead of 228.
 
 ## Adding TLS 1.3
 
@@ -331,7 +338,7 @@ that neither protocol's build references the other's record layer
 |--------|-------|-----|-----------------|----------|
 | **PIC16F1454** | 14 KB | 1 KB | ✅ 4.1 KB + buffers | ❌ 10 KB code alone |
 | **CH32X033** | 62 KB | 20 KB | ✅ Plenty of room | ✅ Fits |
-| **STM32F042** | 32 KB | 6 KB | ✅ 4.1 KB; 8.6 KB with TCP; 14.4 KB with mDNS; 15.0 KB with HTTP; 9.5 KB dual stack; 6.5 KB IPv6 only | ⚠️ Tight with app |
+| **STM32F042** | 32 KB | 6 KB | ✅ 4.1 KB; 8.9 KB with TCP; 14.2 KB with mDNS; 15.3 KB with HTTP; 9.5 KB dual stack; 6.5 KB IPv6 only | ⚠️ Tight with app |
 | **CH32V203** | 256 KB | 10 KB | ✅ Plenty of room | ✅ Fits |
 
 ## How to Reproduce

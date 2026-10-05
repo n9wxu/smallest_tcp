@@ -123,6 +123,8 @@ it is a helper, not a setting.
 | `ICMPV6_ERROR_INTERVAL_MS` | `icmpv6.h` | 100 | Time for the bucket to gain one token, so the sustained rate of ICMPv6 errors is one per interval; at most 65535. |
 | `NDP_MAX_RTR_SOLICITATIONS` | `ndp.h` | 3 | Router Solicitations sent at start-up if no Router Advertisement arrives. |
 | `DNS_COMPRESS_MAX` | `dns_wire.h` | 16 | Label offsets a DNS writer remembers as compression targets. |
+| `NET_API_PREFIX` | — (unset) | — | A prefix for every external name of the stack, for a project with a `net_init()` or a `tcp_write()` of its own (§7). |
+| `MDNS_TIEBREAK` | `mdns.h` | 1 | Simultaneous-probe tiebreaking (RFC 6762 §8.2).  0 leaves it out — about 0.9 KB on Cortex-M0 — for a link where no other host can probe for our names at the same moment, such as a USB network gadget's; a name claimed twice is then settled by conflict detection (REQ-MDNS-081, a deviation from REQ-MDNS-055; [mdns.md §5](mdns.md)). |
 | `HTTP_HDR_MAX` | `http.h` | 224 | Largest response header block, formatted on the C stack. |
 | `HTTP_REQUEST_TIMEOUT_MS` | `http.h` | 10000 | Time a connection slot may take to receive a complete request. |
 | `HTTP_RESPONSE_TIMEOUT_MS` | `http.h` | 10000 | Time allowed to send the response and finish closing. |
@@ -177,7 +179,7 @@ layer can be left out, not both: an IPv6-only build (`NET_USE_IPV4` 0, CMake
 UDP and TCP keep only their IPv6 halves, and mDNS answers over IPv6 with
 AAAA records only (`mdns_init()` refuses an A record).  The DHCPv4 client
 and server and TFTP run only over IPv4 and are not built; DHCPv6, mDNS, HTTP
-and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,453 bytes, 3.0 KB
+and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,465 bytes, 3.0 KB
 less than the dual stack ([size-comparison.md](size-comparison.md)).
 
 The dispatch calls are references, so **linking IPv4 or IPv6 pulls in `udp.o`
@@ -232,3 +234,37 @@ values are ordinary fields the application or a protocol changes:
 Values that exist only at run time — TCP sequence numbers, the peer's window
 and MSS, lease and lifetime timers, DAD state, transaction IDs — live in the
 structures of the protocol that owns them and have no configuration.
+
+## 7. The API under a prefix
+
+The stack's functions have short names — `net_init()`, `tcp_write()`,
+`udp_send()` — and a project may have such names already: its own
+`net_init()`, or lwIP's `tcp_write()` while it moves from one stack to the
+other.  `NET_API_PREFIX` gives every external name of the stack a prefix:
+
+```
+cmake -DSMALLEST_TCP_API_PREFIX=stcp_ ...        # or -DNET_API_PREFIX=stcp_ on
+                                                 # the stack's sources and on
+                                                 # every file that includes its headers
+```
+
+`net_config.h` then includes `net_rename.h`, which defines each name as a
+macro for the prefixed one, so the stack is compiled, and called, as
+`stcp_net_init()`, `stcp_tcp_write()` and so on — functions and objects
+with external linkage, the bundled drivers' included.  It is a setting like
+those of §3: the library and every file that includes its headers must
+agree.  In a file that includes the stack's headers the plain names still
+work and mean the stack's; the project's own function of the same name is
+called there by another name, or from a file that does not include them
+(`tests/config/api_prefix_app.c` does both).  Types, macros and `static
+inline` functions keep their names: they have no linkage to collide, only
+a file that includes both sets of headers would see two.
+
+`net_rename.h` is generated: `scripts/api_rename.py --write
+build/libsmallest_tcp_*.a` adds what the libraries define, and the test
+`api_prefix_covers_every_symbol` fails in any configuration whose
+libraries define a name it lacks — or, in a build with a prefix, an
+external name without it.  `api_prefix_links_beside_own_names` links the
+core, built with `stcp_`, into a program with a `net_init()`, `net_poll()`,
+`tcp_write()` and `udp_send()` of its own
+([issue 3](https://github.com/n9wxu/smallest_tcp/issues/3)).

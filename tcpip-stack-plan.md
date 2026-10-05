@@ -196,9 +196,9 @@ firmware.  Built in CI; not run on hardware.
 ### Measured size
 
 On Cortex-M0 ([size-comparison.md](docs/design/size-comparison.md)): a UDP
-echo is 4,102 B of flash, UDP + TCP 8,622 B, UDP + HTTP (with TCP)
-14,998 B, UDP + mDNS 14,444 B, dual-stack UDP 9,465 B, IPv6-only UDP
-6,453 B; the TLS 1.3 protocol is 7,476 B for a server, DTLS 1.3 11,271 B —
+echo is 4,110 B of flash, UDP + TCP 8,932 B, UDP + HTTP (with TCP)
+15,310 B, UDP + mDNS 14,156 B, dual-stack UDP 9,497 B, IPv6-only UDP
+6,465 B; the TLS 1.3 protocol is 7,476 B for a server, DTLS 1.3 11,271 B —
 with **no** stack-internal static state at all: every byte of RAM is
 application-owned.
 

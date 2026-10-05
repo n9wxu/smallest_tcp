@@ -143,8 +143,8 @@ static uint8_t *frame_start(net_t *net, const tcp_ep_t *ep, uint16_t tcp_len) {
 }
 
 /* Checksum the finished segment, add the IP header, send (REQ-TCP-139) */
-static void frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
-                       uint16_t tcp_len) {
+static net_err_t frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
+                            uint16_t tcp_len) {
   uint8_t *ip_hdr = net->tx.buf + ETH_HDR_SIZE;
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, 0);
   net_write16be(tcp_hdr + TCP_OFF_CKSUM, checksum(ep, 0, tcp_hdr, tcp_len));
@@ -153,7 +153,8 @@ static void frame_send(net_t *net, const tcp_ep_t *ep, uint8_t *tcp_hdr,
                            ep->ip4, NET_DEFAULT_TTL, ep->tos),
             ipv6_build(ip_hdr, tcp_len, IPV6_NH_TCP, ep->local6, ep->ip6,
                        net->ip6.hop_limit));
-  net_transmit(net, (uint16_t)(ETH_HDR_SIZE + ip_header_size(ep) + tcp_len));
+  return net_transmit(net,
+                      (uint16_t)(ETH_HDR_SIZE + ip_header_size(ep) + tcp_len));
 }
 
 static void write_header(uint8_t *hdr, uint16_t src_port, uint16_t dst_port,
@@ -182,9 +183,11 @@ static int address_kept(const net_t *net, const tcp_conn_t *conn) {
 
 /*
  * A segment on @p conn acknowledging RCV.NXT and advertising our window
- * (none on a RST).  A SYN carries our MSS (REQ-TCP-076).  One the driver
- * does not take is lost, as on the wire (docs/design/tcp.md §4.1).  None
- * goes from an address the host no longer has.
+ * (none on a RST).  A SYN carries our MSS (REQ-TCP-076).  None goes from an
+ * address the host no longer has.  One that takes sequence space — a SYN,
+ * data, a FIN — and finds the driver busy is owed: conn_tick() sends it
+ * (REQ-TCP-184).  Any other the driver does not take is lost, as on the
+ * wire (docs/design/tcp.md §4.1).
  */
 static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
                          uint32_t seq, const uint8_t *data, uint16_t data_len) {
@@ -206,9 +209,11 @@ static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
     hdr[TCP_OFF_OPT + 1] = TCP_MSS_OPTION_LEN;
     net_write16be(hdr + TCP_OFF_OPT + 2, conn->our_mss);
   }
-  if (data_len > 0)
+  if (data_len > 0 && data != hdr + hdr_len) /* else there already */
     memcpy(hdr + hdr_len, data, data_len);
-  frame_send(net, &ep, hdr, tcp_len);
+  if (frame_send(net, &ep, hdr, tcp_len) == NET_ERR_BUSY &&
+      (data_len > 0 || (flags & (TCP_FLAG_SYN | TCP_FLAG_FIN))))
+    conn->unsent = 1;
 }
 
 static void send_ack(net_t *net, tcp_conn_t *conn) {
@@ -287,6 +292,7 @@ static void notify(tcp_conn_t *conn, uint8_t events) {
 /* To CLOSED, telling the application @p events (0: nothing) */
 static void close_with(tcp_conn_t *conn, uint8_t events) {
   conn->state = TCP_CLOSED;
+  conn->unsent = 0;
   conn->timer_ms = 0;
   conn->retransmits = 0;
   conn->persist_ms = 0;
@@ -362,6 +368,23 @@ static void soft_error(tcp_conn_t *conn, uint16_t error) {
 
 /* ── Output ── */
 
+/* The next segment of the TX buffer, at most @p max bytes: in place, or —
+ * from a buffer that gives its segments by copy_segment(), its data not
+ * being one contiguous run (REQ-TCP-185) — copied to where a data segment's
+ * payload goes in the TX frame, which send_segment() then leaves alone */
+static uint16_t take_segment(net_t *net, tcp_conn_t *conn, const uint8_t **data,
+                             uint16_t max) {
+  const tcp_txbuf_ops_t *ops = conn->txbuf_ops;
+  tcp_ep_t ep;
+  uint8_t *payload;
+  if (!ops->copy_segment)
+    return ops->next_segment(conn->txbuf_ctx, data, max);
+  conn_endpoint(net, conn, &ep);
+  payload = net->tx.buf + ETH_HDR_SIZE + ip_header_size(&ep) + TCP_HDR_SIZE;
+  *data = payload;
+  return ops->copy_segment(conn->txbuf_ctx, payload, max);
+}
+
 static int all_data_sent(const tcp_conn_t *conn) {
   return conn->txbuf_ops->queued(conn->txbuf_ctx) ==
          conn->txbuf_ops->in_flight(conn->txbuf_ctx);
@@ -395,7 +418,7 @@ static void send_data(net_t *net, tcp_conn_t *conn) {
     return;
   }
   persist_stop(conn);
-  len = conn->txbuf_ops->next_segment(conn->txbuf_ctx, &data, room);
+  len = take_segment(net, conn, &data, room);
   if (len > 0) {
     send_segment(net, conn, data_flags(conn), conn->snd_nxt, data, len);
     conn->snd_nxt += len;
@@ -886,12 +909,29 @@ static void fin_input(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
   }
 }
 
+/* REQ-TCP-183: a segment that lies before the window, once the connection
+ * is open and before TIME-WAIT, acknowledging something sent and not yet
+ * acknowledged */
+static int acks_new_data_of_old_segment(const tcp_conn_t *conn,
+                                        const tcp_seg_t *s) {
+  return conn->state != TCP_SYN_RECEIVED && conn->state != TCP_TIME_WAIT &&
+         has(s, TCP_FLAG_ACK) && !has(s, TCP_FLAG_SYN) &&
+         SEQ_LT(s->seq, conn->rcv_nxt) && SEQ_GT(s->ack, conn->snd_una) &&
+         SEQ_LE(s->ack, conn->snd_nxt);
+}
+
 /* §3.10.7.4: every state from SYN-RECEIVED on */
 static void synchronized_input(net_t *net, tcp_conn_t *conn,
                                const tcp_ep_t *from, const tcp_seg_t *s) {
   if (!in_window(conn, s)) {
-    if (!has(s, TCP_FLAG_RST)) /* REQ-TCP-042 */
-      send_ack(net, conn);
+    if (has(s, TCP_FLAG_RST))
+      return;
+    /* REQ-TCP-183: a segment wholly before the window is a duplicate, but
+     * its acknowledgment may be news — the peer's retransmitted FIN is
+     * where a simultaneous close learns that ours arrived */
+    if (acks_new_data_of_old_segment(conn, s) && !ack_input(net, conn, from, s))
+      return;
+    send_ack(net, conn); /* REQ-TCP-042 */
     return;
   }
   if (has(s, TCP_FLAG_RST)) {
@@ -1078,14 +1118,24 @@ static void resend_in_flight(net_t *net, tcp_conn_t *conn) {
   const uint8_t *data = NULL;
   uint16_t len;
   conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
-  len = conn->txbuf_ops->next_segment(
-      conn->txbuf_ctx, &data,
-      in_flight < conn->snd_mss ? in_flight : conn->snd_mss);
+  len = take_segment(net, conn, &data,
+                     in_flight < conn->snd_mss ? in_flight : conn->snd_mss);
   if (len < in_flight) {
     conn->snd_nxt = conn->snd_una + len;
     conn->fin_sent = 0;
   }
   send_segment(net, conn, data_flags(conn), conn->snd_una, data, len);
+}
+
+/* The earliest unacknowledged segment again: our SYN, the data in flight —
+ * a FIN follows once it is acknowledged — or our FIN */
+static void resend_unacked(net_t *net, tcp_conn_t *conn) {
+  if (conn->state == TCP_SYN_SENT || conn->state == TCP_SYN_RECEIVED)
+    send_syn(net, conn);
+  else if (conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0)
+    resend_in_flight(net, conn);
+  else if (fin_unacked(conn))
+    send_fin(net, conn, conn->snd_nxt - 1u);
 }
 
 /* REQ-TCP-090..100, 162..165: the earliest unacknowledged segment again,
@@ -1118,14 +1168,21 @@ static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
   conn->timer_ms = conn->rto_ms;
   if (conn->retransmits == TCP_R1)
     soft_error(conn, TCP_SOFT_RETRANSMITTING);
+  resend_unacked(net, conn);
+}
 
-  if (syn) {
-    send_syn(net, conn);
-  } else if (data_unacked) {
-    resend_in_flight(net, conn); /* a FIN follows once it is acknowledged */
-  } else {
-    send_fin(net, conn, conn->snd_nxt - 1u);
-  }
+/* REQ-TCP-184: what the driver was too busy to take, now.  It was never on
+ * the wire, so this is no retransmission: nothing is counted or doubled,
+ * and the timeout runs from the moment it does leave.  @return 1 if it
+ * left.  While the driver stays busy the timer runs on, so that a driver
+ * busy for good costs the connection as a dead link would. */
+static int send_unsent(net_t *net, tcp_conn_t *conn) {
+  conn->unsent = 0;
+  resend_unacked(net, conn);
+  if (conn->unsent)
+    return 0;
+  retransmit_timer_restart_if_running(conn);
+  return 1;
 }
 
 /* REQ-TCP-086, 087: one byte past the peer's zero window, the same byte
@@ -1136,7 +1193,7 @@ static void probe_zero_window(net_t *net, tcp_conn_t *conn) {
     conn->snd_nxt = conn->snd_una;
     conn->txbuf_ops->mark_retransmit(conn->txbuf_ctx);
   }
-  if (conn->txbuf_ops->next_segment(conn->txbuf_ctx, &byte, 1) == 0) {
+  if (take_segment(net, conn, &byte, 1) == 0) {
     persist_stop(conn); /* nothing left to send */
     return;
   }
@@ -1155,6 +1212,8 @@ static void conn_tick(net_t *net, tcp_conn_t *conn, uint32_t elapsed_ms) {
     abort_on_error(conn);
     return;
   }
+  if (conn->unsent && send_unsent(net, conn))
+    return; /* the time that passed was before it left */
   if (!all_data_sent(conn))
     flush(net, conn);
   if (!conn->timer_ms || !net_countdown(&conn->timer_ms, elapsed_ms))

@@ -10,6 +10,7 @@
 #ifndef NET_MAC_H
 #define NET_MAC_H
 
+#include "net_config.h"
 #include <stdint.h>
 
 /**

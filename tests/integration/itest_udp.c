@@ -423,7 +423,8 @@ TEST(itest_udp_044_ttl_and_tos) {
   ASSERT_EQ(ip.tos, 0x28);
 }
 
-/* REQ-UDP-040: a handler learns the datagram's destination address */
+/* REQ-UDP-040: a handler learns the datagram's destination address; there
+ * is none once the handler has returned */
 TEST(itest_udp_040_destination_address_passed_up) {
   uint8_t f[128];
   up();
@@ -436,6 +437,7 @@ TEST(itest_udp_040_destination_address_passed_up) {
                                OPEN_PORT, "x", 1));
   ASSERT_EQ(seen_dst, 0xFFFFFFFFu);
   ASSERT_EQ(delivered, 2);
+  ASSERT_EQ(udp_rx_dst_ip(&t.net), 0);
 }
 
 /* REQ-UDP-041: the source is ours, or 0.0.0.0 while acquiring an address */

@@ -1122,8 +1122,8 @@ TEST(test_tcp_unsent_frame_is_retransmitted) {
   ASSERT_MEM_EQ(sent_tcp_payload(0), "data", 4);
 }
 
-/* A SYN the driver did not take is lost like any other segment: the
- * connection is opening, and the retransmission timer sends it again */
+/* A SYN the driver was too busy to take: the connection is opening, and
+ * the next tick sends it (REQ-TCP-184) */
 TEST(test_tcp_connect_with_busy_driver_resends_syn) {
   setup();
   busy_sends = 1;

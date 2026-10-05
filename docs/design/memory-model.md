@@ -42,6 +42,7 @@ One `net_t` per network interface (`include/net.h`):
 | `mcast6_groups[][16]` | Joined IPv6 groups (`::` = free slot) | `NET_USE_IPV6` and `NET_MAX_MCAST6_GROUPS > 0` |
 | `udp_ports`, `udp_port_count` | The UDP port table | `NET_USE_UDP` and `NET_USE_IPV4` |
 | `udp_rx_dst`, `udp_error_handler` | The destination address of the datagram being handled (`udp_rx_dst_ip()`), and where ICMP errors about UDP go (`udp_set_error_handler()`) | `NET_USE_UDP` and `NET_USE_IPV4` |
+| `udp6_rx_dst` | The destination address of the IPv6 datagram being handled (`udp6_rx_dst_ip()`): a pointer into the frame, NULL outside a handler | `NET_USE_UDP` and `NET_USE_IPV6` |
 | `udp6_ports`, `udp6_port_count` | The UDP-over-IPv6 port table | `NET_USE_UDP` and `NET_USE_IPV6` |
 | `udp6_error_handler` | Where ICMPv6 errors about UDP go (`udp6_set_error_handler()`) | `NET_USE_UDP` and `NET_USE_IPV6` |
 | `tcp_conns`, `tcp_conn_count` | The TCP connection table (pointers) | `NET_USE_TCP` |

@@ -10,6 +10,7 @@
 #ifndef TCP_BUF_H
 #define TCP_BUF_H
 
+#include "net_config.h"
 #include <stdint.h>
 
 /** Outgoing data: what the application wrote, until the peer ACKs it. */
@@ -18,7 +19,8 @@ typedef struct {
   uint16_t (*write)(void *ctx, const uint8_t *data, uint16_t len);
 
   /** The next segment to send, at most @p mss bytes, in place; 0 if
-   *  nothing is ready.  The bytes are then in flight. */
+   *  nothing is ready.  The bytes are then in flight.  Not called if
+   *  copy_segment() is given. */
   uint16_t (*next_segment)(void *ctx, const uint8_t **data, uint16_t mss);
 
   /** The peer acknowledged @p bytes_acked bytes: release them.  The count
@@ -38,6 +40,13 @@ typedef struct {
   /** A retransmission timeout: next_segment() must return the in-flight
    *  data again. */
   void (*mark_retransmit)(void *ctx);
+
+  /** Optional, in place of next_segment() (which may then be NULL): copy
+   *  the next segment, at most @p mss bytes, to @p dst — for a buffer
+   *  whose data is not always one contiguous run, such as a ring, which
+   *  would otherwise send a short segment at every wrap.  @return the
+   *  bytes copied, which are then in flight; 0 if nothing is ready. */
+  uint16_t (*copy_segment)(void *ctx, uint8_t *dst, uint16_t mss);
 } tcp_txbuf_ops_t;
 
 /** Incoming data: in-order bytes from the peer, until the application

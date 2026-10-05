@@ -8,6 +8,7 @@
 #ifndef NET_CKSUM_H
 #define NET_CKSUM_H
 
+#include "net_config.h"
 #include <stdint.h>
 
 /** A running one's complement sum; carries are folded at the end. */

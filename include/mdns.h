@@ -44,6 +44,18 @@ extern const uint8_t mdns_group6[16]; /**< ff02::fb */
 #define MDNS_ANNOUNCE_COUNT 2  /**< RFC 6762 §8.3 */
 #define MDNS_ANNOUNCE_WAIT_MS 1000
 #define MDNS_TIEBREAK_WAIT_MS 1000 /**< After losing a tiebreak (§8.2) */
+/**
+ * Simultaneous-probe tiebreaking (RFC 6762 §8.2).  0 leaves it out, for a
+ * link on which no other host can be probing for our names at the same
+ * moment — a point-to-point link such as a USB network gadget's, whose
+ * only neighbour is its host.  Another host's probe is then a query like
+ * any other, and two hosts that do claim a name at once are told apart by
+ * the conflicts of §8.1 and §9: the one that announces while the other
+ * still probes keeps the name (docs/design/mdns.md §5, REQ-MDNS-081).
+ */
+#ifndef MDNS_TIEBREAK
+#define MDNS_TIEBREAK 1
+#endif
 /** RFC 6762 §8.1: after this many conflicts within MDNS_CONFLICT_WINDOW_MS,
  *  every probe attempt waits MDNS_SLOW_PROBE_MS first */
 #define MDNS_CONFLICT_LIMIT 15
@@ -193,12 +205,12 @@ void mdns_tick(mdns_t *m, uint32_t elapsed_ms);
 
 #if NET_USE_IPV4
 /**
- * Process one mDNS message received on UDP port 5353.  @p msg is the
- * payload pointer the UDP handler received, into net->rx.buf: the
- * responder reads the packet's destination address from the frame, as a
- * response sent by unicast counts only from an on-link source (RFC 6762
- * §11) and only while the responder probes (§6).  A message from anywhere
- * else is taken as unicast.
+ * Process one mDNS message received on UDP port 5353: call it from the
+ * port's UDP handler, with what the handler was given.  The responder
+ * asks UDP for the destination address of the datagram being handled
+ * (udp_rx_dst_ip()), as a response sent by unicast counts only from an
+ * on-link source (RFC 6762 §11) and only while the responder probes (§6).
+ * A message handed in at any other time is taken as unicast.
  * @param src_port  Querier's source port; not 5353 = legacy unicast query.
  */
 void mdns_input(mdns_t *m, uint32_t src_ip, const uint8_t *src_mac,

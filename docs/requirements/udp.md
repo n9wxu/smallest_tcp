@@ -122,7 +122,7 @@ Minimum: 8 bytes (header only, zero-length data).
 
 | ID | Level | Requirement | RFC | Test ID |
 |---|---|---|---|---|
-| REQ-UDP-040 | MUST | Pass the specific destination address of a received datagram up to the application (`udp_rx_dst_ip()` in a handler) | RFC 1122 §4.1.3.5 | itest_udp_040_destination_address_passed_up |
+| REQ-UDP-040 | MUST | Pass the specific destination address of a received datagram up to the application (`udp_rx_dst_ip()` in a handler, `udp6_rx_dst_ip()` over IPv6; outside a handler there is none: 0, NULL) | RFC 1122 §4.1.3.5 | itest_udp_040_destination_address_passed_up, itest_udp_040_ipv6_destination_address_passed_up |
 | REQ-UDP-041 | MUST | Let the application choose the source address of a datagram or leave it unspecified (`udp_send_inplace_from()`, `udp_send()`); the source must be one of the host's addresses — or 0.0.0.0 while it acquires one | RFC 1122 §4.1.3.5, §4.1.3.6 | itest_udp_041_source_must_be_ours |
 | REQ-UDP-042 | MUST | Pass IP options through, both ways — **deviation:** options are neither passed up nor settable (REQ-IPv4-065, 066) | RFC 1122 §4.1.3.2 | itest_udp_042_ip_options_not_passed_up |
 | REQ-UDP-043 | MUST | Provide the IP/transport interface: the source address (`net_t.ipv4_addr`), the maximum sizes (`ipv4_mms_s()`, `ipv4_mms_r()`), ICMP messages (REQ-UDP-039) — **deviation:** no ADVISE_DELIVPROB: there is no gateway choice to advise (REQ-IPv4-075) | RFC 1122 §4.1.4, §3.4 | itest_ipv4_063_mms_s |

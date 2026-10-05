@@ -116,6 +116,8 @@ typedef struct tcp_conn_s {
   uint8_t passive; /**< Opened by tcp_listen(): reset in SYN-RECEIVED, it
                         listens again */
   uint16_t last_error; /**< tcp_last_error() */
+  uint8_t unsent;      /**< The driver was busy (NET_ERR_BUSY) for our SYN, data
+                            or FIN: it goes at the next tick (REQ-TCP-184) */
 #if NET_USE_IPV6
   uint8_t ip_ver;     /**< 4 or 6; always 6 without IPv4 */
   uint8_t local_slot; /**< IPv6: our address the peer used, in ip6.addr */
@@ -189,8 +191,7 @@ net_err_t tcp_listen(tcp_conn_t *conn, uint16_t local_port);
 #if NET_USE_IPV4
 /**
  * Active open over IPv4, from net->ipv4_addr; TCP_EVT_CONNECTED follows.  A
- * SYN the driver does not take is resent by the retransmission timer, like
- * any lost segment.
+ * SYN the driver is too busy to take goes at the next tick (REQ-TCP-184).
  * @param remote_mac  The peer's or the gateway's MAC, already resolved.
  * @return NET_OK; NET_ERR_INVALID_PARAM — also for a @p remote_ip that
  *         is no single host (a broadcast, a group, 0.0.0.0, 127/8;

@@ -38,6 +38,7 @@ typedef struct {
   uint16_t (*queued)(const void *ctx);
   uint16_t (*writable)(const void *ctx);
   void (*mark_retransmit)(void *ctx);
+  uint16_t (*copy_segment)(void *ctx, uint8_t *dst, uint16_t mss); /* optional */
 } tcp_txbuf_ops_t;
 ```
 
@@ -62,6 +63,25 @@ SND.NXT, the buffer keeps bytes, and the two stay in step by these rules:
 | `queued` | `tcp_tx_idle()`, `all_data_sent()` | Bytes written and not yet acknowledged, sent or not |
 | `writable` | `send_side_ack()`, which raises `TCP_EVT_WRITABLE` when new data was acknowledged and it is > 0 | Room for `write` |
 | `mark_retransmit` | `resend_in_flight()` (a retransmission timeout), `probe_zero_window()` (a probe still unacknowledged) | The next `next_segment()` returns the in-flight bytes again, from the oldest (REQ-TCP-095) |
+| `copy_segment` (optional; NULL in a table without it) | In place of `next_segment`, wherever that is called (`take_segment()`) | As `next_segment`, but the bytes are copied to `dst` — the payload's place in the TX frame — instead of pointed at.  `next_segment` may then be NULL |
+
+**A buffer whose data is not one contiguous run** (REQ-TCP-185).
+`next_segment()` returns one pointer and one length, so a ring buffer can
+offer only the bytes up to the end of its memory: every wrap makes a short
+segment, and with one segment in flight each short segment is a round trip
+— a 2,048-byte ring alternated segments of 1,460 and 588 bytes for the
+whole of a download
+([issue 4](https://github.com/n9wxu/smallest_tcp/issues/4)).  Such a
+buffer gives `copy_segment()` instead: `tcp.c` hands it the place of the
+payload in `net->tx.buf` and the buffer copies up to `mss` bytes there, in
+as many pieces as it holds them.  The count of copies is unchanged — the
+bytes went from the buffer into the frame before, too — and
+`send_segment()` leaves the payload where it is.  Everything else in the
+contract is the same: what is copied is in flight, `mark_retransmit()`
+starts again at the oldest byte, and nothing is offered while anything is
+in flight (below).  A table written positionally, without the new member,
+still compiles (the member is NULL), though `-Wextra` warns of the missing
+initializer.
 
 One more rule, which comes from `tcp.c` rather than the interface:
 **`next_segment()` must return 0 while anything is in flight.**  `send_data()`

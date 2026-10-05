@@ -3,7 +3,7 @@
 **Files:** `include/ipv6.h`, `src/ipv6.c` (packets, addresses, groups); `include/icmpv6.h`, `src/icmpv6.c`; `include/ndp.h`, `src/ndp.c` (Neighbor Discovery, DAD, router discovery, SLAAC); `include/mld.h`, `src/mld.c`; `include/dhcpv6_client.h`, `src/dhcpv6_client.c`.  The interface's IPv6 state is `net_ip6_t` in `include/net.h`.
 **Requirements:** [ipv6.md](../requirements/ipv6.md), [icmpv6.md](../requirements/icmpv6.md), [ndp.md](../requirements/ndp.md), [slaac.md](../requirements/slaac.md), [dhcpv6.md](../requirements/dhcpv6.md)
 **RFCs:** 8200 (IPv6), 4291 (addressing), 4443 (ICMPv6), 4861 (ND), 4862 (SLAAC), 6724 (address selection), 2464 (IPv6 over Ethernet), 3810 (MLDv2), 8201 (path MTU), 8415 (DHCPv6)
-**Size (Cortex-M0):** 9,465 B flash / 828 B RAM for a dual-stack UDP echo (IPv4-only: 4,102 B / 720 B; IPv6-only: 6,453 B / 756 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
+**Size (Cortex-M0):** 9,497 B flash / 832 B RAM for a dual-stack UDP echo (IPv4-only: 4,110 B / 720 B; IPv6-only: 6,465 B / 760 B); see [size-comparison.md](size-comparison.md#adding-ipv6-dual-stack).
 
 ## 1. Goals and scope
 

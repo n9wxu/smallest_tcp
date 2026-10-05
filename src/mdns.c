@@ -827,6 +827,15 @@ static void probe_again(mdns_t *m, uint8_t i) {
   m->state = MDNS_STATE_PROBING;
   m->step = 0;
   m->timer_ms = probe_delay(m, 0);
+#if !MDNS_TIEBREAK
+  /* REQ-MDNS-081: two hosts that announced a name at the same moment are
+   * both here, and without a tiebreak only time can tell them apart.  The
+   * 0-250 ms above cannot: each would be through probing within the second
+   * its last multicast holds the next one back (REQ-MDNS-063), and they
+   * would announce together again, for ever.  Up to a second more lets one
+   * announce while the other still probes. */
+  m->timer_ms += net_random_below(m->net, MDNS_MULTICAST_INTERVAL_MS + 1);
+#endif
   m->announce_families = ALL_FAMILIES;
 }
 
@@ -1385,6 +1394,8 @@ static void more_known_answers(mdns_t *m, const dest_t *from,
 
 /* ── Simultaneous probe tiebreaking (RFC 6762 §8.2) ── */
 
+#if MDNS_TIEBREAK
+
 /* The records named @p name among the @p n records at @p off of a
  * message, and a place in them */
 typedef struct {
@@ -1428,51 +1439,45 @@ static int rr_order(const rrlist_t *la, const dns_rr_t *a, const rrlist_t *lb,
   return d;
 }
 
+/* The smallest record of @p l that is later than @p prev of @p prev_l
+ * (any, if @p prev_l is NULL), into @p out.  @return 0 if there is none. */
+static int next_above(const rrlist_t *l, const rrlist_t *prev_l,
+                      const dns_rr_t *prev, dns_rr_t *out) {
+  dns_rr_t rr;
+  rrpos_t p;
+  int found = 0;
+  for (rrlist_rewind(l, &p); rrlist_next(l, &p, &rr);) {
+    if ((!prev_l || rr_order(l, &rr, prev_l, prev) > 0) &&
+        (!found || rr_order(l, &rr, l, out) < 0)) {
+      *out = rr;
+      found = 1;
+    }
+  }
+  return found;
+}
+
 /*
  * §8.2.1: both lists sorted, compared pairwise until a difference, a list
- * that runs out first being the earlier.  Done without sorting: value by
- * value from the smallest, counting each list's copies of it, until the
- * counts differ.  @return < 0 if ours (lists[0]) are earlier — we lose —,
- * 0 if the lists are the same, > 0 if ours are later.
+ * that runs out first being the earlier.  Done without sorting: the
+ * smallest record of each list, then the next larger of each, as long as
+ * the two are the same.  A record a list repeats counts once — an RRSet
+ * has no duplicates (RFC 2181 §5).  @return < 0 if ours (lists[0]) are
+ * earlier — we lose —, 0 if the lists are the same, > 0 if ours are later.
  */
 static int compare_sets(const rrlist_t *const lists[2]) {
-  uint16_t total[2] = {0, 0}, done[2] = {0, 0}, same[2];
-  const rrlist_t *prev_l = NULL, *min_l;
-  dns_rr_t prev, min, rr;
-  rrpos_t p;
-  int k;
-  for (k = 0; k < 2; k++) {
-    for (rrlist_rewind(lists[k], &p); rrlist_next(lists[k], &p, &rr);)
-      total[k]++;
-  }
+  const rrlist_t *prev_l = NULL;
+  dns_rr_t prev, ours, theirs;
   for (;;) {
-    min_l = NULL;
-    for (k = 0; k < 2; k++) {
-      for (rrlist_rewind(lists[k], &p); rrlist_next(lists[k], &p, &rr);) {
-        if ((!prev_l || rr_order(lists[k], &rr, prev_l, &prev) > 0) &&
-            (!min_l || rr_order(lists[k], &rr, min_l, &min) < 0)) {
-          min = rr;
-          min_l = lists[k];
-        }
-      }
-    }
-    if (!min_l)
-      return 0;
-    for (k = 0; k < 2; k++) {
-      same[k] = 0;
-      for (rrlist_rewind(lists[k], &p); rrlist_next(lists[k], &p, &rr);)
-        same[k] =
-            (uint16_t)(same[k] + (rr_order(lists[k], &rr, min_l, &min) == 0));
-    }
-    if (same[0] != same[1]) {
-      /* The list with fewer copies wins if a later record follows them */
-      k = same[0] < same[1] ? 0 : 1;
-      return ((done[k] + same[k] < total[k]) == (k == 0)) ? 1 : -1;
-    }
-    done[0] = (uint16_t)(done[0] + same[0]);
-    done[1] = (uint16_t)(done[1] + same[1]);
-    prev = min;
-    prev_l = min_l;
+    int have_ours = next_above(lists[0], prev_l, &prev, &ours);
+    int have_theirs = next_above(lists[1], prev_l, &prev, &theirs);
+    int d;
+    if (!have_ours || !have_theirs)
+      return have_ours - have_theirs;
+    d = rr_order(lists[0], &ours, lists[1], &theirs);
+    if (d != 0)
+      return d;
+    prev = ours;
+    prev_l = lists[0];
   }
 }
 
@@ -1528,6 +1533,8 @@ static int probe_tiebreak(mdns_t *m, const uint8_t *msg, uint16_t len) {
   return 0;
 }
 
+#endif /* MDNS_TIEBREAK */
+
 /* A probe (RFC 6762 §6, §8.2): a query with, in its Authority section, a
  * record of the name of one of the unique records @p asked for */
 static int is_probe(const mdns_t *m, const uint8_t *msg, uint16_t len, int off,
@@ -1549,7 +1556,9 @@ static int is_probe(const mdns_t *m, const uint8_t *msg, uint16_t len, int off,
 }
 
 /* A query: answered unless malformed (REQ-MDNS-041), and not for the names
- * being probed for — whose probes from other hosts are tiebroken */
+ * being probed for — whose probes from other hosts are tiebroken, unless
+ * MDNS_TIEBREAK is 0: then such a probe is a query like any other, and a
+ * contested name is settled by the conflicts of §8.1 and §9 (REQ-MDNS-081) */
 static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
                         uint16_t len) {
   uint16_t qd = net_read16be(msg + DNS_OFF_QDCOUNT), k;
@@ -1557,8 +1566,10 @@ static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
   dns_question_t q;
   wanted_t w;
 
+#if MDNS_TIEBREAK
   if (m->state == MDNS_STATE_PROBING && probe_tiebreak(m, msg, len))
     return;
+#endif
   if (qd == 0) {
     if (m->pending.timer_ms)
       more_known_answers(m, from, msg, len);
@@ -1584,17 +1595,16 @@ static void query_input(mdns_t *m, const dest_t *from, const uint8_t *msg,
            probe);
 }
 
-/* The packet @p msg came in was sent to the mDNS group.  The UDP handlers
- * pass a pointer into the frame in net->rx.buf, whose IP header holds the
- * destination; a message from elsewhere counts as unicast. */
-static int sent_to_group(const mdns_t *m, const dest_t *from,
-                         const uint8_t *msg) {
-  const uint8_t *ip = m->net->rx.buf + ETH_HDR_SIZE;
-  uintptr_t at = (uintptr_t)msg, rx = (uintptr_t)m->net->rx.buf;
-  if (at < rx || at - rx >= m->net->rx.capacity)
-    return 0;
-  return BY_FAMILY(from, net_read32be(ip + IPV4_OFF_DST) == MDNS_GROUP,
-                   memcmp(ip + IPV6_OFF_DST, mdns_group6, 16) == 0);
+/* The datagram being handled was sent to the mDNS group: UDP knows its
+ * destination while the port's handler runs, wherever the driver keeps the
+ * frame (REQ-ETH-026).  A message the application hands in at another time
+ * counts as unicast. */
+static int sent_to_group(const mdns_t *m, const dest_t *from) {
+#if NET_USE_IPV6
+  const uint8_t *dst6 = udp6_rx_dst_ip(m->net);
+#endif
+  return BY_FAMILY(from, udp_rx_dst_ip(m->net) == MDNS_GROUP,
+                   dst6 && memcmp(dst6, mdns_group6, 16) == 0);
 }
 
 /* A source on our IPv4 subnet, or link-local or on an on-link IPv6 prefix */
@@ -1607,11 +1617,10 @@ static int on_link(const mdns_t *m, const dest_t *from) {
 /* REQ-MDNS-061, 062, 080 (RFC 6762 §6, §11): a response counts only from
  * port 5353 and from the local link — sent to the group, or by unicast
  * from an on-link source in answer to the QU questions of our probes */
-static int response_acceptable(const mdns_t *m, const dest_t *from,
-                               const uint8_t *msg) {
+static int response_acceptable(const mdns_t *m, const dest_t *from) {
   if (from->port != MDNS_PORT)
     return 0;
-  if (sent_to_group(m, from, msg))
+  if (sent_to_group(m, from))
     return 1;
   return m->state == MDNS_STATE_PROBING && m->step > 0 && on_link(m, from);
 }
@@ -1628,7 +1637,7 @@ static void input(mdns_t *m, const dest_t *from, const uint8_t *msg,
     return;
   if (!(flags & DNS_FLAG_QR)) {
     query_input(m, from, msg, len);
-  } else if (response_acceptable(m, from, msg)) {
+  } else if (response_acceptable(m, from)) {
     check_conflicts(m, from, msg, len);
   }
 }

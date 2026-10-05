@@ -32,21 +32,21 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`, `arm-none-eabi-gcc` 13.2), UDP echo se
 
 | Metric | smallest_tcp | lwIP (same features) | Ratio |
 |---|---|---|---|
-| **Flash** | **4,102 B** | 10,089 B | **2.5× smaller** |
+| **Flash** | **4,110 B** | 10,089 B | **2.5× smaller** |
 | **RAM** | **720 B** (600 = app buffers) | 2,619 B | **3.6× smaller** |
-| Stack-only code (objects) | **4,874 B** | 10,087 B | **2.1× smaller** |
+| Stack-only code (objects) | **4,882 B** | 10,087 B | **2.1× smaller** |
 | Stack-internal state | **0 B** | ~2,619 B | — |
 
 The stack itself has **no static state**: everything it keeps lives in `net_t` and in structures your application declares and sizes.  The object total includes IPv4 reassembly (about 800 B), which lwIP's build has switched off and which is linked only when the application gives it a buffer.
 
 | Configuration (`make` target) | Flash (.text) | RAM |
 |---|---:|---:|
-| UDP echo (`arm-size`) | 4,102 B | 720 B |
-| UDP + TCP echo (`arm-size-tcp`) | 8,622 B | 1,116 B |
-| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 14,444 B | 832 B |
-| UDP + HTTP server, with TCP (`arm-size-http`) | 14,998 B | 1,760 B |
-| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 9,465 B | 828 B |
-| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 6,453 B | 756 B |
+| UDP echo (`arm-size`) | 4,110 B | 720 B |
+| UDP + TCP echo (`arm-size-tcp`) | 8,932 B | 1,116 B |
+| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 14,156 B | 832 B |
+| UDP + HTTP server, with TCP (`arm-size-http`) | 15,310 B | 1,760 B |
+| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 9,497 B | 832 B |
+| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 6,465 B | 760 B |
 | TLS 1.3 protocol, server only (`arm-size-tls`) | 7,476 B | 448 B per connection + record buffers |
 | TLS 1.3 protocol, client and server (`arm-size-tls`) | 11,088 B | 448 B per connection + record buffers |
 | DTLS 1.3 protocol, server only (`arm-size-dtls`) | 11,271 B | 904 B per connection + buffers |
@@ -134,7 +134,7 @@ instead, and [tcpip-stack-plan.md](tcpip-stack-plan.md) has the whole list.
 |---|---|---|---|---|---|
 | PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ UDP: 4.1 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (8.6 KB), mDNS (14.4 KB), HTTP (15.0 KB), dual-stack UDP (9.5 KB) or IPv6-only UDP (6.5 KB) | ⚠️ Tight with app |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (8.9 KB), mDNS (14.2 KB), HTTP (15.3 KB), dual-stack UDP (9.5 KB) or IPv6-only UDP (6.5 KB) | ⚠️ Tight with app |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 

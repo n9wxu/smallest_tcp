@@ -127,6 +127,13 @@ if(SMALLEST_TCP_IPV4 AND SMALLEST_TCP_UDP)
     add_integration_test(itest_link smallest_tcp_core)
     add_integration_test(itest_udp smallest_tcp_core)
     add_integration_test(itest_mdns smallest_tcp_mdns)
+    # The responder without simultaneous-probe tiebreaking (MDNS_TIEBREAK
+    # 0, REQ-MDNS-081): its sources compiled into the test with that setting
+    add_integration_test(itest_mdns_no_tiebreak smallest_tcp_core)
+    target_sources(itest_mdns_no_tiebreak PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/mdns.c ${PROJECT_SOURCE_DIR}/src/dns_wire.c
+        ${PROJECT_SOURCE_DIR}/src/igmp.c)
+    target_compile_definitions(itest_mdns_no_tiebreak PRIVATE MDNS_TIEBREAK=0)
     add_integration_test(itest_igmp smallest_tcp_mdns)
     add_integration_test(itest_dhcpv4
         smallest_tcp_dhcpv4_client smallest_tcp_dhcpv4_server)
@@ -226,3 +233,42 @@ add_config_rejected_test(byte_order_set_twice src/net_cksum.c
 add_config_accepted_test(icmpv6_without_transports src/icmpv6.c
     -Wall -Wextra -Werror -pedantic
     -DNET_USE_IPV6=1 -DNET_USE_UDP=0 -DNET_USE_TCP=0)
+
+# ── The API under a prefix (NET_API_PREFIX, include/net_rename.h) ─────
+#
+# A project with a net_init() of its own — or another stack's tcp_write()
+# — builds this one under a prefix.  The core compiled with
+# NET_API_PREFIX=stcp_ links into a program that defines net_init(),
+# net_poll(), tcp_write() and udp_send() itself, and each call reaches its
+# own; and net_rename.h lists every external symbol the libraries of this
+# configuration define, or names the ones it lacks.
+
+get_target_property(_core_sources smallest_tcp_core SOURCES)
+get_target_property(_core_definitions smallest_tcp_core
+    INTERFACE_COMPILE_DEFINITIONS)
+list(TRANSFORM _core_sources PREPEND ${PROJECT_SOURCE_DIR}/)
+add_executable(api_prefix_app config/api_prefix_app.c config/api_prefix_own.c
+    config/api_prefix_calls.c ${PROJECT_SOURCE_DIR}/src/driver/stub.c
+    ${_core_sources})
+target_include_directories(api_prefix_app PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_definitions(api_prefix_app PRIVATE ${_core_definitions})
+if(NOT SMALLEST_TCP_API_PREFIX)
+    target_compile_definitions(api_prefix_app PRIVATE NET_API_PREFIX=stcp_)
+endif()
+target_compile_options(api_prefix_app PRIVATE -Wall -Wextra -Werror -pedantic)
+target_compile_features(api_prefix_app PRIVATE c_std_99)
+add_test(NAME api_prefix_links_beside_own_names COMMAND api_prefix_app)
+
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    get_property(_libraries GLOBAL PROPERTY SMALLEST_TCP_LIBRARIES)
+    set(_library_files "")
+    foreach(_library ${_libraries})
+        list(APPEND _library_files $<TARGET_FILE:${_library}>)
+    endforeach()
+    add_test(NAME api_prefix_covers_every_symbol
+        COMMAND ${CMAKE_COMMAND} -E env
+            NET_API_PREFIX=${SMALLEST_TCP_API_PREFIX}
+            ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/api_rename.py
+            --nm ${CMAKE_NM} --check ${_library_files})
+endif()

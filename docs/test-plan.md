@@ -225,6 +225,7 @@ TCP client on the wire (connect, send, acknowledge and collect, close).
 | `itest_dhcpv4` | Every observable DHCPv4 row, client and server: the state machine and its timers, options (in `file`/`sname`, split, the handler table), T1/T2, the address probe and DECLINE, the server's one client, reply routing and option order |
 | `itest_tftp` | Every implemented TFTP row: the request, blocks and ACKs, transfer IDs, blksize negotiation, errors, the adaptive retransmission timeout, netascii |
 | `itest_mdns` | The responder's rows on the wire: probing, conflicts and tiebreaking, announcing, answers and additionals, NSEC, rate limiting, known answers, unicast and legacy unicast, names and TXT strings, goodbyes, withdrawing records, malformed names; DNS-SD browsing and resolving as resolvers ask |
+| `itest_mdns_no_tiebreak` | The responder built with `MDNS_TIEBREAK` 0, two whole stacks claiming one name on a shared link: another host's probe not deferred to, the first to announce keeping the name, a dead heat settled by probing again |
 | `itest_mdns6` | mDNS over IPv6 (dual stack): ff02::fb, AAAA records and NSEC, answers on the query's family, addresses appearing and going |
 | `itest_ipv6` | IPv6 and ICMPv6: the header checked and built, destinations and sources accepted and refused, extension headers walked (a Routing header with segments left refused, fragments dropped), source address selection, nothing sent to `::`, upper-layer checksums; echo, Port Unreachable and Parameter Problem, what no error is sent about, the rate limit of the errors sent, errors received reaching UDP's error handler and the TCP connection (Packet Too Big lowering its segment size) |
 | `itest_ndp` | Neighbor Discovery and SLAAC: messages validated (hop limit 255, code, checksum, options), solicitations answered and sent, Duplicate Address Detection both ways, Router Solicitations, the default router and its lifetime, the hop limit and the M and O flags of Router Advertisements, Redirects ignored, no neighbour cache; global addresses formed from prefixes, their lifetimes and the two-hour rule, the next hop |
@@ -259,6 +260,7 @@ or must be accepted:
 | CTest name | Checks |
 |---|---|
 | `mdns_needs_ipv4_group_slot`, `mdns_needs_ipv6_group_slot` | `mdns.c` refuses to compile without a multicast group slot for a family it runs over |
+| `api_prefix_links_beside_own_names`, `api_prefix_covers_every_symbol` | The core built with `NET_API_PREFIX=stcp_` links into a program with a `net_init()`, `net_poll()`, `tcp_write()` and `udp_send()` of its own, each call reaching its own; `net_rename.h` lists every external name the libraries of the configuration define (and in a build with a prefix, every one carries it) |
 | `tftp_needs_ipv4`, `dhcpv4_client_needs_ipv4` | The protocols that run only over IPv4 refuse an IPv6-only configuration |
 | `network_layer_needed` | A configuration with neither IPv4 nor IPv6 is refused |
 | `byte_order_set_by_hand` | `NET_LITTLE_ENDIAN` is accepted where the compiler does not predefine `__BYTE_ORDER__` |

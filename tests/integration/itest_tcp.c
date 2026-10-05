@@ -1139,6 +1139,219 @@ TEST(itest_tcp_007_simultaneous_close) {
   ASSERT_EQ(tcp_status(&conn), TCP_TIME_WAIT);
 }
 
+/* REQ-TCP-183: both close at once and the ACK of our FIN comes only on
+ * the peer's retransmitted FIN — a segment wholly before the window.  It
+ * is answered with an ACK and its data dropped, as any such segment, but
+ * what it acknowledges is taken: TIME-WAIT at once, not when our own FIN
+ * has been retransmitted.  An acknowledgment of what we never sent is not
+ * taken */
+TEST(itest_tcp_183_ack_of_a_segment_before_the_window_taken) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = in_state(TCP_FIN_WAIT_1);
+  segment(RPORT, 1001, iss + 1, TCPF_FIN | TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_CLOSING);
+  wire_clear(&t);
+  segment(RPORT, 1001, iss + 3, TCPF_FIN | TCPF_ACK); /* beyond SND.NXT */
+  ASSERT_EQ(tcp_status(&conn), TCP_CLOSING);
+  wire_clear(&t);
+  segment(RPORT, 1001, iss + 2, TCPF_FIN | TCPF_ACK); /* its FIN again */
+  ASSERT_EQ(tcp_status(&conn), TCP_TIME_WAIT);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_ACK);
+  ASSERT_EQ(tcp.ack, 1002u);
+  ASSERT_EQ(tcp.seq, iss + 2);
+}
+
+/* REQ-TCP-184: a segment the driver was too busy to take has not been
+ * sent: it goes at the next tick, and again while the driver stays busy —
+ * not a retransmission timeout later.  The timeout runs from when the
+ * segment left, and is not doubled for it. */
+TEST(itest_tcp_184_busy_driver_retried_at_the_next_tick) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = established();
+  t.wire.tx_refuse = 3;
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"abc", 3), 3);
+  itest_advance(&t, 2, 1);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 3);
+  ASSERT_MEM_EQ(tcp.data, "abc", 3);
+  /* the first timeout a whole RTO after it left, the second twice that */
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS - 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  itest_advance(&t, 20, 10);
+  ASSERT_EQ(t.wire.tx_count, 2);
+  itest_advance(&t, 2 * NET_DEFAULT_TCP_RTO_INIT_MS - 30, 10);
+  ASSERT_EQ(t.wire.tx_count, 2);
+  itest_advance(&t, 40, 10);
+  ASSERT_EQ(t.wire.tx_count, 3);
+
+  /* a retransmission the driver does not take, too */
+  up();
+  iss = established();
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"abc", 3), 3);
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS - 10, 10);
+  wire_clear(&t);
+  t.wire.tx_refuse = 1;
+  itest_advance(&t, 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+
+  /* our SYN */
+  up();
+  t.wire.tx_refuse = 1;
+  ASSERT_EQ(tcp_connect(&t.net, &conn, PEER_IP, peer_mac, RPORT, LPORT),
+            NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_SYN);
+
+  /* our SYN,ACK */
+  up();
+  tcp_listen(&conn, LPORT);
+  t.wire.tx_refuse = 1;
+  segment(RPORT, 1000, 0, TCPF_SYN);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_SYN | TCPF_ACK);
+
+  /* our FIN */
+  up();
+  iss = established();
+  t.wire.tx_refuse = 1;
+  tcp_close(&t.net, &conn);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_FIN | TCPF_ACK);
+  ASSERT_EQ(tcp.seq, iss + 1);
+}
+
+/* A TX buffer that is a ring: its data may lie across the end of its
+ * memory, so it gives segments by copy_segment() and has no next_segment() */
+typedef struct {
+  uint8_t mem[64];
+  uint16_t head, len, sent; /* the oldest byte, bytes queued, in flight */
+} ring_t;
+
+static ring_t ring;
+
+static uint16_t ring_write(void *ctx, const uint8_t *data, uint16_t len) {
+  ring_t *r = (ring_t *)ctx;
+  uint16_t i;
+  if (len > sizeof(r->mem) - r->len)
+    len = (uint16_t)(sizeof(r->mem) - r->len);
+  for (i = 0; i < len; i++)
+    r->mem[(r->head + r->len + i) % sizeof(r->mem)] = data[i];
+  r->len = (uint16_t)(r->len + len);
+  return len;
+}
+
+static uint16_t ring_copy_segment(void *ctx, uint8_t *dst, uint16_t mss) {
+  ring_t *r = (ring_t *)ctx;
+  uint16_t i, n = r->len < mss ? r->len : mss;
+  if (r->sent)
+    return 0;
+  for (i = 0; i < n; i++)
+    dst[i] = r->mem[(r->head + i) % sizeof(r->mem)];
+  r->sent = n;
+  return n;
+}
+
+static void ring_ack(void *ctx, uint32_t acked) {
+  ring_t *r = (ring_t *)ctx;
+  uint16_t n = acked < r->sent ? (uint16_t)acked : r->sent;
+  r->head = (uint16_t)((r->head + n) % sizeof(r->mem));
+  r->len = (uint16_t)(r->len - n);
+  r->sent = (uint16_t)(r->sent - n);
+}
+
+static uint16_t ring_in_flight(const void *ctx) {
+  return ((const ring_t *)ctx)->sent;
+}
+
+static uint16_t ring_queued(const void *ctx) {
+  return ((const ring_t *)ctx)->len;
+}
+
+static uint16_t ring_writable(const void *ctx) {
+  return (uint16_t)(sizeof(ring.mem) - ((const ring_t *)ctx)->len);
+}
+
+static void ring_mark_retransmit(void *ctx) { ((ring_t *)ctx)->sent = 0; }
+
+static const tcp_txbuf_ops_t ring_ops = {
+    .write = ring_write,
+    .copy_segment = ring_copy_segment,
+    .ack = ring_ack,
+    .in_flight = ring_in_flight,
+    .queued = ring_queued,
+    .writable = ring_writable,
+    .mark_retransmit = ring_mark_retransmit,
+};
+
+/* REQ-TCP-185: a TX buffer whose data is not one contiguous run — a ring,
+ * at its wrap — gives a whole segment through copy_segment(): 40 bytes
+ * that lie across the end of the ring's memory go in one segment, not a
+ * short one up to the wrap and another after it; a retransmission and a
+ * zero-window probe take their bytes the same way */
+TEST(itest_tcp_185_segment_across_a_ring_buffers_wrap) {
+  static const char text[] = "0123456789abcdefghijklmnopqrstuvwxyzABCD";
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  itest_up(&t, 1514, 1514);
+  memset(&ring, 0, sizeof(ring));
+  ring.head = 50; /* 14 bytes before the end of its memory */
+  tcp_saw_rx_init(&rx_ctx, rx_mem, sizeof(rx_mem));
+  ASSERT_EQ(tcp_conn_init(&conn, &ring_ops, &ring, &tcp_saw_rx_ops, &rx_ctx,
+                          on_event),
+            NET_OK);
+  tcp_set_connections(&t.net, table, 1);
+  no_events();
+  iss = established();
+
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)text, 40), 40);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 40);
+  ASSERT_MEM_EQ(tcp.data, text, 40);
+  ASSERT_TRUE(tcp.flags & TCPF_PSH);
+
+  wire_clear(&t);
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS, 10); /* retransmitted */
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 40);
+  ASSERT_MEM_EQ(tcp.data, text, 40);
+
+  /* acknowledged with the window shut: the next byte goes as a probe */
+  segment_opts(1001, iss + 41, TCPF_ACK, 0, 0, NULL, 0, NULL, 0);
+  ASSERT_TRUE(tcp_tx_idle(&conn));
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"Z", 1), 1);
+  wire_clear(&t);
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS, 10);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 41);
+  ASSERT_EQ(tcp.data_len, 1);
+  ASSERT_EQ(tcp.data[0], 'Z');
+}
+
 /* REQ-TCP-011, 012, 013, 017: tcp_conn_init() refuses a connection
  * without buffers and leaves a good one CLOSED; the opens refuse port 0;
  * tcp_status() of no connection is CLOSED */
@@ -2417,8 +2630,8 @@ static uint16_t own_available(const void *ctx) {
 }
 
 static const tcp_txbuf_ops_t own_tx_ops = {
-    own_write,  own_next,     own_ack, own_in_flight,
-    own_queued, own_writable, own_mark};
+    own_write,  own_next,     own_ack,  own_in_flight,
+    own_queued, own_writable, own_mark, NULL};
 static const tcp_rxbuf_ops_t own_rx_ops = {own_deliver, own_read, own_readable,
                                            own_available};
 
@@ -2785,6 +2998,9 @@ int main(void) {
   RUN_TEST(itest_tcp_005_active_close);
   RUN_TEST(itest_tcp_006_passive_close);
   RUN_TEST(itest_tcp_007_simultaneous_close);
+  RUN_TEST(itest_tcp_183_ack_of_a_segment_before_the_window_taken);
+  RUN_TEST(itest_tcp_184_busy_driver_retried_at_the_next_tick);
+  RUN_TEST(itest_tcp_185_segment_across_a_ring_buffers_wrap);
   RUN_TEST(itest_tcp_011_conn_init_validates);
   RUN_TEST(itest_tcp_013_connect_on_a_live_connection);
   RUN_TEST(itest_tcp_014_send_and_receive);

@@ -40,6 +40,10 @@ static int w_init(void *ctx) {
 
 static int w_send(void *ctx, const uint8_t *frame, uint16_t len) {
   wire_t *w = (wire_t *)ctx;
+  if (w->tx_refuse) {
+    w->tx_refuse--;
+    return 0;
+  }
   if (w->tx_count < WIRE_TX_SLOTS && len <= WIRE_FRAME_MAX) {
     memcpy(w->tx[w->tx_count].data, frame, len);
     w->tx[w->tx_count].len = len;

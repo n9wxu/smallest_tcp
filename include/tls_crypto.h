@@ -16,6 +16,7 @@
 #ifndef TLS_CRYPTO_H
 #define TLS_CRYPTO_H
 
+#include "net_config.h"
 #include <stddef.h>
 #include <stdint.h>
 

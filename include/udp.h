@@ -68,7 +68,7 @@ net_err_t udp_send_inplace_opts(net_t *net, uint32_t dst_ip,
                                 const udp_tx_opts_t *opts);
 
 /** In a handler: the destination address of the datagram being handled —
- *  ours, a broadcast or a group (RFC 1122 §4.1.3.5). */
+ *  ours, a broadcast or a group (RFC 1122 §4.1.3.5).  Outside one: 0. */
 uint32_t udp_rx_dst_ip(const net_t *net);
 
 /** An ICMP error about a datagram we sent (RFC 1122 §4.1.3.3) */
@@ -143,6 +143,11 @@ static inline void udp6_set_ports(net_t *net, const udp6_port_entry_t *ports,
 
 /** As udp_input(); a zero checksum is invalid over IPv6 (RFC 8200 §8.1). */
 void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth);
+
+/** In a handler: the destination address of the datagram being handled —
+ *  16 bytes in the received frame, one of ours or a group.  Outside one:
+ *  NULL. */
+const uint8_t *udp6_rx_dst_ip(const net_t *net);
 
 /** An ICMPv6 error about a datagram we sent (RFC 4443 §2.4(d)) */
 typedef struct {

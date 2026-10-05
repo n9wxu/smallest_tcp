@@ -36,6 +36,8 @@ option(SMALLEST_TCP_DEBUG         "NET_LOG debug output to stderr (hosted builds
 option(SMALLEST_TCP_COVERAGE      "Instrument the stack and tests for gcov line and branch coverage" OFF)
 set(SMALLEST_TCP_CONFIG_FILE "" CACHE FILEPATH
     "Application configuration header, included first by net_config.h")
+set(SMALLEST_TCP_API_PREFIX "" CACHE STRING
+    "Prefix for every external name of the stack (NET_API_PREFIX), e.g. stcp_")
 set(SMALLEST_TCP_BOARD "" CACHE STRING
     "Board port whose firmware to build (boards/<name>), cross-compiling")
 
@@ -67,6 +69,11 @@ function(smallest_tcp_library name)
     if(PROJECT_IS_TOP_LEVEL)
         target_compile_options(smallest_tcp_${name} PRIVATE ${SMALLEST_TCP_WARNINGS})
     endif()
+    if(SMALLEST_TCP_API_PREFIX)
+        target_compile_definitions(smallest_tcp_${name} PUBLIC
+            NET_API_PREFIX=${SMALLEST_TCP_API_PREFIX})
+    endif()
+    set_property(GLOBAL APPEND PROPERTY SMALLEST_TCP_LIBRARIES smallest_tcp_${name})
     add_library(smallest_tcp::${name} ALIAS smallest_tcp_${name})
 endfunction()
 

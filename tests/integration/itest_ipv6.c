@@ -44,14 +44,19 @@ static uint8_t got[2048];
 static uint16_t got_len;
 static const uint8_t *got_ptr;
 
+static uint8_t got_dst[16];
+static int got_dst_known;
+
 static void on_datagram6(net_t *net, const uint8_t *src_ip, uint16_t src_port,
                          const uint8_t *src_mac, const uint8_t *data,
                          uint16_t len) {
-  (void)net;
   (void)src_ip;
   (void)src_port;
   (void)src_mac;
   delivered++;
+  got_dst_known = udp6_rx_dst_ip(net) != NULL;
+  if (got_dst_known)
+    memcpy(got_dst, udp6_rx_dst_ip(net), 16);
   got_ptr = data;
   got_len = len < sizeof(got) ? len : (uint16_t)sizeof(got);
   memcpy(got, data, got_len);
@@ -278,6 +283,20 @@ TEST(itest_ipv6_047_built_in_place) {
   ASSERT_TRUE(udp.cksum_ok);
   ASSERT_EQ(udp.sport, 1234);
   ASSERT_EQ(udp.dport, PEER_PORT);
+}
+
+/* REQ-UDP-040: over IPv6 too a handler learns the datagram's destination
+ * address — one of ours here, the link-local then the global — and there
+ * is none once the handler has returned */
+TEST(itest_udp_040_ipv6_destination_address_passed_up) {
+  up_global();
+  datagram(peer6_ll, ll, OPEN_PORT, "x", 1);
+  ASSERT_TRUE(got_dst_known);
+  ASSERT_MEM_EQ(got_dst, ll, 16);
+  datagram(offlink6, global, OPEN_PORT, "x", 1);
+  ASSERT_MEM_EQ(got_dst, global, 16);
+  ASSERT_EQ(delivered, 2);
+  ASSERT_TRUE(udp6_rx_dst_ip(&t.net) == NULL);
 }
 
 /* REQ-IPv6-046: a handler's payload points into the received frame */
@@ -1338,6 +1357,7 @@ int main(void) {
   RUN_TEST(itest_ipv6_003_payload_length_bounds_the_payload);
   RUN_TEST(itest_ipv6_024_header_built);
   RUN_TEST(itest_ipv6_047_built_in_place);
+  RUN_TEST(itest_udp_040_ipv6_destination_address_passed_up);
   RUN_TEST(itest_ipv6_046_parsed_in_place);
   RUN_TEST(itest_ipv6_044_upper_layer_checksums);
   RUN_TEST(itest_ipv6_045_computed_zero_checksum_sent_as_ffff);

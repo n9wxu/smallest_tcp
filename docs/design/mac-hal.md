@@ -99,7 +99,12 @@ Consequences and invariants:
 with frames in memory.  A platform whose MAC delivers frames into RAM by DMA
 could do the same and skip the copy, provided the frame stays valid and
 unmodified until `eth_input()` returns and the platform releases the DMA
-buffer itself afterwards.  None of the bundled drivers work that way.
+buffer itself afterwards (REQ-ETH-026: nothing is read from `net->rx.buf`
+on the stack's own account; `net->rx.capacity` still bounds what TCP and
+IPv4 say the host can receive).  None of the bundled drivers work that way;
+the first driver that did — for TinyUSB's network device, outside this tree
+— found that mDNS did not, which is fixed
+([issue 1](https://github.com/n9wxu/smallest_tcp/issues/1)).
 
 ## 4. Driver models
 
@@ -275,6 +280,21 @@ RMII pins, the ST-LINK console, and the `tcp_echo_demo` firmware
 
 Drivers the tree does not have: the ENC28J60 (SPI, pure-peek) and USB
 CDC-ECM (the use case `dhcpv4_server` was written for).
+
+**On hardware.**  The stack's first run on a board was 0.1.10 on an RP2040
+as a USB CDC-ECM/RNDIS network gadget (TinyUSB, FreeRTOS, a macOS host),
+with a driver of about 325 lines outside this tree: ARP, ping, the DHCPv4
+server, mDNS with a DNS-SD service and an HTTP server over 16 connections
+worked, at 457-592 kB/s against lwIP's 516-668 kB/s on the same board
+([issue 6](https://github.com/n9wxu/smallest_tcp/issues/6), with the
+figures and what was not tested).  What that run found is fixed: a frame
+in the driver's own memory (REQ-ETH-026), a busy driver costing TCP a
+retransmission timeout (REQ-TCP-184), a ring buffer's short segments
+(REQ-TCP-185), a simultaneous close waiting for a timer (REQ-TCP-183),
+and names that collide with an application's (`NET_API_PREFIX`,
+[configuration.md §7](configuration.md#7-the-api-under-a-prefix)).  For a
+gadget's point-to-point link, `MDNS_TIEBREAK` 0 saves 0.9 KB
+([mdns.md §5](mdns.md)).
 
 ## 8. Future work
 

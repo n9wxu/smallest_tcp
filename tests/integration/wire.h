@@ -36,6 +36,7 @@ typedef struct {
   uint8_t rx_count;
   wire_frame_t tx[WIRE_TX_SLOTS]; /* what the stack sent, in order */
   uint16_t tx_count;              /* frames sent; beyond the slots: lost */
+  uint8_t tx_refuse; /* the next frames find the driver busy: not sent */
 } wire_t;
 
 /** The driver the stack is initialised with; its context is a wire_t. */

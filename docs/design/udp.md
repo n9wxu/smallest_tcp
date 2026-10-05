@@ -86,7 +86,9 @@ udp_set_ports(&net, ports, 1);
   released (see [mac-hal.md §3](mac-hal.md#3-the-receive-lifecycle-net_poll)):
   keep it short.
 - `udp_rx_dst_ip(net)`, called in the handler, gives the datagram's
-  destination address: ours, a broadcast or a group (RFC 1122 §4.1.3.5).
+  destination address: ours, a broadcast or a group (RFC 1122 §4.1.3.5);
+  `udp6_rx_dst_ip(net)` gives an IPv6 handler the 16 bytes of it, in the
+  frame.  Outside a handler there is no datagram: 0, and NULL.
 - The handler **may send**.  `net->tx.buf` is separate from `net->rx.buf`, so
   `udp_send()` with `payload` as its data (the echo above) is safe, as is
   building a reply in place.  The application protocol modules answer from
@@ -361,7 +363,7 @@ Problem).  See [configuration.md §5](configuration.md#5-compile-time-protocol-s
 | Receive queues | A datagram is delivered during `net_poll()` or not at all. |
 | Sending without a checksum (REQ-UDP-010) | Every datagram sent is checksummed. |
 | IP options (REQ-UDP-042) | Received options are skipped, not passed to the handler; none can be sent. |
-| Over IPv6: the destination address of a received datagram, a source address chosen by the application | `udp_rx_dst_ip()` and `udp_send_inplace_from()` are IPv4 only; `ipv6_src_for()` picks the IPv6 source. |
+| Over IPv6: a source address chosen by the application | `udp_send_inplace_from()` is IPv4 only; `ipv6_src_for()` picks the IPv6 source. |
 | UDP-Lite, zero-checksum IPv6 tunnels (RFC 6935) | — |
 
 ---

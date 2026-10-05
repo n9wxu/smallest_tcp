@@ -81,7 +81,9 @@ them, and an unused one is simply not linked.  Each is its own CMake library
 mDNS and ships in the `mdns` library.  `stm32f4_eth.c` drives the STM32F4's
 Ethernet MAC for the NUCLEO-F429ZI board port (`boards/`; built in CI, not
 yet run on hardware).  An ENC28J60 (SPI) or USB CDC-ECM driver would sit
-beside the bundled ones; none is in the tree yet.
+beside the bundled ones; none is in the tree yet — the stack has run over
+USB CDC-ECM on an RP2040 with a driver kept in that project
+([mac-hal.md §7](design/mac-hal.md)).
 
 ## 4. The network context: `net_t`
 

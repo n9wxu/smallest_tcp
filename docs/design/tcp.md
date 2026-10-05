@@ -204,7 +204,7 @@ goes out after the next `TCP_EVT_WRITABLE`.
 |---|---|---|
 | `tcp_conn_init()` | Zero the connection, attach buffers and callback; CLOSED | any |
 | `tcp_listen()` | LISTEN on a port | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
-| `tcp_connect()`, `tcp6_connect()`, `tcp6_connect_from()` | Send the SYN now; SYN-SENT.  `tcp6_connect_from()` names the local address — one of the host's (REQ-TCP-170).  A SYN the driver does not take is resent by its timer, like any lost segment (section 4.1).  `NET_ERR_INVALID_PARAM`, and the connection untouched, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
+| `tcp_connect()`, `tcp6_connect()`, `tcp6_connect_from()` | Send the SYN now; SYN-SENT.  `tcp6_connect_from()` names the local address — one of the host's (REQ-TCP-170).  A SYN the driver was too busy for goes at the next tick (section 4.1).  `NET_ERR_INVALID_PARAM`, and the connection untouched, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
 | `tcp_set_tos()`, `tcp_set_max_retransmits()` | The TOS of the connection's IPv4 segments (REQ-TCP-174); R2, its retransmission limit (REQ-TCP-165, section 5.1) | any, after `tcp_conn_init()` |
 | `tcp_last_error()` | The last ICMP error (type << 8 \| code) or `TCP_SOFT_RETRANSMITTING`; 0 for none (section 3.8) | any |
 | `tcp_write()` | Queue data; returns bytes accepted — 0 while the stop-and-wait buffer has a segment in flight | ESTABLISHED, CLOSE-WAIT (else < 0) |
@@ -336,9 +336,21 @@ may end the processing of the segment.
 An unacceptable segment is answered with an ACK (`<SEQ=SND.NXT><ACK=RCV.NXT>`)
 unless it is a RST, and dropped.  This is also how retransmissions of things
 already received are acknowledged — the peer's FIN again in CLOSE-WAIT,
-LAST-ACK or TIME-WAIT lies before RCV.NXT.  With RCV.WND zero, the ACK field of
-an unacceptable segment is not processed (§3.10.7.4 allows for it; this code
-does not).
+LAST-ACK or TIME-WAIT lies before RCV.NXT.
+
+One thing is taken from a segment that lies wholly before the window: its
+acknowledgment, if it acknowledges something sent and not yet acknowledged
+(REQ-TCP-183, `acks_new_data_of_old_segment()`).  §3.10.7.4 lets a segment be
+tailored to the window, and BSD trims a duplicate to nothing and goes on to
+its ACK field; here `ack_input()` runs for it, then the ACK is sent and the
+segment dropped.  It matters when both sides close at once and the peer's
+ACK of our FIN is lost or never sent alone: its retransmitted FIN carries
+that acknowledgment, and without this the connection would sit in CLOSING
+until our own FIN's retransmission timer — a second in which its record
+serves nobody.  Not in SYN-RECEIVED or TIME-WAIT, not with SYN or RST, and
+never for an acknowledgment beyond SND.NXT.  Otherwise the ACK field of an
+unacceptable segment is not processed — with RCV.WND zero, a segment beyond
+RCV.NXT (§3.10.7.4 allows for it; this code does not).
 
 **Step 2 — `rst_input()`** (REQ-TCP-046..049).  A RST anywhere in the window is
 accepted; the exact-match test and challenge ACK of RFC 5961 §3 are not
@@ -491,11 +503,15 @@ leaving room for the IP header; the caller writes the TCP header and payload;
 `frame_send()` computes the checksum over the pseudo-header, writes the IPv4
 or IPv6 header and calls `net_transmit()`.  The payload is copied once, from
 the TX buffer into the frame.  The checksum is always computed in software.
-TCP ignores what `net_transmit()` returns: a segment the driver did not take
-is treated as lost on the wire.  A SYN or SYN,ACK, data, a FIN or a probe is
-sent again by its timer (section 4.3), and an ACK or RST is answered again
-when the peer retransmits.  That includes the first SYN of an active open:
-`tcp_connect()` does not fail for a busy driver.  Every segment fits
+A segment the driver could not take is one of two things.  If the driver was
+busy (`NET_ERR_BUSY`) and the segment takes sequence space — a SYN or
+SYN,ACK, data, a FIN — it has simply not been sent yet, and goes at the next
+tick (section 4.3, REQ-TCP-184).  Anything else — an ACK or a RST the driver
+was too busy for, any segment the driver failed to send (`NET_ERR_NO_FRAME`)
+— is treated as lost on the wire: the retransmission timer sends data again,
+and an ACK or RST is answered again when the peer retransmits.  That
+includes the first SYN of an active open: `tcp_connect()` does not fail for
+a busy driver.  Every segment fits
 `net->tx`, since `net_init()` insists on `TCP_MIN_FRAME` (section 4.4).
 
 ### 4.2 Segments
@@ -548,15 +564,26 @@ connection's, `flush()` aborts it with `TCP_EVT_ERROR` instead
 (REQ-TCP-171).  A retransmission timeout does not go through `flush()`: it
 resends the bytes in flight itself (section 5.1).
 
-**A frame the driver did not take is a lost segment.**  `net_transmit()`
-reports a busy driver (`NET_ERR_BUSY`) or a failed one (`NET_ERR_NO_FRAME`),
-and `send_data()` ignores both: the bytes are in flight and SND.NXT is past
-them, exactly as if the frame had been lost on the wire, and the
-retransmission timer — which runs whenever SND.UNA < SND.NXT — sends them
-again.  Recovery needs no path of its own, and nothing can be left in flight
-without a timer.  The price is that a driver busy for longer than the
-retransmission back-off (section 5.1) costs the connection, as a dead link
-would.
+**A frame the driver was too busy for is sent at the next tick**
+(REQ-TCP-184).  `net_transmit()` reports a busy driver (`NET_ERR_BUSY`) or a
+failed one (`NET_ERR_NO_FRAME`).  Either way the bytes are in flight and
+SND.NXT is past them, and the retransmission timer — which runs whenever
+SND.UNA < SND.NXT — would send them again: nothing can be left in flight
+without a timer.  But a busy driver is no lost segment.  On a USB network
+device the endpoint is busy for a millisecond per frame, so two connections
+or an mDNS answer wanting the link together is the ordinary case, and a
+retransmission timeout for each — a second, doubling, never coming back
+down — made eight downloads at once take half as long again
+([issue 2](https://github.com/n9wxu/smallest_tcp/issues/2)).  So
+`send_segment()` notes it (`tcp_conn_t.unsent`) for a SYN, data or a FIN,
+and `conn_tick()` sends the earliest unacknowledged segment again
+(`send_unsent()`, by `resend_unacked()` as a timeout would) at every tick
+until the driver takes it: no retransmission is counted, the timeout is not
+doubled, and it restarts when the segment leaves.  While the driver stays
+busy the timer runs on, so a driver busy for longer than the retransmission
+back-off (section 5.1) still costs the connection, as a dead link would.  A
+frame the driver failed to send is still a lost segment, and so is an ACK
+or a RST it was too busy for.
 
 The limit ignores bytes already in flight — the usable window is really
 SND.UNA + SND.WND − SND.NXT — and data is sent at SND.NXT.  Both are right only
@@ -734,7 +761,9 @@ is unacknowledged:
 
 A zero-window probe does not start it (section 5.2).  Because it follows
 SND.NXT and not the driver's return value, a frame the driver did not take is
-resent like one lost on the wire (section 4.3).
+resent like one lost on the wire (section 4.3) — and one the driver was only
+too busy for goes at the next tick, the timer restarted when it leaves, so
+that the timeout is measured from a transmission (REQ-TCP-179).
 
 On expiry `retransmission_timeout()`:
 

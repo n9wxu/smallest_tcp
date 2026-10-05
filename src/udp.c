@@ -66,9 +66,11 @@ void udp_input(net_t *net, const ipv4_hdr_t *ip, const eth_frame_t *eth) {
       net->udp_ports[i].handler(
           net, ip->src_ip, net_read16be(udp + UDP_OFF_SPORT), eth->src_mac,
           udp + UDP_HDR_SIZE, (uint16_t)(udp_len - UDP_HDR_SIZE));
+      net->udp_rx_dst = 0;
       return;
     }
   }
+  net->udp_rx_dst = 0;
   icmp_send_dest_unreach(net, ICMP_CODE_PORT_UNREACH, ip, eth);
 }
 
@@ -182,15 +184,19 @@ void udp6_input(net_t *net, const ipv6_hdr_t *ip, const eth_frame_t *eth) {
   dst_port = net_read16be(udp + UDP_OFF_DPORT);
   for (i = 0; i < net->udp6_port_count; i++) {
     if (net->udp6_ports[i].port == dst_port) {
+      net->udp6_rx_dst = ip->dst; /* REQ-UDP-040 */
       net->udp6_ports[i].handler(
           net, ip->src, net_read16be(udp + UDP_OFF_SPORT), eth->src_mac,
           udp + UDP_HDR_SIZE, (uint16_t)(udp_len - UDP_HDR_SIZE));
+      net->udp6_rx_dst = NULL;
       return;
     }
   }
   icmpv6_send_error(net, ICMPV6_DEST_UNREACH, ICMPV6_CODE_PORT_UNREACH, 0, ip,
                     eth);
 }
+
+const uint8_t *udp6_rx_dst_ip(const net_t *net) { return net->udp6_rx_dst; }
 
 void udp6_set_error_handler(net_t *net, udp6_error_handler_t handler) {
   net->udp6_error_handler = (void (*)(void))handler;
