@@ -10,6 +10,8 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-05
+
 What the first run on hardware found — 0.1.10 on an RP2040 as a USB
 CDC-ECM network gadget
 ([issue 6](https://github.com/n9wxu/smallest_tcp/issues/6)) — and the size
@@ -425,7 +427,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.7...v0.1.8
