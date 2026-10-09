@@ -1340,12 +1340,14 @@ TEST(itest_tcp_185_segment_across_a_ring_buffers_wrap) {
   ASSERT_EQ(tcp.data_len, 40);
   ASSERT_MEM_EQ(tcp.data, text, 40);
 
-  /* acknowledged with the window shut: the next byte goes as a probe */
+  /* acknowledged with the window shut: the next byte goes as a probe,
+   * after the retransmission timeout — still doubled, the ACK being of a
+   * segment sent twice (REQ-TCP-086, 100) */
   segment_opts(1001, iss + 41, TCPF_ACK, 0, 0, NULL, 0, NULL, 0);
   ASSERT_TRUE(tcp_tx_idle(&conn));
   ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"Z", 1), 1);
   wire_clear(&t);
-  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS, 10);
+  itest_advance(&t, 2 * NET_DEFAULT_TCP_RTO_INIT_MS, 10);
   ASSERT_TRUE(last_segment(&ip, &tcp));
   ASSERT_EQ(tcp.seq, iss + 41);
   ASSERT_EQ(tcp.data_len, 1);
@@ -2396,10 +2398,22 @@ TEST(itest_tcp_097_ack_restarts_or_stops_the_timer) {
   ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
 }
 
-/* REQ-TCP-091, 099 (deviations), REQ-TCP-093, 100: no round-trip time is
- * measured.  The timeout is 1 s however fast the peer answers — never
- * less — and once backed off it stays so for later segments */
-TEST(itest_tcp_091_rto_not_measured) {
+/* Milliseconds, in ticks of 10, until the segment just sent goes again:
+ * its retransmission timeout */
+static uint32_t ms_until_resent(void) {
+  uint32_t ms = 0;
+  wire_clear(&t);
+  while (t.wire.tx_count == 0 && ms < 120000u) {
+    itest_advance(&t, 10, 10);
+    ms += 10;
+  }
+  return ms;
+}
+
+/* REQ-TCP-093, 100: the timeout is 1 s however fast the peer answers —
+ * never less — and an acknowledgment of a segment sent twice is no round
+ * trip (Karn's algorithm): the doubled timeout stays for the next segment */
+TEST(itest_tcp_100_backoff_kept_after_an_ambiguous_ack) {
   uint32_t iss;
   up();
   iss = established();
@@ -2418,6 +2432,322 @@ TEST(itest_tcp_091_rto_not_measured) {
   ASSERT_EQ(t.wire.tx_count, 0);
   itest_advance(&t, 1, 1);
   ASSERT_EQ(t.wire.tx_count, 1);
+}
+
+/* REQ-TCP-091, 093, 100 (RFC 6298 §5, RFC 9293 §3.8.2): the backoff of a
+ * timeout lasts until a segment sent once is acknowledged; its round trip,
+ * measured, sets the timeout again — 100 ms after the handshake's 0 gives
+ * SRTT 12 + 4 × RTTVAR 25 ms, so the 1 s floor (issue 12: it stayed
+ * doubled for the rest of the connection) */
+TEST(itest_tcp_091_backoff_ends_at_a_clean_round_trip) {
+  uint32_t iss;
+  up();
+  iss = established();
+  tcp_send(&t.net, &conn, (const uint8_t *)"a", 1);
+  ASSERT_EQ(ms_until_resent(), 1000u);     /* now 2 s */
+  segment(RPORT, 1001, iss + 2, TCPF_ACK); /* sent twice: no sample */
+  tcp_send(&t.net, &conn, (const uint8_t *)"b", 1);
+  itest_advance(&t, 100, 10);
+  segment(RPORT, 1001, iss + 3, TCPF_ACK); /* sent once: 100 ms */
+  tcp_send(&t.net, &conn, (const uint8_t *)"c", 1);
+  ASSERT_EQ(ms_until_resent(), 1000u);
+}
+
+/* REQ-TCP-091, 099: the path's round trip grows from nothing (the
+ * handshake) to 2.5 s.  The first two segments time out — at 1 s, then
+ * 2 s: the backoff finds the delay, and the ACKs of segments sent twice
+ * are no samples.  From the third on every round trip is measured and none
+ * goes twice.  After 58 measurements SRTT is within a tick of 2.5 s and
+ * 4 × RTTVAR has fallen below G, so the timeout is SRTT + G (RFC 6298
+ * 2.3): above the round trip, below the 4 s the backoff reached */
+TEST(itest_tcp_091_rto_follows_a_long_round_trip) {
+  uint32_t iss, ack;
+  int i;
+  up();
+  iss = established();
+  ack = iss + 1;
+  for (i = 0; i < 60; i++) {
+    wire_clear(&t);
+    tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+    itest_advance(&t, 2500, 10);
+    ASSERT_EQ(t.wire.tx_count, i < 2 ? 2 : 1);
+    segment(RPORT, 1001, ++ack, TCPF_ACK);
+  }
+  tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+  ASSERT_EQ(ms_until_resent(), 2500u + NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS);
+}
+
+/* REQ-TCP-091: the path speeds up from 2.5 s to 100 ms.  A shorter round
+ * trip moves SRTT down and, by the size of the change, RTTVAR up (RFC 6298
+ * 2.3); as the variation decays the timeout comes down to the 1 s floor */
+TEST(itest_tcp_091_rto_comes_down_when_the_path_speeds_up) {
+  uint32_t iss, ack;
+  int i;
+  up();
+  iss = established();
+  ack = iss + 1;
+  for (i = 0; i < 70; i++) {
+    wire_clear(&t);
+    tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+    itest_advance(&t, i < 30 ? 2500 : 100, 10);
+    ASSERT_EQ(t.wire.tx_count, i < 2 ? 2 : 1);
+    segment(RPORT, 1001, ++ack, TCPF_ACK);
+  }
+  tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+  ASSERT_EQ(ms_until_resent(), 1000u);
+}
+
+/* REQ-TCP-094: a computed timeout is bounded too.  On a path whose round
+ * trip is 25 s, SRTT + 4 × RTTVAR passes 60 s at the sixth segment (64.3 s,
+ * then 67.3 s at the seventh); a segment lost after that goes again at
+ * 60 s */
+TEST(itest_tcp_094_measured_rto_bounded) {
+  uint32_t iss, ack;
+  int i;
+  up();
+  iss = established();
+  ack = iss + 1;
+  for (i = 0; i < 7; i++) {
+    tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+    itest_advance(&t, 25000, 100);
+    segment(RPORT, 1001, ++ack, TCPF_ACK);
+  }
+  tcp_send(&t.net, &conn, (const uint8_t *)"x", 1);
+  ASSERT_EQ(ms_until_resent(), NET_DEFAULT_TCP_RTO_MAX_MS);
+}
+
+/* A TX buffer that sends whatever is queued, however much is in flight —
+ * a buffer of the application's (tcp_txbuf_ops_t) may: the stack then has
+ * several segments in flight, and times one of them */
+typedef struct {
+  uint8_t mem[64];
+  uint16_t len, sent; /* bytes queued, in flight (from mem[0]) */
+} pipe_t;
+
+static pipe_t pipe_buf;
+
+static uint16_t pipe_write(void *ctx, const uint8_t *data, uint16_t len) {
+  pipe_t *p = (pipe_t *)ctx;
+  if (len > sizeof(p->mem) - p->len)
+    len = (uint16_t)(sizeof(p->mem) - p->len);
+  memcpy(p->mem + p->len, data, len);
+  p->len = (uint16_t)(p->len + len);
+  return len;
+}
+
+static uint16_t pipe_next_segment(void *ctx, const uint8_t **data,
+                                  uint16_t mss) {
+  pipe_t *p = (pipe_t *)ctx;
+  uint16_t n = (uint16_t)(p->len - p->sent);
+  if (n > mss)
+    n = mss;
+  *data = p->mem + p->sent;
+  p->sent = (uint16_t)(p->sent + n);
+  return n;
+}
+
+static void pipe_ack(void *ctx, uint32_t acked) {
+  pipe_t *p = (pipe_t *)ctx;
+  uint16_t n = acked < p->sent ? (uint16_t)acked : p->sent;
+  memmove(p->mem, p->mem + n, (size_t)(p->len - n));
+  p->len = (uint16_t)(p->len - n);
+  p->sent = (uint16_t)(p->sent - n);
+}
+
+static uint16_t pipe_in_flight(const void *ctx) {
+  return ((const pipe_t *)ctx)->sent;
+}
+
+static uint16_t pipe_queued(const void *ctx) {
+  return ((const pipe_t *)ctx)->len;
+}
+
+static uint16_t pipe_writable(const void *ctx) {
+  return (uint16_t)(sizeof(pipe_buf.mem) - ((const pipe_t *)ctx)->len);
+}
+
+static void pipe_mark_retransmit(void *ctx) { ((pipe_t *)ctx)->sent = 0; }
+
+static const tcp_txbuf_ops_t pipe_ops = {
+    .write = pipe_write,
+    .next_segment = pipe_next_segment,
+    .ack = pipe_ack,
+    .in_flight = pipe_in_flight,
+    .queued = pipe_queued,
+    .writable = pipe_writable,
+    .mark_retransmit = pipe_mark_retransmit,
+};
+
+/* The stack, its connection on the pipe buffer, passively open after a
+ * handshake of @p rtt_ms; our ISS */
+static uint32_t established_on_pipe(uint32_t rtt_ms) {
+  uint32_t iss;
+  itest_up(&t, 1514, 1514);
+  memset(&pipe_buf, 0, sizeof(pipe_buf));
+  tcp_saw_rx_init(&rx_ctx, rx_mem, sizeof(rx_mem));
+  tcp_conn_init(&conn, &pipe_ops, &pipe_buf, &tcp_saw_rx_ops, &rx_ctx,
+                on_event);
+  tcp_set_connections(&t.net, table, 1);
+  no_events();
+  iss = syn_received();
+  itest_advance(&t, rtt_ms, 10);
+  segment(RPORT, 1001, iss + 1, TCPF_ACK);
+  return iss;
+}
+
+/* REQ-TCP-099: one segment is timed at a time.  With "A" timed, "B" sent
+ * 100 ms after it is not; the ACK of "A" 2 s after it left is a round trip
+ * of 2 s — after the handshake's 800 ms, SRTT 950 + 4 × RTTVAR 600 = 3350
+ * ms, with which the timer restarts for "B" (not the 2400 ms the handshake
+ * gave) */
+TEST(itest_tcp_099_one_segment_timed_at_a_time) {
+  uint32_t iss = established_on_pipe(800);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  tcp_send(&t.net, &conn, (const uint8_t *)"A", 1);
+  itest_advance(&t, 100, 10);
+  wire_clear(&t);
+  tcp_send(&t.net, &conn, (const uint8_t *)"B", 1);
+  ASSERT_EQ(t.wire.tx_count, 1); /* in flight beside "A" */
+  itest_advance(&t, 1900, 10);
+  segment(RPORT, 1001, iss + 2, TCPF_ACK);
+  ASSERT_EQ(ms_until_resent(), 3350u);
+}
+
+/* REQ-TCP-099, 100: an ACK that stops at the timed segment measures
+ * nothing.  "A" times out and goes again, so it is not timed; "B", sent
+ * after, is.  The ACK of "A" alone 800 ms after "B" left is no round trip
+ * of "B": the timer restarts with the timeout still doubled, 2 s, not the
+ * 1 s floor a sample would give */
+TEST(itest_tcp_099_ack_short_of_the_timed_segment) {
+  uint32_t iss = established_on_pipe(0);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  tcp_send(&t.net, &conn, (const uint8_t *)"A", 1);
+  ASSERT_EQ(ms_until_resent(), 1000u); /* now 2 s */
+  tcp_send(&t.net, &conn, (const uint8_t *)"B", 1);
+  itest_advance(&t, 800, 10);
+  segment(RPORT, 1001, iss + 2, TCPF_ACK);
+  ASSERT_EQ(ms_until_resent(), 2000u);
+}
+
+/* REQ-TCP-091, 099: the handshake's round trip is the first measurement:
+ * 800 ms gives 800 + 4 × 400 = 2400 ms — after our SYN, and after our
+ * SYN,ACK */
+TEST(itest_tcp_099_handshake_round_trip_measured) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  tcp_connect(&t.net, &conn, PEER_IP, peer_mac, RPORT, LPORT);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  iss = tcp.seq;
+  itest_advance(&t, 800, 10);
+  segment(RPORT, 5000, iss + 1, TCPF_SYN | TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  tcp_send(&t.net, &conn, (const uint8_t *)"data", 4);
+  ASSERT_EQ(ms_until_resent(), 2400u);
+
+  up();
+  iss = syn_received();
+  itest_advance(&t, 800, 10);
+  segment(RPORT, 1001, iss + 1, TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  tcp_send(&t.net, &conn, (const uint8_t *)"data", 4);
+  ASSERT_EQ(ms_until_resent(), 2400u);
+}
+
+/* REQ-TCP-100: bytes sent before are not timed when they go again as new
+ * data — here the rest of a segment that Fragmentation Needed cut down
+ * (RFC 1191).  Their acknowledgment 900 ms later is no sample: the timeout
+ * stays backed off at 2 s, not the 1012 ms (SRTT 112 + 4 × RTTVAR 225)
+ * that sample would give */
+TEST(itest_tcp_100_bytes_sent_before_not_timed) {
+  static uint8_t big[1400];
+  static const uint8_t mtu_1000[4] = {0, 0, 0x03, 0xE8};
+  static tcp_saw_tx_ctx_t btx;
+  static uint8_t btx_mem[1460];
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  tcp_saw_tx_init(&btx, btx_mem, sizeof(btx_mem));
+  conn.txbuf_ctx = &btx;
+  iss = established();
+  tcp_send(&t.net, &conn, big, sizeof(big));
+  icmp_about_sent(0, 0x0A0000FEu, 3, 4, mtu_1000, 0);
+  ASSERT_EQ(ms_until_resent(), 1000u); /* 960 bytes; now 2 s */
+  segment(RPORT, 1001, iss + 1 + 960, TCPF_ACK);
+  ASSERT_TRUE(last_segment(&ip, &tcp)); /* the other 440, sent before */
+  ASSERT_EQ(tcp.seq, iss + 1 + 960);
+  ASSERT_EQ(tcp.data_len, 440);
+  itest_advance(&t, 900, 10);
+  segment(RPORT, 1001, iss + 1 + 1400, TCPF_ACK);
+  tcp_send(&t.net, &conn, (const uint8_t *)"new", 3);
+  ASSERT_EQ(ms_until_resent(), 2000u);
+}
+
+/* REQ-TCP-184, 099: a SYN the driver was too busy for is timed from when
+ * it left — its SYN,ACK 800 ms later is a round trip of 800 ms (timeout
+ * 800 + 4 × 400 = 2400 ms), not of the 1400 since the open (4200 ms) */
+TEST(itest_tcp_184_round_trip_timed_from_when_it_left) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  up();
+  t.wire.tx_refuse = 6; /* the open and five ticks */
+  tcp_connect(&t.net, &conn, PEER_IP, peer_mac, RPORT, LPORT);
+  itest_advance(&t, 500, 100);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 100, 100);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_SYN);
+  itest_advance(&t, 800, 100);
+  segment(RPORT, 5000, tcp.seq + 1, TCPF_SYN | TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  tcp_send(&t.net, &conn, (const uint8_t *)"data", 4);
+  ASSERT_EQ(ms_until_resent(), 2400u);
+}
+
+/* REQ-TCP-091, 099: each connection measures its own path.  A passive open
+ * reset in SYN-RECEIVED while its SYN,ACK was being timed listens again
+ * with nothing left behind: the next handshake is timed from its own
+ * SYN,ACK, and 800 ms is its first measurement — 2400 ms, not a round trip
+ * from the first SYN,ACK (1300 ms) */
+TEST(itest_tcp_091_each_connection_measures_afresh) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  syn_received(); /* our SYN,ACK, timed */
+  itest_advance(&t, 500, 10);
+  segment(RPORT, 1001, 0, TCPF_RST);
+  ASSERT_EQ(tcp_status(&conn), TCP_LISTEN);
+  wire_clear(&t);
+  segment(RPORT + 1, 7000, 0, TCPF_SYN);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_SYN | TCPF_ACK);
+  iss = tcp.seq;
+  itest_advance(&t, 800, 10);
+  segment(RPORT + 1, 7001, iss + 1, TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  tcp_send(&t.net, &conn, (const uint8_t *)"data", 4);
+  ASSERT_EQ(ms_until_resent(), 2400u);
+}
+
+/* REQ-TCP-086: the first zero-window probe goes after the retransmission
+ * timeout — the measured one, 2400 ms after a handshake of 800 ms */
+TEST(itest_tcp_086_first_probe_after_the_measured_rto) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = syn_received();
+  itest_advance(&t, 800, 10);
+  segment_opts(1001, iss + 1, TCPF_ACK, 0, 0, NULL, 0, NULL, 0);
+  ASSERT_EQ(tcp_status(&conn), TCP_ESTABLISHED);
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"abc", 3), 3);
+  ASSERT_EQ(ms_until_resent(), 2400u);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 1);
 }
 
 /* REQ-TCP-101..105 (deviations), REQ-TCP-108, 130, 131, 145: no
@@ -3036,7 +3366,18 @@ int main(void) {
   RUN_TEST(itest_tcp_089_small_window_small_segment);
   RUN_TEST(itest_tcp_090_retransmission_schedule);
   RUN_TEST(itest_tcp_097_ack_restarts_or_stops_the_timer);
-  RUN_TEST(itest_tcp_091_rto_not_measured);
+  RUN_TEST(itest_tcp_100_backoff_kept_after_an_ambiguous_ack);
+  RUN_TEST(itest_tcp_091_backoff_ends_at_a_clean_round_trip);
+  RUN_TEST(itest_tcp_091_rto_follows_a_long_round_trip);
+  RUN_TEST(itest_tcp_099_handshake_round_trip_measured);
+  RUN_TEST(itest_tcp_091_rto_comes_down_when_the_path_speeds_up);
+  RUN_TEST(itest_tcp_094_measured_rto_bounded);
+  RUN_TEST(itest_tcp_099_one_segment_timed_at_a_time);
+  RUN_TEST(itest_tcp_099_ack_short_of_the_timed_segment);
+  RUN_TEST(itest_tcp_100_bytes_sent_before_not_timed);
+  RUN_TEST(itest_tcp_184_round_trip_timed_from_when_it_left);
+  RUN_TEST(itest_tcp_091_each_connection_measures_afresh);
+  RUN_TEST(itest_tcp_086_first_probe_after_the_measured_rto);
   RUN_TEST(itest_tcp_108_one_segment_in_flight);
   RUN_TEST(itest_tcp_127_ack_not_delayed);
   RUN_TEST(itest_tcp_133_no_keep_alive);

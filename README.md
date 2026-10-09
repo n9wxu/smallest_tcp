@@ -119,7 +119,7 @@ instead, and [tcpip-stack-plan.md](tcpip-stack-plan.md) has the whole list.
 | Area | Not implemented |
 |---|---|
 | **DNS** | The stub resolver ([requirements](docs/requirements/dns.md) written; `dns_wire.c` is the wire format it will share with mDNS); an mDNS querier / DNS-SD browser |
-| **TCP** | RTT measurement and a computed RTO (RFC 6298), congestion control (RFC 5681), delayed ACK and Nagle, window scale / timestamps / SACK (RFC 7323), keep-alive; buffer implementations beyond stop-and-wait (a ring and a packet list are designed in [tcp-buffer.md](docs/design/tcp-buffer.md)) |
+| **TCP** | Congestion control (RFC 5681), delayed ACK and Nagle, window scale / timestamps / SACK (RFC 7323), keep-alive; buffer implementations beyond stop-and-wait (a ring and a packet list are designed in [tcp-buffer.md](docs/design/tcp-buffer.md)) |
 | **Hardware** | The STM32F4 port run on a board, and the hardware fuzz job with it; drivers for an ENC28J60 (SPI) or a USB CDC-ECM link; checksum offload |
 | **Timers** | Tickless operation (`net_next_event_ms()`): the device wakes at its tick period ([timer-model.md](docs/design/timer-model.md)) |
 | **IPv6** | Fragment reassembly, a neighbour cache with unreachability detection, Redirects ([ipv6.md §13](docs/design/ipv6.md#13-deviations-and-limitations)) |

@@ -118,6 +118,8 @@ typedef struct tcp_conn_s {
   uint16_t last_error; /**< tcp_last_error() */
   uint8_t unsent;      /**< The driver was busy (NET_ERR_BUSY) for our SYN, data
                             or FIN: it goes at the next tick (REQ-TCP-184) */
+  uint8_t rtt_flags;   /**< A segment's round trip is being timed; SRTT and
+                            RTTVAR hold a measurement */
 #if NET_USE_IPV6
   uint8_t ip_ver;     /**< 4 or 6; always 6 without IPv4 */
   uint8_t local_slot; /**< IPv6: our address the peer used, in ip6.addr */
@@ -131,6 +133,8 @@ typedef struct tcp_conn_s {
   uint32_t snd_wnd;
   uint32_t snd_wl1; /**< Segment sequence number of the last window update */
   uint32_t snd_wl2; /**< Segment acknowledgment number of it */
+  uint32_t snd_max; /**< The furthest SND.NXT has been: what lies before it
+                         has been sent, and is never timed again (Karn) */
   uint16_t snd_mss; /**< The peer's MSS, at most what our TX buffer carries */
   uint8_t fin_sent; /**< Our FIN is SND.NXT - 1; until then it waits for the
                          data queued before it */
@@ -149,8 +153,13 @@ typedef struct tcp_conn_s {
   uint8_t retransmits; /**< Consecutive retransmission timeouts */
   uint8_t r2;          /**< tcp_set_max_retransmits(); 0: the default */
   uint8_t tos;         /**< tcp_set_tos() */
-  uint32_t rto_ms;     /**< Retransmission timeout, doubled per expiry */
+  uint32_t rto_ms;     /**< Retransmission timeout: from the measured round
+                            trip (RFC 6298), doubled per expiry */
   uint32_t persist_ms; /**< Zero-window probe interval, doubled per probe */
+  uint32_t srtt8;      /**< Smoothed round-trip time × 8, in ms */
+  uint32_t rttvar4;    /**< Round-trip time variation × 4, in ms */
+  uint32_t rtt_seq;    /**< The timed segment's first sequence number */
+  uint32_t rtt_sent;   /**< net->tcp_clock when it left */
 
   const tcp_txbuf_ops_t *txbuf_ops;
   void *txbuf_ctx;
