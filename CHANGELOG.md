@@ -10,6 +10,35 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+TCP measures the round trip, as RFC 6298 requires, so a timeout's backoff
+ends at the next segment acknowledged without a retransmission
+([issue 12](https://github.com/n9wxu/smallest_tcp/issues/12)).
+
+### Added
+
+- `NET_DEFAULT_TCP_RTO_MIN_MS` (1 s, RFC 6298 2.4), the least a measured
+  retransmission timeout may be, and `NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS`
+  (100 ms), the clock granularity G added to the smoothed round trip: at
+  least the interval between calls of `net_tick()`.
+
+### Changed
+
+- TCP times one segment at a time, the handshake's included, and computes
+  the retransmission timeout from the smoothed round trip and its variation
+  (Jacobson's algorithm, REQ-TCP-091, 099).  A segment sent twice is never
+  timed (Karn's algorithm, REQ-TCP-100).  These were deviations before.
+- The first zero-window probe goes after the retransmission timeout as it
+  stands, not after `NET_DEFAULT_TCP_RTO_INIT_MS` (REQ-TCP-086).
+- `tcp_conn_t` has six more members, `snd_max`, `srtt8`, `rttvar4`,
+  `rtt_seq`, `rtt_sent` and `rtt_flags`, and grows by 20 bytes.
+
+### Fixed
+
+- The retransmission timeout comes back down after a loss: it used to keep
+  its backed-off value for the rest of the connection, so on a long-lived
+  connection every loss cost twice the last, up to a minute
+  ([issue 12](https://github.com/n9wxu/smallest_tcp/issues/12)).
+
 ## [0.1.11] - 2026-10-05
 
 What the first run on hardware found — 0.1.10 on an RP2040 as a USB

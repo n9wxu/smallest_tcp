@@ -238,7 +238,7 @@ says **deviation** and what the stack does instead:
 |---|---|---|
 | DNS | The stub resolver (A and AAAA lookups through a recursive server) | Requirements written ([dns.md](docs/requirements/dns.md)); `dns_wire.c` is the wire format it shares with mDNS |
 | mDNS | A querier (resolving `.local` names) and DNS-SD browsing | [mdns.md §2](docs/design/mdns.md) |
-| TCP | RTT measurement and a computed RTO (RFC 6298); congestion control (RFC 5681); delayed ACK and Nagle; window scale, timestamps and SACK (RFC 7323); keep-alive; RFC 5961 challenge ACKs | [tcp.md §8](docs/design/tcp.md#8-not-implemented-and-known-gaps): one segment in flight and a fixed initial RTO with backoff stand in for them |
+| TCP | Congestion control (RFC 5681); delayed ACK and Nagle; window scale, timestamps and SACK (RFC 7323); keep-alive; RFC 5961 challenge ACKs | [tcp.md §8](docs/design/tcp.md#8-not-implemented-and-known-gaps): one segment in flight stands in for congestion control |
 | TCP buffers | A ring buffer and a packet list, for more than one segment in flight | Designed in [tcp-buffer.md §5](docs/design/tcp-buffer.md) |
 | Hardware | The STM32F4 port run on a board, and the nightly hardware fuzz job with it | Firmware built in CI; fixture described in [test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture-recommended) |
 | MAC drivers | ENC28J60 (SPI), USB CDC-ECM; checksum offload; scatter-gather transmit | [mac-hal.md §8](docs/design/mac-hal.md) |

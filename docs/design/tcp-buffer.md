@@ -253,7 +253,6 @@ change first:
   need duplicate-ACK counting.
 - Sender silly-window avoidance (REQ-TCP-089) and, with it, Nagle
   (REQ-TCP-129).
-- RTT measurement and a computed RTO (REQ-TCP-091, 099, 100).
 - Partial acknowledgements become normal.  The stop-and-wait buffer leaves the
   rest of a partly acknowledged segment in flight until a timeout; a ring must
   go on sending new bytes at SND.NXT, from its send position, while older ones

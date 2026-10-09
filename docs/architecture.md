@@ -227,8 +227,8 @@ operation tables (`tcp_txbuf_ops_t`, `tcp_rxbuf_ops_t`); `tcp.c` never touches
 buffer memory itself.  The bundled implementation, `tcp_buf_saw.c`, is
 stop-and-wait: one segment in flight, a ring buffer for received data.
 Received data is accepted in order only (no reassembly queue), every data
-segment is acknowledged at once, the retransmission timeout backs off without
-RTT measurement, and the only option is MSS.  Events reach the application
+segment is acknowledged at once, the retransmission timeout follows the
+measured round trip (RFC 6298), and the only option is MSS.  Events reach the application
 through `on_event`, which must not send or close.  See
 [tcp.md](design/tcp.md) and [tcp-buffer.md](design/tcp-buffer.md).
 

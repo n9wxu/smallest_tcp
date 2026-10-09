@@ -116,14 +116,23 @@
   { 0x02, 0x00, 0x00, 0xde, 0xad, 0x01 }
 #endif
 
-/* TCP timing, in milliseconds: the first retransmission timeout and
- * zero-window probe interval, the ceiling of their doubling, and the
- * maximum segment lifetime (TIME-WAIT lasts twice that) */
+/* TCP timing, in milliseconds: the retransmission timeout before a round
+ * trip has been measured, the least a measured one may be (RFC 6298 2.1,
+ * 2.4), the ceiling of its doubling, the clock granularity G that RFC
+ * 6298 2.3 adds to the smoothed round trip — at least the interval between
+ * calls of net_tick() — and the maximum segment lifetime (TIME-WAIT lasts
+ * twice that) */
 #ifndef NET_DEFAULT_TCP_RTO_INIT_MS
 #define NET_DEFAULT_TCP_RTO_INIT_MS 1000
 #endif
+#ifndef NET_DEFAULT_TCP_RTO_MIN_MS
+#define NET_DEFAULT_TCP_RTO_MIN_MS 1000
+#endif
 #ifndef NET_DEFAULT_TCP_RTO_MAX_MS
 #define NET_DEFAULT_TCP_RTO_MAX_MS 60000
+#endif
+#ifndef NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS
+#define NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS 100
 #endif
 #ifndef NET_DEFAULT_TCP_MSL_MS
 #define NET_DEFAULT_TCP_MSL_MS 120000

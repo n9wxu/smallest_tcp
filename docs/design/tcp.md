@@ -27,7 +27,7 @@ them.  `tcp.c` has no static data.
 | Out-of-order data | Dropped — no reassembly queue; the ACK asks for RCV.NXT again | REQ-TCP-067 |
 | Options | MSS sent on every SYN and read from the peer's; every other option skipped by its length.  No SACK, window scale or timestamps | REQ-TCP-076..081, 109..117 |
 | Urgent data | URG flag and urgent pointer ignored; the pointer is sent as 0 | REQ-TCP-063 (deviation) |
-| Retransmission timeout | Starts at `NET_DEFAULT_TCP_RTO_INIT_MS`, doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS`; no RTT measurement | REQ-TCP-092, 094..098; 091, 099 are deviations |
+| Retransmission timeout | RFC 6298: one segment at a time timed (never one sent twice: Karn), SRTT and RTTVAR (Jacobson), RTO = SRTT + max(G, 4 RTTVAR), at least `NET_DEFAULT_TCP_RTO_MIN_MS`; `NET_DEFAULT_TCP_RTO_INIT_MS` until the first measurement; doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS` until the next (section 5.1) | REQ-TCP-091..100 |
 | Initial sequence number | RFC 6528: a 4 µs clock plus a keyed hash of the addresses and ports (section 4.6) | REQ-TCP-028, 153 |
 
 Stop-and-wait is what keeps the sender small.  With one segment outstanding,
@@ -44,8 +44,8 @@ cost is throughput — one segment per round trip
 
 ### 2.1 The connection
 
-`tcp_conn_t` is the whole transmission control block: 104 bytes on Cortex-M0,
-120 with IPv6.
+`tcp_conn_t` is the whole transmission control block: 124 bytes on Cortex-M0,
+144 with IPv6.
 
 | Fields | Contents |
 |---|---|
@@ -56,6 +56,7 @@ cost is throughput — one segment per round trip
 | `remote_mac`, `mac_valid` | Where frames go — the peer, or the gateway for an off-link peer |
 | `ip_ver`, `remote_ip6`, `local_slot` | IPv6 builds only (section 7) |
 | `iss`, `snd_una`, `snd_nxt`, `snd_wnd`, `snd_wl1`, `snd_wl2` | Send sequence space (§3.3.1) |
+| `snd_max` | The furthest SND.NXT has been: octets before it have been sent, and are not timed when they go again (section 5.1) |
 | `snd_mss` | Largest segment we send: the peer's MSS (or the family's default), at most what the TX frame buffer carries (section 4.4) |
 | `fin_sent` | Our FIN has been sent and is SND.NXT − 1.  Until then a closing connection's FIN waits behind the data queued before it (section 4.7) |
 | `passive` | Opened by `tcp_listen()`: a reset, a SYN or a give-up in SYN-RECEIVED returns it to LISTEN (section 3.4) |
@@ -63,6 +64,7 @@ cost is throughput — one segment per round trip
 | `irs`, `rcv_nxt`, `rcv_wnd` | Receive sequence space; `rcv_wnd` is the window on offer, at most the RX buffer's free space (section 4.5) |
 | `our_mss` | The MSS we advertise: what the RX frame buffer takes (section 4.4) |
 | `timer_ms`, `timer`, `rto_ms`, `retransmits`, `persist_ms` | One timer at a time — retransmission, zero-window probe or TIME-WAIT (section 5) |
+| `srtt8`, `rttvar4`, `rtt_seq`, `rtt_sent`, `rtt_flags` | The round-trip time: its estimate and the segment being timed (section 5.1) |
 | `txbuf_ops`/`txbuf_ctx`, `rxbuf_ops`/`rxbuf_ctx` | The two buffers ([tcp-buffer.md](tcp-buffer.md)) |
 | `on_event` | Event callback (section 6), may be NULL |
 
@@ -817,17 +819,63 @@ peers seldom acknowledge part of a segment.
 With the defaults (1 s initial RTO, 60 s maximum) the waits are 1, 2, 4, 8, 16,
 32, 60, 60 and 60 s: a connection whose peer has gone is reset about four
 minutes after the original transmission, within §3.8.3's R2 (at least 100 s,
-three minutes for a SYN).  There is no RTT measurement (REQ-TCP-091, 099, 100),
-so `rto_ms` starts at `NET_DEFAULT_TCP_RTO_INIT_MS` for every connection and
-never decreases: after a loss the backed-off value stays for the rest of the
-connection.  One exception: if the SYN or SYN,ACK timed out, data starts
-with an RTO of 3 s (`handshake_done()`, RFC 6298 5.7, REQ-TCP-181).
+three minutes for a SYN).  A measured RTO is never below
+`NET_DEFAULT_TCP_RTO_MIN_MS` (1 s), so the waits for data are never shorter.
+
+**The round-trip time (REQ-TCP-091, 099, 100; RFC 6298 §2, §3).**  One
+segment at a time is timed — with one segment in flight, every one — so
+there is a measurement every round trip:
+
+| Field | Meaning |
+|---|---|
+| `rtt_flags` | `TCP_RTT_TIMING`: a segment is being timed; `TCP_RTT_MEASURED`: `srtt8` and `rttvar4` hold a measurement |
+| `rtt_seq`, `rtt_sent` | The timed segment's first sequence number, and `net->tcp_clock` when it left |
+| `srtt8`, `rttvar4` | SRTT × 8 and RTTVAR × 4, in ms: Jacobson's scaled integers |
+| `snd_max` | The furthest SND.NXT has been |
+
+- `segment_left()` runs when our SYN or data has left the driver — not
+  when the driver was busy: a segment owed (REQ-TCP-184) is timed from
+  `send_unsent()`, when it does leave.  `send_queued_fin()` does not time
+  our FIN: nothing goes after it whose timeout its round trip could set.  A segment at or past `snd_max`,
+  new, is timed unless one already is.  One before it has been sent before
+  and ends the timing (Karn's algorithm): a simultaneous open's SYN,ACK,
+  which is our SYN again, or the rest of a segment that Fragmentation Needed
+  cut down and that `send_data()` sends again as new data.  A timeout ends
+  it too (`retransmission_timeout()`).  A zero-window probe is never timed,
+  and none is being timed while the persist timer runs: it starts only with
+  nothing in flight, and the probe's byte goes again only as a probe or by a
+  timeout.
+- `segment_acked()` runs wherever SND.UNA advances — `take_ack()`, and the
+  ACK of our SYN in SYN-SENT and SYN-RECEIVED.  An ACK past `rtt_seq` is a
+  round trip R, in ms from the 4 µs clock.  The first sets SRTT = R and
+  RTTVAR = R/2 (2.2); each later one moves RTTVAR by a quarter of the
+  difference |SRTT − R| from it and SRTT by an eighth of R − SRTT (2.3).
+  `rto_ms` becomes SRTT + max(G, 4 RTTVAR), G being
+  `NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS` (100 ms; at least the interval
+  between calls of `net_tick()`, since both the clock and the timer advance
+  by ticks), bounded by `NET_DEFAULT_TCP_RTO_MIN_MS` and
+  `NET_DEFAULT_TCP_RTO_MAX_MS` (2.4, 2.5).  `take_ack()` takes the sample
+  before it restarts the timer, so the restart uses the new value (5.3).
+
+The backoff of step 3 therefore lasts until the next measurement: the ACK
+of a segment that was sent twice is no sample, so the doubled `rto_ms` stays
+for the segment after it; that one's ACK computes the timeout again, which
+"collapses" it (RFC 6298 §5; RFC 9293 §3.8.2).  On a path slower than the
+timeout, the doubling finds the delay — 1 s, 2 s, 4 s — and the first
+segment answered before its timer runs out gives the measurement that keeps
+later ones from timing out.
+
+`start_send_sequence()` clears the estimate for each new connection:
+`rto_ms` is `NET_DEFAULT_TCP_RTO_INIT_MS` until the handshake's round trip is
+measured (2.1).  If the SYN or SYN,ACK timed out there is no measurement,
+and data starts with an RTO of 3 s (`handshake_done()`, RFC 6298 5.7,
+REQ-TCP-181) until the first.
 
 ### 5.2 Zero-window probing (REQ-TCP-085..087)
 
 `send_data()` starts the persist timer when min(SND.WND, `snd_mss`) is zero,
 data is waiting to be sent and no timer is running; the first interval is
-`NET_DEFAULT_TCP_RTO_INIT_MS`.  It stops when `send_data()` finds the window
+the retransmission timeout, `rto_ms` (REQ-TCP-086).  It stops when `send_data()` finds the window
 open, when a probe finds nothing left to send, and whenever the connection
 goes to CLOSED (`tcp_abort()`, a RST); the retransmission timer and TIME-WAIT
 replace it.
@@ -962,7 +1010,6 @@ single-stack build reduces to its own family's.
 | Sender silly-window avoidance | REQ-TCP-089 (MUST) | A segment as large as the window and the MSS allow goes at once (section 4.3) |
 | Slow start, congestion avoidance | REQ-TCP-101..105 (MUST) | One segment in flight (REQ-TCP-108) |
 | Fast retransmit and recovery | REQ-TCP-106, 107 (SHOULD) | The retransmission timer |
-| RTT measurement, a computed RTO | REQ-TCP-091, 099 (MUST) | A fixed initial RTO with backoff, never below 1 s (section 5.1) |
 | Reassembly of out-of-order segments | REQ-TCP-067 (SHLD-31) | Dropped; the peer retransmits |
 | SACK, window scale, timestamps | REQ-TCP-113, 114, 117..124 | Options skipped by length |
 | Urgent data | REQ-TCP-063 (MUST) | Ignored; delivered in line |
@@ -985,8 +1032,6 @@ single-stack build reduces to its own family's.
   (REQ-TCP-162).
 - Zero-window probes for unsent data have no limit: a peer that stops
   answering them is probed until the application closes (section 5.2).
-- The RTO keeps its backed-off value for the rest of the connection, there
-  being no RTT sample to recompute it from (section 5.1).
 
 ---
 
