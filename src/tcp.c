@@ -34,7 +34,6 @@
 #define TCP_R1 3u /* retransmissions reported (RFC 1122 4.2.3.5) */
 #define TCP_RTO_AFTER_SYN_TIMEOUT_MS 3000u /* RFC 6298 5.7 */
 #define TCP_TIME_WAIT_MS (2u * NET_DEFAULT_TCP_MSL_MS)
-#define TCP_CLOCK_PER_MS 250u /* net->tcp_clock counts 4 µs */
 
 /* rtt_flags */
 #define TCP_RTT_TIMING 1u   /* rtt_seq's segment is being timed */
@@ -298,13 +297,13 @@ static void rtt_stop(tcp_conn_t *conn) {
  * already is: one segment at a time is a measurement per round trip.  If
  * it went before, the timing ends, since its ACK could answer either
  * transmission (Karn's algorithm). */
-static void segment_left(const net_t *net, tcp_conn_t *conn, uint32_t seq) {
+static void segment_left(tcp_conn_t *conn, uint32_t seq) {
   if (SEQ_LT(seq, conn->snd_max)) {
     rtt_stop(conn);
   } else if (!(conn->rtt_flags & TCP_RTT_TIMING)) {
     conn->rtt_flags |= TCP_RTT_TIMING;
     conn->rtt_seq = seq;
-    conn->rtt_sent = net->tcp_clock;
+    conn->rtt_ms = 0; /* conn_tick() counts from here */
   }
   if (SEQ_GT(conn->snd_nxt, conn->snd_max))
     conn->snd_max = conn->snd_nxt;
@@ -327,13 +326,13 @@ static uint32_t rto_from_rtt(const tcp_conn_t *conn) {
  * would have ended the timing.  The first sets SRTT = R, RTTVAR = R / 2
  * (2.2); later ones move them by 1/8 and 1/4 of the difference (2.3).
  * The timeout is computed again, which ends any backoff (§5). */
-static void segment_acked(const net_t *net, tcp_conn_t *conn, uint32_t ack) {
+static void segment_acked(tcp_conn_t *conn, uint32_t ack) {
   uint32_t r;
   int32_t err;
   if (!(conn->rtt_flags & TCP_RTT_TIMING) || !SEQ_GT(ack, conn->rtt_seq))
     return;
   rtt_stop(conn);
-  r = (net->tcp_clock - conn->rtt_sent) / TCP_CLOCK_PER_MS;
+  r = conn->rtt_ms;
   if (!(conn->rtt_flags & TCP_RTT_MEASURED)) {
     conn->rtt_flags |= TCP_RTT_MEASURED;
     conn->srtt8 = r * 8u;
@@ -490,7 +489,7 @@ static void send_data(net_t *net, tcp_conn_t *conn) {
     send_segment(net, conn, data_flags(conn), seq, data, len);
     conn->snd_nxt += len;
     if (!conn->unsent)
-      segment_left(net, conn, seq);
+      segment_left(conn, seq);
   }
   if (SEQ_LT(conn->snd_una, conn->snd_nxt))
     retransmit_timer_run(conn);
@@ -721,7 +720,7 @@ static void start_send_sequence(net_t *net, tcp_conn_t *conn) {
 static void send_syn_and_time(net_t *net, tcp_conn_t *conn) {
   send_syn(net, conn);
   if (!conn->unsent)
-    segment_left(net, conn, conn->iss);
+    segment_left(conn, conn->iss);
   retransmit_timer_start(conn);
 }
 
@@ -779,7 +778,7 @@ static void syn_sent_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
   take_peer_syn(conn, s);
   if (ack_ok) {
     conn->snd_una = s->ack;
-    segment_acked(net, conn, s->ack);
+    segment_acked(conn, s->ack);
     conn->snd_wl1 = s->seq;
     conn->snd_wl2 = s->ack;
     conn->state = TCP_ESTABLISHED;
@@ -829,10 +828,10 @@ static void update_send_window(tcp_conn_t *conn, const tcp_seg_t *s) {
  * while anything — data or our FIN — is unacknowledged, restarted with the
  * timeout a round trip just measured gave (REQ-TCP-091).  Retransmissions
  * are counted per segment (§3.8.3), so the next one starts from none. */
-static void take_ack(const net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
+static void take_ack(tcp_conn_t *conn, const tcp_seg_t *s) {
   conn->txbuf_ops->ack(conn->txbuf_ctx, s->ack - conn->snd_una);
   conn->snd_una = s->ack;
-  segment_acked(net, conn, s->ack);
+  segment_acked(conn, s->ack);
   conn->retransmits = 0;
   if (SEQ_LT(conn->snd_una, conn->snd_nxt))
     retransmit_timer_restart_if_running(conn);
@@ -848,7 +847,7 @@ static void take_ack(const net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
 static void send_side_ack(net_t *net, tcp_conn_t *conn, const tcp_seg_t *s) {
   int acked_new = SEQ_GT(s->ack, conn->snd_una);
   if (acked_new)
-    take_ack(net, conn, s);
+    take_ack(conn, s);
   update_send_window(conn, s);
   if (conn->snd_wnd == 0)
     conn->retransmits = 0;
@@ -869,7 +868,7 @@ static int ack_input(net_t *net, tcp_conn_t *conn, const tcp_ep_t *from,
       return 0;
     }
     conn->snd_una = s->ack;
-    segment_acked(net, conn, s->ack);
+    segment_acked(conn, s->ack);
     conn->snd_wnd = s->window;
     conn->snd_wl1 = s->seq;
     conn->snd_wl2 = s->ack;
@@ -1267,7 +1266,7 @@ static int send_unsent(net_t *net, tcp_conn_t *conn) {
   if (conn->unsent)
     return 0;
   retransmit_timer_restart_if_running(conn);
-  segment_left(net, conn, conn->snd_una); /* timed from now, if new */
+  segment_left(conn, conn->snd_una); /* timed from now, if new */
   return 1;
 }
 
@@ -1294,6 +1293,8 @@ static void probe_zero_window(net_t *net, tcp_conn_t *conn) {
 static void conn_tick(net_t *net, tcp_conn_t *conn, uint32_t elapsed_ms) {
   if (conn->state == TCP_CLOSED || conn->state == TCP_LISTEN)
     return;
+  if (conn->rtt_flags & TCP_RTT_TIMING) /* REQ-TCP-099 */
+    conn->rtt_ms += elapsed_ms;
   if (!address_kept(net, conn)) {
     abort_on_error(conn);
     return;
@@ -1319,7 +1320,7 @@ static void conn_tick(net_t *net, tcp_conn_t *conn, uint32_t elapsed_ms) {
 
 void tcp_tick(net_t *net, uint32_t elapsed_ms) {
   uint8_t i;
-  net->tcp_clock += elapsed_ms * TCP_CLOCK_PER_MS;
+  net->tcp_clock += elapsed_ms * 250u;
   for (i = 0; i < net->tcp_conn_count; i++) {
     if (net->tcp_conns[i])
       conn_tick(net, net->tcp_conns[i], elapsed_ms);

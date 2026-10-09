@@ -64,7 +64,7 @@ cost is throughput — one segment per round trip
 | `irs`, `rcv_nxt`, `rcv_wnd` | Receive sequence space; `rcv_wnd` is the window on offer, at most the RX buffer's free space (section 4.5) |
 | `our_mss` | The MSS we advertise: what the RX frame buffer takes (section 4.4) |
 | `timer_ms`, `timer`, `rto_ms`, `retransmits`, `persist_ms` | One timer at a time — retransmission, zero-window probe or TIME-WAIT (section 5) |
-| `srtt8`, `rttvar4`, `rtt_seq`, `rtt_sent`, `rtt_flags` | The round-trip time: its estimate and the segment being timed (section 5.1) |
+| `srtt8`, `rttvar4`, `rtt_seq`, `rtt_ms`, `rtt_flags` | The round-trip time: its estimate and the segment being timed (section 5.1) |
 | `txbuf_ops`/`txbuf_ctx`, `rxbuf_ops`/`rxbuf_ctx` | The two buffers ([tcp-buffer.md](tcp-buffer.md)) |
 | `on_event` | Event callback (section 6), may be NULL |
 
@@ -829,7 +829,7 @@ there is a measurement every round trip:
 | Field | Meaning |
 |---|---|
 | `rtt_flags` | `TCP_RTT_TIMING`: a segment is being timed; `TCP_RTT_MEASURED`: `srtt8` and `rttvar4` hold a measurement |
-| `rtt_seq`, `rtt_sent` | The timed segment's first sequence number, and `net->tcp_clock` when it left |
+| `rtt_seq`, `rtt_ms` | The timed segment's first sequence number, and the milliseconds since it left, which `conn_tick()` counts as it counts down the timers — no division, which Cortex-M0 lacks |
 | `srtt8`, `rttvar4` | SRTT × 8 and RTTVAR × 4, in ms: Jacobson's scaled integers |
 | `snd_max` | The furthest SND.NXT has been |
 
@@ -847,7 +847,7 @@ there is a measurement every round trip:
   timeout.
 - `segment_acked()` runs wherever SND.UNA advances — `take_ack()`, and the
   ACK of our SYN in SYN-SENT and SYN-RECEIVED.  An ACK past `rtt_seq` is a
-  round trip R, in ms from the 4 µs clock.  The first sets SRTT = R and
+  round trip R, `rtt_ms`.  The first sets SRTT = R and
   RTTVAR = R/2 (2.2); each later one moves RTTVAR by a quarter of the
   difference |SRTT − R| from it and SRTT by an eighth of R − SRTT (2.3).
   `rto_ms` becomes SRTT + max(G, 4 RTTVAR), G being

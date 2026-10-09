@@ -30,7 +30,7 @@ ends at the next segment acknowledged without a retransmission
 - The first zero-window probe goes after the retransmission timeout as it
   stands, not after `NET_DEFAULT_TCP_RTO_INIT_MS` (REQ-TCP-086).
 - `tcp_conn_t` has six more members, `snd_max`, `srtt8`, `rttvar4`,
-  `rtt_seq`, `rtt_sent` and `rtt_flags`, and grows by 20 bytes.
+  `rtt_seq`, `rtt_ms` and `rtt_flags`, and grows by 20 bytes.
 
 ### Fixed
 

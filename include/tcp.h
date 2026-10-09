@@ -159,7 +159,7 @@ typedef struct tcp_conn_s {
   uint32_t srtt8;      /**< Smoothed round-trip time × 8, in ms */
   uint32_t rttvar4;    /**< Round-trip time variation × 4, in ms */
   uint32_t rtt_seq;    /**< The timed segment's first sequence number */
-  uint32_t rtt_sent;   /**< net->tcp_clock when it left */
+  uint32_t rtt_ms;     /**< Since it left */
 
   const tcp_txbuf_ops_t *txbuf_ops;
   void *txbuf_ctx;
