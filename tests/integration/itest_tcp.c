@@ -2420,6 +2420,116 @@ TEST(itest_tcp_091_rto_not_measured) {
   ASSERT_EQ(t.wire.tx_count, 1);
 }
 
+/* REQ-TCP-091: a segment acknowledged on its first transmission brings the
+ * timeout back to its initial value; one acknowledged after a timeout
+ * leaves it backed off (Karn) */
+TEST(itest_tcp_091_rto_back_after_a_clean_ack) {
+  uint32_t iss;
+  up();
+  iss = established();
+  tcp_send(&t.net, &conn, (const uint8_t *)"a", 1);
+  /* "a" times out (doubled); its ACK comes after that, so it stays doubled */
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS, 10);
+  segment(RPORT, 1001, iss + 2, TCPF_ACK);
+  /* "b" is acknowledged on its first transmission: back to the start */
+  tcp_send(&t.net, &conn, (const uint8_t *)"b", 1);
+  segment(RPORT, 1001, iss + 3, TCPF_ACK);
+  tcp_send(&t.net, &conn, (const uint8_t *)"c", 1);
+  wire_clear(&t);
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS - 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 1); /* the initial timeout again */
+}
+
+/* REQ-TCP-186: tcp_retransmit() sends the earliest unacknowledged segment
+ * at once, and leaves the timer running from the first send, the timeout
+ * as it was and nothing counted */
+TEST(itest_tcp_186_retransmit_on_request) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = established();
+  ASSERT_EQ(tcp_retransmit(&t.net, &conn), NET_ERR_NO_FRAME); /* nothing yet */
+  ASSERT_EQ(t.wire.tx_count, 0);
+  tcp_send(&t.net, &conn, (const uint8_t *)"abc", 3);
+  itest_advance(&t, 100, 10);
+  wire_clear(&t);
+  ASSERT_EQ(tcp_retransmit(&t.net, &conn), NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_EQ(tcp.data_len, 3);
+  ASSERT_MEM_EQ(tcp.data, "abc", 3);
+  ASSERT_EQ(conn.retransmits, 0);
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS - 110, 10);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  itest_advance(&t, 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 2); /* the timer ran from the first send */
+  segment(RPORT, 1001, iss + 4, TCPF_ACK);
+  wire_clear(&t);
+  ASSERT_EQ(tcp_retransmit(&t.net, &conn), NET_ERR_NO_FRAME);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  ASSERT_EQ(tcp_retransmit(NULL, &conn), NET_ERR_INVALID_PARAM);
+
+  /* our SYN+ACK, in SYN-RECEIVED */
+  up();
+  iss = syn_received();
+  wire_clear(&t);
+  ASSERT_EQ(tcp_retransmit(&t.net, &conn), NET_OK);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_SYN | TCPF_ACK);
+  ASSERT_EQ(tcp.seq, iss);
+}
+
+static uint32_t fixed_50_ms(void *ctx, const tcp_conn_t *c, uint32_t rto_ms) {
+  (void)ctx;
+  (void)c;
+  (void)rto_ms;
+  return 50;
+}
+
+static uint32_t no_timer(void *ctx, const tcp_conn_t *c, uint32_t rto_ms) {
+  (void)ctx;
+  (void)c;
+  (void)rto_ms;
+  return 0;
+}
+
+/* REQ-TCP-187: tcp_set_retx() puts the application's timeout in place of
+ * the stack's — here 50 ms, not doubled — or none at all, leaving
+ * retransmission to tcp_retransmit() */
+TEST(itest_tcp_187_application_sets_the_timeout) {
+  static const tcp_retx_ops_t fixed = {fixed_50_ms};
+  static const tcp_retx_ops_t none = {no_timer};
+  uint32_t iss;
+  up();
+  iss = established();
+  ASSERT_EQ(tcp_set_retx(&conn, &fixed, NULL), NET_OK);
+  tcp_send(&t.net, &conn, (const uint8_t *)"a", 1);
+  wire_clear(&t);
+  itest_advance(&t, 40, 10);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  itest_advance(&t, 40, 10);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  itest_advance(&t, 10, 10);
+  ASSERT_EQ(t.wire.tx_count, 2); /* 50 ms again: no backoff */
+  segment(RPORT, 1001, iss + 2, TCPF_ACK);
+
+  ASSERT_EQ(tcp_set_retx(&conn, &none, NULL), NET_OK);
+  tcp_send(&t.net, &conn, (const uint8_t *)"b", 1);
+  wire_clear(&t);
+  itest_advance(&t, 10 * NET_DEFAULT_TCP_RTO_INIT_MS, 100);
+  ASSERT_EQ(t.wire.tx_count, 0); /* no timer */
+  ASSERT_EQ(tcp_retransmit(&t.net, &conn), NET_OK);
+  ASSERT_EQ(t.wire.tx_count, 1);
+
+  ASSERT_EQ(tcp_set_retx(NULL, &none, NULL), NET_ERR_INVALID_PARAM);
+}
+
 /* REQ-TCP-101..105 (deviations), REQ-TCP-108, 130, 131, 145: no
  * congestion window — one segment in flight, never more than RFC 5681's
  * loss window, whatever the peer's window; the next leaves when it is
@@ -3001,6 +3111,8 @@ int main(void) {
   RUN_TEST(itest_tcp_183_ack_of_a_segment_before_the_window_taken);
   RUN_TEST(itest_tcp_184_busy_driver_retried_at_the_next_tick);
   RUN_TEST(itest_tcp_185_segment_across_a_ring_buffers_wrap);
+  RUN_TEST(itest_tcp_186_retransmit_on_request);
+  RUN_TEST(itest_tcp_187_application_sets_the_timeout);
   RUN_TEST(itest_tcp_011_conn_init_validates);
   RUN_TEST(itest_tcp_013_connect_on_a_live_connection);
   RUN_TEST(itest_tcp_014_send_and_receive);
@@ -3037,6 +3149,7 @@ int main(void) {
   RUN_TEST(itest_tcp_090_retransmission_schedule);
   RUN_TEST(itest_tcp_097_ack_restarts_or_stops_the_timer);
   RUN_TEST(itest_tcp_091_rto_not_measured);
+  RUN_TEST(itest_tcp_091_rto_back_after_a_clean_ack);
   RUN_TEST(itest_tcp_108_one_segment_in_flight);
   RUN_TEST(itest_tcp_127_ack_not_delayed);
   RUN_TEST(itest_tcp_133_no_keep_alive);

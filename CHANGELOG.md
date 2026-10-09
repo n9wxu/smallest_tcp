@@ -10,6 +10,37 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+For links that know more than a wall clock — a polled bus, where the
+master's next poll shows within milliseconds whether a segment arrived —
+the application can now time TCP's retransmissions itself
+([issue 13](https://github.com/n9wxu/smallest_tcp/issues/13)), and the
+stack's own timeout no longer stays backed off for good
+([issue 12](https://github.com/n9wxu/smallest_tcp/issues/12)).
+
+### Added
+
+- `tcp_retransmit()`: sends the earliest unacknowledged SYN, data or FIN
+  again at once, for an application that knows it was lost.  The timer runs
+  on from the first send and nothing is counted or doubled, so a link that
+  keeps losing it still ends the connection by R2 (REQ-TCP-186).
+- `tcp_set_retx()` and `tcp_retx_ops_t`: the application's `timeout_ms()`
+  is asked each time the retransmission timer is armed, with the stack's
+  own value, and decides it: another value, no backoff, or 0 for no timer
+  (REQ-TCP-187).
+
+### Changed
+
+- `tcp_conn_t` has two more fields, `retx_ops` and `retx_ctx`, set by
+  `tcp_set_retx()` and cleared by `tcp_conn_init()`.
+
+### Fixed
+
+- The retransmission timeout returns to `NET_DEFAULT_TCP_RTO_INIT_MS` once
+  a segment that was sent only once is acknowledged.  It used to keep its
+  backed-off value for the rest of the connection, so on a long-lived
+  connection every loss cost twice the last, up to a minute (REQ-TCP-091,
+  [issue 12](https://github.com/n9wxu/smallest_tcp/issues/12)).
+
 ## [0.1.11] - 2026-10-05
 
 What the first run on hardware found — 0.1.10 on an RP2040 as a USB

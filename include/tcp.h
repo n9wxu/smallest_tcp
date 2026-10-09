@@ -100,6 +100,32 @@ typedef enum {
 /** tcp_last_error() after retransmissions reached R1 */
 #define TCP_SOFT_RETRANSMITTING 0xFFFFu
 
+struct tcp_conn_s;
+
+/**
+ * How a connection times its retransmissions (tcp_set_retx()), for a link
+ * that knows more than a wall clock does.  On a polled bus, for one, the
+ * master's next poll shows within milliseconds whether a segment arrived:
+ * the application resends at once with tcp_retransmit(), and the timer is
+ * only the last resort, or not wanted at all.
+ */
+typedef struct tcp_retx_ops_s {
+  /**
+   * The retransmission timeout, each time the timer is armed: a segment sent
+   * while it is stopped, a timeout (its retransmission already counted in
+   * conn->retransmits), new data acknowledged with more still in flight.
+   * @param rto_ms  The stack's own: NET_DEFAULT_TCP_RTO_INIT_MS, doubled at
+   *                each timeout up to NET_DEFAULT_TCP_RTO_MAX_MS, and back to
+   *                the initial value once a segment that was sent only once
+   *                is acknowledged.
+   * @return The timeout to use.  0: no timer: segments are sent again only
+   *         by tcp_retransmit(), and the application decides when to give
+   *         up (tcp_abort()).
+   */
+  uint32_t (*timeout_ms)(void *ctx, const struct tcp_conn_s *conn,
+                         uint32_t rto_ms);
+} tcp_retx_ops_t;
+
 /** One connection; initialise with tcp_conn_init(). */
 typedef struct tcp_conn_s {
   tcp_state_t state;
@@ -149,8 +175,11 @@ typedef struct tcp_conn_s {
   uint8_t retransmits; /**< Consecutive retransmission timeouts */
   uint8_t r2;          /**< tcp_set_max_retransmits(); 0: the default */
   uint8_t tos;         /**< tcp_set_tos() */
-  uint32_t rto_ms;     /**< Retransmission timeout, doubled per expiry */
+  uint32_t rto_ms;     /**< Retransmission timeout, doubled per expiry, back
+                            to the initial value at a clean ACK */
   uint32_t persist_ms; /**< Zero-window probe interval, doubled per probe */
+  const tcp_retx_ops_t *retx_ops; /**< tcp_set_retx(); NULL: rto_ms as it is */
+  void *retx_ctx;
 
   const tcp_txbuf_ops_t *txbuf_ops;
   void *txbuf_ctx;
@@ -251,6 +280,24 @@ net_err_t tcp_set_tos(tcp_conn_t *conn, uint8_t tos);
  *  the application gets TCP_EVT_SOFT_ERROR.  tcp_conn_init() resets it.
  *  @return NET_ERR_INVALID_PARAM for 0. */
 net_err_t tcp_set_max_retransmits(tcp_conn_t *conn, uint8_t r2);
+
+/** Time the connection's retransmissions with @p ops (tcp_retx_ops_t), or
+ *  the stack's own way for NULL, the default.  tcp_conn_init() resets it.
+ *  @return NET_ERR_INVALID_PARAM for no @p conn. */
+net_err_t tcp_set_retx(tcp_conn_t *conn, const tcp_retx_ops_t *ops, void *ctx);
+
+/**
+ * Send the earliest unacknowledged segment again now (our SYN, the data in
+ * flight or our FIN), because the application knows it was lost: on a polled
+ * bus, the master has polled again without its host's acknowledgment.  The
+ * retransmission timer, the timeout and the count of retransmissions stay as
+ * they are, so a link that keeps losing the segment still ends the
+ * connection when the timer has run out R2 times.  A segment the driver is
+ * too busy to take goes at the next tcp_tick() (REQ-TCP-184).
+ * @return NET_OK; NET_ERR_NO_FRAME with nothing unacknowledged;
+ *         NET_ERR_INVALID_PARAM for no @p net or @p conn.
+ */
+net_err_t tcp_retransmit(net_t *net, tcp_conn_t *conn);
 
 /**
  * Queue data without sending it, e.g. to build one segment from several

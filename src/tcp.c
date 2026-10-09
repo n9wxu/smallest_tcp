@@ -243,9 +243,17 @@ static int timer_running(const tcp_conn_t *conn, uint8_t timer) {
   return conn->timer_ms != 0 && conn->timer == timer;
 }
 
+/* REQ-TCP-187: the timeout to arm, the application's (tcp_set_retx()) or
+ * the stack's own; 0 leaves the timer stopped */
+static uint32_t retransmission_timeout_ms(const tcp_conn_t *conn) {
+  if (conn->retx_ops && conn->retx_ops->timeout_ms)
+    return conn->retx_ops->timeout_ms(conn->retx_ctx, conn, conn->rto_ms);
+  return conn->rto_ms;
+}
+
 /* Starting the retransmission timer replaces a zero-window probe */
 static void retransmit_timer_start(tcp_conn_t *conn) {
-  timer_start(conn, TCP_TIMER_RETRANSMIT, conn->rto_ms);
+  timer_start(conn, TCP_TIMER_RETRANSMIT, retransmission_timeout_ms(conn));
 }
 
 /* RFC 6298 §5.1: started by a segment sent while it is not running */
@@ -256,7 +264,7 @@ static void retransmit_timer_run(tcp_conn_t *conn) {
 
 static void retransmit_timer_restart_if_running(tcp_conn_t *conn) {
   if (timer_running(conn, TCP_TIMER_RETRANSMIT))
-    conn->timer_ms = conn->rto_ms;
+    conn->timer_ms = retransmission_timeout_ms(conn);
 }
 
 static void retransmit_timer_stop(tcp_conn_t *conn) {
@@ -746,10 +754,15 @@ static void update_send_window(tcp_conn_t *conn, const tcp_seg_t *s) {
 
 /* REQ-TCP-055, 097, 098: SND.UNA advances; the retransmission timer runs
  * while anything — data or our FIN — is unacknowledged.  Retransmissions
- * are counted per segment (§3.8.3), so the next one starts from none. */
+ * are counted per segment (§3.8.3), so the next one starts from none.
+ * REQ-TCP-091: what was acknowledged had not timed out, so the path is
+ * back: the timeout returns to its initial value.  An acknowledgment after
+ * a timeout keeps it backed off (Karn's algorithm, RFC 6298 §5). */
 static void take_ack(tcp_conn_t *conn, const tcp_seg_t *s) {
   conn->txbuf_ops->ack(conn->txbuf_ctx, s->ack - conn->snd_una);
   conn->snd_una = s->ack;
+  if (conn->retransmits == 0)
+    conn->rto_ms = NET_DEFAULT_TCP_RTO_INIT_MS;
   conn->retransmits = 0;
   if (SEQ_LT(conn->snd_una, conn->snd_nxt))
     retransmit_timer_restart_if_running(conn);
@@ -1165,7 +1178,7 @@ static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
     return;
   }
   conn->rto_ms = doubled_up_to_rto_max(conn->rto_ms);
-  conn->timer_ms = conn->rto_ms;
+  conn->timer_ms = retransmission_timeout_ms(conn);
   if (conn->retransmits == TCP_R1)
     soft_error(conn, TCP_SOFT_RETRANSMITTING);
   resend_unacked(net, conn);
@@ -1413,6 +1426,47 @@ net_err_t tcp_set_max_retransmits(tcp_conn_t *conn, uint8_t r2) {
   if (!conn || r2 == 0)
     return NET_ERR_INVALID_PARAM;
   conn->r2 = r2;
+  return NET_OK;
+}
+
+/* REQ-TCP-187 */
+net_err_t tcp_set_retx(tcp_conn_t *conn, const tcp_retx_ops_t *ops, void *ctx) {
+  if (!conn)
+    return NET_ERR_INVALID_PARAM;
+  conn->retx_ops = ops;
+  conn->retx_ctx = ctx;
+  return NET_OK;
+}
+
+/* REQ-TCP-186: our SYN, data or FIN sent and not yet acknowledged */
+static int unacknowledged(const tcp_conn_t *conn) {
+  switch (conn->state) {
+  case TCP_SYN_SENT:
+  case TCP_SYN_RECEIVED:
+    return 1;
+  case TCP_ESTABLISHED:
+  case TCP_CLOSE_WAIT:
+  case TCP_FIN_WAIT_1:
+  case TCP_CLOSING:
+  case TCP_LAST_ACK:
+    return conn->unsent || conn->txbuf_ops->in_flight(conn->txbuf_ctx) > 0 ||
+           fin_unacked(conn);
+  default:
+    return 0;
+  }
+}
+
+/* REQ-TCP-186: the earliest unacknowledged segment again, now; no timeout
+ * is counted or doubled, and the timer runs on from the first send */
+net_err_t tcp_retransmit(net_t *net, tcp_conn_t *conn) {
+  if (!net || !conn)
+    return NET_ERR_INVALID_PARAM;
+  if (!unacknowledged(conn))
+    return NET_ERR_NO_FRAME;
+  if (conn->unsent)
+    (void)send_unsent(net, conn);
+  else
+    resend_unacked(net, conn);
   return NET_OK;
 }
 

@@ -12,8 +12,8 @@
 #define NET_VERSION_H
 
 #define NET_VERSION_MAJOR 0
-#define NET_VERSION_MINOR 1
-#define NET_VERSION_PATCH 11
+#define NET_VERSION_MINOR 2
+#define NET_VERSION_PATCH 0
 
 /** The version as one number, for #if: 0x00MMmmpp */
 #define NET_VERSION                                                            \

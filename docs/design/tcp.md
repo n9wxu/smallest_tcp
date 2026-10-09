@@ -27,7 +27,7 @@ them.  `tcp.c` has no static data.
 | Out-of-order data | Dropped — no reassembly queue; the ACK asks for RCV.NXT again | REQ-TCP-067 |
 | Options | MSS sent on every SYN and read from the peer's; every other option skipped by its length.  No SACK, window scale or timestamps | REQ-TCP-076..081, 109..117 |
 | Urgent data | URG flag and urgent pointer ignored; the pointer is sent as 0 | REQ-TCP-063 (deviation) |
-| Retransmission timeout | Starts at `NET_DEFAULT_TCP_RTO_INIT_MS`, doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS`; no RTT measurement | REQ-TCP-092, 094..098; 091, 099 are deviations |
+| Retransmission timeout | Starts at `NET_DEFAULT_TCP_RTO_INIT_MS`, doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS`, back to the initial value when a segment sent once is acknowledged; no RTT measurement.  `tcp_set_retx()` lets the application replace it, `tcp_retransmit()` resend at once | REQ-TCP-092, 094..098, 186, 187; 091, 099 are deviations |
 | Initial sequence number | RFC 6528: a 4 µs clock plus a keyed hash of the addresses and ports (section 4.6) | REQ-TCP-028, 153 |
 
 Stop-and-wait is what keeps the sender small.  With one segment outstanding,
@@ -206,6 +206,8 @@ goes out after the next `TCP_EVT_WRITABLE`.
 | `tcp_listen()` | LISTEN on a port | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
 | `tcp_connect()`, `tcp6_connect()`, `tcp6_connect_from()` | Send the SYN now; SYN-SENT.  `tcp6_connect_from()` names the local address — one of the host's (REQ-TCP-170).  A SYN the driver was too busy for goes at the next tick (section 4.1).  `NET_ERR_INVALID_PARAM`, and the connection untouched, for a bad argument, a remote address that is no single host — a broadcast, a group, 0.0.0.0, 127/8 (REQ-TCP-172) — a host with no IPv4 address yet, or (IPv6) when no source address is usable | CLOSED, LISTEN (else `NET_ERR_BUSY`) |
 | `tcp_set_tos()`, `tcp_set_max_retransmits()` | The TOS of the connection's IPv4 segments (REQ-TCP-174); R2, its retransmission limit (REQ-TCP-165, section 5.1) | any, after `tcp_conn_init()` |
+| `tcp_set_retx()` | Time the connection's retransmissions with the application's `tcp_retx_ops_t`: its `timeout_ms()` is asked whenever the timer is armed, with the stack's value; 0 means no timer (REQ-TCP-187) | any, after `tcp_conn_init()` |
+| `tcp_retransmit()` | Send the earliest unacknowledged SYN, data or FIN again at once; the timer, the timeout and the retransmission count are left alone (REQ-TCP-186).  `NET_ERR_NO_FRAME` with nothing unacknowledged | any |
 | `tcp_last_error()` | The last ICMP error (type << 8 \| code) or `TCP_SOFT_RETRANSMITTING`; 0 for none (section 3.8) | any |
 | `tcp_write()` | Queue data; returns bytes accepted — 0 while the stop-and-wait buffer has a segment in flight | ESTABLISHED, CLOSE-WAIT (else < 0) |
 | `tcp_output()` | Send one segment of the data not yet sent, as the window allows | ESTABLISHED, CLOSE-WAIT |
