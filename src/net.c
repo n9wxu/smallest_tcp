@@ -40,8 +40,8 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
                    const net_mac_t *driver, void *driver_ctx) {
   static const uint8_t default_mac[6] = NET_DEFAULT_MAC;
 
-  if (!net || !rx_buf || !tx_buf || !driver ||
-      buffers_overlap(rx_buf, rx_size, tx_buf, tx_size))
+  if (!net || !tx_buf || !driver ||
+      (rx_buf && buffers_overlap(rx_buf, rx_size, tx_buf, tx_size)))
     return NET_ERR_INVALID_PARAM;
   if (rx_size < NET_MIN_FRAME || tx_size < NET_MIN_FRAME)
     return NET_ERR_BUF_TOO_SMALL;
@@ -69,7 +69,10 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
 }
 
 int net_poll(net_t *net) {
-  int len = net->mac_driver->poll(net->mac_ctx);
+  int len;
+  if (!net->rx.buf) /* the driver calls eth_input() (REQ-ETH-027) */
+    return NET_ERR_INVALID_PARAM;
+  len = net->mac_driver->poll(net->mac_ctx);
   if (len <= 0)
     return len;
   if (len > net->rx.capacity)

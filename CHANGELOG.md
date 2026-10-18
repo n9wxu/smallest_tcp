@@ -10,6 +10,15 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+### Changed
+
+- `net_init()` takes a NULL receive buffer, for a driver that hands
+  `eth_input()` every frame in its own memory: `rx_size` is then the
+  largest frame the driver delivers, and sizes the TCP MSS as the buffer
+  would, with no memory reserved (REQ-ETH-027,
+  [issue 11](https://github.com/n9wxu/smallest_tcp/issues/11)).
+  `net_poll()` returns `NET_ERR_INVALID_PARAM` in that configuration.
+
 ### Fixed
 
 - TCP: a FIN the driver was too busy to take, sent behind data still in

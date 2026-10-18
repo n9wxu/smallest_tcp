@@ -106,6 +106,15 @@ the first driver that did — for TinyUSB's network device, outside this tree
 — found that mDNS did not, which is fixed
 ([issue 1](https://github.com/n9wxu/smallest_tcp/issues/1)).
 
+Such a platform needs no RX buffer at all (REQ-ETH-027,
+[issue 11](https://github.com/n9wxu/smallest_tcp/issues/11)).
+`net_init(net, NULL, rx_size, ...)` takes `rx_size` as the largest frame
+the driver will deliver: it becomes `net->rx.capacity`, so TCP advertises
+the MSS that size allows, and no memory is reserved for it.  `net_poll()`
+then has nowhere to read a frame to, and returns `NET_ERR_INVALID_PARAM`
+without asking the driver; the platform calls `eth_input()` for every frame
+instead, and must not hand it one longer than `rx_size`.
+
 ## 4. Driver models
 
 `poll`/`peek`/`discard` fit two ways of building a driver; the stack cannot

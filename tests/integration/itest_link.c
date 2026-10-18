@@ -171,6 +171,65 @@ TEST(itest_eth_019_parsed_in_the_rx_buffer) {
   ASSERT_TRUE(seen_data == t.rx_buf + 14 + 20 + 8);
 }
 
+/* REQ-ETH-027 (issue 11): a driver that hands eth_input() frames in its
+ * own memory needs no RX buffer: net_init() takes none, with the size of
+ * the largest frame the driver delivers, and what is sized by the RX frame
+ * buffer — TCP's MSS — is sized by that.  net_poll(), which would read a
+ * frame into the buffer, then reads nothing. */
+TEST(itest_eth_027_no_rx_buffer) {
+  static uint8_t own[128];
+  ASSERT_EQ(net_init(&t.net, NULL, 13, t.tx_buf, 1514, NULL, &wire_driver,
+                     &t.wire),
+            NET_ERR_BUF_TOO_SMALL);
+  ASSERT_EQ(net_init(&t.net, t.rx_buf, 1514, NULL, 1514, NULL, &wire_driver,
+                     &t.wire),
+            NET_ERR_INVALID_PARAM);
+  memset(&t, 0, sizeof(t));
+  ASSERT_EQ(net_init(&t.net, NULL, 1514, t.tx_buf, 1514, NULL, &wire_driver,
+                     &t.wire),
+            NET_OK);
+  wire_driver.init(&t.wire);
+  udp_set_ports(&t.net, ports, 1);
+  delivered = 0;
+  eth_input(&t.net, own, datagram_frame(own, t.net.mac, t.net.ipv4_addr));
+  ASSERT_EQ(delivered, 1);
+  ASSERT_TRUE(seen_data == own + 14 + 20 + 8);
+
+  wire_deliver(&t, own, datagram_frame(own, t.net.mac, t.net.ipv4_addr));
+  ASSERT_EQ(net_poll(&t.net), NET_ERR_INVALID_PARAM);
+  ASSERT_EQ(delivered, 1);
+  ASSERT_EQ(t.wire.rx_count, 1); /* left with the driver */
+#if NET_USE_TCP
+  {
+    static tcp_conn_t conn;
+    static tcp_conn_t *table[1] = {&conn};
+    static tcp_saw_tx_ctx_t tx_ctx;
+    static tcp_saw_rx_ctx_t rx_ctx;
+    static uint8_t tx_mem[256], rx_mem[256];
+    peer_tcp_seg_t syn;
+    peer_ip_t ip;
+    peer_tcp_t tcp;
+    tcp_saw_tx_init(&tx_ctx, tx_mem, sizeof(tx_mem));
+    tcp_saw_rx_init(&rx_ctx, rx_mem, sizeof(rx_mem));
+    tcp_conn_init(&conn, &tcp_saw_tx_ops, &tx_ctx, &tcp_saw_rx_ops, &rx_ctx,
+                  NULL);
+    tcp_set_connections(&t.net, table, 1);
+    ASSERT_EQ(tcp_listen(&conn, 80), NET_OK);
+    memset(&syn, 0, sizeof(syn));
+    syn.sport = 40000;
+    syn.dport = 80;
+    syn.seq = 1000;
+    syn.flags = TCPF_SYN;
+    syn.window = 4096;
+    syn.mss = 1460;
+    eth_input(&t.net, own, peer_tcp_frame(own, &t.net, PEER_IP, &syn));
+    ASSERT_EQ(wire_find_tcp(&t, 0, &ip, &tcp), 0);
+    ASSERT_EQ(tcp.flags, TCPF_SYN | TCPF_ACK);
+    ASSERT_EQ(tcp.mss, 1460);
+  }
+#endif
+}
+
 /* REQ-ETH-020, REQ-IPv4-057: a frame is built in the application's TX
  * buffer — the Ethernet header first, the IPv4 header at offset 14 — and
  * sent from there */
@@ -896,6 +955,7 @@ int main(void) {
   RUN_TEST(itest_eth_011_header_sent);
   RUN_TEST(itest_eth_018_payload_is_the_rest_of_the_frame);
   RUN_TEST(itest_eth_019_parsed_in_the_rx_buffer);
+  RUN_TEST(itest_eth_027_no_rx_buffer);
   RUN_TEST(itest_eth_020_built_in_the_tx_buffer);
   RUN_TEST(itest_eth_024_unresolved_address_is_no_error);
 #if NET_USE_IPV6

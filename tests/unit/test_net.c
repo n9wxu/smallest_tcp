@@ -161,7 +161,7 @@ TEST(test_net_init_null_params) {
   ASSERT_EQ(net_init(NULL, rx, 200, tx, 200, NULL, &stub_mac, &dummy),
             NET_ERR_INVALID_PARAM);
   ASSERT_EQ(net_init(&net, NULL, 200, tx, 200, NULL, &stub_mac, &dummy),
-            NET_ERR_INVALID_PARAM);
+            NET_OK); /* frames by eth_input() alone (REQ-ETH-027) */
   ASSERT_EQ(net_init(&net, rx, 200, NULL, 200, NULL, &stub_mac, &dummy),
             NET_ERR_INVALID_PARAM);
   ASSERT_EQ(net_init(&net, rx, 200, tx, 200, NULL, NULL, &dummy),

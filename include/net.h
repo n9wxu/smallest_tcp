@@ -167,9 +167,13 @@ typedef struct {
  * NET_DEFAULT_MAC), MAC driver, the MTU (NET_DEFAULT_MTU) and the
  * net_config.h identity defaults (the IPv4 address, mask and gateway, with
  * IPv4 compiled in).  The driver is not opened: call driver->init().
- * The RX and TX buffers must not overlap.
+ * The RX and TX buffers must not overlap.  @p rx_buf may be NULL for a
+ * driver that hands eth_input() frames in its own memory and never uses
+ * net_poll(): @p rx_size is then the largest frame it delivers, which sizes
+ * what the RX buffer would (TCP's MSS, IPv4 reassembly, TFTP's blksize,
+ * the DHCP checks) and reserves nothing (REQ-ETH-027).
  * @return NET_OK, NET_ERR_INVALID_PARAM (also: overlapping buffers), or
- *         NET_ERR_BUF_TOO_SMALL for a buffer smaller than TCP_MIN_FRAME
+ *         NET_ERR_BUF_TOO_SMALL for a size smaller than TCP_MIN_FRAME
  *         (tcp.h) with TCP compiled in, else than an Ethernet header.
  */
 net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
@@ -181,7 +185,8 @@ net_err_t net_init(net_t *net, uint8_t *rx_buf, uint16_t rx_size,
  * net->rx.buf (cut to the buffer's capacity if longer), dispatched through
  * the protocol layers, and released.
  * @return The number of bytes read, 0 if no frame was waiting, < 0 on
- *         driver error.
+ *         driver error; NET_ERR_INVALID_PARAM, asking the driver nothing,
+ *         if net_init() was given no RX buffer.
  */
 int net_poll(net_t *net);
 
