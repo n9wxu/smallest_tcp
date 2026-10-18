@@ -28,6 +28,15 @@ jobs:
           cmake --build build-no-tcp
           cmake -S . -B build-no-udp -DSMALLEST_TCP_UDP=OFF -DSMALLEST_TCP_TLS=OFF
           cmake --build build-no-udp
+      # Every library, test and demo under NET_API_PREFIX: a source whose
+      # names its headers do not rename fails the link or
+      # api_prefix_covers_every_symbol
+      - name: Build and test under a prefix (NET_API_PREFIX=stcp_)
+        run: |
+          cmake -S . -B build-prefix -DSMALLEST_TCP_IPV6=OFF \
+            -DSMALLEST_TCP_TLS=OFF -DSMALLEST_TCP_API_PREFIX=stcp_
+          cmake --build build-prefix
+          ctest --test-dir build-prefix --output-on-failure
 
   # IPv6 alone: no ARP, IPv4 or ICMP, and none of the IPv4 applications.
   # The IPv6 suites, TLS and the demos that need no IPv4 build and run.

@@ -11,6 +11,8 @@
 #ifndef TLS_H
 #define TLS_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "tls_keys.h"
 
 #include <stddef.h>

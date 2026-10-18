@@ -13,6 +13,8 @@
 #ifndef MLD_H
 #define MLD_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "ipv6.h"
 #include "net.h"

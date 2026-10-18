@@ -9,6 +9,8 @@
 #ifndef DRIVER_TAP_H
 #define DRIVER_TAP_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_mac.h"
 #include <stdint.h>
 

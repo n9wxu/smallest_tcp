@@ -6,6 +6,8 @@
 #ifndef ARP_H
 #define ARP_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "ipv4.h" /* an IPv4 protocol: needs NET_USE_IPV4 */
 #include "net.h"

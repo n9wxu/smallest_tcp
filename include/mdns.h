@@ -15,6 +15,8 @@
 #ifndef MDNS_H
 #define MDNS_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "dns_wire.h"
 #include "net.h"
 #include <stdint.h>

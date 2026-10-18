@@ -14,6 +14,8 @@
 #ifndef IPV6_H
 #define IPV6_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "net.h"
 #include "net_cksum.h"

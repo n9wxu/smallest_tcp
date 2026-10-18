@@ -11,3 +11,4 @@ int net_init(void) { return ++own_calls; }
 int net_poll(void) { return ++own_calls; }
 int tcp_write(const char *text) { return text ? ++own_calls : 0; }
 int udp_send(void) { return ++own_calls; }
+int http_server_init(void) { return own_calls += 10; }

@@ -6,6 +6,8 @@
 #ifndef DRIVER_STUB_H
 #define DRIVER_STUB_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_mac.h"
 
 extern const net_mac_t stub_mac_ops;

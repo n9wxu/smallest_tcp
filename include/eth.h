@@ -6,6 +6,8 @@
 #ifndef ETH_H
 #define ETH_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net.h"
 #include <stdint.h>
 

@@ -8,6 +8,8 @@
 #ifndef TLS_KEYS_H
 #define TLS_KEYS_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "tls_crypto.h"
 
 #include <stddef.h>

@@ -8,6 +8,8 @@
 #ifndef TLS_INTERNAL_H
 #define TLS_INTERNAL_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_endian.h"
 #include "tls.h"
 

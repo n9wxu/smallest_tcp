@@ -3,7 +3,9 @@
  * @brief The stack built with NET_API_PREFIX=stcp_ linked into a program
  *        that has a net_init(), net_poll(), tcp_write() and udp_send() of
  *        its own (api_prefix_own.c): both sets exist, and each call
- *        reaches its own.  Exits 0 if so.
+ *        reaches its own.  Exits 0 if so.  A name of a module whose
+ *        header this file does not include is the application's own here
+ *        (issue 10): http_server_init() is not the stack's.
  */
 
 #include "driver/stub.h"
@@ -22,6 +24,9 @@ int own_net_init(void);
 int own_net_poll(void);
 extern int own_calls;
 
+/* The application's own, by its plain name: http.h is not included */
+int http_server_init(void);
+
 static net_t net;
 static uint8_t rx[600], tx[600];
 
@@ -39,5 +44,7 @@ int main(void) {
     return 4;
   if (own_net_init() != 1 || own_net_poll() != 2)
     return 5;
+  if (http_server_init() != 12)
+    return 6;
   return 0;
 }

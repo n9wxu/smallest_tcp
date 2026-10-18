@@ -7,6 +7,8 @@
 #ifndef UDP_H
 #define UDP_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "net.h"
 #include <stdint.h>

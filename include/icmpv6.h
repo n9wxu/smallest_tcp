@@ -8,6 +8,8 @@
 #ifndef ICMPV6_H
 #define ICMPV6_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "ipv6.h"
 #include "net.h"

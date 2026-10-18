@@ -9,6 +9,8 @@
 #ifndef NET_H
 #define NET_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include <stdint.h>
 #include <string.h>
 

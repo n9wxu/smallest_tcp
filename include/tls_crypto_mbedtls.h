@@ -17,6 +17,8 @@
 #ifndef TLS_CRYPTO_MBEDTLS_H
 #define TLS_CRYPTO_MBEDTLS_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "tls_crypto.h"
 
 #include <mbedtls/ctr_drbg.h>

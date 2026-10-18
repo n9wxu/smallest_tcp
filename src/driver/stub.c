@@ -7,7 +7,7 @@
  * to measure code size on targets like ARM Cortex-M0.
  */
 
-#include "net_mac.h"
+#include "driver/stub.h"
 #include <stddef.h>
 
 static int stub_init(void *ctx) {

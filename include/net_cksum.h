@@ -8,6 +8,8 @@
 #ifndef NET_CKSUM_H
 #define NET_CKSUM_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_config.h"
 #include <stdint.h>
 

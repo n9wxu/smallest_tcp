@@ -14,6 +14,8 @@
 #ifndef DRIVER_STM32F4_ETH_H
 #define DRIVER_STM32F4_ETH_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_mac.h"
 #include <stdint.h>
 

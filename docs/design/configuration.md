@@ -248,23 +248,34 @@ cmake -DSMALLEST_TCP_API_PREFIX=stcp_ ...        # or -DNET_API_PREFIX=stcp_ on
                                                  # every file that includes its headers
 ```
 
-`net_config.h` then includes `net_rename.h`, which defines each name as a
-macro for the prefixed one, so the stack is compiled, and called, as
-`stcp_net_init()`, `stcp_tcp_write()` and so on — functions and objects
-with external linkage, the bundled drivers' included.  It is a setting like
-those of §3: the library and every file that includes its headers must
-agree.  In a file that includes the stack's headers the plain names still
-work and mean the stack's; the project's own function of the same name is
-called there by another name, or from a file that does not include them
-(`tests/config/api_prefix_app.c` does both).  Types, macros and `static
+Each of the stack's headers then includes `net_rename.h`, which defines
+the names that header declares as macros for the prefixed ones, so the
+stack is compiled, and called, as `stcp_net_init()`, `stcp_tcp_write()` and
+so on — functions and objects with external linkage, the bundled drivers'
+included.  It is a setting like those of §3: the library and every file
+that includes its headers must agree, whether it comes from `-D` or from
+`NET_CONFIG_FILE`.
+
+A file is given the macros of the headers it includes and no others
+([issue 10](https://github.com/n9wxu/smallest_tcp/issues/10)).  A file that
+includes `net.h` and `tcp.h` but not `http.h` keeps its own
+`http_server_init()`: the HTTP server's names are renamed only where
+`http.h` is included.  Where a header is included, its plain names mean the
+stack's; the project's own function of the same name is called there by
+another name, or from a file that does not include that header
+(`tests/config/api_prefix_app.c` does both), or the file `#undef`s the name
+after its includes.  Types, macros and `static
 inline` functions keep their names: they have no linkage to collide, only
 a file that includes both sets of headers would see two.
 
 `net_rename.h` is generated: `scripts/api_rename.py --write
-build/libsmallest_tcp_*.a` adds what the libraries define, and the test
-`api_prefix_covers_every_symbol` fails in any configuration whose
-libraries define a name it lacks — or, in a build with a prefix, an
-external name without it.  `api_prefix_links_beside_own_names` links the
+build/libsmallest_tcp_*.a` adds what the libraries define, each name in the
+section of the one header that declares it, and adds the include to any
+header that lacks it.  The test `api_prefix_covers_every_symbol` fails in
+any configuration whose libraries define a name it lacks, lists a name
+under a header that does not declare it, or has a header with names that
+does not include it — or, in a build with a prefix, an external name
+without the prefix.  CI builds and tests everything with a prefix.  `api_prefix_links_beside_own_names` links the
 core, built with `stcp_`, into a program with a `net_init()`, `net_poll()`,
 `tcp_write()` and `udp_send()` of its own
 ([issue 3](https://github.com/n9wxu/smallest_tcp/issues/3)).

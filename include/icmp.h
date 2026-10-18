@@ -8,6 +8,8 @@
 #ifndef ICMP_H
 #define ICMP_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "ipv4.h"
 #include "net.h"

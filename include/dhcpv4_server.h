@@ -16,6 +16,8 @@
 #ifndef DHCPV4_SERVER_H
 #define DHCPV4_SERVER_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "ipv4.h" /* an IPv4 protocol: needs NET_USE_IPV4 */
 #include "net.h"
 #include <stdint.h>

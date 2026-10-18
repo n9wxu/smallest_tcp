@@ -17,13 +17,11 @@
 #include NET_CONFIG_FILE
 #endif
 
-/* A prefix for every external name of the stack — stcp_, say — so that it
- * links beside code with a net_init() or a tcp_write() of its own.  The
- * stack and every file that includes its headers are compiled with the
- * same prefix (net_rename.h; CMake: -DSMALLEST_TCP_API_PREFIX=stcp_). */
-#ifdef NET_API_PREFIX
-#include "net_rename.h"
-#endif
+/* NET_API_PREFIX: a prefix for every external name of the stack — stcp_,
+ * say — so that it links beside code with a net_init() or a tcp_write() of
+ * its own.  The stack and every file that includes its headers are
+ * compiled with the same prefix (net_rename.h, which each header includes;
+ * CMake: -DSMALLEST_TCP_API_PREFIX=stcp_). */
 
 /* The network layers Ethernet dispatches to (IPv4 with ARP and ICMP; IPv6
  * with ICMPv6, NDP and MLD) — one or both — and the transports they

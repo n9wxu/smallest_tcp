@@ -6,6 +6,8 @@
 #ifndef TLS_TCP_H
 #define TLS_TCP_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "tcp.h"
 #include "tls.h"
 

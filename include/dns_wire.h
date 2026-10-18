@@ -20,6 +20,8 @@
 #ifndef DNS_WIRE_H
 #define DNS_WIRE_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_config.h"
 #include <stdint.h>
 

@@ -10,6 +10,8 @@
 #ifndef IPV4_H
 #define IPV4_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "eth.h"
 #include "net.h"
 #include "net_cksum.h"

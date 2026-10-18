@@ -27,6 +27,8 @@
 #ifndef DRIVER_RAWSOCK_H
 #define DRIVER_RAWSOCK_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_mac.h"
 #include <stdint.h>
 

@@ -21,6 +21,8 @@
 #ifndef DHCPV6_CLIENT_H
 #define DHCPV6_CLIENT_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net.h"
 #include <stdint.h>
 

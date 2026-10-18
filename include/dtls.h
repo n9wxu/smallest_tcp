@@ -8,6 +8,8 @@
 #ifndef DTLS_H
 #define DTLS_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "tls.h"
 
 #include <stddef.h>

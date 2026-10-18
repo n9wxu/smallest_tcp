@@ -12,6 +12,8 @@
 #ifndef HTTP_H
 #define HTTP_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net.h"
 #include "tcp.h"
 #include "tcp_buf.h"

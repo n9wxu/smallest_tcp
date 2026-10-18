@@ -10,6 +10,8 @@
 #ifndef TCP_BUF_H
 #define TCP_BUF_H
 
+#include "net_rename.h" /* NET_API_PREFIX */
+
 #include "net_config.h"
 #include <stdint.h>
 

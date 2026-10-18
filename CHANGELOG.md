@@ -18,6 +18,15 @@ entry says how.  How a release is made:
   would, with no memory reserved (REQ-ETH-027,
   [issue 11](https://github.com/n9wxu/smallest_tcp/issues/11)).
   `net_poll()` returns `NET_ERR_INVALID_PARAM` in that configuration.
+- `NET_API_PREFIX` renames, in a file, only the names declared by the
+  stack's headers that file includes: each header includes `net_rename.h`
+  for its own section.  An application's `http_server_init()` stays its
+  own in a file that includes `net.h` but not `http.h`; before, every name
+  of every module was a macro in any file that included any of the
+  stack's headers
+  ([issue 10](https://github.com/n9wxu/smallest_tcp/issues/10)).
+  `net_config.h` no longer includes `net_rename.h`.
+- CI builds and tests the whole stack under `NET_API_PREFIX=stcp_`.
 
 ### Fixed
 
