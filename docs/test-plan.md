@@ -260,7 +260,7 @@ or must be accepted:
 | CTest name | Checks |
 |---|---|
 | `mdns_needs_ipv4_group_slot`, `mdns_needs_ipv6_group_slot` | `mdns.c` refuses to compile without a multicast group slot for a family it runs over |
-| `api_prefix_links_beside_own_names`, `api_prefix_covers_every_symbol` | The core built with `NET_API_PREFIX=stcp_` links into a program with a `net_init()`, `net_poll()`, `tcp_write()` and `udp_send()` of its own, each call reaching its own; `net_rename.h` lists every external name the libraries of the configuration define (and in a build with a prefix, every one carries it) |
+| `api_prefix_links_beside_own_names`, `api_prefix_covers_every_symbol` | The core built with `NET_API_PREFIX=stcp_` links into a program with a `net_init()`, `net_poll()`, `tcp_write()` and `udp_send()` of its own, each call reaching its own, and a file that does not include `http.h` keeps its own `http_server_init()`; `net_rename.h` lists every external name the libraries of the configuration define under the header that declares it, and every such header includes it (and in a build with a prefix, every name carries it) |
 | `tftp_needs_ipv4`, `dhcpv4_client_needs_ipv4` | The protocols that run only over IPv4 refuse an IPv6-only configuration |
 | `network_layer_needed` | A configuration with neither IPv4 nor IPv6 is refused |
 | `byte_order_set_by_hand` | `NET_LITTLE_ENDIAN` is accepted where the compiler does not predefine `__BYTE_ORDER__` |
