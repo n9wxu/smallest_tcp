@@ -27,6 +27,11 @@ entry says how.  How a release is made:
   ([issue 10](https://github.com/n9wxu/smallest_tcp/issues/10)).
   `net_config.h` no longer includes `net_rename.h`.
 - CI builds and tests the whole stack under `NET_API_PREFIX=stcp_`.
+- TCP sets PSH on every data segment, not only on the one that empties the
+  send buffer: with one segment in flight, a receiver could hold its ACK of
+  a full segment for its delayed-ACK time, as macOS was seen to do on the
+  RP2040 spike (REQ-TCP-187,
+  [issue 9](https://github.com/n9wxu/smallest_tcp/issues/9)).
 
 ### Fixed
 

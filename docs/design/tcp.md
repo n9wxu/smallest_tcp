@@ -524,8 +524,16 @@ share: SEG.ACK = RCV.NXT (its callers set the ACK flag on every segment but
 the SYN of an active open); SEG.WND = `rcv_wnd`, or 0 on a RST; and a SYN
 always carries the MSS option, the only option ever sent (REQ-TCP-076, 082,
 116).  The data segment that leaves nothing unsent — the buffer's `queued()`
-equal to its `in_flight()` once it is taken — carries PSH (`data_flags()`,
-REQ-TCP-180); so does a retransmission on the same terms.  The IPv4 header
+equal to its `in_flight()` once it is taken — must carry PSH (REQ-TCP-180),
+and so does every other data segment and retransmission (`data_flags()`,
+REQ-TCP-187).  With one segment in flight, a full segment sent while more
+data waits went without PSH, and a receiver may hold its ACK of such a
+segment for its delayed-ACK time while nothing else can be sent.  In the
+RP2040 spike macOS held about one ACK in 22 for 100 ms, and a download ran
+at 140 kB/s against 500 when every segment carried PSH — two builds of the
+application compared, not this change alone
+([issue 9](https://github.com/n9wxu/smallest_tcp/issues/9)).  A buffer that
+allows several segments in flight would want the rule of REQ-TCP-180 back.  The IPv4 header
 carries the connection's TOS (`tcp_set_tos()`, REQ-TCP-174), and no segment
 goes from an address the host no longer has (`address_kept()`).
 

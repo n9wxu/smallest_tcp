@@ -474,10 +474,11 @@ static int fin_queued(const tcp_conn_t *conn) {
           conn->state == TCP_LAST_ACK);
 }
 
-/* PSH on the segment that leaves nothing unsent (REQ-TCP-180) */
-static uint8_t data_flags(const tcp_conn_t *conn) {
-  return all_data_sent(conn) ? TCP_FLAG_ACK | TCP_FLAG_PSH : TCP_FLAG_ACK;
-}
+/* PSH on every data segment: the one that leaves nothing unsent must have
+ * it (REQ-TCP-180), and with one segment in flight so must the others, or
+ * a receiver may hold its ACK of one for its delayed-ACK time while
+ * nothing else can be sent (REQ-TCP-187) */
+static uint8_t data_flags(void) { return TCP_FLAG_ACK | TCP_FLAG_PSH; }
 
 /* REQ-TCP-084, 085: one segment of unsent data, as the peer's window
  * allows; a zero window starts the persist timer instead.  A frame the
@@ -498,7 +499,7 @@ static void send_data(net_t *net, tcp_conn_t *conn) {
   len = take_segment(net, conn, &data, room);
   if (len > 0) {
     uint32_t seq = conn->snd_nxt;
-    send_segment(net, conn, data_flags(conn), seq, data, len);
+    send_segment(net, conn, data_flags(), seq, data, len);
     conn->snd_nxt += len;
     if (!(conn->unsent & TCP_UNSENT_SEGMENT))
       segment_left(conn, seq);
@@ -1219,7 +1220,7 @@ static void resend_in_flight(net_t *net, tcp_conn_t *conn) {
     conn->snd_nxt = conn->snd_una + len;
     conn->fin_sent = 0;
   }
-  send_segment(net, conn, data_flags(conn), conn->snd_una, data, len);
+  send_segment(net, conn, data_flags(), conn->snd_una, data, len);
 }
 
 /* The earliest unacknowledged segment again: our SYN, the data in flight —

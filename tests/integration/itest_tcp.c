@@ -701,6 +701,33 @@ TEST(itest_tcp_180_push_and_no_indefinite_buffering) {
   ASSERT_EQ(tcp.data_len, 3);
 }
 
+/* REQ-TCP-187 (issue 9): with one segment in flight, every data segment
+ * carries PSH — one that leaves data waiting too, and its retransmission —
+ * so that a receiver does not hold its ACK of it for the delayed-ACK time
+ * while nothing else can be sent */
+TEST(itest_tcp_187_push_on_every_segment) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = established();
+  segment_opts(1001, iss + 1, TCPF_ACK, 2, 0, NULL, 0, NULL, 0);
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"abcdef", 6), 6);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.data_len, 2);
+  ASSERT_TRUE(tcp.flags & TCPF_PSH); /* "cdef" still waits */
+  wire_clear(&t);
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS, 10);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 1);
+  ASSERT_TRUE(tcp.flags & TCPF_PSH);
+  wire_clear(&t);
+  segment_opts(1001, iss + 3, TCPF_ACK, 2, 0, NULL, 0, NULL, 0);
+  ASSERT_TRUE(nth_segment(0, &ip, &tcp));
+  ASSERT_EQ(tcp.seq, iss + 3);
+  ASSERT_TRUE(tcp.flags & TCPF_PSH);
+}
+
 /* REQ-TCP-181 (RFC 6298 5.7): after the SYN timed out, data starts with an
  * RTO of 3 s */
 TEST(itest_tcp_181_rto_three_seconds_after_syn_timeout) {
@@ -3425,6 +3452,7 @@ int main(void) {
   RUN_TEST(itest_tcp_177_syn_from_unspecified_ignored);
   RUN_TEST(itest_tcp_179_retransmit_not_early);
   RUN_TEST(itest_tcp_180_push_and_no_indefinite_buffering);
+  RUN_TEST(itest_tcp_187_push_on_every_segment);
   RUN_TEST(itest_tcp_181_rto_three_seconds_after_syn_timeout);
   RUN_TEST(itest_tcp_135_unreachable_in_syn_sent);
   RUN_TEST(itest_tcp_135_fragmentation_needed_lowers_mss);
