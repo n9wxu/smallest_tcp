@@ -39,6 +39,11 @@
 #define TCP_RTT_TIMING 1u   /* rtt_seq's segment is being timed */
 #define TCP_RTT_MEASURED 2u /* srtt8 and rttvar4 hold a measurement */
 
+/* unsent: what the driver was too busy to take (REQ-TCP-184, 186) */
+#define TCP_UNSENT_SEGMENT 1u /* our SYN or data: resend_unacked() */
+#define TCP_UNSENT_FIN 2u     /* our FIN, whatever is in flight before it */
+#define TCP_UNSENT_ACK 4u     /* an ACK: one, however many were refused */
+
 /* ── Endpoints: the other end of a segment, over IPv4 or IPv6 ── */
 
 typedef struct {
@@ -188,10 +193,11 @@ static int address_kept(const net_t *net, const tcp_conn_t *conn) {
 /*
  * A segment on @p conn acknowledging RCV.NXT and advertising our window
  * (none on a RST).  A SYN carries our MSS (REQ-TCP-076).  None goes from an
- * address the host no longer has.  One that takes sequence space — a SYN,
- * data, a FIN — and finds the driver busy is owed: conn_tick() sends it
- * (REQ-TCP-184).  Any other the driver does not take is lost, as on the
- * wire (docs/design/tcp.md §4.1).
+ * address the host no longer has.  One that finds the driver busy is owed,
+ * and conn_tick() sends it: a SYN, data or a FIN (REQ-TCP-184), or an ACK
+ * (REQ-TCP-186), which any segment that leaves meanwhile carries.  A RST,
+ * or a segment the driver failed to send, is lost, as on the wire
+ * (docs/design/tcp.md §4.1).
  */
 static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
                          uint32_t seq, const uint8_t *data, uint16_t data_len) {
@@ -200,6 +206,7 @@ static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
   uint16_t tcp_len = (uint16_t)(hdr_len + data_len);
   uint8_t *hdr;
   tcp_ep_t ep;
+  net_err_t err;
 
   if (!address_kept(net, conn))
     return;
@@ -215,9 +222,14 @@ static void send_segment(net_t *net, tcp_conn_t *conn, uint8_t flags,
   }
   if (data_len > 0 && data != hdr + hdr_len) /* else there already */
     memcpy(hdr + hdr_len, data, data_len);
-  if (frame_send(net, &ep, hdr, tcp_len) == NET_ERR_BUSY &&
-      (data_len > 0 || (flags & (TCP_FLAG_SYN | TCP_FLAG_FIN))))
-    conn->unsent = 1;
+  err = frame_send(net, &ep, hdr, tcp_len);
+  if (err == NET_OK)
+    conn->unsent &= (uint8_t)~TCP_UNSENT_ACK;
+  else if (err == NET_ERR_BUSY && !(flags & TCP_FLAG_RST))
+    conn->unsent |= (data_len > 0 || (flags & TCP_FLAG_SYN))
+                        ? TCP_UNSENT_SEGMENT
+                    : (flags & TCP_FLAG_FIN) ? TCP_UNSENT_FIN
+                                             : TCP_UNSENT_ACK;
 }
 
 static void send_ack(net_t *net, tcp_conn_t *conn) {
@@ -488,7 +500,7 @@ static void send_data(net_t *net, tcp_conn_t *conn) {
     uint32_t seq = conn->snd_nxt;
     send_segment(net, conn, data_flags(conn), seq, data, len);
     conn->snd_nxt += len;
-    if (!conn->unsent)
+    if (!(conn->unsent & TCP_UNSENT_SEGMENT))
       segment_left(conn, seq);
   }
   if (SEQ_LT(conn->snd_una, conn->snd_nxt))
@@ -719,7 +731,7 @@ static void start_send_sequence(net_t *net, tcp_conn_t *conn) {
  * timed, one sent again (a simultaneous open's) ends the timing */
 static void send_syn_and_time(net_t *net, tcp_conn_t *conn) {
   send_syn(net, conn);
-  if (!conn->unsent)
+  if (!(conn->unsent & TCP_UNSENT_SEGMENT))
     segment_left(conn, conn->iss);
   retransmit_timer_start(conn);
 }
@@ -1255,19 +1267,39 @@ static void retransmission_timeout(net_t *net, tcp_conn_t *conn) {
   resend_unacked(net, conn);
 }
 
-/* REQ-TCP-184: what the driver was too busy to take, now.  It was never on
- * the wire, so this is no retransmission: nothing is counted or doubled,
- * and the timeout runs from the moment it does leave.  @return 1 if it
- * left.  While the driver stays busy the timer runs on, so that a driver
- * busy for good costs the connection as a dead link would. */
+/* REQ-TCP-184, 186: what the driver was too busy to take, now — our SYN
+ * or data, then our FIN, each the segment that was refused, then an ACK if
+ * neither carried one.  It was never on the wire, so this is no
+ * retransmission: nothing is counted or doubled, and the timeout runs from
+ * the moment it does leave.  @return 1 if that restarted the timer.  While
+ * the driver stays busy the timer runs on, so that a driver busy for good
+ * costs the connection as a dead link would. */
 static int send_unsent(net_t *net, tcp_conn_t *conn) {
-  conn->unsent = 0;
-  resend_unacked(net, conn);
-  if (conn->unsent)
-    return 0;
-  retransmit_timer_restart_if_running(conn);
-  segment_left(conn, conn->snd_una); /* timed from now, if new */
-  return 1;
+  uint8_t owed = conn->unsent;
+  int restarted = 0;
+  conn->unsent &= TCP_UNSENT_ACK; /* until a segment carries it */
+  if (owed & TCP_UNSENT_SEGMENT) {
+    resend_unacked(net, conn);
+    if (conn->unsent & ~TCP_UNSENT_ACK) {
+      conn->unsent |= owed;
+      return 0;
+    }
+    retransmit_timer_restart_if_running(conn);
+    segment_left(conn, conn->snd_una); /* timed from now, if new */
+    restarted = 1;
+  }
+  if ((owed & TCP_UNSENT_FIN) && fin_unacked(conn)) {
+    send_fin(net, conn, conn->snd_nxt - 1u);
+    if (conn->unsent & TCP_UNSENT_FIN)
+      return restarted;
+    if (!restarted && conn->txbuf_ops->in_flight(conn->txbuf_ctx) == 0) {
+      retransmit_timer_restart_if_running(conn); /* the FIN's own */
+      restarted = 1;
+    }
+  }
+  if (conn->unsent & TCP_UNSENT_ACK)
+    send_ack(net, conn);
+  return restarted;
 }
 
 /* REQ-TCP-086, 087: one byte past the peer's zero window, the same byte

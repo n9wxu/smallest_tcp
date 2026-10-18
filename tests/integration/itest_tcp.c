@@ -1240,6 +1240,114 @@ TEST(itest_tcp_184_busy_driver_retried_at_the_next_tick) {
   ASSERT_EQ(tcp.seq, iss + 1);
 }
 
+/* REQ-TCP-184 (issue 7): a FIN the driver was too busy for, sent behind
+ * data still in flight, is what goes at the next tick — not the data again,
+ * with the FIN left to the retransmission timeout */
+TEST(itest_tcp_184_busy_fin_behind_data_in_flight) {
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+  up();
+  iss = established();
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"abc", 3), 3);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  wire_clear(&t);
+  t.wire.tx_refuse = 1;
+  tcp_close(&t.net, &conn);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_FIN | TCPF_ACK);
+  ASSERT_EQ(tcp.seq, iss + 4);
+  ASSERT_EQ(tcp.data_len, 0);
+  /* the data's timer was not restarted by the FIN, nor doubled */
+  itest_advance(&t, NET_DEFAULT_TCP_RTO_INIT_MS - 20, 10);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  segment(RPORT, 1001, iss + 5, TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_FIN_WAIT_2);
+}
+
+/* REQ-TCP-186 (issue 8): an ACK the driver was too busy for — a window
+ * update, the acknowledgment of data or of the peer's FIN — goes at the
+ * next tick, once however many were refused, and not at all if a segment
+ * carrying it has left meanwhile */
+TEST(itest_tcp_186_busy_ack_sent_at_the_next_tick) {
+  static uint8_t in[512], out[512];
+  peer_ip_t ip;
+  peer_tcp_t tcp;
+  uint32_t iss;
+
+  /* a window update after the window closed: the peer has nothing to
+   * retransmit, and would wait for its persist timer */
+  up();
+  iss = established();
+  peer_data(1001, iss + 1, in, 512);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.window, 0);
+  ASSERT_EQ(tcp_recv(&conn, out, sizeof(out)), 512);
+  wire_clear(&t);
+  t.wire.tx_refuse = 1;
+  tcp_window_update(&t.net, &conn);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_ACK);
+  ASSERT_EQ(tcp.ack, 1513u);
+  ASSERT_EQ(tcp.window, 512);
+  itest_advance(&t, 100, 1); /* once */
+  ASSERT_EQ(t.wire.tx_count, 1);
+
+  /* two ACKs of data refused: one ACK of both */
+  up();
+  iss = established();
+  t.wire.tx_refuse = 2;
+  peer_data(1001, iss + 1, in, 100);
+  peer_data(1101, iss + 1, in, 100);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.ack, 1201u);
+  ASSERT_EQ(tcp.window, 312);
+  itest_advance(&t, 100, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+
+  /* data sent before the tick carries the acknowledgment: no ACK after */
+  up();
+  iss = established();
+  t.wire.tx_refuse = 1;
+  peer_data(1001, iss + 1, in, 100);
+  ASSERT_EQ(tcp_send(&t.net, &conn, (const uint8_t *)"abc", 3), 3);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.ack, 1101u);
+  itest_advance(&t, 100, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+
+  /* the ACK of the peer's FIN in TIME-WAIT, whose 2 × MSL is unchanged */
+  up();
+  iss = established();
+  tcp_close(&t.net, &conn);
+  segment(RPORT, 1001, iss + 2, TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_FIN_WAIT_2);
+  wire_clear(&t);
+  t.wire.tx_refuse = 1;
+  segment(RPORT, 1001, iss + 2, TCPF_FIN | TCPF_ACK);
+  ASSERT_EQ(tcp_status(&conn), TCP_TIME_WAIT);
+  ASSERT_EQ(t.wire.tx_count, 0);
+  itest_advance(&t, 1, 1);
+  ASSERT_EQ(t.wire.tx_count, 1);
+  ASSERT_TRUE(last_segment(&ip, &tcp));
+  ASSERT_EQ(tcp.flags, TCPF_ACK);
+  ASSERT_EQ(tcp.ack, 1002u);
+  itest_advance(&t, 2u * NET_DEFAULT_TCP_MSL_MS - 100u, 100);
+  ASSERT_EQ(tcp_status(&conn), TCP_TIME_WAIT);
+  itest_advance(&t, 100, 100);
+  ASSERT_EQ(tcp_status(&conn), TCP_CLOSED);
+}
+
 /* A TX buffer that is a ring: its data may lie across the end of its
  * memory, so it gives segments by copy_segment() and has no next_segment() */
 typedef struct {
@@ -3330,6 +3438,8 @@ int main(void) {
   RUN_TEST(itest_tcp_007_simultaneous_close);
   RUN_TEST(itest_tcp_183_ack_of_a_segment_before_the_window_taken);
   RUN_TEST(itest_tcp_184_busy_driver_retried_at_the_next_tick);
+  RUN_TEST(itest_tcp_184_busy_fin_behind_data_in_flight);
+  RUN_TEST(itest_tcp_186_busy_ack_sent_at_the_next_tick);
   RUN_TEST(itest_tcp_185_segment_across_a_ring_buffers_wrap);
   RUN_TEST(itest_tcp_011_conn_init_validates);
   RUN_TEST(itest_tcp_013_connect_on_a_live_connection);

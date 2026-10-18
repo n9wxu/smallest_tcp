@@ -116,8 +116,9 @@ typedef struct tcp_conn_s {
   uint8_t passive; /**< Opened by tcp_listen(): reset in SYN-RECEIVED, it
                         listens again */
   uint16_t last_error; /**< tcp_last_error() */
-  uint8_t unsent;      /**< The driver was busy (NET_ERR_BUSY) for our SYN, data
-                            or FIN: it goes at the next tick (REQ-TCP-184) */
+  uint8_t unsent;      /**< What the driver was busy (NET_ERR_BUSY) for — our
+                            SYN or data, our FIN, an ACK: it goes at the
+                            next tick (REQ-TCP-184, 186) */
   uint8_t rtt_flags;   /**< A segment's round trip is being timed; SRTT and
                             RTTVAR hold a measurement */
 #if NET_USE_IPV6

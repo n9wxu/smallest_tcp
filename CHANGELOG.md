@@ -10,6 +10,19 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+### Fixed
+
+- TCP: a FIN the driver was too busy to take, sent behind data still in
+  flight, goes at the next tick; it used to send the data again and leave
+  the FIN to the retransmission timeout, a second later (REQ-TCP-184,
+  [issue 7](https://github.com/n9wxu/smallest_tcp/issues/7)).
+- TCP: an ACK the driver was too busy to take goes at the next tick, once
+  however many were refused (REQ-TCP-186,
+  [issue 8](https://github.com/n9wxu/smallest_tcp/issues/8)).  A window
+  update was lost before, and the peer waited for its persist timer — 5 s
+  on macOS.  `tcp_conn_t.unsent` now records what was refused; its size is
+  unchanged.
+
 ## [0.1.12] - 2026-10-10
 
 TCP measures the round trip, as RFC 6298 requires, so a timeout's backoff

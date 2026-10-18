@@ -508,9 +508,10 @@ the TX buffer into the frame.  The checksum is always computed in software.
 A segment the driver could not take is one of two things.  If the driver was
 busy (`NET_ERR_BUSY`) and the segment takes sequence space — a SYN or
 SYN,ACK, data, a FIN — it has simply not been sent yet, and goes at the next
-tick (section 4.3, REQ-TCP-184).  Anything else — an ACK or a RST the driver
-was too busy for, any segment the driver failed to send (`NET_ERR_NO_FRAME`)
-— is treated as lost on the wire: the retransmission timer sends data again,
+tick (section 4.3, REQ-TCP-184); so does an ACK, which may be a window
+update the peer cannot recover by retransmitting (REQ-TCP-186).  Anything
+else — a RST the driver was too busy for, any segment the driver failed to
+send (`NET_ERR_NO_FRAME`) — is treated as lost on the wire: the retransmission timer sends data again,
 and an ACK or RST is answered again when the peer retransmits.  That
 includes the first SYN of an active open: `tcp_connect()` does not fail for
 a busy driver.  Every segment fits
@@ -577,15 +578,27 @@ or an mDNS answer wanting the link together is the ordinary case, and a
 retransmission timeout for each — a second, doubling, never coming back
 down — made eight downloads at once take half as long again
 ([issue 2](https://github.com/n9wxu/smallest_tcp/issues/2)).  So
-`send_segment()` notes it (`tcp_conn_t.unsent`) for a SYN, data or a FIN,
-and `conn_tick()` sends the earliest unacknowledged segment again
-(`send_unsent()`, by `resend_unacked()` as a timeout would) at every tick
-until the driver takes it: no retransmission is counted, the timeout is not
-doubled, and it restarts when the segment leaves.  While the driver stays
+`send_segment()` notes what was refused in `tcp_conn_t.unsent` — our SYN or
+data, our FIN, or an ACK — and `conn_tick()` sends it at every tick until
+the driver takes it (`send_unsent()`): the SYN or data as a timeout would
+(`resend_unacked()`), then the FIN itself at SND.NXT − 1, then a bare ACK
+if neither carried one.  The FIN is kept apart because it can go behind
+data still in flight: sending the earliest unacknowledged segment would
+repeat the data and leave the FIN to the timer
+([issue 7](https://github.com/n9wxu/smallest_tcp/issues/7)).  No
+retransmission is counted, the timeout is not doubled, and it restarts when
+a SYN, data or a FIN with nothing before it leaves.  While the driver stays
 busy the timer runs on, so a driver busy for longer than the retransmission
-back-off (section 5.1) still costs the connection, as a dead link would.  A
-frame the driver failed to send is still a lost segment, and so is an ACK
-or a RST it was too busy for.
+back-off (section 5.1) still costs the connection, as a dead link would.
+
+An ACK is owed too (REQ-TCP-186).  For the acknowledgment of data the
+peer's retransmission would recover, but a window update reopening a closed
+window has nothing behind it: the peer waits for its persist timer, 5 s on
+macOS ([issue 8](https://github.com/n9wxu/smallest_tcp/issues/8)).  One
+flag is enough however many were refused, since an ACK carries RCV.NXT and
+the window as they are when it leaves, and any segment that leaves meanwhile
+clears it.  Sending it restarts no timer.  A frame the driver failed to
+send is still a lost segment, and so is a RST it was too busy for.
 
 The limit ignores bytes already in flight — the usable window is really
 SND.UNA + SND.WND − SND.NXT — and data is sent at SND.NXT.  Both are right only
