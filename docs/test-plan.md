@@ -859,8 +859,7 @@ next reset.
 ### Setting up the runner
 
 The runner `stcp-hwdut` is a VM on the lab's Proxmox cluster, and the
-job's steps, run in it by hand, flash the board and pass.  The job itself
-has not run yet: it waits for `HW_DUT_ENABLED`.  On the Proxmox host:
+job `fuzz-tcp-hw` runs on it every night.  On the Proxmox host:
 
 1. **The DUT's link.**  A bridge on the port the board is cabled to, with
    no address and nothing else on it (`/etc/network/interfaces`):
@@ -960,7 +959,7 @@ and 14.8 KB of RAM.
 | # | Requirement(s) | Description | Priority |
 |---|---|---|---|
 | 1 | REQ-DNS-* | The DNS stub resolver is not implemented; its rows are the bulk of the *not implemented* column (§0) | Medium |
-| 2 | Hardware fixture | The runner on the lab's Proxmox host is set up and its job's steps pass by hand; the nightly job has not run yet (§4).  On a board, only the echo firmware has run: no IPv6, TLS, DTLS, DHCP, mDNS or HTTP suite | Medium |
+| 2 | Hardware fixture | The nightly job runs on the lab's runner (§4).  On a board, only the echo firmware has run: no IPv6, TLS, DTLS, DHCP, mDNS or HTTP suite | Medium |
 | 3 | Code coverage (§0) | `src/dns_wire.c`: the integration tests do not reach `dns_name_decode()` — no module calls it; it is the resolver's — nor the refusal of a received name that runs past the end of the message, uses a reserved label type or is longer than 255 bytes, a name that overflows the writer part-way, and the tiebreak comparison of record data that starts with a name (PTR, NSEC) or holds one after a preference (MX).  `test_dns_wire` covers them | Low |
 | 4 | Code coverage (§0) | `src/net_cksum.c`: `net_cksum_update()`, the incremental update of RFC 1624, has no caller in the stack and is not reached; `test_checksum` verifies it | Low |
 | 5 | REQ-TCP-113/114/117/118/122 | Window Scale, Timestamps, SACK options: not implemented (MAY) | Low |

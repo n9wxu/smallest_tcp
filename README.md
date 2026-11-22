@@ -138,8 +138,7 @@ bundled `sam4e_gmac.c` driver, is the board the test suites run against:
 the ARP, IPv4, ICMP, UDP and TCP conformance suites and the TCP fuzz suite
 pass on it ([test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture)).
 It sits in the lab on a port of its own, behind a self-hosted runner that
-builds the firmware, flashes it and runs those suites; the steps pass
-there by hand, and the nightly job's first run is still to come.  The
+builds the firmware, flashes it and runs those suites every night.  The
 second port, a NUCLEO-F429ZI, is built by CI and has not run.
 
 > ⚠️ **On a new device, suspect the driver first.**  A driver that loses,
