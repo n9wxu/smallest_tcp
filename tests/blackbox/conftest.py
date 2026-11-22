@@ -38,6 +38,14 @@ from scapy.all import (
     get_if_hwaddr, conf,
 )
 
+# On real Ethernet a frame shorter than 60 bytes is padded on the wire — a
+# bare ACK by 6 bytes, a 9-byte UDP echo by 9 — and Scapy would hand the
+# padding to the tests as part of the last layer's payload: an echo with
+# zeros after it, a FIN acknowledged 6 too far.  TAP, veth and feth links
+# never pad, so only a hardware SUT shows it.  The tests look at what the
+# IP length says is there.
+conf.padding = 0
+
 
 # ── Custom marks ───────────────────────────────────────────────────────────────
 
