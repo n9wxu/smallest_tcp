@@ -58,6 +58,10 @@ No source of the protocol modules changes.
   back with zeros behind it and a FIN was acknowledged 6 too far.
   `conftest.py` has Scapy drop the padding.  TAP, veth and feth links never
   pad, so no hosted run showed it.
+- `test_rawsock`'s two kernel-checksum tests failed on Linux 7.0 (GitHub's
+  `ubuntu-latest` is now Ubuntu 26.04): the neighbour entry they send
+  through was installed before the link's carrier came up, and that
+  kernel drops it then.  Each test installs it when it needs it.
 - CI's coverage job reported 85 % of lines where the integration tests
   reach 97 %: since 0.1.11 it counted `api_prefix_app`'s second copy of
   the core, linked under other names and never run.  The report leaves

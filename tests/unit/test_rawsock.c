@@ -188,9 +188,16 @@ static int veth_up(void) {
          sh("sysctl -qw net.ipv6.conf." DRV_IF ".disable_ipv6=1") &&
          sh("sysctl -qw net.ipv6.conf." PEER_IF ".disable_ipv6=1") &&
          sh("ip addr add 10.231.0.1/24 dev " PEER_IF) &&
-         sh("ip neigh replace 10.231.0.2 lladdr 02:00:00:aa:bb:cc dev " PEER_IF
-            " nud permanent") &&
          sh("ip link set " DRV_IF " up") && sh("ip link set " PEER_IF " up");
+}
+
+/** Tell the kernel where FAKE_IP is, so that it sends there without ARP.
+ * Called when the entry is needed and not with the link's set-up: Linux 7.0
+ * drops a neighbour entry, even a permanent one, when the link's carrier
+ * comes up, which is some time after "ip link set up" returns. */
+static int fake_neighbour(void) {
+  return sh("ip neigh replace 10.231.0.2 lladdr 02:00:00:aa:bb:cc dev " PEER_IF
+            " nud permanent");
 }
 
 static void veth_down(void) { sh("ip link del " PEER_IF " 2>/dev/null"); }
@@ -397,6 +404,7 @@ TEST(test_live_kernel_udp_checksum_valid) {
    * must hand the stack a frame whose UDP checksum verifies. */
   rawsock_ctx_t c;
   uint8_t f[1514];
+  ASSERT_TRUE(fake_neighbour());
   ASSERT_EQ(drv_open(&c), 0);
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   ASSERT_TRUE(s >= 0);
@@ -419,6 +427,7 @@ TEST(test_live_kernel_udp_checksum_valid) {
 TEST(test_live_kernel_tcp_checksum_valid) {
   rawsock_ctx_t c;
   uint8_t f[1514];
+  ASSERT_TRUE(fake_neighbour());
   ASSERT_EQ(drv_open(&c), 0);
   int s = socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_TRUE(s >= 0);
