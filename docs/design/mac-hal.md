@@ -8,9 +8,9 @@
 The stack reaches the network hardware through one interface, `net_mac_t`: a
 table of six function pointers.  A driver provides one `const` instance of the
 table per driver *type* (`tap_mac_ops`, `rawsock_mac_ops`, `bpf_mac_ops`,
-`stm32f4_eth_ops`, `stub_mac_ops`); all of its mutable state lives in a
+`stm32f4_eth_ops`, `sam4e_gmac_ops`, `stub_mac_ops`); all of its mutable state lives in a
 context struct the application allocates (`tap_ctx_t`, `rawsock_ctx_t`,
-`bpf_ctx_t`, `stm32f4_eth_ctx_t`) and passes to `net_init()` as
+`bpf_ctx_t`, `stm32f4_eth_ctx_t`, `sam4e_gmac_ctx_t`) and passes to `net_init()` as
 `void *driver_ctx`.  The stack never knows the concrete
 context type, so the tables can live in flash and one driver can serve several
 interfaces.
@@ -102,12 +102,10 @@ unmodified until `eth_input()` returns and the platform releases the DMA
 buffer itself afterwards (REQ-ETH-026: nothing is read from `net->rx.buf`
 on the stack's own account; `net->rx.capacity` still bounds what TCP and
 IPv4 say the host can receive).  None of the bundled drivers work that way;
-the first driver that did — for TinyUSB's network device, outside this tree
-— found that mDNS did not, which is fixed
-([issue 1](https://github.com/n9wxu/smallest_tcp/issues/1)).
+a driver for TinyUSB's network device, outside this tree, does
+([§7](#drivers-on-hardware)).
 
-Such a platform needs no RX buffer at all (REQ-ETH-027,
-[issue 11](https://github.com/n9wxu/smallest_tcp/issues/11)).
+Such a platform needs no RX buffer at all (REQ-ETH-027).
 `net_init(net, NULL, rx_size, ...)` takes `rx_size` as the largest frame
 the driver will deliver: it becomes `net->rx.capacity`, so TCP advertises
 the MSS that size allows, and no memory is reserved for it.  `net_poll()`
@@ -126,10 +124,10 @@ tell them apart.
 | `poll()` | Reads the next frame from the device into its buffer (if not already there) and returns its length | Checks the hardware RX pointer and returns the waiting frame's length, touching no MCU RAM |
 | `peek()` | `memcpy` from its buffer | An SPI/DMA read from the MAC's SRAM at `offset` |
 | `discard()` | Marks its buffer empty | Advances the hardware RX pointer, freeing the slot |
-| Examples | `tap.c`, `rawsock.c`, `bpf.c`, `stm32f4_eth.c` | ENC28J60 over SPI (not written) |
+| Examples | `tap.c`, `rawsock.c`, `bpf.c`, `stm32f4_eth.c`, `sam4e_gmac.c` | ENC28J60 over SPI (not written) |
 
-`stm32f4_eth.c` is a caching driver whose buffers the MAC's DMA fills
-([§6](#stm32f4-ethernet-stm32f4_ethc)).
+`stm32f4_eth.c` and `sam4e_gmac.c` are caching drivers whose buffers the
+MAC's DMA fills ([§6](#sam4e-gmac-sam4e_gmacc)).
 
 Because `net_poll()` copies the whole frame (up to `rx.capacity`), a
 pure-peek driver still moves every byte across its bus, even for frames
@@ -154,11 +152,17 @@ means the frame was not sent.  What happens next depends on the caller:
   in-place forms, `arp_request()` — return the error, and the application may
   try again.  An in-place payload is still in `tx.buf` only until the next
   frame is built there.
-- **TCP** ignores it.  Every segment counts as sent and lost: SYN (an
-  active open's first included), SYN,ACK, data, FIN and window probes are
-  sent again by the retransmission or persist timer
-  ([tcp.md §4.3](tcp.md#43-output-flush-and-send_data)), and a lost ACK or
-  RST is repeated when the peer retransmits.
+- **TCP** returns no error for it.  What a busy driver refused has simply
+  not been sent yet: the connection notes whether it was a SYN (an active
+  open's first included) or data, a FIN, or an ACK, and sends it at the
+  next tick, without waiting for the retransmission timeout (REQ-TCP-184,
+  186; [tcp.md §4.3](tcp.md#43-output-flush-and-send_data)).  A segment
+  the driver failed to send (< 0), and a RST it was too busy for, count as
+  lost on the wire: the retransmission or persist timer sends data again,
+  and an ACK or RST is repeated when the peer retransmits.  So a driver
+  whose link is busy for a moment after every frame — a USB endpoint, a
+  polled bus — needs no transmit queue for TCP's sake, though a short one
+  spares each refused frame the wait for a tick.
 - **Messages the stack sends on its own** — ARP replies, ICMP and ICMPv6
   echo replies and errors, neighbor discovery and MLD messages — are lost, as
   they would be on a congested wire.
@@ -171,11 +175,12 @@ means the frame was not sent.  What happens next depends on the caller:
 | `rawsock.c` | Linux | caching | `AF_PACKET` on an existing interface: a NIC or one end of a veth pair.  Needs root or `CAP_NET_RAW`. |
 | `bpf.c` | macOS | caching | `/dev/bpfN` bound to an interface, typically one end of a `feth` pair. |
 | `stm32f4_eth.c` | STM32F4 (bare metal) | DMA | The ETH peripheral over RMII, the PHY on MDIO; polled.  The NUCLEO-F429ZI port (`boards/nucleo-f429zi`) uses it.  **Not yet run on hardware.** |
+| `sam4e_gmac.c` | SAM4E (bare metal) | DMA | The GMAC peripheral over MII, the PHY on MDIO; polled.  The SAM4E Xplained Pro port (`boards/sam4e-xplained-pro`) uses it: the board of the hardware job, and the one bundled driver that has run on hardware. |
 | `stub.c` | any | — | Does nothing; links the stack for ARM size measurement (`bench/`). |
 
 The three hosted drivers keep a 1514-byte frame buffer in their context (the
-largest Ethernet II frame without FCS); `stm32f4_eth.c` reads the frame
-where the DMA put it.
+largest Ethernet II frame without FCS); `stm32f4_eth.c` and `sam4e_gmac.c`
+read the frame where the DMA put it.
 
 ### Raw socket (`rawsock.c`)
 
@@ -229,10 +234,57 @@ sudo ifconfig feth0 peer feth1
 sudo ifconfig feth0 inet 10.0.0.1/24 up && sudo ifconfig feth1 up
 ```
 
+### SAM4E GMAC (`sam4e_gmac.c`)
+
+A driver for the SAM4E's GMAC peripheral (the Cadence 10/100 MAC; SAM4E
+datasheet §41), written for and run on a SAM4E Xplained Pro — an
+ATSAM4E16E with a KSZ8081MNX PHY — the DUT of the hardware job
+([test-plan.md §4](../test-plan.md#4-hardware-test-fixture)).
+
+- **Model.**  A DMA driver: rings of two-word descriptors — four RX, two
+  TX, the last of each marked as the wrap — each with a 1536-byte buffer
+  in the context (`sam4e_gmac_ctx_t`).  The MAC is told buffers of that
+  size (`DCFGR.DRBS`), so a frame is never split; it stores no frame with
+  an error, and strips the CRC.  `poll()` returns the frame of the current
+  RX descriptor once the MAC has marked it; `peek()` copies from that
+  buffer; `discard()` hands it back.  A MAC that ran out of buffers takes
+  the next frame by itself.  `send()` copies the frame into the next TX
+  buffer, or returns 0 (busy) while the MAC still has it; the MAC pads a
+  short frame and appends the CRC.
+- **The transmitter stalls, and is started again.**  The MAC stops at a
+  descriptor it finds used, and a start bit written while it is still
+  going does nothing.  A second frame queued at that moment — an ACK and
+  the data behind it, 70 µs apart — would stay in the ring until the next
+  one is sent.  `poll()` and `send()` therefore start the transmitter
+  whenever a frame waits and it is idle (`tx_kick()`).
+- **A descriptor is read in the MAC's order.**  The MAC writes a
+  descriptor's status and then marks it ours in the address word, at any
+  moment.  `poll()` reads the mark first and the status only after it:
+  read the other way round, a frame that completes between the two reads
+  has a mark and no length.
+- **Bring-up** (`init`): the peripheral's clock, MII selected
+  (`GMAC_UR`), the address filter (our address, broadcast, and all
+  multicast through a hash of all ones: the stack filters the rest), the
+  rings, the MDIO port, then the PHY's reset and auto-negotiation.
+- **Link.**  As the STM32F4 driver's: `sam4e_gmac_link_poll()`, every
+  half second, reads the PHY's standard registers and gives the MAC the
+  best mode both ends advertised.
+- **Not done.**  Interrupts, checksum offload, the hardware multicast
+  filter, frames larger than one buffer, RMII (the SAM4E's GMAC has MII
+  only).
+
+The board (`boards/sam4e-xplained-pro`) provides the rest: start-up code
+and linker scripts (for flash, and for RAM), the watchdog off, 120 MHz
+from the 12 MHz crystal, SysTick milliseconds, the MII pins, the console on
+the EDBG's virtual COM port, `flash.sh`, and the `tcp_echo_demo` firmware.
+The SAM4E has no random number generator: the firmware seeds the stack
+from the chip's identity and from when the link came up, which is no
+secret — enough for a test fixture, not for a product.
+
 ### STM32F4 Ethernet (`stm32f4_eth.c`)
 
 A driver for the STM32F4's ETH peripheral (RM0090 §33), written for the
-hardware fuzz job's DUT, a NUCLEO-F429ZI, and **not yet run on
+hardware job when its DUT was to be a NUCLEO-F429ZI, and **not yet run on
 hardware**: it builds in CI (`board-nucleo-f429zi`), and its register
 addresses and bits were checked against ST's CMSIS header and legacy HAL,
 but no frame has gone through it.
@@ -267,7 +319,7 @@ but no frame has gone through it.
 The board (`boards/nucleo-f429zi`) provides the rest: start-up code and
 linker script, the 168 MHz clock from the HSI, SysTick milliseconds, the
 RMII pins, the ST-LINK console, and the `tcp_echo_demo` firmware
-([test-plan.md §4](../test-plan.md#4-hardware-test-fixture-recommended)).
+([test-plan.md §4](../test-plan.md#4-hardware-test-fixture)).
 
 ## 7. Writing a driver
 
@@ -290,19 +342,42 @@ RMII pins, the ST-LINK console, and the `tcp_echo_demo` firmware
 Drivers the tree does not have: the ENC28J60 (SPI, pure-peek) and USB
 CDC-ECM (the use case `dhcpv4_server` was written for).
 
-**On hardware.**  The stack's first run on a board was 0.1.10 on an RP2040
-as a USB CDC-ECM/RNDIS network gadget (TinyUSB, FreeRTOS, a macOS host),
-with a driver of about 325 lines outside this tree: ARP, ping, the DHCPv4
-server, mDNS with a DNS-SD service and an HTTP server over 16 connections
-worked, at 457-592 kB/s against lwIP's 516-668 kB/s on the same board
-([issue 6](https://github.com/n9wxu/smallest_tcp/issues/6), with the
-figures and what was not tested).  What that run found is fixed: a frame
-in the driver's own memory (REQ-ETH-026), a busy driver costing TCP a
-retransmission timeout (REQ-TCP-184), a ring buffer's short segments
-(REQ-TCP-185), a simultaneous close waiting for a timer (REQ-TCP-183),
-and names that collide with an application's (`NET_API_PREFIX`,
-[configuration.md §7](configuration.md#7-the-api-under-a-prefix)).  For a
-gadget's point-to-point link, `MDNS_TIEBREAK` 0 saves 0.9 KB
+### Drivers on hardware
+
+Of the bundled drivers for a microcontroller, `sam4e_gmac.c` has run on
+its board.  The drivers the stack runs on in other projects are theirs;
+together they show the two shapes a driver takes:
+
+| Driver | Device and link | Shape |
+|---|---|---|
+| `sam4e_gmac.c`, in this tree | SAM4E Xplained Pro, 10/100 Ethernet | A caching `net_mac_t` on the MAC's DMA (§6).  The one the conformance and fuzz suites run against |
+| `net_glue.c` in [pyro_fw](https://github.com/n9wxu/pyro_fw) | RP2040, a USB CDC-ECM / RNDIS network gadget (TinyUSB) under FreeRTOS | The table's `poll()` reports nothing and `net_poll()` is never called: TinyUSB's receive callback keeps the frame, and the network task hands it to `eth_input()` in TinyUSB's buffer (§3).  `send()` gives the frame to the USB endpoint |
+| `link485.c` in [halfduplex-tcpip](https://github.com/n9wxu/halfduplex-tcpip), also used by [ve.direct-concentrator](https://github.com/n9wxu/ve.direct-concentrator) | SAMD21, the polled slave of an RS-485 master: one Ethernet frame each way per poll | A caching `net_mac_t` (§4): `poll()` returns the frame the last poll carried, and `send()` queues a frame for the next answers, and returns 0 when it has no room |
+
+On the RP2040 (a macOS host) ARP, ping, the DHCPv4 server, mDNS with a
+DNS-SD service and an HTTP server over 16 connections run at 457-592 kB/s
+against lwIP's 516-668 kB/s on the same board
+([the measurements](https://github.com/n9wxu/smallest_tcp/issues/6), with
+what was not tested).  What these links ask of the stack:
+
+- a frame in the driver's own memory (REQ-ETH-026), and no receive buffer
+  reserved for such a driver (REQ-ETH-027);
+- a busy driver costs TCP no retransmission timeout: a SYN or data
+  (REQ-TCP-184), a FIN and an ACK (REQ-TCP-186) go at the next tick;
+- a ring buffer sends full segments across its wrap (REQ-TCP-185), a
+  simultaneous close waits for no timer (REQ-TCP-183), and every data
+  segment carries PSH for a host that delays its ACK of one without
+  (REQ-TCP-187);
+- the API under a prefix, beside an application's own names
+  (`NET_API_PREFIX`,
+  [configuration.md §7](configuration.md#7-the-api-under-a-prefix));
+- on the RS-485 link, whose master drops a frame now and then, a
+  retransmission timeout that follows the measured round trip and comes
+  back down after a loss (RFC 6298, REQ-TCP-091, 099).  Damage on such a
+  link is the link's to repair: that project resends a damaged frame
+  within milliseconds, and TCP's timer stays the end-to-end backstop.
+
+For a gadget's point-to-point link, `MDNS_TIEBREAK` 0 saves 0.9 KB
 ([mdns.md §5](mdns.md)).
 
 ## 8. Future work

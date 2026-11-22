@@ -89,21 +89,21 @@ its summary, so every commit has its own.  The table here is a snapshot:
 | dns | 28 | 0 | 0 | 0 | 28 | 0 |
 | dns-sd | 25 | 25 | 25 | 0 | 0 | 0 |
 | dtls | 47 | 45 | 46 | 1 | 0 | 0 |
-| ethernet | 22 | 22 | 22 | 0 | 0 | 0 |
+| ethernet | 24 | 24 | 24 | 0 | 0 | 0 |
 | http | 51 | 51 | 51 | 0 | 0 | 0 |
 | icmpv4 | 38 | 38 | 38 | 0 | 0 | 0 |
 | icmpv6 | 38 | 38 | 38 | 0 | 0 | 0 |
 | igmp | 13 | 13 | 13 | 0 | 0 | 0 |
 | ipv4 | 71 | 71 | 71 | 0 | 0 | 0 |
 | ipv6 | 50 | 50 | 50 | 0 | 0 | 0 |
-| mdns | 67 | 66 | 66 | 0 | 1 | 0 |
+| mdns | 68 | 67 | 67 | 0 | 1 | 0 |
 | ndp | 57 | 56 | 56 | 1 | 0 | 0 |
 | slaac | 30 | 30 | 30 | 0 | 0 | 0 |
-| tcp | 151 | 145 | 145 | 6 | 0 | 0 |
+| tcp | 155 | 149 | 149 | 6 | 0 | 0 |
 | tftp | 33 | 33 | 33 | 0 | 0 | 0 |
 | tls | 65 | 64 | 64 | 1 | 0 | 0 |
 | udp | 38 | 38 | 38 | 0 | 0 | 0 |
-| **Total** | **1008** | **966** | **967** | **11** | **30** | **0** |
+| **Total** | **1015** | **973** | **974** | **11** | **30** | **0** |
 <!-- end snapshot -->
 
 Reading it: a row counts as verified when a test cites its ID, so the table
@@ -127,7 +127,10 @@ tests alone and reports with [gcovr](https://gcovr.com) the lines and
 branches of `src/` they reach.  The MAC drivers (`src/driver/`) are left
 out, since the scripted link stands in for them, and so is the Mbed TLS
 backend (`src/tls_crypto_mbedtls.c`), which adapts a library and is not
-stack code.  The job's summary has the table of every commit, and its HTML
+stack code.  One build directory is left out too, `api_prefix_app`'s: that
+test links a second copy of the core under other names
+(`NET_API_PREFIX`, §1) and never runs it, and counted, every line of it
+would be one the tests do not reach.  The job's summary has the table of every commit, and its HTML
 report (which lines, which branches) is the artifact
 `coverage-integration`.  Locally:
 
@@ -138,7 +141,8 @@ cmake -S . -B build-cov -DSMALLEST_TCP_COVERAGE=ON
 cmake --build build-cov -j8
 ctest --test-dir build-cov -L integration
 gcovr --root . --filter 'src/' --exclude 'src/driver/' \
-      --exclude 'src/tls_crypto_mbedtls.c' build-cov \
+      --exclude 'src/tls_crypto_mbedtls.c' \
+      --gcov-exclude-directory '.*api_prefix_app\.dir' build-cov \
       --markdown | sed -e 's/🔴 //g' -e 's/🟡 //g' -e 's/🟢 //g'
 #   macOS (Apple clang): add  --gcov-executable "xcrun llvm-cov gcov"
 #   which lines:         add  --html-details build-cov/coverage.html
@@ -154,9 +158,9 @@ job uses, counts lines and branches a little differently):
 <!-- snapshot: the gcovr command above, on macOS -->
 | Metric        | Coverage |
 |---------------|----------|
-| **Lines**     | 7881/8125 (97.0%) |
-| **Functions** | 749/754 (99.3%) |
-| **Branches**  | 4499/5117 (87.9%) |
+| **Lines**     | 7975/8223 (97.0%) |
+| **Functions** | 760/765 (99.3%) |
+| **Branches**  | 4564/5189 (88.0%) |
 
 | File                   | Lines | Functions | Branches |
 |------------------------|-------|-----------|----------|
@@ -165,7 +169,7 @@ job uses, counts lines and branches a little differently):
 | **`src/dhcpv4_server.c`** | 168/169 (99.4%) | 16/16 (100.0%) | 111/113 (98.2%) |
 | **`src/dhcpv4_wire.h`** | 77/78 (98.7%) | 10/10 (100.0%) | 36/44 (81.8%) |
 | **`src/dhcpv6_client.c`** | 318/321 (99.1%) | 22/22 (100.0%) | 173/198 (87.4%) |
-| **`src/dns_wire.c`** | 243/275 (88.4%) | 26/27 (96.3%) | 120/150 (80.0%) |
+| **`src/dns_wire.c`** | 238/275 (86.5%) | 26/27 (96.3%) | 117/150 (78.0%) |
 | **`src/dtls.c`** | 690/715 (96.5%) | 57/58 (98.3%) | 404/465 (86.9%) |
 | **`src/eth.c`** | 44/45 (97.8%) | 4/4 (100.0%) | 23/24 (95.8%) |
 | **`src/http.c`** | 682/686 (99.4%) | 53/53 (100.0%) | 523/586 (89.2%) |
@@ -175,13 +179,13 @@ job uses, counts lines and branches a little differently):
 | **`src/igmp.c`** | 88/94 (93.6%) | 9/9 (100.0%) | 45/57 (78.9%) |
 | **`src/ipv4.c`** | 278/294 (94.6%) | 28/29 (96.6%) | 163/195 (83.6%) |
 | **`src/ipv6.c`** | 256/260 (98.5%) | 25/25 (100.0%) | 155/165 (93.9%) |
-| **`src/mdns.c`** | 1091/1104 (98.8%) | 86/86 (100.0%) | 739/822 (89.9%) |
+| **`src/mdns.c`** | 1077/1090 (98.8%) | 87/87 (100.0%) | 730/812 (89.9%) |
 | **`src/mld.c`** | 123/127 (96.9%) | 13/13 (100.0%) | 76/82 (92.7%) |
 | **`src/ndp.c`** | 208/211 (98.6%) | 18/18 (100.0%) | 118/125 (94.4%) |
-| **`src/net.c`** | 112/116 (96.6%) | 13/13 (100.0%) | 26/40 (65.0%) |
+| **`src/net.c`** | 117/118 (99.2%) | 13/13 (100.0%) | 32/42 (76.2%) |
 | **`src/net_cksum.c`** | 39/44 (88.6%) | 8/9 (88.9%) | 10/10 (100.0%) |
 | **`src/net_text.c`** | 12/12 (100.0%) | 1/1 (100.0%) | 10/10 (100.0%) |
-| **`src/tcp.c`** | 829/863 (96.1%) | 101/101 (100.0%) | 443/519 (85.4%) |
+| **`src/tcp.c`** | 932/968 (96.3%) | 110/110 (100.0%) | 514/599 (85.8%) |
 | **`src/tcp_buf_saw.c`** | 83/84 (98.8%) | 14/14 (100.0%) | 24/26 (92.3%) |
 | **`src/tftp.c`** | 277/281 (98.6%) | 28/28 (100.0%) | 151/168 (89.9%) |
 | **`src/tls.c`** | 347/357 (97.2%) | 33/33 (100.0%) | 202/224 (90.2%) |
@@ -191,7 +195,7 @@ job uses, counts lines and branches a little differently):
 | **`src/tls_keys.c`** | 117/122 (95.9%) | 14/14 (100.0%) | 33/38 (86.8%) |
 | **`src/tls_server.c`** | 442/459 (96.3%) | 21/21 (100.0%) | 257/295 (87.1%) |
 | **`src/tls_tcp.c`** | 20/20 (100.0%) | 5/5 (100.0%) | 9/12 (75.0%) |
-| **`src/udp.c`** | 150/153 (98.0%) | 18/18 (100.0%) | 57/66 (86.4%) |
+| **`src/udp.c`** | 155/158 (98.1%) | 19/19 (100.0%) | 57/66 (86.4%) |
 <!-- end snapshot -->
 
 Reading it: every protocol module has an integration suite, so each file's
@@ -717,13 +721,13 @@ programs run in their own source tree, which they insist on.
 
 | Job | Workflow | Runner | Tests | Trigger |
 |---|---|---|---|---|
-| `cmake-ipv4-only` | ci.yml | ubuntu-latest | ctest on an IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`); then library-only builds without TCP and without UDP | push/PR |
+| `cmake-ipv4-only` | ci.yml | ubuntu-latest | ctest on an IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`); library-only builds without TCP and without UDP; then the same build and ctest with every external name under a prefix (`-DSMALLEST_TCP_API_PREFIX=stcp_`) | push/PR |
 | `cmake-ipv6-only` | ci.yml | ubuntu-latest | ctest on an IPv6-only build (`-DSMALLEST_TCP_IPV4=OFF`): the suites that need no IPv4, TLS, and the checks that the IPv4-only protocols refuse to compile; then library-only builds without TCP and without UDP | push/PR |
 | `cmake-linux` | ci.yml | ubuntu-latest | ctest (dual stack, TLS): unit and integration tests | push/PR |
 | `cmake-macos` | ci.yml | macos-latest | ctest (dual stack, TLS): unit and integration tests | push/PR |
 | `cmake-linux` (root step) | ci.yml | ubuntu-latest | `sudo test_rawsock`: raw-socket driver live tests on a veth pair | push/PR |
 | `traceability` | ci.yml | ubuntu-latest | `scripts/trace.py --strict --markdown`: every integration test cites a requirement, every cited ID exists, every test a row names exists and cites it, every MUST row is cited by a test or says why none can verify it; the summary is the requirements coverage (§0) | push/PR |
-| `coverage` | ci.yml | ubuntu-latest | An instrumented build (`-DSMALLEST_TCP_COVERAGE=ON`), `ctest -L integration`, gcovr: line and branch coverage of `src/` (without the MAC drivers and the Mbed TLS backend) by the integration tests (§0); the HTML report is an artifact | push/PR |
+| `coverage` | ci.yml | ubuntu-latest | An instrumented build (`-DSMALLEST_TCP_COVERAGE=ON`), `ctest -L integration`, gcovr: line and branch coverage of `src/` (without the MAC drivers, the Mbed TLS backend and `api_prefix_app`'s unused copy of the core) by the integration tests (§0); the HTML report is an artifact | push/PR |
 | `blackbox-linux` | ci.yml | ubuntu-latest | Linux sanity (arping/ping/nc) + Scapy full conformance via `run_blackbox.sh` — once over TAP, once over the raw socket | push/PR |
 | `blackbox-validate` | ci.yml | ubuntu-latest | Same Scapy suites against Linux kernel reference SUT (`socat` echo); `-m "not sut_specific"` | push/PR |
 | `blackbox-ipv6` | ci.yml | ubuntu-latest | IPv6 / ICMPv6 / NDP / DAD / UDP / TCP / SLAAC / DHCPv6 suite against dual-stack `tcp_echo_demo`, then DHCPv6 interop with dnsmasq (TAP, raw socket); and against an IPv6-only `tcp_echo_demo` (TAP) | push/PR |
@@ -733,12 +737,12 @@ programs run in their own source tree, which they insist on.
 | `blackbox-tls` | ci.yml | ubuntu-latest | TLS 1.3 server, client and HTTPS suites against `tls_echo_demo`, `tls_client_demo`, `https_demo` with Python ssl, OpenSSL 3 and curl (TAP, raw socket) | push/PR |
 | `blackbox-dtls` | ci.yml | ubuntu-latest | DTLS 1.3 server and client suites against `dtls_echo_demo`, `dtls_client_demo` with wolfSSL, built from its pinned release by `build_wolfssl.sh` and cached (TAP, raw socket) | push/PR |
 | `arm-size` | ci.yml | ubuntu-latest | `make arm-size-all`: Cortex-M0 size benchmark (UDP, UDP+TCP, UDP+mDNS, UDP+HTTP, dual stack, IPv6 only, TLS and DTLS server-only and both roles), then `arm-check-division` — fails if any object calls a library divide — and `arm-check-links` — fails if TLS's objects need DTLS's record layer or DTLS's TLS's | push/PR |
-| `board-nucleo-f429zi` | ci.yml | ubuntu-latest | Builds the NUCLEO-F429ZI `tcp_echo_demo.elf` of the hardware fuzz job (§4) — build only | push/PR |
+| `board-sam4e-xplained-pro`, `board-nucleo-f429zi` | ci.yml | ubuntu-latest | Build each board port's `tcp_echo_demo.elf`, the firmware of the hardware job (§4) — build only | push/PR |
 | `fetchcontent` | ci.yml | ubuntu-latest | Builds and runs `examples/fetchcontent` against the checkout | push/PR |
 | `release-check` | ci.yml | ubuntu-latest | `scripts/release.py check` (version, `[Unreleased]`, a trial stamp); CMake and the library report the version | push/PR |
 | `release` | release.yml | ubuntu-latest | Commits the next version, tags it and publishes the release for every push to `main` that passes CI ([release-process.md](release-process.md)) | CI completed on main |
 | `fuzz-tcp-linux` | fuzz.yml | ubuntu-latest | Scapy fuzz + post-fuzz conformance (TAP, raw socket) | Nightly 02:00 UTC |
-| `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Scapy fuzz and conformance on a NUCLEO-F429ZI (§4) | Nightly (when enabled) |
+| `fuzz-tcp-hw` | fuzz.yml | self-hosted, hw-dut | Flashes the board (a SAM4E Xplained Pro), then Scapy fuzz and the ARP, IPv4, ICMP, UDP and TCP conformance suites against it (§4) | Nightly and on request, when enabled |
 
 The Linux blackbox jobs and the nightly fuzz run as a two-leg matrix,
 one leg per MAC driver.  `tests/blackbox/sut_net.sh up tap|raw` builds the
@@ -762,78 +766,192 @@ Tests marked `@pytest.mark.sut_specific` are excluded from `blackbox-validate` b
 
 ---
 
-## 4. Hardware Test Fixture (Recommended)
+## 4. Hardware Test Fixture
+
+### What has run on hardware
+
+**The suites of this plan, against a board.**  The DUT is a SAM4E Xplained
+Pro (`boards/sam4e-xplained-pro`, the bundled driver `sam4e_gmac.c`).  The
+ARP, IPv4, ICMPv4, UDP and TCP conformance suites (47 tests) and the TCP
+fuzz suite at 500 iterations pass against it, from the lab's runner, with
+the firmware booted from flash.  A real wire differs from the hosted links
+in ways the tests allow for: a frame under 60 bytes arrives padded, which
+TAP, veth and feth never do, so `conftest.py` has Scapy drop the padding
+(`conf.padding = 0`) and no test counts it as payload.
+
+**The stack, in other projects' firmware.**  Three projects run it on
+Cortex-M0+ boards, each with a driver of its own: over a USB network
+gadget on an RP2040, and over a polled RS-485 link on a SAMD21
+([mac-hal.md §7](design/mac-hal.md#drivers-on-hardware),
+[README](../README.md#-where-it-runs)).  What those links ask of the stack
+is covered by integration tests (§0): the tests citing REQ-ETH-026 and
+027, REQ-TCP-091, 099, 100 and 183..187, and REQ-MDNS-081.
+
+Not yet on a board: IPv6, TLS, DTLS, the DHCP clients, the stack's HTTP
+server and mDNS over Ethernet (the firmware is the TCP and UDP echo); and
+the NUCLEO-F429ZI port, which is built and has never run.
 
 ### Purpose
 
-Validate the stack on real embedded hardware to catch issues that the
-TAP-based software tests cannot detect:
-- Interrupt-driven Ethernet DMA timing
-- Stack/heap exhaustion on small MCUs
-- Hardware checksum offload paths
+A board on a wire, tested every night, catches what the TAP-based tests
+cannot:
+- A real MAC and PHY: padding, the DMA's timing, a link that goes down
+- Stack and RAM use on a microcontroller
 - Real-silicon clock drift affecting RTO
 
-### Recommended BOM
+### The fixture
 
-| Component | Recommendation | Role |
+| Part | What | Role |
 |---|---|---|
-| **Runner host** | Raspberry Pi 5 (4 GB) or x86 mini-PC with a second Ethernet port | Runs the GitHub Actions self-hosted runner; `eth1` faces the DUT |
-| **DUT** | NUCLEO-F429ZI | STM32F429ZI (Cortex-M4) with the ETH MAC and a LAN8742A PHY on board, and an ST-LINK/V2-1 for SWD and a virtual COM port — the one board the port supports (`boards/nucleo-f429zi`) |
-| **Cabling** | Direct cable, or a small unmanaged switch | Runner `eth1` and the DUT on one link |
-
-**Estimated cost: about $30 for the DUT**, plus the runner.  The board
-needs both an Ethernet MAC and a PHY: an STM32F446 has no MAC, and the
-STM32F4-Discovery no PHY.  A USB relay to cut the DUT's power is optional:
-the job resets it over SWD.
-
-### Wiring Topology
+| **DUT** | SAM4E Xplained Pro | ATSAM4E16E (Cortex-M4, 1 MB flash, 128 KB RAM) with the GMAC and a KSZ8081MNX PHY on board, and an EDBG debugger: CMSIS-DAP for flashing and reset, and a virtual COM port for the console, on one USB cable |
+| **Runner** | A VM on the lab's Proxmox host | The GitHub Actions self-hosted runner, labels `self-hosted`, `hw-dut` |
+| **Link** | A port of the host for the DUT alone, on a bridge with no address | The runner's second interface and the DUT are the only two on it |
 
 ```
-┌───────────────────────────────────────────────┐
-│  Self-hosted runner                            │
-│  eth0 ─── LAN ─── GitHub                       │
-│  eth1 (10.0.0.100/24) ──── NUCLEO-F429ZI RJ45  │  the DUT at 10.0.0.2
-│  USB ───────────────────── NUCLEO ST-LINK      │  SWD + /dev/ttyACM0
-└───────────────────────────────────────────────┘
+┌──────────────────────── Proxmox host ───────────────────────────┐
+│  vmbr0 ── lab network ── GitHub                                  │
+│    │                                                             │
+│  ┌─┴────────── runner VM ──────────┐                             │
+│  │ eth0   the lab, and GitHub      │                             │
+│  │ eth1   no address (HW_DUT_IFACE)├── vmbr-dut ── NIC port ─────┼── RJ45 of the board
+│  │ /dev/ttyACM0, CMSIS-DAP         ├── USB passed through ───────┼── "DEBUG USB" (EDBG)
+│  └─────────────────────────────────┘                             │
+└──────────────────────────────────────────────────────────────────┘
+        tests speak as 10.0.0.100 (no host has it); the DUT is 10.0.0.2
 ```
+
+The DUT's link is kept off the lab network on purpose.  The tests send
+forged and malformed segments, the fuzz suite thousands of them; every
+demo and every board uses the same MAC address (02:00:00:de:ad:01) and the
+same 10.0.0.2; and a switch that runs spanning tree forwards nothing for
+some seconds after the board's link comes up.  The board's second USB
+connector ("TARGET USB") is not used.
 
 ### The firmware
 
-`boards/nucleo-f429zi` is the board port, with the MAC driver
-`src/driver/stm32f4_eth.c` ([mac-hal.md §6](design/mac-hal.md#6-bundled-drivers)):
-start-up code, linker script, the 168 MHz clock from the HSI, SysTick,
-USART3 on the ST-LINK's virtual COM port, the RMII pins, and
-`tcp_echo_demo` — TCP and UDP echo on port 7 at 10.0.0.2 (IPv6 too), the
-default MAC 02:00:00:de:ad:01, "ready" on the console (115200 8N1) once the
-link is up, LD1 lit with the link.
+`boards/sam4e-xplained-pro` is the board port
+([mac-hal.md §6](design/mac-hal.md#sam4e-gmac-sam4e_gmacc)): TCP and UDP
+echo on port 7 at 10.0.0.2 (IPv6 too), "ready" on the console (115200 8N1)
+once the link is up, LED0 lit with the link.
 
 ```sh
 cmake -S . -B build-arm -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-      -DSMALLEST_TCP_BOARD=nucleo-f429zi -DCMAKE_BUILD_TYPE=MinSizeRel
+      -DSMALLEST_TCP_BOARD=sam4e-xplained-pro -DSMALLEST_TCP_TLS=OFF \
+      -DCMAKE_BUILD_TYPE=MinSizeRel
 cmake --build build-arm --target tcp_echo_demo     # build-arm/tcp_echo_demo.elf
-openocd -f interface/stlink.cfg -f target/stm32f4x.cfg \
-        -c "program build-arm/tcp_echo_demo.elf verify reset exit"
+boards/sam4e-xplained-pro/flash.sh build-arm/tcp_echo_demo.elf
+boards/sam4e-xplained-pro/flash.sh --reset         # start it afresh
 ```
 
-**Status: built, not run on hardware.**  CI builds it on every push
-(`board-nucleo-f429zi`); the register addresses and bits are checked
-against ST's CMSIS header and legacy HAL; no frame has gone through it.
-The first run on a board is the test.  MinSizeRel: 16.4 KB of flash and
-14.8 KB of RAM, 9.3 KB of it the driver's DMA rings and frame buffers.
+`flash.sh` drives OpenOCD (0.12, with CMSIS-DAP over HID) through the
+EDBG: erase, write, verify, set GPNVM bit 1 — without which the chip boots
+its SAM-BA ROM, not the flash — and reset.  MinSizeRel: 17.3 KB of flash
+and 14.8 KB of RAM, 9.3 KB of it the driver's DMA rings and frame buffers.
 
-### GitHub Actions Integration
+**The ERASE jumper must be off.**  Fitted, it holds the flash erased:
+OpenOCD's writes are accepted and none is kept, verification reads 0xff
+everywhere, and the board enumerates on its TARGET USB as the SAM-BA
+bootloader (03eb:6124).  A build can be run without the flash —
+`-DSAM4E_XPLAINED_RAM=ON`, then `flash.sh --ram
+build-arm/tcp_echo_demo.elf` loads it into RAM and starts it, until the
+next reset.
 
-Add the self-hosted runner with labels `[self-hosted, hw-dut]` to the
-repository, and set the Actions variable `HW_DUT_ENABLED = true` (and
-`HW_DUT_SERIAL` if the virtual COM port is not `/dev/ttyACM0`).
+### Setting up the runner
 
-The `fuzz.yml` workflow's `fuzz-tcp-hw` job then:
-1. Cross-compiles the firmware with `arm-none-eabi-gcc` through
-   `cmake/arm-none-eabi.cmake` and `-DSMALLEST_TCP_BOARD=nucleo-f429zi`
-2. Flashes it with OpenOCD and waits for "ready" on the serial port
-3. Runs the TCP fuzz suite over `eth1`
-4. Resets the DUT over SWD, waits for "ready" again, and runs the ARP,
-   IPv4, ICMP, UDP and TCP conformance suites
+The runner `stcp-hwdut` is a VM on the lab's Proxmox cluster, and the
+job's steps, run in it by hand, flash the board and pass.  The job itself
+has not run yet: it waits for `HW_DUT_ENABLED`.  On the Proxmox host:
+
+1. **The DUT's link.**  A bridge on the port the board is cabled to, with
+   no address and nothing else on it (`/etc/network/interfaces`):
+
+   ```
+   auto vmbr-dut
+   iface vmbr-dut inet manual
+       bridge-ports enp3s0        # the port the board is on
+       bridge-stp off
+       bridge-fd 0
+   ```
+
+   Cable the board straight to that port, as it is in the lab.  It also
+   works through a switch shared with other machines, but the tests put forged and fuzzed segments and the
+   addresses 10.0.0.2 and 10.0.0.100 on that segment, and every demo has
+   the same MAC address.
+2. **The VM.**  Ubuntu 24.04 (the cloud image, with cloud-init for the
+   user and its key), two cores, 2 GB.  `net0` on the lab bridge,
+   `net1` on `vmbr-dut`; the EDBG passed through by its USB ID, which
+   carries the debugger and the console together:
+
+   ```sh
+   qm set <vmid> --net1 virtio,bridge=vmbr-dut
+   qm set <vmid> --usb0 host=03eb:2111
+   ```
+
+   A container would need the USB device, its tty and raw sockets mapped
+   in by hand; a VM needs none of that.
+3. **In the VM.**  The toolchain and tools, and access to the probe and the
+   console for the runner's user, which also needs `sudo` without a
+   password (the job brings the interface up and runs Scapy as root):
+
+   ```sh
+   sudo apt-get install -y build-essential cmake gcc-arm-none-eabi \
+        libnewlib-arm-none-eabi openocd python3-venv iproute2 libpcap0.8t64 \
+        linux-image-generic
+   echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="03eb", ATTR{idProduct}=="2111", MODE="0660", GROUP="plugdev"' \
+        | sudo tee /etc/udev/rules.d/60-edbg.rules
+   sudo usermod -aG plugdev,dialout <runner user>
+   ```
+
+   `linux-image-generic` and a reboot give the cloud image the `cdc_acm`
+   driver its own kernel lacks: without it there is no `/dev/ttyACM0`.
+   The second interface is `ens19` there, not `eth1`.
+
+   Then, by hand, what the job will do: build, `flash.sh`, `ready` on
+   `/dev/ttyACM0`, and one suite with `--iface` the second interface.
+4. **The runner.**  Register a GitHub Actions self-hosted runner for the
+   repository with the labels `self-hosted` and `hw-dut`, as a service.
+   On a public repository, also require approval for the workflows of
+   every outside contributor (Settings → Actions → General): a pull
+   request from a fork may rewrite a workflow to run on this runner.
+5. **The repository's Actions variables.**
+
+   | Variable | Default | |
+   |---|---|---|
+   | `HW_DUT_ENABLED` | — | `true` turns the job on |
+   | `HW_DUT_BOARD` | `sam4e-xplained-pro` | The board port (`boards/<name>`, with its `flash.sh`) |
+   | `HW_DUT_IFACE` | `eth1` | The runner's interface on the DUT's link |
+   | `HW_DUT_SERIAL` | `/dev/ttyACM0` | The console |
+   | `HW_DUT_PROBE` | — | The EDBG's serial number, with more than one CMSIS-DAP probe on the host |
+
+6. **A first run** from the Actions tab: *Fuzz — Nightly TCP Robustness*,
+   *Run workflow*.
+
+The job `fuzz-tcp-hw` (`fuzz.yml`) then, every night:
+1. Cross-compiles the firmware
+2. Flashes it and waits for "ready" on the console, then for an ARP reply
+3. Runs the TCP fuzz suite
+4. Resets the DUT through the debugger, waits for "ready" again, and runs
+   the ARP, IPv4, ICMP, UDP and TCP conformance suites
+
+**It runs nightly and on request, not on a push or a pull request**, for
+two reasons.  The repository is public, and a self-hosted runner must
+never build what a fork's pull request sends: `fuzz.yml` has no such
+trigger.  And a release must not wait on a board in a lab: `release.yml`
+releases what `ci.yml` passed, and a runner that is switched off would
+hold its job, and the release, for a day.  A failed night shows on the
+Actions page like any other.
+
+A board that no longer answers its debugger needs its power cycled by
+hand, or by a USB relay on its supply.
+
+### The NUCLEO-F429ZI
+
+`boards/nucleo-f429zi`, with `stm32f4_eth.c`, is the other board port:
+`HW_DUT_BOARD=nucleo-f429zi` and an ST-LINK in place of the EDBG.  **Built,
+not run on hardware**: CI builds it on every push (`board-nucleo-f429zi`),
+its register addresses and bits are checked against ST's CMSIS header and
+legacy HAL, and no frame has gone through it.  MinSizeRel: 17.8 KB of flash
+and 14.8 KB of RAM.
 
 ---
 
@@ -842,7 +960,7 @@ The `fuzz.yml` workflow's `fuzz-tcp-hw` job then:
 | # | Requirement(s) | Description | Priority |
 |---|---|---|---|
 | 1 | REQ-DNS-* | The DNS stub resolver is not implemented; its rows are the bulk of the *not implemented* column (§0) | Medium |
-| 2 | Hardware fixture | Procure BOM, set up self-hosted runner; the STM32F4 port has not run on a board (§4) | Medium |
+| 2 | Hardware fixture | The runner on the lab's Proxmox host is set up and its job's steps pass by hand; the nightly job has not run yet (§4).  On a board, only the echo firmware has run: no IPv6, TLS, DTLS, DHCP, mDNS or HTTP suite | Medium |
 | 3 | Code coverage (§0) | `src/dns_wire.c`: the integration tests do not reach `dns_name_decode()` — no module calls it; it is the resolver's — nor the refusal of a received name that runs past the end of the message, uses a reserved label type or is longer than 255 bytes, a name that overflows the writer part-way, and the tiebreak comparison of record data that starts with a name (PTR, NSEC) or holds one after a preference (MX).  `test_dns_wire` covers them | Low |
 | 4 | Code coverage (§0) | `src/net_cksum.c`: `net_cksum_update()`, the incremental update of RFC 1624, has no caller in the stack and is not reached; `test_checksum` verifies it | Low |
 | 5 | REQ-TCP-113/114/117/118/122 | Window Scale, Timestamps, SACK options: not implemented (MAY) | Low |

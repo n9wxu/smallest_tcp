@@ -101,9 +101,9 @@ one iteration per second.
 | ARP | `gateway_mac_s`, `arp_carry_ms`; `arp_recent[].ms_left` | `NET_ARP_GATEWAY_TIMEOUT_MS` (5 min) from the gateway's last reply; 1 s per target requested | `gateway_mac_valid` = 0; the target may be requested again |
 | IPv4 reassembly | 32 bits in the reassembly buffer | `IPV4_REASM_TIMEOUT_MS` (60 s) from a datagram's first fragment | Discard the partial datagram; ICMP Time Exceeded if fragment zero came |
 | IGMP | `igmp_delay_ms[]` per group, `igmp_v1_ms` | random in (0, the query's Max Response Time]; 400 s after an IGMPv1 query | Membership Report for the group; IGMPv2 messages again |
-| TCP connection | `timer_ms` (`timer` = retransmit), `rto_ms`, `retransmits` | RTO starts at `NET_DEFAULT_TCP_RTO_INIT_MS` (1 s), doubles per expiry up to `NET_DEFAULT_TCP_RTO_MAX_MS` (60 s); 3 s for data once a SYN had to be retransmitted | Resend the SYN, the data from SND.UNA, or the FIN; the third reports `TCP_EVT_SOFT_ERROR`; the expiry after the R2-th retransmission (8, or `tcp_set_max_retransmits()`) sends RST and reports `TCP_EVT_ERROR` — a passive open returns to LISTEN instead |
+| TCP connection | `timer_ms` (`timer` = retransmit), `rto_ms`, `retransmits` | RTO starts at `NET_DEFAULT_TCP_RTO_INIT_MS` (1 s) and is then computed from the measured round trip, SRTT + max(G, 4 × RTTVAR), between `NET_DEFAULT_TCP_RTO_MIN_MS` (1 s) and `NET_DEFAULT_TCP_RTO_MAX_MS` (60 s); it doubles per expiry until the next measurement; 3 s for data once a SYN had to be retransmitted | Resend the SYN, the data from SND.UNA, or the FIN; the third reports `TCP_EVT_SOFT_ERROR`; the expiry after the R2-th retransmission (8, or `tcp_set_max_retransmits()`) sends RST and reports `TCP_EVT_ERROR` — a passive open returns to LISTEN instead |
 | TCP connection, TIME-WAIT | `timer_ms` (`timer` = TIME-WAIT) | 2 × `NET_DEFAULT_TCP_MSL_MS` (4 min) | CLOSED, `TCP_EVT_CLOSED` |
-| TCP connection, zero window | `timer_ms` (`timer` = persist), `persist_ms` | from 1 s, doubling to 60 s | Send a one-byte window probe |
+| TCP connection, zero window | `timer_ms` (`timer` = persist), `persist_ms` | from the retransmission timeout as it stands, doubling to 60 s | Send a one-byte window probe |
 | IPv6 address | `dad_timer_ms` | random 0–1 s before the link-local probe; 1 s between probes | Next DAD probe, or the address becomes PREFERRED |
 | IPv6 router discovery | `router_solicit_ms`, `router_solicits_left` | random 0–1 s, then 4 s; up to 3 | Next Router Solicitation |
 | MLD | `query_reply_ms`, `report_repeat_ms`, `v1_querier_left_s` | random within the query's maximum response delay; 1 s; 260 s | Report; repeat a change report; leave MLDv1 mode |
@@ -121,10 +121,15 @@ by 250 per millisecond, the 4 µs clock of initial sequence numbers
 ([tcp.md §4.6](tcp.md#46-initial-sequence-numbers)); it is a clock, not a
 timer, and never fires.
 
-TCP has no delayed-ACK timer (an ACK goes out as soon as data arrives) and no
-round-trip-time estimator: the RTO is not measured (RFC 6298's smoothed RTT is
-not implemented), and once doubled it stays doubled for the life of the
-connection.
+TCP has no delayed-ACK timer: an ACK goes out as soon as data arrives.  It
+measures the round trip of one segment at a time (RFC 6298), counting the
+milliseconds in `conn_tick()` as the timers are counted, so the measurement
+is as fine as the interval between calls of `net_tick()` and no finer:
+`NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS` (100 ms) must be at least that
+interval ([tcp.md §5.1](tcp.md)).  A tick is also when TCP sends what the
+driver was too busy to take — a SYN, data, a FIN or an ACK (REQ-TCP-184,
+186) — so on a link whose driver is often busy, a USB endpoint's for one,
+the tick period is the delay such a frame waits.
 
 ## 4. Semantics of `elapsed_ms`
 

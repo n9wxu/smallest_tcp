@@ -9,7 +9,8 @@ recipe.
 ## 1. The pattern
 
 1. **Initialise the stack.**  `net_init()` with two frame buffers and a MAC
-   driver, then open the driver (`driver->init(ctx)` — `net_init()` does not),
+   driver (or no receive buffer, for a driver that calls `eth_input()`:
+   §6), then open the driver (`driver->init(ctx)` — `net_init()` does not),
    then seed the random generator with real entropy:
    `net_random_seed(&net, entropy, len)`.  For IPv6, `ipv6_start(&net)`.
 2. **Initialise the module** with its `*_init()` function: its state
@@ -38,7 +39,8 @@ static void dhcp_port(net_t *n, uint32_t src_ip, uint16_t src_port,
 }
 ```
 
-`payload` points into `net->rx.buf` and is valid only during the call
+`payload` points into the received frame — in `net->rx.buf`, or in the
+driver's own memory (§6) — and is valid only during the call
 ([udp.md §3](design/udp.md#3-port-tables)); every module parses it in place
 and copies what it keeps.  A module may send its reply from inside the call:
 replies are built in `net->tx.buf`, a separate buffer.
@@ -308,7 +310,86 @@ The hosted demos do the same through `demo/common/demo_loop.h`
 (`demo_net_open()`, `demo_run()` with per-demo tick and service hooks); each
 demo's `main.c` is a working example of one or more modules.
 
-## 6. Randomness
+## 6. On a device
+
+What the firmware that runs the stack needed beyond the recipe above
+([README](../README.md#-where-it-runs) names the projects).
+
+**The driver, in one of two shapes.**
+
+- *The stack asks for frames.*  A `net_mac_t` table whose `poll()`,
+  `peek()` and `discard()` give `net_poll()` one frame at a time, which it
+  copies into the receive buffer
+  ([mac-hal.md §2](design/mac-hal.md#2-interface)).  This fits a MAC or a
+  link with a frame store of its own: the bundled drivers, an RS-485 link
+  that carries a frame per poll.
+- *The platform hands frames over.*  Where a USB stack or a DMA
+  descriptor already holds each frame in memory, call
+  `eth_input(&net, frame, len)` with it and skip the copy; the frame must
+  stay unchanged until the call returns.  `net_poll()` is then never
+  called, and the receive buffer is not needed:
+
+  ```c
+  /* no RX buffer: 1514 is the largest frame the driver delivers */
+  net_init(&net, NULL, 1514, tx_buf, sizeof tx_buf, mac, &usb_mac_ops, NULL);
+  ...
+  eth_input(&net, usb_frame, usb_len); /* once per received frame */
+  ```
+
+  The size still matters: it is what TCP's MSS, TFTP's block size and the
+  DHCP checks are worked out from (REQ-ETH-027).  The table still supplies
+  `send()`; its `poll()` may return 0.
+
+Either way, **`send()` returns 0 when the link cannot take a frame now**,
+and < 0 only for a failure.  TCP sends what was refused at the next tick
+(REQ-TCP-184, 186), so a link that is busy for a moment after every frame
+needs no transmit queue to keep connections moving
+([mac-hal.md §5](design/mac-hal.md#5-transmit-net_transmit)).  UDP and
+ARP sends return `NET_ERR_BUSY` to their caller.
+
+**The tick.**  Call `net_tick()` at least every
+`NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS` (100 ms), or raise that setting to
+your interval: TCP measures its round trip in ticks.  A shorter interval
+— the examples use 10 ms — also shortens the wait of a frame a busy
+driver refused ([timer-model.md §3](design/timer-model.md)).
+
+**The sources, compiled with your settings.**  A firmware build usually
+has its own flags and wants no second build system.  List the sources
+you use — the core's by transport
+([configuration.md §5](design/configuration.md#5-compile-time-protocol-selection)),
+and one or more files per module — and compile them and your application
+with the same `NET_USE_*` and table-size settings, which change `net_t`
+([configuration.md §3](design/configuration.md#3-library-and-application-must-agree)).
+With CMake, FetchContent can fetch a release without building it
+([README](../README.md#cmake-fetchcontent-recommended)).  A bootloader and
+an application with different settings each need their own copy of the
+objects.
+
+**Names of your own.**  If the firmware, or another stack it still
+carries, has a `net_init()` or a `tcp_write()`, build the stack and every
+file that includes its headers with `NET_API_PREFIX` (`stcp_`, say): the
+stack's functions are then `stcp_net_init()` and so on, while your source
+goes on writing `net_init()` wherever the header that declares it is
+included ([configuration.md §7](design/configuration.md#7-the-api-under-a-prefix)).
+
+**Buffers of your own for TCP.**  A connection reaches its memory through
+two tables, `tcp_txbuf_ops_t` and `tcp_rxbuf_ops_t`; the bundled
+stop-and-wait buffers are one implementation, and an application with
+rings already — an HTTP server's, a serial bridge's — can give the tables
+over them and leave `tcp_buf_saw.c` out
+([tcp-buffer.md §6](design/tcp-buffer.md#6-writing-another-implementation)).
+
+**A point-to-point link.**  On a USB network gadget the device is the
+only other host: the DHCPv4 server gives the computer its address, and
+mDNS can be built with `MDNS_TIEBREAK=0`, 0.9 KB smaller
+([mdns.md §5](design/mdns.md)).
+
+**A link that damages frames** should repair them itself, by its own
+checksum and a retry: TCP's retransmission timeout is at least a second
+(RFC 6298), by design, and ARP, ICMP and UDP have no retransmission at
+all.
+
+## 7. Randomness
 
 `net_init()` seeds the stack's one generator from the MAC address, which is
 unique per device but public.  TCP initial sequence numbers, DHCPv4 and

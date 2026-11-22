@@ -15,8 +15,10 @@ A general-purpose, portable TCP/IP stack in C99 with:
 - Abstract MAC interface — the stack is transport-agnostic (TAP, raw socket, feth+BPF, an MCU's Ethernet MAC, ENC28J60, CDC-ECM, …)
 - Errors caught early — at compile time where possible, then at link time, then at run time (configuration is `#define`s; buffer sizes come from the buffers the application passes in, and the init functions check them)
 
-The use case it is validated against is a TCP/IP bootloader on a small
-MCU, but the stack is general-purpose: DHCP, TFTP, mDNS, HTTP, TLS.
+The use case it was first written for is a TCP/IP bootloader on a small
+MCU, but the stack is general-purpose: DHCP, TFTP, mDNS, HTTP, TLS.  It
+now runs in the firmware of three other projects — a TFTP bootloader among
+them ([In use](#in-use)).
 
 ## Target Platforms
 
@@ -28,7 +30,8 @@ The stack scales from tiny MCUs to hosted environments:
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | Best cost/capability ratio, RISC-V, QFN20/TSSOP20 |
 | CH32V203 | 32+224 KB | 10 KB | ~$0.50 | Better TinyUSB support, RISC-V |
 | STM32F042 | 32 KB | 6 KB | ~$1.00 | Mature ecosystem, QFN20 |
-| STM32F429 (NUCLEO-F429ZI) | 2 MB | 256 KB | ~$30 (board) | The board port, with the on-chip Ethernet MAC |
+| ATSAM4E16E (SAM4E Xplained Pro) | 1 MB | 128 KB | ~$40 (board) | The board the hardware job tests on, with the on-chip Ethernet MAC |
+| STM32F429 (NUCLEO-F429ZI) | 2 MB | 256 KB | ~$30 (board) | A second board port; built, not run |
 | Linux/macOS | unlimited | unlimited | — | Development and test via TAP, raw socket or feth+BPF |
 
 ## Architecture
@@ -54,9 +57,9 @@ The stack scales from tiny MCUs to hosted environments:
 ├──────────────────────────────────────────────┤
 │  MAC driver interface (net_mac.h)            │  ← abstract: function pointers
 ├──────────────┬─────────────┬─────────────────┤
-│ tap.c        │ bpf.c       │ stm32f4_eth.c,  │  ← one per platform
-│ rawsock.c    │ (macOS,     │ or yours (e.g.  │
-│ (Linux)      │  feth pair) │ ENC28J60, SPI)  │
+│ tap.c        │ bpf.c       │ sam4e_gmac.c,   │  ← one per platform
+│ rawsock.c    │ (macOS,     │ stm32f4_eth.c,  │
+│ (Linux)      │  feth pair) │ or yours        │
 └──────────────┴─────────────┴─────────────────┘
 ```
 
@@ -172,20 +175,30 @@ application seeds ([docs/architecture.md §9](docs/architecture.md#9-randomness)
 - `read()`/`write()` raw Ethernet frames (reads prefixed with `bpf_hdr`)
 - Host assigns IP to `feth0`
 
+**SAM4E** (`sam4e_gmac.c`, `boards/sam4e-xplained-pro`): the on-chip
+Ethernet MAC and DMA over MII, with start-up code, clocks, a flash script
+and a `tcp_echo_demo` firmware.  The DUT of the hardware job: the
+conformance and fuzz suites pass against it.
+
 **STM32F4** (`stm32f4_eth.c`, `boards/nucleo-f429zi`): the on-chip Ethernet
-MAC and DMA over RMII, with start-up code, clocks and a `tcp_echo_demo`
-firmware.  Built in CI; not run on hardware.
+MAC and DMA over RMII, with the same firmware.  Built in CI; not run on
+hardware.
+
+**In other projects**, with their own drivers: a USB network gadget
+(CDC-ECM / RNDIS, TinyUSB) on an RP2040, whose frames go to `eth_input()`
+in the USB stack's memory, and a polled RS-485 link on a SAMD21, a
+`net_mac_t` driver ([mac-hal.md §7](docs/design/mac-hal.md#drivers-on-hardware)).
 
 ## Scope: Implemented
 
 | Layer | What | Files | Design |
 |---|---|---|---|
 | Core | `net_t`; `net_init()`, `net_poll()`, `net_tick()`, `net_transmit()`; the keyed-hash random generator; the Internet checksum; byte-order access | `net.c`, `net_cksum.c`, `net_endian.h`, `net_config.h` | [architecture](docs/architecture.md), [memory-model](docs/design/memory-model.md), [configuration](docs/design/configuration.md), [checksum](docs/design/checksum.md), [byte-order](docs/design/byte-order.md), [timer-model](docs/design/timer-model.md) |
-| MAC drivers | The six-function interface; TAP and raw socket (Linux), BPF (macOS), STM32F4 Ethernet, a stub | `net_mac.h`, `src/driver/` | [mac-hal](docs/design/mac-hal.md) |
+| MAC drivers | The six-function interface; TAP and raw socket (Linux), BPF (macOS), SAM4E and STM32F4 Ethernet, a stub | `net_mac.h`, `src/driver/` | [mac-hal](docs/design/mac-hal.md) |
 | Link | Ethernet II; ARP without a cache | `eth.c`, `arp.c` | [arp-resolution](docs/design/arp-resolution.md) |
 | IPv4 | Host IPv4 with options skipped, every broadcast form, the MTU and MMS_R/MMS_S, reassembly in an application buffer; ICMP echo and errors, received errors passed to the transports; multicast reception and IGMPv2 | `ipv4.c`, `icmp.c`, `igmp.c` | [architecture §5–§6](docs/architecture.md#5-receive-path) |
 | IPv6 | Header and extension headers, ICMPv6 (errors sent under a rate limit, received errors passed to the transports), Neighbor Discovery with Duplicate Address Detection, router discovery and SLAAC, MLDv2/v1; dual stack or IPv6 alone | `ipv6.c`, `icmpv6.c`, `ndp.c`, `mld.c` | [ipv6](docs/design/ipv6.md) |
-| Transport | UDP with port tables; TCP with the full state machine, stop-and-wait buffers, retransmission and persist timers, RFC 6528 initial sequence numbers — both over IPv4 and IPv6 | `udp.c`, `tcp.c`, `tcp_buf_saw.c` | [udp](docs/design/udp.md), [tcp](docs/design/tcp.md), [tcp-buffer](docs/design/tcp-buffer.md) |
+| Transport | UDP with port tables; TCP with the full state machine, stop-and-wait buffers, retransmission (the timeout from the measured round trip, RFC 6298) and persist timers, RFC 6528 initial sequence numbers — both over IPv4 and IPv6 | `udp.c`, `tcp.c`, `tcp_buf_saw.c` | [udp](docs/design/udp.md), [tcp](docs/design/tcp.md), [tcp-buffer](docs/design/tcp-buffer.md) |
 | Configuration | DHCPv4 client and a one-client server; DHCPv6 client, stateless and stateful | `dhcpv4_client.c`, `dhcpv4_server.c`, `dhcpv6_client.c` | [dhcpv4](docs/design/dhcpv4.md), [ipv6](docs/design/ipv6.md) |
 | File transfer | TFTP client (read requests, blksize, netascii) | `tftp.c` | [tftp](docs/design/tftp.md) |
 | Discovery | mDNS responder with DNS-SD, over IPv4 and IPv6 | `mdns.c`, `dns_wire.c` | [mdns](docs/design/mdns.md) |
@@ -196,9 +209,9 @@ firmware.  Built in CI; not run on hardware.
 ### Measured size
 
 On Cortex-M0 ([size-comparison.md](docs/design/size-comparison.md)): a UDP
-echo is 4,110 B of flash, UDP + TCP 8,932 B, UDP + HTTP (with TCP)
-15,310 B, UDP + mDNS 14,156 B, dual-stack UDP 9,497 B, IPv6-only UDP
-6,465 B; the TLS 1.3 protocol is 7,476 B for a server, DTLS 1.3 11,271 B —
+echo is 4,122 B of flash, UDP + TCP 9,328 B, UDP + HTTP (with TCP)
+15,726 B, UDP + mDNS 14,168 B, dual-stack UDP 9,509 B, IPv6-only UDP
+6,477 B; the TLS 1.3 protocol is 7,476 B for a server, DTLS 1.3 11,271 B —
 with **no** stack-internal static state at all: every byte of RAM is
 application-owned.
 
@@ -210,6 +223,20 @@ through its API and the wire and cite the rows they verify; a bug becomes
 a failing test before its fix.  Quality is measured by requirements
 coverage and by the code coverage of the black-box integration tests, both
 reported by CI ([test-plan.md §0](docs/test-plan.md#0-policy-and-the-integration-tests)).
+
+### In use
+
+Three projects run the stack in their firmware, on Cortex-M0+ boards
+([README](README.md#-where-it-runs)): rocket flight computers that appear
+as a USB network adapter and serve their pages by name (RP2040), a TCP/IP
+link over one RS-485 pair, and a device on that link that puts four serial
+ports on TCP (SAMD21).  They use IPv4, ARP, ICMP, IGMP, UDP, TCP, TFTP,
+the DHCPv4 server and the mDNS responder.  Their links shaped the driver
+interface: a frame taken in the driver's own memory, a busy driver retried
+at the next tick, the API under a prefix beside an application's own
+names, buffers of the application's own, and a retransmission timeout that
+follows the measured round trip.  Damage on a link is the link's to
+repair: TCP's timer stays as RFC 6298 has it.
 
 ## Scope: Left Out by Design
 
@@ -239,9 +266,9 @@ says **deviation** and what the stack does instead:
 | DNS | The stub resolver (A and AAAA lookups through a recursive server) | Requirements written ([dns.md](docs/requirements/dns.md)); `dns_wire.c` is the wire format it shares with mDNS |
 | mDNS | A querier (resolving `.local` names) and DNS-SD browsing | [mdns.md §2](docs/design/mdns.md) |
 | TCP | Congestion control (RFC 5681); delayed ACK and Nagle; window scale, timestamps and SACK (RFC 7323); keep-alive; RFC 5961 challenge ACKs | [tcp.md §8](docs/design/tcp.md#8-not-implemented-and-known-gaps): one segment in flight stands in for congestion control |
-| TCP buffers | A ring buffer and a packet list, for more than one segment in flight | Designed in [tcp-buffer.md §5](docs/design/tcp-buffer.md) |
-| Hardware | The STM32F4 port run on a board, and the nightly hardware fuzz job with it | Firmware built in CI; fixture described in [test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture-recommended) |
-| MAC drivers | ENC28J60 (SPI), USB CDC-ECM; checksum offload; scatter-gather transmit | [mac-hal.md §8](docs/design/mac-hal.md) |
+| TCP buffers | A ring buffer and a packet list, for more than one segment in flight | Designed in [tcp-buffer.md §5](docs/design/tcp-buffer.md); an application's own ring already fits the interface (`copy_segment()`), one segment in flight |
+| Hardware | The nightly hardware job's runner in the lab; IPv6, TLS, DTLS and the application protocols on a board; the STM32F4 port run at all | The conformance and fuzz suites pass against a SAM4E Xplained Pro from a desk; the runner's set-up is in [test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture).  The stack also runs on RP2040 and SAMD21 boards in other projects |
+| MAC drivers | ENC28J60 (SPI), USB CDC-ECM in this tree (a TinyUSB driver exists in a project that uses the stack); checksum offload; scatter-gather transmit | [mac-hal.md §7, §8](docs/design/mac-hal.md) |
 | Timers | Tickless operation (`net_next_event_ms()`) | What it takes is in [timer-model.md §7](docs/design/timer-model.md) |
 | IPv6 | Fragment reassembly; a neighbour cache with unreachability detection; Redirects; the RA's MTU option; DHCPv6 Confirm, Decline, Reconfigure, Rapid Commit | [ipv6.md §13](docs/design/ipv6.md) |
 | IPv4 | Address conflict detection after an address is in use (RFC 5227); the DHCPv4 client probes an offered address once | [dhcpv4.md §7](docs/design/dhcpv4.md) |

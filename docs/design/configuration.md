@@ -73,6 +73,7 @@ offsets and corrupt each other's memory.
 | `NET_USE_IPV4` | `net_t` (the IPv4 address, mask, gateway and its MAC, `mcast_groups`, the IPv4 port table), `tcp_conn_t` (`remote_ip`), `http_request_t` (`remote_ip`), and which functions exist |
 | `NET_USE_IPV6` | `net_t` (the `ip6` block, `mcast6_groups`, the IPv6 port table and error handler), `tcp_conn_t`, `http_request_t`, `http_conn_t`, and which functions exist |
 | `NET_USE_UDP`, `NET_USE_TCP` | `net_t` (port tables and error handlers, connection table and the TCP clock) |
+| `NET_API_PREFIX` | No layout, but every external name (§7): a file compiled without it calls functions the library does not have, which is a link error |
 | `NET_MAX_MCAST_GROUPS`, `NET_MAX_MCAST6_GROUPS` | `net_t` (group arrays; IGMP's operations and timers) |
 | `NET_ARP_RATE_SLOTS` | `net_t` (`arp_recent[]`) |
 | `NET_IPV6_ADDRS` | `net_t` (`ip6.addr[]`) |
@@ -107,8 +108,10 @@ to scattered `-D` flags: one file, included by every translation unit.
 | `NET_ARP_GATEWAY_TIMEOUT_MS` | 300000 | How long a gateway MAC learned by ARP stays valid without a new reply (RFC 1122 §2.3.2.1). |
 | `NET_ARP_RATE_SLOTS` | 2 | ARP targets remembered so that none is requested more than once a second (RFC 1122 §2.3.2.1); at least 1; `net_t` holds them. |
 | `NET_DEFAULT_MAC` | 02:00:00:de:ad:01 | Used when `net_init()` is given a NULL MAC.  A locally administered address for development; production devices pass their own. |
-| `NET_DEFAULT_TCP_RTO_INIT_MS` | 1000 | Initial retransmission timeout and first zero-window probe interval. |
-| `NET_DEFAULT_TCP_RTO_MAX_MS` | 60000 | Ceiling for the doubling retransmission and probe intervals. |
+| `NET_DEFAULT_TCP_RTO_INIT_MS` | 1000 | The retransmission timeout of a connection until its first round trip has been measured (RFC 6298 §2.1). |
+| `NET_DEFAULT_TCP_RTO_MIN_MS` | 1000 | The least a retransmission timeout computed from the measured round trip may be (RFC 6298 §2.4). |
+| `NET_DEFAULT_TCP_RTO_MAX_MS` | 60000 | Ceiling for the retransmission timeout, measured or doubled, and for the zero-window probe interval. |
+| `NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS` | 100 | The clock granularity G that RFC 6298 §2.3 adds to the smoothed round trip: RTO = SRTT + max(G, 4 × RTTVAR).  At least the interval between the application's calls of `net_tick()`, which is the resolution of both the measurement and the timer ([tcp.md §5.1](tcp.md)). |
 | `NET_DEFAULT_TCP_MSL_MS` | 120000 | Maximum segment lifetime; TIME-WAIT lasts 2 × MSL. |
 
 `NET_IPV4(a, b, c, d)` builds a host-order IPv4 address for these defaults;
@@ -161,8 +164,8 @@ stack does not do them or does not choose them:
 - Which application protocols are built in (DHCP, TFTP, mDNS, HTTP, TLS):
   they are selected by linking (§5).
 - Run-time assertions: there are none.
-- A DNS server (there is no resolver), a minimum RTO or a delayed-ACK time
-  (TCP has no RTT estimator and acknowledges at once), ARP retries (the
+- A DNS server (there is no resolver), a delayed-ACK time (TCP
+  acknowledges at once), ARP retries (the
   stack does not retry ARP; the application does — see
   [arp-resolution.md](arp-resolution.md)).
 
@@ -179,7 +182,7 @@ layer can be left out, not both: an IPv6-only build (`NET_USE_IPV4` 0, CMake
 UDP and TCP keep only their IPv6 halves, and mDNS answers over IPv6 with
 AAAA records only (`mdns_init()` refuses an A record).  The DHCPv4 client
 and server and TFTP run only over IPv4 and are not built; DHCPv6, mDNS, HTTP
-and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,465 bytes, 3.0 KB
+and TLS are.  On Cortex-M0 a UDP echo over IPv6 alone is 6,477 bytes, 3.0 KB
 less than the dual stack ([size-comparison.md](size-comparison.md)).
 
 The dispatch calls are references, so **linking IPv4 or IPv6 pulls in `udp.o`
@@ -213,7 +216,7 @@ unused module is simply not linked.  In CMake each is its own library:
 | `smallest_tcp::tls` | TLS 1.3, and DTLS 1.3 with `SMALLEST_TCP_DTLS` ([tls.md](tls.md), [dtls.md](dtls.md)); no dependencies |
 | `smallest_tcp::tls_tcp`, `::https` | A TLS connection carried over a TCP connection, and HTTPS (`http_tls.c`) (TCP) |
 | `smallest_tcp::tls_mbedtls` | The Mbed TLS crypto backend (`SMALLEST_TCP_TLS`) |
-| `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf`, `::driver_stm32f4_eth` | Platform MAC drivers (`SMALLEST_TCP_BUILD_DRIVERS`; the last when cross-compiling for ARM) |
+| `smallest_tcp::driver_tap`, `::driver_rawsock`, `::driver_bpf`, `::driver_sam4e_gmac`, `::driver_stm32f4_eth` | Platform MAC drivers (`SMALLEST_TCP_BUILD_DRIVERS`; the last two when cross-compiling for ARM) |
 
 ## 6. Run-time values
 
@@ -256,8 +259,7 @@ included.  It is a setting like those of §3: the library and every file
 that includes its headers must agree, whether it comes from `-D` or from
 `NET_CONFIG_FILE`.
 
-A file is given the macros of the headers it includes and no others
-([issue 10](https://github.com/n9wxu/smallest_tcp/issues/10)).  A file that
+A file is given the macros of the headers it includes and no others.  A file that
 includes `net.h` and `tcp.h` but not `http.h` keeps its own
 `http_server_init()`: the HTTP server's names are renamed only where
 `http.h` is included.  Where a header is included, its plain names mean the
@@ -277,5 +279,4 @@ under a header that does not declare it, or has a header with names that
 does not include it — or, in a build with a prefix, an external name
 without the prefix.  CI builds and tests everything with a prefix.  `api_prefix_links_beside_own_names` links the
 core, built with `stcp_`, into a program with a `net_init()`, `net_poll()`,
-`tcp_write()` and `udp_send()` of its own
-([issue 3](https://github.com/n9wxu/smallest_tcp/issues/3)).
+`tcp_write()` and `udp_send()` of its own.

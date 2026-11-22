@@ -21,9 +21,15 @@ everything it stores or fetches.  The implementation is chosen per
 connection; each lives in its own source file, so a build links only the ones
 it uses.
 
-There is one implementation, stop-and-wait (`tcp_buf_saw.c`, REQ-TCP-145).
-The ring buffer (REQ-TCP-146) and packet list (REQ-TCP-147) in section 5 are
-designs only: `tcp_buf.h` declares neither.
+There is one implementation in the tree, stop-and-wait (`tcp_buf_saw.c`,
+REQ-TCP-145).  The ring buffer (REQ-TCP-146) and packet list (REQ-TCP-147)
+in section 5 are designs only: `tcp_buf.h` declares neither.  An
+application may bring its own (section 6), and one does: the firmware that
+runs the stack over USB
+([mac-hal.md §7](mac-hal.md#drivers-on-hardware)) carries its HTTP
+server's 2 kB rings through the two tables, without `tcp_buf_saw.c`, and
+`copy_segment()` (REQ-TCP-185) is there because its ring wraps.  Still one
+segment in flight: that is `tcp.c`'s, not the buffer's.
 
 ---
 
@@ -69,9 +75,8 @@ SND.NXT, the buffer keeps bytes, and the two stay in step by these rules:
 `next_segment()` returns one pointer and one length, so a ring buffer can
 offer only the bytes up to the end of its memory: every wrap makes a short
 segment, and with one segment in flight each short segment is a round trip
-— a 2,048-byte ring alternated segments of 1,460 and 588 bytes for the
-whole of a download
-([issue 4](https://github.com/n9wxu/smallest_tcp/issues/4)).  Such a
+— a 2,048-byte ring would alternate segments of 1,460 and 588 bytes for
+the whole of a download.  Such a
 buffer gives `copy_segment()` instead: `tcp.c` hands it the place of the
 payload in `net->tx.buf` and the buffer copies up to `mss` bytes there, in
 as many pieces as it holds them.  The count of copies is unchanged — the
@@ -192,7 +197,7 @@ advertised.
 
 ### 4.3 RAM and throughput
 
-A connection costs its `tcp_conn_t` (104 bytes on Cortex-M0, 120 with IPv6),
+A connection costs its `tcp_conn_t` (124 bytes on Cortex-M0, 144 with IPv6),
 two 12-byte contexts, and the TX and RX memory.  The frame buffers in `net_t`
 are separate and shared by every connection.
 

@@ -81,7 +81,7 @@ that finds none is refused with RST.
 
 | | Cortex-M0 |
 |---|---:|
-| `http_conn_t` | 220 B (240 dual stack) |
+| `http_conn_t` | 240 B (264 dual stack) |
 | `http_server_t` | 36 B |
 
 plus each slot's TCP buffers and request buffer (and, for HTTPS, a

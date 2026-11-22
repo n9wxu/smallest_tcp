@@ -10,6 +10,59 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+A second board port, on which the conformance suites run; and the
+documentation brought up to the code and to the projects that now use it.
+No source of the protocol modules changes.
+
+### Added
+
+- `src/driver/sam4e_gmac.c`, a MAC driver for the SAM4E's GMAC (MII, a PHY
+  on MDIO, polled), and `boards/sam4e-xplained-pro`: the `tcp_echo_demo`
+  firmware for the SAM4E Xplained Pro, with `flash.sh` (OpenOCD through
+  the EDBG) and a link for RAM (`-DSAM4E_XPLAINED_RAM=ON`).  The ARP, IPv4,
+  ICMP, UDP and TCP conformance suites and the TCP fuzz suite pass against
+  the board ([test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture)).
+  CMake target `smallest_tcp::driver_sam4e_gmac`; CI builds the firmware.
+- The nightly hardware job (`fuzz-tcp-hw`) takes its board, interface,
+  console and probe from Actions variables (`HW_DUT_BOARD`, default
+  `sam4e-xplained-pro`; `HW_DUT_IFACE`, `HW_DUT_SERIAL`, `HW_DUT_PROBE`),
+  flashes through `boards/<board>/flash.sh`, and waits for the board to
+  answer ARP before it tests.
+
+### Changed
+
+- The documents say where the stack runs — three projects' firmware, on
+  RP2040 and SAMD21 boards over USB and RS-485 — and what a device needs
+  that the hosted demos do not: a driver that calls `eth_input()`, the
+  sources compiled with the project's own settings, names under a prefix,
+  TCP buffers of the application's own (README,
+  [integrating-modules.md §6](docs/integrating-modules.md#6-on-a-device),
+  [mac-hal.md §7](docs/design/mac-hal.md#drivers-on-hardware)).
+- The documents describe the stack as it is: what earlier releases fixed
+  is in this file and in the repository's history, not in the README or
+  the design documents.
+- Sizes measured again on Cortex-M0, from a clean build: they had stood
+  since 0.1.11.  A UDP echo is 4,122 B of flash (2.4 times smaller than
+  lwIP's, not 2.5), UDP + TCP 9,328 B, UDP + HTTP 15,726 B; `tcp_conn_t`
+  is 124 bytes and `http_conn_t` 240, and a dual-stack `net_t` 272.
+- `configuration.md` lists `NET_DEFAULT_TCP_RTO_MIN_MS` and
+  `NET_DEFAULT_TCP_CLOCK_GRANULARITY_MS`; it, `timer-model.md`,
+  `architecture.md` and `mac-hal.md` no longer say that TCP has no
+  round-trip estimator or that a segment a busy driver refused waits for
+  the retransmission timer.
+
+### Fixed
+
+- The blackbox suites counted Ethernet padding as payload: against a SUT
+  on a real wire, where a frame under 60 bytes is padded, a UDP echo came
+  back with zeros behind it and a FIN was acknowledged 6 too far.
+  `conftest.py` has Scapy drop the padding.  TAP, veth and feth links never
+  pad, so no hosted run showed it.
+- CI's coverage job reported 85 % of lines where the integration tests
+  reach 97 %: since 0.1.11 it counted `api_prefix_app`'s second copy of
+  the core, linked under other names and never run.  The report leaves
+  that directory out, and the test plan's command with it.
+
 ## [0.1.13] - 2026-10-18
 
 ### Changed

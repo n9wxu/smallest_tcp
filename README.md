@@ -9,7 +9,7 @@
 
 ## ✨ What Is This?
 
-**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — IPv4 and IPv6, TCP, UDP, DHCP, TFTP, mDNS + DNS-SD, HTTP, TLS 1.3 — using **zero dynamic memory allocation** and fitting in as little as **4.1 KB of flash**.
+**smallest_tcp** is a ground-up TCP/IP network stack written in portable C99.  It's designed for one audacious goal: give *any* device with a MAC interface a full networking capability — IPv4 and IPv6, TCP, UDP, DHCP, TFTP, mDNS + DNS-SD, HTTP, TLS 1.3 — using **zero dynamic memory allocation** and fitting in as little as **4.1 KB of flash**.  It runs in the firmware of three other projects, on Cortex-M0+ boards over USB and RS-485 ([where it runs](#-where-it-runs)).
 
 Whether you're building a TCP/IP bootloader on a chip with 1 KB of RAM, adding network connectivity to a $0.20 RISC-V MCU, or prototyping protocol logic on your laptop — this stack has you covered.
 
@@ -32,21 +32,21 @@ Measured on ARM Cortex-M0 (`-Os -mthumb`, `arm-none-eabi-gcc` 13.2), UDP echo se
 
 | Metric | smallest_tcp | lwIP (same features) | Ratio |
 |---|---|---|---|
-| **Flash** | **4,110 B** | 10,089 B | **2.5× smaller** |
+| **Flash** | **4,122 B** | 10,089 B | **2.4× smaller** |
 | **RAM** | **720 B** (600 = app buffers) | 2,619 B | **3.6× smaller** |
-| Stack-only code (objects) | **4,882 B** | 10,087 B | **2.1× smaller** |
+| Stack-only code (objects) | **4,894 B** | 10,087 B | **2.1× smaller** |
 | Stack-internal state | **0 B** | ~2,619 B | — |
 
 The stack itself has **no static state**: everything it keeps lives in `net_t` and in structures your application declares and sizes.  The object total includes IPv4 reassembly (about 800 B), which lwIP's build has switched off and which is linked only when the application gives it a buffer.
 
 | Configuration (`make` target) | Flash (.text) | RAM |
 |---|---:|---:|
-| UDP echo (`arm-size`) | 4,110 B | 720 B |
-| UDP + TCP echo (`arm-size-tcp`) | 8,932 B | 1,116 B |
-| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 14,156 B | 832 B |
-| UDP + HTTP server, with TCP (`arm-size-http`) | 15,310 B | 1,760 B |
-| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 9,497 B | 832 B |
-| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 6,465 B | 760 B |
+| UDP echo (`arm-size`) | 4,122 B | 720 B |
+| UDP + TCP echo (`arm-size-tcp`) | 9,328 B | 1,136 B |
+| UDP + mDNS/DNS-SD responder (`arm-size-mdns`) | 14,168 B | 832 B |
+| UDP + HTTP server, with TCP (`arm-size-http`) | 15,726 B | 1,780 B |
+| UDP echo, dual stack IPv4 + IPv6 with ICMPv6, ND, SLAAC, MLD (`arm-size-ipv6`) | 9,509 B | 832 B |
+| UDP echo, IPv6 only: no ARP, IPv4 or ICMP (`arm-size-ipv6-only`) | 6,477 B | 760 B |
 | TLS 1.3 protocol, server only (`arm-size-tls`) | 7,476 B | 448 B per connection + record buffers |
 | TLS 1.3 protocol, client and server (`arm-size-tls`) | 11,088 B | 448 B per connection + record buffers |
 | DTLS 1.3 protocol, server only (`arm-size-dtls`) | 11,271 B | 904 B per connection + buffers |
@@ -69,33 +69,33 @@ tests reach ([test-plan.md §0](docs/test-plan.md#0-policy-and-the-integration-t
 
 | Measure | Snapshot | Produced by |
 |---|---|---|
-| **Requirements coverage** — MUST rows verified by a test | 967 of 1008 by a test, 966 of them by a black-box test (through the API or on the wire); of the other 41, 11 state what no test can observe and 30 belong to what is not implemented (28 of them the DNS resolver's); none is left without a test or the reason there is none | `python3 scripts/trace.py` (CI job `traceability`, which fails if one is) |
-| **Code coverage** — `src/` reached by the black-box integration tests alone | 97.0 % of lines, 87.9 % of branches | gcovr on a `-DSMALLEST_TCP_COVERAGE=ON` build after `ctest -L integration` (CI job `coverage`) |
+| **Requirements coverage** — MUST rows verified by a test | 974 of 1015 by a test, 973 of them by a black-box test (through the API or on the wire); of the other 41, 11 state what no test can observe and 30 belong to what is not implemented (28 of them the DNS resolver's); none is left without a test or the reason there is none | `python3 scripts/trace.py` (CI job `traceability`, which fails if one is) |
+| **Code coverage** — `src/` reached by the black-box integration tests alone | 97.0 % of lines, 88.0 % of branches | gcovr on a `-DSMALLEST_TCP_COVERAGE=ON` build after `ctest -L integration` (CI job `coverage`) |
 
 The figures are a snapshot; the test plan has the tables per requirement
 document and per source file, and the commands that regenerate them.
 
-Everything compiles with `-Wall -Wextra -Werror -pedantic`.  CI runs the unit and integration tests on Linux and macOS, in dual-stack, IPv4-only and IPv6-only builds, and checks that a configuration which cannot work refuses to build.  The blackbox conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4, mDNS/DNS-SD, HTTP, IPv6, TLS server and client, HTTPS, DTLS server and client) run the demos on a live link — on every push on Linux, over both the TAP and the raw-socket driver, and by hand on macOS (feth) — with interop checks against Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`), dnsmasq (DHCPv6), OpenSSL, Python ssl and curl (TLS 1.3), and wolfSSL (DTLS 1.3).  A TCP fuzz suite runs nightly.
+Everything compiles with `-Wall -Wextra -Werror -pedantic`.  CI runs the unit and integration tests on Linux and macOS, in dual-stack, IPv4-only and IPv6-only builds and with every external name under a prefix (`NET_API_PREFIX`), and checks that a configuration which cannot work refuses to build.  The blackbox conformance suites (ARP, IPv4, ICMPv4, UDP, TCP, DHCPv4, mDNS/DNS-SD, HTTP, IPv6, TLS server and client, HTTPS, DTLS server and client) run the demos on a live link — on every push on Linux, over both the TAP and the raw-socket driver, and by hand on macOS (feth) — with interop checks against Avahi (over IPv4 and IPv6), macOS (discover the device, browse to `http://pyro-dead01.local/`), dnsmasq (DHCPv6), OpenSSL, Python ssl and curl (TLS 1.3), and wolfSSL (DTLS 1.3).  A TCP fuzz suite runs nightly.
 
 ### 🧩 Components
 
 | Component | File(s) | Requirements | Description |
 |---|---|---|---|
-| Core context | `net.h` / `net.c` / `net_version.h` | — | `net_init()`, `net_poll()`, `net_tick()`, `net_transmit()`, random numbers (HalfSipHash-2-4 under a secret key, seeded with any number of bytes), defaults from `net_config.h`, the version |
+| Core context | `net.h` / `net.c` / `net_version.h` / `net_rename.h` | — | `net_init()` (with or without a receive buffer), `net_poll()`, `net_tick()`, `net_transmit()`, every external name under a prefix of your choice (`NET_API_PREFIX`), random numbers (HalfSipHash-2-4 under a secret key, seeded with any number of bytes), defaults from `net_config.h`, the version |
 | Byte order | `net_endian.h` | — | Portable wire read/write + host/network conversion |
 | Checksum | `net_cksum.h` / `net_cksum.c` | [checksum](docs/requirements/checksum.md) | RFC 1071 Internet checksum — incremental (pieces of any length), one-shot, verify |
-| Ethernet | `eth.h` / `eth.c` | [ethernet](docs/requirements/ethernet.md) | Ethernet II parse/build, protocol dispatch; our own frames looped back dropped |
+| Ethernet | `eth.h` / `eth.c` | [ethernet](docs/requirements/ethernet.md) | Ethernet II parse/build, protocol dispatch; our own frames looped back dropped; `eth_input()` takes a frame in the driver's own memory |
 | ARP | `arp.h` / `arp.c` | [arp](docs/requirements/arp.md) | Requests for our address answered, gateway MAC learning (expiring after 5 minutes), next-hop choice, requests rate-limited; no cache |
 | IPv4 | `ipv4.h` / `ipv4.c` | [ipv4](docs/requirements/ipv4.md) | Parse/build/send, protocol dispatch, every broadcast form of our network, sources that name no host refused, source routes dropped, reassembly in an application buffer, the MTU (`net_t.mtu`, MMS_S/MMS_R), ICMP Protocol Unreachable |
 | ICMPv4 | `icmp.h` / `icmp.c` | [icmpv4](docs/requirements/icmpv4.md) | Echo reply (ping, truncated to fit), destination unreachable, Time Exceeded on reassembly timeout, errors received passed to UDP and TCP, checksum validation |
 | UDP | `udp.h` / `udp.c` | [udp](docs/requirements/udp.md) | Parse/send (the MTU at most), port table dispatch, pseudo-header checksum, ICMP Port Unreachable; the destination address and ICMP and ICMPv6 errors to the application, TTL and TOS per datagram |
-| **TCP** | **`tcp.h` / `tcp.c`** | [tcp](docs/requirements/tcp.md) | **Full state machine, retransmit (data + FIN; R1 reported, R2 per connection), MSS (and Path MTU from ICMP), window updates, persist timer, in-order delivery, close with the FIN queued behind unsent data — and in every state, a listener that outlives a failed handshake, RFC 6528 initial sequence numbers, ICMP soft and hard errors, TOS; application-owned connection table** |
-| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | [tcp](docs/requirements/tcp.md) | Stop-and-wait TX + RX buffers |
+| **TCP** | **`tcp.h` / `tcp.c`** | [tcp](docs/requirements/tcp.md) | **Full state machine, retransmit (data + FIN; R1 reported, R2 per connection) with the timeout computed from the measured round trip (RFC 6298), what a busy driver refused sent at the next tick, MSS (and Path MTU from ICMP), window updates, persist timer, in-order delivery, close with the FIN queued behind unsent data — and in every state, a listener that outlives a failed handshake, RFC 6528 initial sequence numbers, ICMP soft and hard errors, TOS; application-owned connection table** |
+| TCP buffer | `tcp_buf.h` / `tcp_buf_saw.c` | [tcp](docs/requirements/tcp.md) | The buffer interface a connection sends and receives through — your own rings fit it — and the stop-and-wait TX + RX buffers |
 | **DHCPv4** | **`dhcpv4_client.h/.c`** `dhcpv4_server.h/.c` | [dhcpv4](docs/requirements/dhcpv4.md) | **RFC 2131 client state machine (DISCOVER→OFFER→REQUEST→ACK/NAK), the offered address probed with ARP and declined if in use, options in `file`/`sname` and split options joined; minimal server for one client; option callback API** |
 | TFTP | `tftp.h` / `tftp.c` | [tftp](docs/requirements/tftp.md) | RFC 1350 TFTP client — block-read, octet and netascii, blksize option, adaptive retransmission timeout, error handling |
 | Multicast + IGMP | `ipv4.c` / `igmp.h` / `igmp.c` | [igmp](docs/requirements/igmp.md) | Fixed-size group table (224.0.0.1 always joined), multicast RX, per-packet TTL, IGMPv2 host: join/leave, queries answered, IGMPv1 routers (RFC 1112, 2236) |
 | DNS wire format | `dns_wire.h` / `dns_wire.c` | [mdns](docs/requirements/mdns.md) | RFC 1035 names with compression, bounds-checked readers |
-| **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | [mdns](docs/requirements/mdns.md), [dns-sd](docs/requirements/dns-sd.md) | **RFC 6762 responder: probe, announce, answer (A/AAAA/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression (truncated queries too), conflict rename, goodbye, withdrawing a service while the rest stay; RFC 6763 service advertising; dual stack: ff02::fb, AAAA for every usable IPv6 address, answers on the query's family** |
+| **mDNS + DNS-SD** | **`mdns.h` / `mdns.c`** | [mdns](docs/requirements/mdns.md), [dns-sd](docs/requirements/dns-sd.md) | **RFC 6762 responder: probe, announce, answer (A/AAAA/PTR/SRV/TXT + DNS-SD additionals), NSEC negative answers, known-answer suppression (truncated queries too), conflict rename, simultaneous-probe tiebreaking (`MDNS_TIEBREAK` 0 leaves it out on a point-to-point link), goodbye, withdrawing a service while the rest stay; RFC 6763 service advertising; dual stack: ff02::fb, AAAA for every usable IPv6 address, answers on the query's family** |
 | **HTTP server** | **`http.h` / `http.c`** `http_tls.h/.c` | [http](docs/requirements/http.md) | **HTTP/1.0: GET/HEAD/POST route table, streamed responses of any length, 400/404/405/412/413/414/417/421/431/501/505, Date, conditional requests, `Expect: 100-continue`, connection slots recycled at once, timeouts; over IPv4 and IPv6; plain TCP or TLS 1.3 through a transport interface** |
 | **IPv6** | **`ipv6.h/.c`** `icmpv6.h/.c` `ndp.h/.c` `mld.h/.c` `udp.c` `tcp.c` | [ipv6](docs/requirements/ipv6.md), [icmpv6](docs/requirements/icmpv6.md), [ndp](docs/requirements/ndp.md), [slaac](docs/requirements/slaac.md) | **RFC 8200 header + extension-header walk, EUI-64 link-local, ICMPv6 echo, errors sent under a rate limit and errors received passed to UDP and TCP, Neighbor Solicitation/Advertisement responder, Duplicate Address Detection, UDP and TCP over IPv6 (dual-stack listeners), router discovery + SLAAC (global address, default router, lifetimes), MLDv2 with MLDv1 fallback + `ipv6_mcast_join()`; dual stack via `NET_USE_IPV6`, or IPv6 alone with `NET_USE_IPV4` 0** |
 | **DHCPv6** | **`dhcpv6_client.h/.c`** | [dhcpv6](docs/requirements/dhcpv6.md) | **RFC 8415 client: stateless (Information-Request → DNS) and stateful (Solicit/Advertise/Request/Reply, Renew at T1, Rebind at T2, expiry, Release), DUID-LL, §15 retransmission with jitter, option handler table; started by the RA's M / O flags** |
@@ -104,12 +104,52 @@ Everything compiles with `-Wall -Wextra -Werror -pedantic`.  CI runs the unit an
 | MAC: TAP | `driver/tap.c` | — | Linux TAP driver |
 | MAC: raw socket | `driver/rawsock.c` | — | Linux `AF_PACKET` driver on an existing interface — a real NIC or a veth end, no `/dev/net/tun`; finishes offloaded checksums |
 | MAC: BPF | `driver/bpf.c` | — | macOS BPF driver (feth pair) |
-| MAC: STM32F4 Ethernet | `driver/stm32f4_eth.c` | — | The STM32F4's ETH MAC and DMA over RMII; with the NUCLEO-F429ZI board port (`boards/nucleo-f429zi`), the firmware of the hardware fuzz job.  Built in CI; not run on hardware |
+| MAC: SAM4E Ethernet | `driver/sam4e_gmac.c` | — | The SAM4E's GMAC and DMA over MII; with the SAM4E Xplained Pro board port (`boards/sam4e-xplained-pro`), the firmware of the hardware job.  The conformance and fuzz suites pass against the board |
+| MAC: STM32F4 Ethernet | `driver/stm32f4_eth.c` | — | The STM32F4's ETH MAC and DMA over RMII; with the NUCLEO-F429ZI board port (`boards/nucleo-f429zi`).  Built in CI; not run on hardware |
 | MAC: Stub | `driver/stub.c` | — | No-op driver for cross-compilation / size measurement |
-| Build | `CMakeLists.txt`, `Makefile` | — | CMake: libraries, tests, demos, FetchContent integration.  Makefile: Cortex-M0 size benchmarks and the no-division check |
-| CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds with the unit and integration tests, IPv4-only and IPv6-only builds, requirements traceability and code coverage, the blackbox suites over TAP and raw socket (DTLS against a pinned wolfSSL), the ARM size benchmark, the board firmware and the release check on every push |
+| Build | `CMakeLists.txt`, `Makefile`, `scripts/api_rename.py` | — | CMake: libraries, tests, demos, FetchContent integration; `api_rename.py` generates and checks `net_rename.h`.  Makefile: Cortex-M0 size benchmarks and the no-division check |
+| CI | `.github/workflows/ci.yml` | — | Linux + macOS CMake builds with the unit and integration tests, IPv4-only and IPv6-only builds, a build under `NET_API_PREFIX`, requirements traceability and code coverage, the blackbox suites over TAP and raw socket (DTLS against a pinned wolfSSL), the ARM size benchmark, the board firmware and the release check on every push |
 | Releases | `.github/workflows/release.yml`, `scripts/release.py`, `CHANGELOG.md` | — | Every push to `main` that passes CI is released as the next version: CI commits it, tags it and publishes it ([release-process.md](docs/release-process.md)) |
-| Fuzz (nightly) | `.github/workflows/fuzz.yml` | — | TCP adversarial fuzz + full conformance regression nightly |
+| Fuzz (nightly) | `.github/workflows/fuzz.yml` | — | TCP adversarial fuzz + full conformance regression nightly, on the hosted runners and, through the lab's self-hosted runner, on the SAM4E board |
+
+### 🔌 Where It Runs
+
+Besides the hosted demos and CI, the stack runs in the firmware of three
+other projects.  Each compiles the sources it needs with its own settings
+and keeps its own MAC driver.
+
+| Project | Device and link | What it uses of the stack |
+|---|---|---|
+| [pyro_fw](https://github.com/n9wxu/pyro_fw) — rocket flight computers | RP2040 (Cortex-M0+) under FreeRTOS, a USB network gadget (CDC-ECM / RNDIS, TinyUSB) plugged into a computer | IPv4, ARP, ICMP, IGMP, UDP, TCP, the DHCPv4 server and the mDNS / DNS-SD responder (`http://pyro.local/`); the firmware's own HTTP server on its own ring buffers through the TCP buffer interface.  Frames go to `eth_input()` in TinyUSB's memory; built with `NET_API_PREFIX=stcp_` and `MDNS_TIEBREAK=0` |
+| [halfduplex-tcpip](https://github.com/n9wxu/halfduplex-tcpip) — TCP/IP over one RS-485 pair | SAMD21 (Cortex-M0+), bare metal, the polled slave of a Linux master at 500 kbaud | IPv4, ARP, ICMP, UDP, TFTP, TCP with the stop-and-wait buffers, behind a `net_mac_t` driver that carries one frame each way per poll.  12.3 KB of flash for the stack |
+| [ve.direct-concentrator](https://github.com/n9wxu/ve.direct-concentrator) — four serial ports as TCP streams | SAMD21, on that RS-485 link | Five TCP listeners, a UDP maintenance port, and a bootloader built without TCP that updates the application by TFTP |
+
+On the RP2040 the stack moves 457–592 kB/s against lwIP's 516–668 on the
+same board, in 19.7 KB of flash against lwIP's 48.6 KB with the same
+services ([the measurements](https://github.com/n9wxu/smallest_tcp/issues/6)).
+The driver's two shapes, and what else a device needs, are in
+[integrating-modules.md §6](docs/integrating-modules.md#6-on-a-device).
+
+None of the three uses IPv6, TLS, DTLS or the stack's own HTTP server:
+those have run on the hosted builds only.
+
+The stack's own board port, a SAM4E Xplained Pro on Ethernet with the
+bundled `sam4e_gmac.c` driver, is the board the test suites run against:
+the ARP, IPv4, ICMP, UDP and TCP conformance suites and the TCP fuzz suite
+pass on it ([test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture)).
+It sits in the lab on a port of its own, behind a self-hosted runner that
+builds the firmware, flashes it and runs those suites; the steps pass
+there by hand, and the nightly job's first run is still to come.  The
+second port, a NUCLEO-F429ZI, is built by CI and has not run.
+
+> ⚠️ **On a new device, suspect the driver first.**  A driver that loses,
+> delays or pads frames shows as failed UDP and TCP tests and as
+> connections that stall, which look like faults of the stack.  Capture
+> the wire before concluding so:
+> [integrating-modules.md §6](docs/integrating-modules.md#6-on-a-device)
+> says what a driver owes the stack.  Loss on a link is the link's to
+> repair; TCP's retransmission timer is the end-to-end backstop and stays
+> as RFC 6298 has it.
 
 ### 🔜 Roadmap
 
@@ -120,7 +160,7 @@ instead, and [tcpip-stack-plan.md](tcpip-stack-plan.md) has the whole list.
 |---|---|
 | **DNS** | The stub resolver ([requirements](docs/requirements/dns.md) written; `dns_wire.c` is the wire format it will share with mDNS); an mDNS querier / DNS-SD browser |
 | **TCP** | Congestion control (RFC 5681), delayed ACK and Nagle, window scale / timestamps / SACK (RFC 7323), keep-alive; buffer implementations beyond stop-and-wait (a ring and a packet list are designed in [tcp-buffer.md](docs/design/tcp-buffer.md)) |
-| **Hardware** | The STM32F4 port run on a board, and the hardware fuzz job with it; drivers for an ENC28J60 (SPI) or a USB CDC-ECM link; checksum offload |
+| **Hardware** | IPv6, TLS and the application protocols on a board; the STM32F4 port run at all; drivers in this tree for an ENC28J60 (SPI) or a USB CDC-ECM link — the projects that [run the stack](#-where-it-runs) keep their drivers; checksum offload |
 | **Timers** | Tickless operation (`net_next_event_ms()`): the device wakes at its tick period ([timer-model.md](docs/design/timer-model.md)) |
 | **IPv6** | Fragment reassembly, a neighbour cache with unreachability detection, Redirects ([ipv6.md §13](docs/design/ipv6.md#13-deviations-and-limitations)) |
 | **HTTP** | Persistent connections, chunked transfer coding |
@@ -134,7 +174,7 @@ instead, and [tcpip-stack-plan.md](tcpip-stack-plan.md) has the whole list.
 |---|---|---|---|---|---|
 | PIC16F1454 | 14 KB | 1 KB | ~$1.20 | ✅ UDP: 4.1 KB + buffers | ❌ 10 KB code alone |
 | CH32X033 | 62 KB | 20 KB | ~$0.20 | ✅ Plenty of room | ✅ Fits |
-| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (8.9 KB), mDNS (14.2 KB), HTTP (15.3 KB), dual-stack UDP (9.5 KB) or IPv6-only UDP (6.5 KB) | ⚠️ Tight with app |
+| STM32F042 | 32 KB | 6 KB | ~$1.00 | ✅ Room for TCP (9.3 KB), mDNS (14.2 KB), HTTP (15.7 KB), dual-stack UDP (9.5 KB) or IPv6-only UDP (6.5 KB) | ⚠️ Tight with app |
 | CH32V203 | 256 KB | 10 KB | ~$0.50 | ✅ Plenty of room | ✅ Fits |
 | Linux / macOS | ∞ | ∞ | — | ✅ Dev & testing | ✅ Dev & testing |
 
@@ -165,8 +205,9 @@ ctest --test-dir build --output-on-failure
 | `SMALLEST_TCP_DTLS` | ON | DTLS 1.3 (`dtls.c`) as well as TLS, sharing the handshake (`TLS_USE_DTLS`); OFF builds the handshake for TLS alone |
 | `SMALLEST_TCP_DEBUG` | OFF | `NET_LOG()` output to `stderr` (`NET_DEBUG=1`) |
 | `SMALLEST_TCP_COVERAGE` | OFF | Instruments the stack and the tests for gcov line and branch coverage ([test-plan.md §0](docs/test-plan.md#code-coverage)) |
-| `SMALLEST_TCP_BOARD` | empty | With a cross toolchain, a board port's firmware: `nucleo-f429zi` builds `tcp_echo_demo.elf` ([test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture-recommended)) |
+| `SMALLEST_TCP_BOARD` | empty | With a cross toolchain, a board port's firmware: `sam4e-xplained-pro` or `nucleo-f429zi` builds `tcp_echo_demo.elf` ([test-plan.md §4](docs/test-plan.md#4-hardware-test-fixture)) |
 | `SMALLEST_TCP_CONFIG_FILE` | empty | Your configuration header, included first by `net_config.h` (`NET_CONFIG_FILE`) |
+| `SMALLEST_TCP_API_PREFIX` | empty | A prefix for every external name of the stack (`NET_API_PREFIX`), e.g. `stcp_`, for a project with a `net_init()` of its own ([configuration.md §7](docs/design/configuration.md#7-the-api-under-a-prefix)) |
 
 "At top level" means ON when smallest_tcp is the top-level project and OFF when it is pulled in with FetchContent.  With UDP or TCP off, the tests and demos (which use the whole stack) are not built; with IPv4 off, only the suites and demos that need no IPv4 are (`tcp_echo_demo`, `tls_echo_demo`, `frame_dump`).  The protocol options are `PUBLIC` compile definitions of the core, so everything linked against it is compiled with the same `net_t` layout ([configuration.md §3](docs/design/configuration.md#3-library-and-application-must-agree)).
 
@@ -490,7 +531,7 @@ int main(void) {
 }
 ```
 
-`net_init()` does not open the driver — call its `init()` yourself.  `net_poll()` reads one frame into `rx_buf`, dispatches it through the layers (ARP, ICMP and the UDP handler answer from inside the call) and releases it; `net_tick()` runs the stack's own timers.  The stack keeps no connection table of its own: `tcp_set_connections()` binds yours.  A complete TCP echo is in [tcp.md §2.3](docs/design/tcp.md#23-quick-start); adding DHCP, mDNS, TFTP, HTTP or TLS follows one recipe, in [integrating-modules.md](docs/integrating-modules.md).
+`net_init()` does not open the driver — call its `init()` yourself.  `net_poll()` reads one frame into `rx_buf`, dispatches it through the layers (ARP, ICMP and the UDP handler answer from inside the call) and releases it; `net_tick()` runs the stack's own timers.  A driver that already holds each frame in memory (a USB or DMA buffer) calls `eth_input()` with it instead, and `net_init()` then takes NULL for `rx_buf`, with the largest frame the driver delivers as its size.  The stack keeps no connection table of its own: `tcp_set_connections()` binds yours.  A complete TCP echo is in [tcp.md §2.3](docs/design/tcp.md#23-quick-start); adding DHCP, mDNS, TFTP, HTTP or TLS follows one recipe, in [integrating-modules.md](docs/integrating-modules.md).
 
 ### CMake FetchContent (recommended)
 
@@ -513,6 +554,26 @@ target_link_libraries(my_app PRIVATE smallest_tcp::smallest_tcp)
 When included via FetchContent, smallest_tcp builds its libraries only — no tests, no demos, no drivers, no Mbed TLS (the `SMALLEST_TCP_*` options above turn any of them on).  Choose the transports before `FetchContent_MakeAvailable()`, e.g. `set(SMALLEST_TCP_IPV6 OFF)`.
 
 > 💡 See [`examples/fetchcontent/`](examples/fetchcontent/) for a complete working example.
+
+**Sources only.**  A firmware build with its own compiler flags can fetch the release and compile the sources itself, as the projects that [run the stack](#-where-it-runs) do: name a `SOURCE_SUBDIR` that does not exist, so that this project's `CMakeLists.txt` is not read, and list the files as under [Manual Integration](#manual-integration):
+
+```cmake
+FetchContent_Declare(smallest_tcp
+    GIT_REPOSITORY https://github.com/n9wxu/smallest_tcp.git
+    GIT_TAG        vX.Y.Z
+    SOURCE_SUBDIR  _sources_only)        # no such directory: fetched, not built
+FetchContent_MakeAvailable(smallest_tcp)
+
+set(stcp ${smallest_tcp_SOURCE_DIR}/src)
+add_library(ip_stack STATIC
+    ${stcp}/net.c ${stcp}/net_cksum.c ${stcp}/eth.c ${stcp}/arp.c
+    ${stcp}/ipv4.c ${stcp}/icmp.c ${stcp}/udp.c
+    ${stcp}/tcp.c ${stcp}/tcp_buf_saw.c)
+target_include_directories(ip_stack PUBLIC ${smallest_tcp_SOURCE_DIR}/include)
+target_compile_definitions(ip_stack PUBLIC   # PUBLIC: they change net_t
+    NET_USE_IPV4=1 NET_USE_IPV6=0 NET_USE_UDP=1 NET_USE_TCP=1
+    NET_MAX_MCAST_GROUPS=0)
+```
 
 ### Versions
 
@@ -537,7 +598,7 @@ Each library is `smallest_tcp_<name>`, also available as `smallest_tcp::<name>`.
 | `smallest_tcp::tls_mbedtls` | The `tls_crypto_t` backend on Mbed TLS 3.6 (with `SMALLEST_TCP_TLS`) |
 | `smallest_tcp::driver_tap`, `::driver_rawsock` | Linux TAP and raw-socket (`AF_PACKET`) MAC drivers (with `SMALLEST_TCP_BUILD_DRIVERS`) |
 | `smallest_tcp::driver_bpf` | macOS BPF MAC driver (with `SMALLEST_TCP_BUILD_DRIVERS`) |
-| `smallest_tcp::driver_stm32f4_eth` | STM32F4 Ethernet MAC driver (with `SMALLEST_TCP_BUILD_DRIVERS`, cross-compiling for ARM) |
+| `smallest_tcp::driver_sam4e_gmac`, `::driver_stm32f4_eth` | SAM4E and STM32F4 Ethernet MAC drivers (with `SMALLEST_TCP_BUILD_DRIVERS`, cross-compiling for ARM) |
 
 ### Manual Integration
 
@@ -547,7 +608,8 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 2. Add `include/` to your compiler's include path
 3. Choose the transports: the core (`net.c`, `net_cksum.c`, `eth.c`, `arp.c`, `ipv4.c`, `icmp.c`) dispatches to UDP and TCP unless you compile everything with `-DNET_USE_UDP=0` / `-DNET_USE_TCP=0` and leave out `udp.c` / `tcp.c` + `tcp_buf_saw.c`; `-DNET_USE_IPV6=1` adds `ipv6.c`, `icmpv6.c`, `ndp.c`, `mld.c`, and `-DNET_USE_IPV4=0` with it leaves out `arp.c`, `ipv4.c`, `icmp.c`.  Compile the library and the application with the same settings — they change `net_t` ([configuration.md](docs/design/configuration.md))
 4. Add the application protocols you use (`dhcpv4_client.c`, `mdns.c` + `dns_wire.c` + `igmp.c`, `tftp.c` or `http.c` with `net_text.c`, the `tls*.c` files, …)
-5. Provide your own MAC driver implementing the `net_mac_t` interface ([mac-hal.md](docs/design/mac-hal.md))
+5. Provide your own MAC driver implementing the `net_mac_t` interface, or hand each received frame to `eth_input()` yourself ([mac-hal.md](docs/design/mac-hal.md), [integrating-modules.md §6](docs/integrating-modules.md#6-on-a-device))
+6. If a name of the stack collides with one of yours — `net_init()`, say — compile the stack and every file that includes its headers with `-DNET_API_PREFIX=stcp_` ([configuration.md §7](docs/design/configuration.md#7-the-api-under-a-prefix))
 
 ---
 
@@ -591,20 +653,20 @@ If you're not using CMake (e.g., bare-metal Makefile or IDE project):
 Detailed design docs and RFC-traced requirements live in [`docs/`](docs/):
 
 - **[Architecture](docs/architecture.md)** — How the stack is composed, layers, receive and transmit paths, `net_t`
-- **[Integrating Protocol Modules](docs/integrating-modules.md)** — The one recipe for DHCP, TFTP, mDNS, HTTP and TLS, with a complete main loop
-- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (2.5× less flash, 3.6× less RAM for a UDP echo)
+- **[Integrating Protocol Modules](docs/integrating-modules.md)** — The one recipe for DHCP, TFTP, mDNS, HTTP and TLS, with a complete main loop; and what a device needs: the driver's two shapes, sources compiled with your own settings, names under a prefix, your own TCP buffers
+- **[Size Comparison](docs/design/size-comparison.md)** — ARM Cortex-M0 code size: smallest_tcp vs lwIP (2.4× less flash, 3.6× less RAM for a UDP echo)
 - **Design Documents:**
   - [Coding Rules](docs/design/coding-rules.md) — C99, memory, parsing received data, no run-time division, comments
-  - [MAC HAL](docs/design/mac-hal.md) — The driver interface: poll/peek/discard/send; `net_poll()` copies each frame once into the receive buffer
+  - [MAC HAL](docs/design/mac-hal.md) — The driver interface: poll/peek/discard/send; `net_poll()` copies each frame once into the receive buffer, or the driver hands `eth_input()` its own; the drivers of the projects that run the stack
   - [Memory Model](docs/design/memory-model.md) — Application-owned memory, `net_t`, frame buffers, init functions
-  - [Configuration](docs/design/configuration.md) — Settings, compile-time protocol selection, link-time composition
+  - [Configuration](docs/design/configuration.md) — Settings, compile-time protocol selection, link-time composition, the API under a prefix
   - [Timer Model](docs/design/timer-model.md) — `net_poll()`, `net_tick()` and the module ticks; countdown timers
   - [Checksum](docs/design/checksum.md) — Incremental Internet checksum design
   - [Byte Order](docs/design/byte-order.md) — Portable endian handling, 8-bit target strategy
   - [ARP Resolution](docs/design/arp-resolution.md) — No cache: gateway MAC, reply-to-sender, application-driven resolution
   - [UDP](docs/design/udp.md) — Port tables; handlers get a pointer into the receive buffer `net_poll()` filled; checksum, ICMP port unreachable
-  - [TCP](docs/design/tcp.md) — Stop-and-wait TCP: connections bound by the application, receive path, timers, events
-  - [TCP Buffer](docs/design/tcp-buffer.md) — The buffer interface and the stop-and-wait implementation
+  - [TCP](docs/design/tcp.md) — Stop-and-wait TCP: connections bound by the application, receive path, timers and the measured round trip, a busy driver, events
+  - [TCP Buffer](docs/design/tcp-buffer.md) — The buffer interface (a ring of your own included) and the stop-and-wait implementation
   - [IPv6](docs/design/ipv6.md) — Dual stack: ICMPv6, neighbor discovery, SLAAC, MLD, DHCPv6
   - [DHCPv4](docs/design/dhcpv4.md) — Client + server design, option handler callback API
   - [TFTP](docs/design/tftp.md) — TFTP client: block size from the receive buffer, transfer IDs, retransmission

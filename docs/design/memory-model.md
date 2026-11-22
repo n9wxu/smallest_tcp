@@ -54,8 +54,8 @@ Size on Cortex-M0 (`arm-none-eabi-gcc -mcpu=cortex-m0`):
 |---|---|
 | IPv4, UDP only, no multicast (the `make arm-size` build) | 116 bytes |
 | IPv4, UDP + TCP, one multicast group (the defaults of `net_config.h`) | 144 bytes |
-| Dual stack, the other settings default (`NET_USE_IPV6=1`; the CMake default) | 268 bytes |
-| IPv6 only (`NET_USE_IPV4=0`, `NET_USE_IPV6=1`) | 180 bytes |
+| Dual stack, the other settings default (`NET_USE_IPV6=1`; the CMake default) | 272 bytes |
+| IPv6 only (`NET_USE_IPV4=0`, `NET_USE_IPV6=1`) | 184 bytes |
 
 Because the configuration changes this layout, the library and the
 application must be built with the same settings
@@ -71,6 +71,16 @@ sent is built in `tx.buf`.  The two must not overlap: replies are built in
 refuses buffers that share a byte (`NET_ERR_INVALID_PARAM`); it compares
 their addresses as `uintptr_t`, since `<` between pointers into different
 objects is undefined in C.
+
+The receive buffer may be left out.  A driver that already holds each
+frame in memory — a USB stack's buffer, a DMA descriptor's — calls
+`eth_input()` with it and never `net_poll()`, and `net_init(net, NULL,
+rx_size, …)` then reserves nothing: `rx_size` is the largest frame the
+driver delivers, and sizes what the buffer would have — TCP's MSS, IPv4
+reassembly, TFTP's block size, the DHCP checks (REQ-ETH-027,
+[mac-hal.md §3](mac-hal.md#3-the-receive-lifecycle-net_poll)).  What a
+handler is given then points into the driver's frame, and is valid during
+the call as before.
 
 **Receive buffer.**  Must hold the largest frame the device should accept.
 A longer frame is truncated and then rejected by IPv4/IPv6, so the buffer
@@ -121,8 +131,8 @@ in parentheses where it differs):
 
 | Structure | Size | Plus |
 |---|---|---|
-| `tcp_conn_t` | 104 B (120 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
-| `http_conn_t` (one slot) | 220 B (240 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
+| `tcp_conn_t` | 124 B (144 B) | A TX and an RX buffer through the buffer operation tables; the bundled stop-and-wait contexts (`tcp_saw_tx_ctx_t`, `tcp_saw_rx_ctx_t`) are 12 B each ([tcp-buffer.md](tcp-buffer.md)) |
+| `http_conn_t` (one slot) | 240 B (264 B) | Embeds its `tcp_conn_t` and buffer contexts; needs TCP TX/RX buffers and a request buffer (and a `tls_conn_t` for HTTPS) |
 | `http_server_t` | 36 B | The slot array and a `const` route table (and, optional, a clock and the HTTPS host names) |
 | `mdns_t` | 96 B | A `const` record table |
 | `dhcpv4_client_t` | 64 B | An optional option-handler table |
@@ -152,7 +162,7 @@ For whole-build flash and RAM figures, see
 
 | Function | Validates | Sets |
 |---|---|---|
-| `net_init()` | Non-NULL `net`, buffers and driver; buffers that do not overlap; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver, `mtu` (`NET_DEFAULT_MTU`); `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY` with IPv4; seeds the zeroed `secret` with the MAC address (`net_random_seed()`).  Does **not** call `driver->init()`. |
+| `net_init()` | Non-NULL `net`, TX buffer and driver — the RX buffer may be NULL for a driver that calls `eth_input()` (§3); buffers that do not overlap; each buffer ≥ `TCP_MIN_FRAME` with TCP compiled in (94 bytes, 114 with IPv6), else ≥ 14 (`NET_ERR_INVALID_PARAM`, `NET_ERR_BUF_TOO_SMALL`) | Zeroes `net_t`; buffers, MAC (argument or `NET_DEFAULT_MAC`), driver, `mtu` (`NET_DEFAULT_MTU`); `NET_DEFAULT_IPV4_ADDR`/`_SUBNET_MASK`/`_GATEWAY` with IPv4; seeds the zeroed `secret` with the MAC address (`net_random_seed()`).  Does **not** call `driver->init()`. |
 | `tcp_conn_init()` | Non-NULL connection and buffer tables/contexts | CLOSED, initial RTO, default MSS |
 | `tcp_saw_tx_init()`, `tcp_saw_rx_init()` | — | Buffer and capacity |
 | `http_conn_init()` | Buffers present and not empty; request buffer ≥ 32 bytes | Slot buffers and its TCP connection |

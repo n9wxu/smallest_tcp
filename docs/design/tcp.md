@@ -526,13 +526,10 @@ always carries the MSS option, the only option ever sent (REQ-TCP-076, 082,
 116).  The data segment that leaves nothing unsent — the buffer's `queued()`
 equal to its `in_flight()` once it is taken — must carry PSH (REQ-TCP-180),
 and so does every other data segment and retransmission (`data_flags()`,
-REQ-TCP-187).  With one segment in flight, a full segment sent while more
-data waits went without PSH, and a receiver may hold its ACK of such a
-segment for its delayed-ACK time while nothing else can be sent.  In the
-RP2040 spike macOS held about one ACK in 22 for 100 ms, and a download ran
-at 140 kB/s against 500 when every segment carried PSH — two builds of the
-application compared, not this change alone
-([issue 9](https://github.com/n9wxu/smallest_tcp/issues/9)).  A buffer that
+REQ-TCP-187).  With one segment in flight, a receiver may hold its ACK of
+a full segment without PSH for its delayed-ACK time while nothing else can
+be sent: macOS holds about one such ACK in 22 for 100 ms, which on an
+RP2040 is a download at 140 kB/s against 500.  A buffer that
 allows several segments in flight would want the rule of REQ-TCP-180 back.  The IPv4 header
 carries the connection's TOS (`tcp_set_tos()`, REQ-TCP-174), and no segment
 goes from an address the host no longer has (`address_kept()`).
@@ -583,17 +580,15 @@ SND.UNA < SND.NXT — would send them again: nothing can be left in flight
 without a timer.  But a busy driver is no lost segment.  On a USB network
 device the endpoint is busy for a millisecond per frame, so two connections
 or an mDNS answer wanting the link together is the ordinary case, and a
-retransmission timeout for each — a second, doubling, never coming back
-down — made eight downloads at once take half as long again
-([issue 2](https://github.com/n9wxu/smallest_tcp/issues/2)).  So
+retransmission timeout for each would make eight downloads at once take
+half as long again.  So
 `send_segment()` notes what was refused in `tcp_conn_t.unsent` — our SYN or
 data, our FIN, or an ACK — and `conn_tick()` sends it at every tick until
 the driver takes it (`send_unsent()`): the SYN or data as a timeout would
 (`resend_unacked()`), then the FIN itself at SND.NXT − 1, then a bare ACK
 if neither carried one.  The FIN is kept apart because it can go behind
 data still in flight: sending the earliest unacknowledged segment would
-repeat the data and leave the FIN to the timer
-([issue 7](https://github.com/n9wxu/smallest_tcp/issues/7)).  No
+repeat the data and leave the FIN to the timer.  No
 retransmission is counted, the timeout is not doubled, and it restarts when
 a SYN, data or a FIN with nothing before it leaves.  While the driver stays
 busy the timer runs on, so a driver busy for longer than the retransmission
@@ -602,7 +597,7 @@ back-off (section 5.1) still costs the connection, as a dead link would.
 An ACK is owed too (REQ-TCP-186).  For the acknowledgment of data the
 peer's retransmission would recover, but a window update reopening a closed
 window has nothing behind it: the peer waits for its persist timer, 5 s on
-macOS ([issue 8](https://github.com/n9wxu/smallest_tcp/issues/8)).  One
+macOS.  One
 flag is enough however many were refused, since an ACK carries RCV.NXT and
 the window as they are when it leaves, and any segment that leaves meanwhile
 clears it.  Sending it restarts no timer.  A frame the driver failed to

@@ -111,8 +111,12 @@ after your push; `git pull --rebase` before your next push.
   pair, with the mDNSResponder and browser interop
   ([ci-debugging.md](ci-debugging.md) explains the suites).
 - **The nightly fuzz workflow** (`fuzz.yml`).
-- **Hardware:** the NUCLEO-F429ZI firmware is built in CI but has not been
-  run on a board yet.
+- **Hardware:** the board firmware is built by CI, and tested on the board
+  by the nightly workflow, not by CI: a release does not wait for the lab
+  ([test-plan.md §4](test-plan.md#4-hardware-test-fixture)).  The projects
+  that run the stack on hardware pin a release
+  ([README](../README.md#-where-it-runs)); what they find comes back as
+  issues.
 
 ## 7. Using a release
 

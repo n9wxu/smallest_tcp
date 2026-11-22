@@ -14,20 +14,26 @@ CMake is the only host build; the `Makefile` is used only by `arm-size`.
 
 | Job | What it does |
 |---|---|
-| `cmake-ipv4-only` | IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`) and its tests; then library-only builds with `-DSMALLEST_TCP_TCP=OFF` and with `-DSMALLEST_TCP_UDP=OFF` |
+| `cmake-ipv4-only` | IPv4-only build without TLS (`-DSMALLEST_TCP_IPV6=OFF -DSMALLEST_TCP_TLS=OFF`) and its tests; library-only builds with `-DSMALLEST_TCP_TCP=OFF` and with `-DSMALLEST_TCP_UDP=OFF`; then everything built and tested again with `-DSMALLEST_TCP_API_PREFIX=stcp_` — a source whose names its headers do not rename fails the link there, or `api_prefix_covers_every_symbol` ([configuration.md §7](design/configuration.md#7-the-api-under-a-prefix)) |
 | `cmake-ipv6-only` | IPv6-only build (`-DSMALLEST_TCP_IPV4=OFF`) and its tests, including the checks that the IPv4-only protocols refuse to compile; then library-only builds without TCP and without UDP |
 | `arm-size` | `make arm-size-all`: the Cortex-M0 size benchmarks, `arm-check-division` (§3.10) and `arm-check-links` (TLS's objects must not need DTLS's record layer, nor DTLS's TLS's) |
-| `board-nucleo-f429zi` | Cross-builds the NUCLEO-F429ZI firmware of the hardware fuzz job — build only |
+| `board-sam4e-xplained-pro`, `board-nucleo-f429zi` | Cross-build each board port's firmware — build only.  The first is what the nightly hardware job flashes ([test-plan.md §4](test-plan.md#4-hardware-test-fixture)) |
 | `cmake-linux`, `cmake-macos` | The default build (dual stack, TLS with Mbed TLS) and `ctest`; on Linux also `sudo ./build/tests/test_rawsock` for the raw-socket driver's live tests |
 | `blackbox-linux` | ARP, IPv4, ICMP, UDP, TCP suites against `tcp_echo_demo` via `run_blackbox.sh`, once over TAP and once over the raw socket |
 | `blackbox-validate` | The same suites against the Linux kernel as reference SUT (§1) |
 | `blackbox-ipv6`, `blackbox-dhcp`, `blackbox-mdns`, `blackbox-http`, `blackbox-tls`, `blackbox-dtls` | The suites that launch their own demo SUTs, each over TAP and the raw socket, with their interop checks (DTLS against wolfSSL, built by `tests/blackbox/build_wolfssl.sh` and cached); the IPv6 suite also against an IPv6-only build |
 | `fetchcontent` | Builds and runs `examples/fetchcontent` against the checkout |
 | `traceability` | `scripts/trace.py --strict --markdown`: every integration test cites the requirements it verifies, every cited ID exists, every test a requirement row names exists and cites that row, and every MUST row is cited by a test or says why none can verify it (§3.12); the summary is the requirements coverage — per requirement document, the MUST rows verified by a black-box test and by any test, those not observable or not implemented, and those left with none ([test-plan.md §0](test-plan.md#0-policy-and-the-integration-tests)) |
-| `coverage` | Builds with `-DSMALLEST_TCP_COVERAGE=ON`, runs the integration tests (`ctest -L integration`) and reports, with gcovr, the lines and branches of `src/` they reach — what the API reaches.  The MAC drivers (`src/driver/`) and the Mbed TLS backend (`src/tls_crypto_mbedtls.c`) are left out.  The HTML report is the artifact `coverage-integration` |
+| `coverage` | Builds with `-DSMALLEST_TCP_COVERAGE=ON`, runs the integration tests (`ctest -L integration`) and reports, with gcovr, the lines and branches of `src/` they reach — what the API reaches.  The MAC drivers (`src/driver/`) and the Mbed TLS backend (`src/tls_crypto_mbedtls.c`) are left out, and so are the objects of `api_prefix_app` (`--gcov-exclude-directory`): a second copy of the core under other names that is linked and never run — counted, it takes the total from 97 % of lines to 85 %, which is what this job reported from 0.1.11 to 0.1.13.  The HTML report is the artifact `coverage-integration` |
 | `release-check` | `scripts/release.py check`: the version in `net_version.h` parses, `CHANGELOG.md` has its `## [Unreleased]` section, and a trial stamp of the next version works; CMake and the compiled library report the version ([release-process.md](release-process.md)) |
 
-`fuzz.yml` runs the TCP fuzz suite nightly.  `release.yml` runs when this
+`fuzz.yml` runs the TCP fuzz suite nightly — on the hosted runners, and,
+when a runner with the board is registered, on the board too
+(`fuzz-tcp-hw`: flash, fuzz, then the ARP, IPv4, ICMP, UDP and TCP
+conformance suites).  A failure there that the hosted legs do not share
+points at the board's driver or at the wire: Ethernet padding, a switch
+not yet forwarding, the ERASE jumper
+([test-plan.md §4](test-plan.md#4-hardware-test-fixture)).  `release.yml` runs when this
 workflow completes on `main`: if every job passed and `main` is still the
 tested commit, it commits the next version, tags it and publishes the
 release.  The full matrix is in

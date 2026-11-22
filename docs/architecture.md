@@ -72,18 +72,22 @@ them, and an unused one is simply not linked.  Each is its own CMake library
 ├──────────────────────────────────────────────────────────────────────┤
 │ MAC driver interface — net_mac_t (net_mac.h)                         │
 ├────────────┬──────────────┬────────────┬───────────────┬─────────────┤
-│ tap.c      │ rawsock.c    │ bpf.c      │ stm32f4_eth.c │ stub.c      │
-│ Linux TAP  │ Linux raw    │ macOS BPF  │ STM32F4 MAC   │ size builds │
+│ tap.c      │ rawsock.c    │ bpf.c      │ sam4e_gmac.c  │ stub.c      │
+│ Linux TAP  │ Linux raw    │ macOS BPF  │ stm32f4_eth.c │ size builds │
 └────────────┴──────────────┴────────────┴───────────────┴─────────────┘
 ```
 
 `igmp.c` sends IGMP joins and leaves for IPv4 multicast; it is only needed by
-mDNS and ships in the `mdns` library.  `stm32f4_eth.c` drives the STM32F4's
-Ethernet MAC for the NUCLEO-F429ZI board port (`boards/`; built in CI, not
-yet run on hardware).  An ENC28J60 (SPI) or USB CDC-ECM driver would sit
-beside the bundled ones; none is in the tree yet — the stack has run over
-USB CDC-ECM on an RP2040 with a driver kept in that project
-([mac-hal.md §7](design/mac-hal.md)).
+mDNS and ships in the `mdns` library.  `sam4e_gmac.c` drives the SAM4E's
+Ethernet MAC for the SAM4E Xplained Pro board port (`boards/`), the board
+the conformance and fuzz suites run against; `stm32f4_eth.c` drives the
+STM32F4's for the NUCLEO-F429ZI port (built in CI, not yet run on
+hardware).  An ENC28J60 (SPI) or USB CDC-ECM driver would sit
+beside the bundled ones; none is in the tree.  The projects that run the
+stack on hardware keep their drivers: one for a USB network gadget
+(TinyUSB on an RP2040), which hands `eth_input()` each frame in the USB
+stack's memory, and one for a polled RS-485 link (a SAMD21), a `net_mac_t`
+like the bundled ones ([mac-hal.md §7](design/mac-hal.md#7-writing-a-driver)).
 
 ## 4. The network context: `net_t`
 
@@ -91,7 +95,7 @@ One `net_t` per interface holds everything the core knows:
 
 | Part | Fields |
 |---|---|
-| Buffers | `rx`, `tx` — `{buf, capacity}`, supplied to `net_init()` |
+| Buffers | `rx`, `tx` — `{buf, capacity}`, supplied to `net_init()`; `rx.buf` NULL, and `rx.capacity` the largest frame, for a driver that calls `eth_input()` itself (§5) |
 | Link | `mac`, `mtu`, `mac_driver`, `mac_ctx` |
 | Randomness | `secret`, `random_count` (§9) |
 | IPv4 | `ipv4_addr`, `subnet_mask`, `gateway_ipv4` (host byte order), `gateway_mac`, `gateway_mac_valid` and its expiry, the ARP request rate limit, `mcast_groups[]` and IGMP's state, the reassembly buffer and operations, the DHCP client's address probe |
@@ -101,7 +105,7 @@ One `net_t` per interface holds everything the core knows:
 
 The dispatch tables are the application's, bound into `net_t`, so the stack
 has no global mutable state.  On Cortex-M0, `net_t` is 116 bytes for a
-UDP-only IPv4 build, 144 with the defaults of `net_config.h` and 268 dual
+UDP-only IPv4 build, 144 with the defaults of `net_config.h` and 272 dual
 stack ([memory-model.md](design/memory-model.md)).
 
 ## 5. Receive path
@@ -144,6 +148,17 @@ since checksums are computed over it, so an offset would cost a second copy
 in every handler and expose the driver to applications.  The reasoning
 is in [udp.md §10.1](design/udp.md#101-payload-pointers-not-frame-offsets);
 the driver side is in [mac-hal.md §3](design/mac-hal.md#3-the-receive-lifecycle-net_poll).
+
+**Without `net_poll()`.**  `eth_input(net, frame, len)` is the same entry
+for a platform that already has each frame in memory — a USB stack's
+receive buffer, a DMA descriptor's.  It calls `eth_input()` for every
+frame, which must stay unchanged until the call returns, and never
+`net_poll()`; nothing in the stack reads `net->rx.buf` on its own account
+(REQ-ETH-026), so `net_init()` takes NULL for it, with the largest frame
+the platform delivers as its size (REQ-ETH-027).  The pointers handlers
+are given then lie in the platform's frame.  The firmware that runs the
+stack over a USB network gadget works this way
+([mac-hal.md §7](design/mac-hal.md#7-writing-a-driver)).
 
 ## 6. Transmit path
 
@@ -189,7 +204,11 @@ discarded.
 
 `net->tx.buf` holds one frame at a time and is reused by the next send, so
 nothing keeps a built frame: TCP retransmits from the connection's TX buffer,
-and the DHCP, TFTP and mDNS modules rebuild a message to resend it.  Because
+and the DHCP, TFTP and mDNS modules rebuild a message to resend it.  A
+frame the driver has no room for (`send()` returning 0, `NET_ERR_BUSY`) is
+not queued either: the application's own sends return the error, and TCP
+notes what was refused — a SYN, data, a FIN or an ACK — and sends it at the
+next tick ([mac-hal.md §5](design/mac-hal.md#5-transmit-net_transmit)).  Because
 `tx.buf` is separate from `rx.buf`, a handler may send while it still reads
 the request.  Nothing is fragmented on the way out: every datagram fits
 the MTU (`net->mtu`, `ipv4_mms_s()`) and goes with DF set.
@@ -396,7 +415,7 @@ smallest_tcp/
 │   ├── dhcpv4_client.h  dhcpv4_server.h  dhcpv6_client.h  tftp.h
 │   ├── dns_wire.h  mdns.h  http.h  http_tls.h
 │   ├── tls*.h  dtls.h      TLS 1.3 and DTLS 1.3, the crypto interface and Mbed TLS backend
-│   └── driver/             tap.h  rawsock.h  bpf.h  stm32f4_eth.h  stub.h
+│   └── driver/             tap.h  rawsock.h  bpf.h  sam4e_gmac.h  stm32f4_eth.h  stub.h
 ├── src/
 │   ├── net.c  net_cksum.c  net_text.c
 │   ├── eth.c  arp.c  ipv4.c  icmp.c  igmp.c  udp.c  tcp.c  tcp_buf_saw.c
@@ -404,7 +423,7 @@ smallest_tcp/
 │   ├── dhcpv4_client.c  dhcpv4_server.c  dhcpv4_wire.h (private)  dhcpv6_client.c
 │   ├── tftp.c  dns_wire.c  mdns.c  http.c  http_tls.c
 │   ├── tls*.c  dtls.c      TLS 1.3 and DTLS 1.3 (see design/tls.md, dtls.md)
-│   └── driver/             tap.c  rawsock.c  bpf.c  stm32f4_eth.c  stub.c
+│   └── driver/             tap.c  rawsock.c  bpf.c  sam4e_gmac.c  stm32f4_eth.c  stub.c
 ├── demo/                   hosted demos; common/ has the shared main loop
 │   ├── common/             demo_loop.h  demo_mac.h  demo_echo.h  demo_ipv6.h  demo_tls.h
 │   └── dhcp_echo/  dtls_client/  dtls_echo/  echo_server/  frame_dump/
@@ -416,8 +435,9 @@ smallest_tcp/
 │   ├── unit/               C unit tests (test_main.h framework), per module or feature
 │   ├── blackbox/           pytest + Scapy conformance suites and interop scripts
 │   └── tls/                test certificates; RFC 8448 and DTLS label vector generators
-├── boards/nucleo-f429zi/   bare-metal port: start-up, clocks, linker script, the
-│                           tcp_echo_demo firmware of the hardware fuzz job
+├── boards/                 bare-metal ports — sam4e-xplained-pro/ (the DUT of the
+│                           hardware job), nucleo-f429zi/: start-up, clocks, linker
+│                           script, flash.sh, the tcp_echo_demo firmware
 ├── cmake/                  arm-none-eabi.cmake: cross-compiling the libraries
 ├── bench/                  Cortex-M0 size measurement (and the lwIP comparison)
 ├── examples/fetchcontent/  consuming the library with CMake FetchContent
@@ -476,6 +496,7 @@ smallest_tcp/
 | RFC 6528 | TCP initial sequence numbers | `tcp.c` (clock), `net.c` (keyed hash) |
 | RFC 6724 | IPv6 source address selection | `ipv6.c` |
 | RFC 6762, RFC 6763 | mDNS, DNS-SD | `mdns.c` |
+| RFC 6298 | TCP's retransmission timer: the measured round trip, Karn's algorithm, back-off | `tcp.c` |
 | RFC 6864 | IPv4 ID field | `ipv4.c` |
 | RFC 8200 | IPv6 | `ipv6.c` |
 | RFC 8415 | DHCPv6 | `dhcpv6_client.c` |
@@ -484,7 +505,6 @@ smallest_tcp/
 | RFC 9147 | DTLS 1.3 | `dtls.c`, the roles in `tls_server.c`, `tls_client.c` |
 | RFC 9293 | TCP | `tcp.c` |
 
-Partly implemented: RFC 6298 (initial RTO and back-off, no RTT
-estimation), RFC 5227 (the DHCPv4 client's probe of an offered address; no
+Partly implemented: RFC 5227 (the DHCPv4 client's probe of an offered address; no
 conflict detection after that).  Not implemented: TCP congestion control
 (RFC 5681), TCP extensions (RFC 7323), the DNS stub resolver.
