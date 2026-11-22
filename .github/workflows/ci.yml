@@ -87,7 +87,7 @@ jobs:
             || echo "(no output captured)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  # ── Board port: the NUCLEO-F429ZI firmware of the hardware fuzz job ──
+  # ── Board ports: the firmware of the hardware job (fuzz.yml) ─────────
   # Built on every push; it runs only on the self-hosted hardware runner.
   board-nucleo-f429zi:
     name: Board — NUCLEO-F429ZI firmware (build only)
@@ -104,6 +104,23 @@ jobs:
           cmake -S . -B build-arm \
             -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
             -DSMALLEST_TCP_BOARD=nucleo-f429zi -DCMAKE_BUILD_TYPE=MinSizeRel
+          cmake --build build-arm --target tcp_echo_demo
+
+  board-sam4e-xplained-pro:
+    name: Board — SAM4E Xplained Pro firmware (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Arm GNU toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - name: Build tcp_echo_demo.elf
+        run: |
+          cmake -S . -B build-arm \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+            -DSMALLEST_TCP_BOARD=sam4e-xplained-pro -DCMAKE_BUILD_TYPE=MinSizeRel
           cmake --build build-arm --target tcp_echo_demo
 
   # ── CMake build ─────────────────────────────────────────────────────
@@ -834,8 +851,12 @@ jobs:
         run: ctest --test-dir build-cov -L integration --output-on-failure
       - name: Report
         run: |
+          # api_prefix_app is a second copy of the core under other names,
+          # linked and never run: counted, every line of it would be one
+          # the tests do not reach
           gcovr --root . --filter 'src/' --exclude 'src/driver/' \
-            --exclude 'src/tls_crypto_mbedtls.c' build-cov \
+            --exclude 'src/tls_crypto_mbedtls.c' \
+            --gcov-exclude-directory '.*api_prefix_app\.dir' build-cov \
             --txt build-cov/coverage.txt --markdown build-cov/coverage.md \
             --html-details build-cov/coverage.html
           cat build-cov/coverage.txt

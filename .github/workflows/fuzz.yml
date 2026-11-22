@@ -95,74 +95,102 @@ jobs:
           [ -f /tmp/sut.pid ] && sudo kill $(cat /tmp/sut.pid) || true
           sudo tests/blackbox/sut_net.sh down ${{ matrix.driver }}
 
-  # ── Hardware DUT fuzz (self-hosted, conditional) ───────────────────
+  # ── Hardware DUT: fuzz and conformance (self-hosted, conditional) ──
   # Runs only when a self-hosted runner with the `hw-dut` label is
   # registered and the variable HW_DUT_ENABLED is 'true'; skipped
-  # otherwise.  The DUT is a NUCLEO-F429ZI (boards/nucleo-f429zi) cabled to
-  # the runner's eth1 (10.0.0.100/24), its ST-LINK on USB: SWD for OpenOCD,
-  # and the virtual COM port (HW_DUT_SERIAL, default /dev/ttyACM0) for the
-  # firmware's "ready".  See docs/test-plan.md §4.
+  # otherwise.  Never on a pull request: this workflow has no such trigger,
+  # and a self-hosted runner must not build what a fork sends.
+  #
+  # The DUT is the board HW_DUT_BOARD names (boards/<name>, default
+  # sam4e-xplained-pro), on the same Ethernet segment as the runner's
+  # interface HW_DUT_IFACE (default eth1) and with its debugger on USB:
+  # OpenOCD flashes and resets it through boards/<name>/flash.sh, and its
+  # virtual COM port (HW_DUT_SERIAL, default /dev/ttyACM0) carries the
+  # firmware's "ready".  The tests speak as 10.0.0.100 to the DUT's
+  # 10.0.0.2, an address the runner must not have: its kernel then never
+  # sees the DUT's segments and resets nothing.  See docs/test-plan.md §4.
   fuzz-tcp-hw:
-    name: Fuzz — TCP on Hardware DUT (NUCLEO-F429ZI)
+    name: Hardware DUT — TCP fuzz and conformance
     runs-on: [self-hosted, hw-dut]
     timeout-minutes: 90
     if: ${{ vars.HW_DUT_ENABLED == 'true' }}
     env:
+      BOARD: ${{ vars.HW_DUT_BOARD || 'sam4e-xplained-pro' }}
+      IFACE: ${{ vars.HW_DUT_IFACE || 'eth1' }}
       SERIAL: ${{ vars.HW_DUT_SERIAL || '/dev/ttyACM0' }}
-      OPENOCD: openocd -f interface/stlink.cfg -f target/stm32f4x.cfg
+      HW_DUT_PROBE: ${{ vars.HW_DUT_PROBE }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python deps
-        run: pip3 install -r tests/blackbox/requirements.txt
+      - name: Python deps, in a venv of the job's own
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -r tests/blackbox/requirements.txt
 
-      - name: Cross-compile the NUCLEO-F429ZI firmware
+      - name: Cross-compile the firmware
         run: |
           cmake -S . -B build-arm         \
             -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-            -DSMALLEST_TCP_BOARD=nucleo-f429zi \
+            -DSMALLEST_TCP_BOARD="$BOARD" \
             -DSMALLEST_TCP_TLS=OFF \
-            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_BUILD_TYPE=MinSizeRel
           cmake --build build-arm --target tcp_echo_demo
 
-      - name: Flash DUT via OpenOCD, and wait for its "ready"
+      - name: The link to the DUT
+        run: sudo ip link set "$IFACE" up
+
+      - name: Flash the DUT, and wait for its "ready"
         run: |
           stty -F "$SERIAL" 115200 raw -echo
-          ( timeout 20 grep -q -m1 ready "$SERIAL" ) & watcher=$!
-          $OPENOCD -c "program build-arm/tcp_echo_demo.elf verify reset exit"
+          ( timeout 30 grep -q -m1 ready "$SERIAL" ) & watcher=$!
+          "boards/$BOARD/flash.sh" build-arm/tcp_echo_demo.elf
           wait $watcher
+
+      - name: Wait until the DUT answers ARP
+        run: |
+          # "ready" is the DUT's link; a switch between the two may forward
+          # only some seconds later (spanning tree)
+          cd tests/blackbox
+          for try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if sudo "$RUNNER_TEMP/venv/bin/python" -m pytest test_arp_conform.py \
+                 -k 001 --iface "$IFACE" --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \
+                 --sut-port 7 -q -p no:cacheprovider; then exit 0; fi
+          done
+          exit 1
 
       - name: Run fuzz suite on hardware
         run: |
           FUZZ_COUNT=${{ github.event.inputs.fuzz_count || 500 }}
           cd tests/blackbox
-          sudo python3 -m pytest test_tcp_fuzz.py      \
-            --iface eth1                               \
+          sudo "$RUNNER_TEMP/venv/bin/python" -m pytest test_tcp_fuzz.py \
+            --iface "$IFACE"                           \
             --sut-ip  10.0.0.2                         \
             --our-ip  10.0.0.100                       \
             --sut-port 7                               \
             --fuzz-count "$FUZZ_COUNT"                 \
             -v --tb=long                               \
+            -p no:cacheprovider                        \
             2>&1
 
       - name: Reset DUT and run conformance (regression)
         if: always()
         run: |
-          # A reset over SWD starts the firmware afresh; a board that no
-          # longer answers SWD needs its power cycled by hand (or a relay)
-          ( timeout 20 grep -q -m1 ready "$SERIAL" ) & watcher=$!
-          $OPENOCD -c "init; reset run; exit"
+          # A reset through the debugger starts the firmware afresh; a board
+          # that no longer answers it needs its power cycled by hand (or a
+          # relay)
+          ( timeout 30 grep -q -m1 ready "$SERIAL" ) & watcher=$!
+          "boards/$BOARD/flash.sh" --reset
           wait $watcher
 
           cd tests/blackbox
-          sudo python3 -m pytest                       \
+          sudo "$RUNNER_TEMP/venv/bin/python" -m pytest \
             test_arp_conform.py                        \
             test_ipv4_conform.py                       \
             test_icmp_conform.py                       \
             test_udp_conform.py                        \
             test_tcp_conform.py                        \
-            --iface eth1                               \
+            --iface "$IFACE"                           \
             --sut-ip  10.0.0.2                         \
             --our-ip  10.0.0.100                       \
             --sut-port 7                               \

@@ -108,6 +108,15 @@
 #define rawsock_mac_ops NET_API(rawsock_mac_ops)
 #endif
 
+/* include/driver/sam4e_gmac.h */
+#if defined(DRIVER_SAM4E_GMAC_H) && !defined(NET_RENAMED_DRIVER_SAM4E_GMAC_H)
+#define NET_RENAMED_DRIVER_SAM4E_GMAC_H
+#define sam4e_gmac_ctx_init NET_API(sam4e_gmac_ctx_init)
+#define sam4e_gmac_link_poll NET_API(sam4e_gmac_link_poll)
+#define sam4e_gmac_ops NET_API(sam4e_gmac_ops)
+#define sam4e_gmac_phy_read NET_API(sam4e_gmac_phy_read)
+#endif
+
 /* include/driver/stm32f4_eth.h */
 #if defined(DRIVER_STM32F4_ETH_H) && !defined(NET_RENAMED_DRIVER_STM32F4_ETH_H)
 #define NET_RENAMED_DRIVER_STM32F4_ETH_H

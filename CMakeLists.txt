@@ -201,6 +201,8 @@ if(SMALLEST_TCP_BUILD_DRIVERS)
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
         smallest_tcp_library(driver_stm32f4_eth SOURCES src/driver/stm32f4_eth.c
             LINKS smallest_tcp_core)
+        smallest_tcp_library(driver_sam4e_gmac SOURCES src/driver/sam4e_gmac.c
+            LINKS smallest_tcp_core)
     endif()
 endif()
 
