@@ -10,6 +10,12 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-23
+
+### Changes
+
+- ci: the hardware job's workspace stays the runner's own
+
 ## [0.1.14] - 2026-11-22
 
 A second board port, on which the conformance suites run; and the
@@ -555,7 +561,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.11...v0.1.12
