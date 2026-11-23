@@ -121,6 +121,12 @@ jobs:
       HW_DUT_PROBE: ${{ vars.HW_DUT_PROBE }}
 
     steps:
+      # The runner keeps its workspace between runs, and the tests run as
+      # root: anything root left there would stop the checkout cleaning it.
+      # The tests run with -B so that they leave no bytecode behind.
+      - name: The workspace is the runner's own
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
       - uses: actions/checkout@v4
 
       - name: Python deps, in a venv of the job's own
@@ -153,7 +159,7 @@ jobs:
           # only some seconds later (spanning tree)
           cd tests/blackbox
           for try in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if sudo "$RUNNER_TEMP/venv/bin/python" -m pytest test_arp_conform.py \
+            if sudo "$RUNNER_TEMP/venv/bin/python" -B -m pytest test_arp_conform.py \
                  -k 001 --iface "$IFACE" --sut-ip 10.0.0.2 --our-ip 10.0.0.100 \
                  --sut-port 7 -q -p no:cacheprovider; then exit 0; fi
           done
@@ -163,7 +169,7 @@ jobs:
         run: |
           FUZZ_COUNT=${{ github.event.inputs.fuzz_count || 500 }}
           cd tests/blackbox
-          sudo "$RUNNER_TEMP/venv/bin/python" -m pytest test_tcp_fuzz.py \
+          sudo "$RUNNER_TEMP/venv/bin/python" -B -m pytest test_tcp_fuzz.py \
             --iface "$IFACE"                           \
             --sut-ip  10.0.0.2                         \
             --our-ip  10.0.0.100                       \
@@ -184,7 +190,7 @@ jobs:
           wait $watcher
 
           cd tests/blackbox
-          sudo "$RUNNER_TEMP/venv/bin/python" -m pytest \
+          sudo "$RUNNER_TEMP/venv/bin/python" -B -m pytest \
             test_arp_conform.py                        \
             test_ipv4_conform.py                       \
             test_icmp_conform.py                       \
