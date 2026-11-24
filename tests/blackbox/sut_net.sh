@@ -16,6 +16,11 @@
 #   TEST_IF=veth-test      interface for Scapy (--iface), Avahi, ping ...
 #   SUT_IF=raw:veth-sut    argument for the demo binaries (--sut-iface)
 #
+# The harness subnet is routed to the link by a rule of its own, ahead of the
+# host's routing table: a host may hold a more specific route to an address
+# in it (some CI runners reach their DNS resolver at 10.0.0.2 by a host
+# route).  DNS (port 53) to the subnet is left to the host's table.
+#
 # --rst-drop drops the host kernel's own RSTs on the harness end, which would
 # otherwise tear down Scapy's hand-made connections (the TCP suites need it;
 # suites that use the kernel as a real TCP client must not have it).
@@ -37,6 +42,14 @@ case "$driver" in
     ;;
 esac
 
+subnet=${OUR_IP%.*}.0/24
+route_table=7100
+route_rules=(
+  "pref 7100 to $subnet ipproto udp dport 53 lookup main"
+  "pref 7101 to $subnet ipproto tcp dport 53 lookup main"
+  "pref 7102 to $subnet lookup $route_table"
+)
+
 rst_rule=(OUTPUT -p tcp --tcp-flags RST RST -o "$test_if" -j DROP)
 
 case "$action" in
@@ -52,6 +65,11 @@ case "$action" in
     fi
     ip link set "$test_if" up
     ip addr add "$OUR_IP/24" dev "$test_if"
+    ip route replace "$subnet" dev "$test_if" src "$OUR_IP" table "$route_table"
+    for rule in "${route_rules[@]}"; do
+      # shellcheck disable=SC2086  # the rule is a list of words
+      ip rule add $rule
+    done
     if [[ $rst_drop -eq 1 ]]; then
       iptables -A "${rst_rule[@]}"
     fi
@@ -64,6 +82,11 @@ case "$action" in
     ;;
   down)
     iptables -D "${rst_rule[@]}" 2>/dev/null || true
+    for rule in "${route_rules[@]}"; do
+      # shellcheck disable=SC2086
+      ip rule del $rule 2>/dev/null || true
+    done
+    ip route flush table "$route_table" 2>/dev/null || true
     if [[ $driver == tap ]]; then
       ip tuntap del dev tap0 mode tap 2>/dev/null || true
     else
