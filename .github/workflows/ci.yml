@@ -138,6 +138,12 @@ jobs:
       # ctest runs unprivileged, so test_rawsock skips its live tests there.
       - name: Raw-socket driver live tests (root, veth pair)
         run: sudo ./build/tests/test_rawsock
+      # The optimiser's data-flow warnings appear only in an optimised build.
+      - name: Release build, and its tests
+        run: |
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-release
+          ctest --test-dir build-release --output-on-failure
 
   cmake-macos:
     name: CMake — macOS
@@ -173,7 +179,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            python3-pip iproute2 iputils-arping netcat-openbsd
+            python3-pip iproute2 iputils-arping netcat-openbsd tcpdump
 
       - name: Install Python deps
         run: |
@@ -209,6 +215,10 @@ jobs:
 
       - name: Linux kernel sanity checks (validates interop with production stack)
         run: |
+          # The frames of this step, kept for the failure dump below
+          sudo tcpdump -i "$TEST_IF" -U -w /tmp/sanity.pcap 2>/dev/null &
+          trap 'sleep 1; sudo pkill -x tcpdump || true' EXIT
+          sleep 1
           echo "=== ARP sanity (arping) ==="
           sudo arping -I "$TEST_IF" -c 3 -w 5 10.0.0.2
           echo "=== ICMP sanity (ping) ==="
@@ -241,6 +251,9 @@ jobs:
         run: |
           echo "=== SUT stdout/stderr (/tmp/sut.log) ==="
           cat /tmp/sut.log 2>/dev/null || echo "(no sut.log found)"
+          echo "=== Frames of the sanity checks (/tmp/sanity.pcap) ==="
+          sudo tcpdump -nn -e -tttt -r /tmp/sanity.pcap 2>/dev/null | tail -n 200 \
+            || echo "(no capture found)"
 
       - name: Stop SUT and tear down the link
         if: always()
