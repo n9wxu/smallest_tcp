@@ -39,7 +39,7 @@ static int tap_init(void *ctx) {
 
   memset(&ifr, 0, sizeof(ifr));
   ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-  strncpy(ifr.ifr_name, tap->ifname, IFNAMSIZ - 1);
+  snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", tap->ifname);
 
   if (ioctl(tap->fd, TUNSETIFF, &ifr) < 0) {
     perror("tap_init: ioctl TUNSETIFF");

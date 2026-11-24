@@ -42,7 +42,7 @@ static int dotted_next(const char **pp, const char **label) {
 }
 
 int dns_dotted_equal(const char *a, const char *b) {
-  const char *la, *lb;
+  const char *la = NULL, *lb = NULL;
   int na, nb, i;
   a = dotted_begin(a);
   b = dotted_begin(b);
@@ -181,7 +181,7 @@ static int write_name(dns_writer_t *w, const char *name, int compress) {
 
   dns_writer_mark_t start = dns_writer_mark(w);
   const char *p = dotted_begin(name);
-  const char *label;
+  const char *label = NULL;
   int n;
 
   for (;;) {
@@ -270,7 +270,7 @@ int dns_name_equals(const uint8_t *msg, uint16_t len, uint16_t off,
   const char *p = dotted_begin(name);
   wire_begin(&it, msg, len, off);
   for (;;) {
-    const uint8_t *wl;
+    const uint8_t *wl = NULL;
     const char *dl;
     int wn = wire_next(&it, &wl);
     int dn = dotted_next(&p, &dl);
