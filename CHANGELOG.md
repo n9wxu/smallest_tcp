@@ -10,6 +10,14 @@ entry says how.  How a release is made:
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-24
+
+### Changes
+
+- tests: the harness subnet is routed to the SUT's link by its own rule
+- ci: a Release build, and the frames of a failed sanity check
+- build: an optimised build compiles without warnings
+
 ## [0.1.15] - 2026-11-23
 
 ### Changes
@@ -561,7 +569,8 @@ to change:
 - Resolving MAC addresses (ARP retries, the next hop of a UDP send) is the
   application's job.
 
-[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/n9wxu/smallest_tcp/compare/v0.1.12...v0.1.13

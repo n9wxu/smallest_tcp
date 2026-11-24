@@ -13,7 +13,7 @@
 
 #define NET_VERSION_MAJOR 0
 #define NET_VERSION_MINOR 1
-#define NET_VERSION_PATCH 15
+#define NET_VERSION_PATCH 16
 
 /** The version as one number, for #if: 0x00MMmmpp */
 #define NET_VERSION                                                            \
